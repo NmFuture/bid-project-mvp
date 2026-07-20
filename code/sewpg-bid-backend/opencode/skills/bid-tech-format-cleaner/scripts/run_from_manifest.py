@@ -53,6 +53,7 @@ from verify import scan_docx  # noqa: E402
 
 SCHEMA_VERSION = "bid-tech-format-clean-v1"
 REQUIRED_FIELDS = ("inputFile", "outlineFile", "outputFile", "projectName")
+TOC_BREAK_BOOKMARK = "_TECH_FORMAT_CLEANER_TOC_BREAK"
 
 
 def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[str, Any]:
@@ -148,7 +149,11 @@ def clean_docx(
     if not toc_present_before and toc_cfg.get("insert_when_missing", True) is True:
         insert_toc_field(doc)
         toc_inserted = True
-    _apply_toc_page_break(doc, toc_cfg.get("page_break_after", True) is True)
+    _apply_toc_page_break(
+        doc,
+        toc_cfg.get("page_break_after", True) is True,
+        adopt_unmarked=toc_inserted,
+    )
 
     heading_style_result = _configure_heading_styles(doc, style_spec)
     heading_result = _promote_existing_headings(doc, outline_items, style_spec)
@@ -157,6 +162,7 @@ def clean_docx(
     _apply_document_body_format(doc, style_spec)
     _apply_document_table_format(doc, style_spec.get("table_cell"))
     _apply_document_headers(doc, style_spec.get("header"), project_name)
+    _reapply_heading_direct_formats(doc, style_spec)
     reapply_heading_fonts(doc, style_spec)
     strip_numPr_from_heading_styles(doc)
     strip_numPr_from_body(doc)
@@ -453,27 +459,37 @@ def _apply_document_headers(doc: Document, header_cfg: Any, project_name: str) -
         if template
         else ""
     )
-    seen: set[int] = set()
+    seen: set[Any] = set()
     for section in doc.sections:
-        header = section.header
-        marker = id(header._element)
-        if marker in seen:
+        for header in (section.header, section.first_page_header, section.even_page_header):
+            marker = header._element
+            if marker in seen:
+                continue
+            seen.add(marker)
+            paragraphs = list(header.paragraphs)
+            if not paragraphs:
+                paragraphs = [header.add_paragraph()]
+            target = next((paragraph for paragraph in paragraphs if paragraph.text.strip()), paragraphs[0])
+            if header_text:
+                text_runs = [run for run in target.runs if run.text]
+                if text_runs:
+                    text_runs[0].text = header_text
+                    for run in text_runs[1:]:
+                        run.text = ""
+                else:
+                    target.add_run(header_text)
+            for paragraph in paragraphs:
+                _apply_paragraph_direct_format(paragraph, header_cfg)
+
+
+def _reapply_heading_direct_formats(doc: Document, style_spec: dict[str, Any]) -> None:
+    for paragraph in doc.paragraphs:
+        level = _paragraph_heading_level(paragraph)
+        if not level:
             continue
-        seen.add(marker)
-        paragraphs = list(header.paragraphs)
-        if not paragraphs:
-            paragraphs = [header.add_paragraph()]
-        target = next((paragraph for paragraph in paragraphs if paragraph.text.strip()), paragraphs[0])
-        if header_text:
-            text_runs = [run for run in target.runs if run.text]
-            if text_runs:
-                text_runs[0].text = header_text
-                for run in text_runs[1:]:
-                    run.text = ""
-            else:
-                target.add_run(header_text)
-        for paragraph in paragraphs:
-            _apply_paragraph_direct_format(paragraph, header_cfg)
+        cfg = _heading_cfg(style_spec, level)
+        if cfg:
+            _apply_paragraph_direct_format(paragraph, cfg)
 
 
 def _apply_paragraph_direct_format(paragraph, cfg: dict[str, Any]) -> None:
@@ -524,26 +540,89 @@ def _apply_run_format(run, cfg: dict[str, Any]) -> None:
         r_fonts.set(qn("w:cs"), en_font)
 
 
-def _apply_toc_page_break(doc: Document, enabled: bool) -> None:
-    for paragraph in doc.paragraphs:
-        if not any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText"))):
-            continue
-        sibling = paragraph._element.getnext()
-        while _is_dedicated_page_break(sibling):
-            if enabled:
-                return
-            next_sibling = sibling.getnext()
-            sibling.getparent().remove(sibling)
-            sibling = next_sibling
-        if enabled:
-            page_break = OxmlElement("w:p")
-            run = OxmlElement("w:r")
-            br = OxmlElement("w:br")
-            br.set(qn("w:type"), "page")
-            run.append(br)
-            page_break.append(run)
-            paragraph._element.addnext(page_break)
+def _apply_toc_page_break(doc: Document, enabled: bool, *, adopt_unmarked: bool = False) -> None:
+    anchor = _toc_result_anchor(doc)
+    if anchor is None:
         return
+    sibling = anchor.getnext()
+    if adopt_unmarked and _is_dedicated_page_break(sibling) and not _is_cleaner_toc_break(sibling):
+        next_sibling = sibling.getnext()
+        sibling.getparent().remove(sibling)
+        sibling = next_sibling
+    while _is_cleaner_toc_break(sibling):
+        next_sibling = sibling.getnext()
+        sibling.getparent().remove(sibling)
+        sibling = next_sibling
+    if enabled:
+        anchor.addnext(_make_cleaner_toc_break(doc))
+
+
+def _toc_result_anchor(doc: Document):
+    toc_paragraph = next(
+        (
+            paragraph._element
+            for paragraph in doc.paragraphs
+            if any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText")))
+        ),
+        None,
+    )
+    if toc_paragraph is None:
+        return None
+    anchor = toc_paragraph
+    current = toc_paragraph
+    found_end = False
+    while current is not None and current.tag == qn("w:p"):
+        anchor = current
+        if any(node.get(qn("w:fldCharType")) == "end" for node in current.iter(qn("w:fldChar"))):
+            found_end = True
+            break
+        current = current.getnext()
+    if not found_end:
+        anchor = toc_paragraph
+    current = anchor.getnext()
+    while _is_toc_result_paragraph(current):
+        anchor = current
+        current = current.getnext()
+    return anchor
+
+
+def _is_toc_result_paragraph(element) -> bool:
+    if element is None or element.tag != qn("w:p"):
+        return False
+    p_pr = element.find(qn("w:pPr"))
+    p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
+    style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
+    return bool(re.match(r"^TOC\s*\d+$", style_id, flags=re.IGNORECASE))
+
+
+def _make_cleaner_toc_break(doc: Document):
+    bookmark_id = str(
+        max(
+            (int(node.get(qn("w:id"))) for node in doc.element.iter(qn("w:bookmarkStart")) if str(node.get(qn("w:id")) or "").isdigit()),
+            default=0,
+        )
+        + 1
+    )
+    page_break = OxmlElement("w:p")
+    bookmark_start = OxmlElement("w:bookmarkStart")
+    bookmark_start.set(qn("w:id"), bookmark_id)
+    bookmark_start.set(qn("w:name"), TOC_BREAK_BOOKMARK)
+    page_break.append(bookmark_start)
+    run = OxmlElement("w:r")
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    run.append(br)
+    page_break.append(run)
+    bookmark_end = OxmlElement("w:bookmarkEnd")
+    bookmark_end.set(qn("w:id"), bookmark_id)
+    page_break.append(bookmark_end)
+    return page_break
+
+
+def _is_cleaner_toc_break(element) -> bool:
+    if not _is_dedicated_page_break(element):
+        return False
+    return any(node.get(qn("w:name")) == TOC_BREAK_BOOKMARK for node in element.iter(qn("w:bookmarkStart")))
 
 
 def _is_dedicated_page_break(element) -> bool:

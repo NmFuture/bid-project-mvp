@@ -9,10 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import patch
 
 from docx import Document
 from docx.enum.section import WD_ORIENT, WD_SECTION
+from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm
 
@@ -262,6 +264,87 @@ def _toc_is_followed_by_page_break(path: Path) -> bool:
             return False
         return bool(sibling.findall(".//" + qn("w:br")))
     raise AssertionError("测试文档中未找到 TOC 域")
+
+
+def _write_multi_paragraph_toc_docx(path: Path) -> None:
+    doc = Document()
+    doc.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+    doc.styles.add_style("TOC 2", WD_STYLE_TYPE.PARAGRAPH)
+    field = doc.add_paragraph()
+    for field_type in ("begin", "separate"):
+        run = OxmlElement("w:r")
+        node = OxmlElement("w:fldChar")
+        node.set(qn("w:fldCharType"), field_type)
+        run.append(node)
+        field._element.append(run)
+        if field_type == "begin":
+            instruction_run = OxmlElement("w:r")
+            instruction = OxmlElement("w:instrText")
+            instruction.text = ' TOC \\o "1-3" '
+            instruction_run.append(instruction)
+            field._element.append(instruction_run)
+    doc.add_paragraph("第一章 ................................ 1", style="TOC 1")
+    toc_end = doc.add_paragraph("1.1 节 ................................ 2", style="TOC 2")
+    end_run = OxmlElement("w:r")
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    end_run.append(end)
+    toc_end._element.append(end_run)
+    doc.add_paragraph("用户正文")
+    user_break = doc.add_paragraph("用户分页")
+    user_break.add_run().add_break(WD_BREAK.PAGE)
+    doc.save(path)
+
+
+def _page_break_count_after_toc_end(path: Path) -> int:
+    doc = Document(str(path))
+    for paragraph in doc.paragraphs:
+        has_end = any(
+            node.get(qn("w:fldCharType")) == "end" for node in paragraph._element.iter(qn("w:fldChar"))
+        )
+        if not has_end:
+            continue
+        count = 0
+        sibling = paragraph._element.getnext()
+        while sibling is not None and sibling.tag == qn("w:p") and sibling.findall(".//" + qn("w:br")):
+            count += 1
+            sibling = sibling.getnext()
+        return count
+    raise AssertionError("测试文档中未找到 TOC field end")
+
+
+def _user_page_break_is_present(path: Path) -> bool:
+    doc = Document(str(path))
+    paragraph = next(item for item in doc.paragraphs if item.text == "用户分页")
+    return bool(paragraph._element.findall(".//" + qn("w:br")))
+
+
+def _write_direct_format_heading_docx(path: Path) -> None:
+    doc = Document()
+    heading = doc.add_paragraph(style="Heading 1")
+    bookmark_start = OxmlElement("w:bookmarkStart")
+    bookmark_start.set(qn("w:id"), "42")
+    bookmark_start.set(qn("w:name"), "heading-anchor")
+    heading._element.append(bookmark_start)
+    for text in ("直接", "格式标题"):
+        run = heading.add_run(text)
+        run.font.name = "Courier New"
+        run.font.size = Cm(1.1)
+        run.font.bold = False
+    field_run = OxmlElement("w:r")
+    field = OxmlElement("w:fldChar")
+    field.set(qn("w:fldCharType"), "begin")
+    field_run.append(field)
+    heading._element.append(field_run)
+    bookmark_end = OxmlElement("w:bookmarkEnd")
+    bookmark_end.set(qn("w:id"), "42")
+    heading._element.append(bookmark_end)
+    doc.add_paragraph("正文")
+    doc.save(path)
+
+
+def _write_empty_outline(path: Path) -> None:
+    path.write_text(json.dumps({"schema_version": "tech_bid_outline.v1", "sections": []}), encoding="utf-8")
 
 
 class TechFormatCleanerTest(unittest.TestCase):
@@ -568,6 +651,134 @@ class TechFormatCleanerTest(unittest.TestCase):
         self.assertEqual(counts["invalid_h1"], 3)
         self.assertEqual(counts["empty_leaf_heading"], 4)
 
+    def test_multi_paragraph_toc_break_is_managed_after_field_results(self):
+        input_docx = self.tmp_dir / "multi-toc-input.docx"
+        outline_path = self.tmp_dir / "multi-toc-outline.json"
+        _write_multi_paragraph_toc_docx(input_docx)
+        _write_empty_outline(outline_path)
+        current_input = input_docx
+
+        for index, enabled in enumerate((True, False, True, True), start=1):
+            style_path = self.tmp_dir / f"multi-toc-style-{index}.json"
+            output_docx = self.tmp_dir / f"multi-toc-output-{index}.docx"
+            manifest_path = self.tmp_dir / f"multi-toc-manifest-{index}.json"
+            _write_full_style(
+                style_path,
+                body_size=12,
+                margin=2.54,
+                toc_page_break_after=enabled,
+            )
+            _write_manifest(
+                manifest_path,
+                input_docx=current_input,
+                outline_path=outline_path,
+                output_docx=output_docx,
+                style_path=style_path,
+            )
+
+            _run_manifest(manifest_path)
+
+            self.assertEqual(_page_break_count_after_toc_end(output_docx), 1 if enabled else 0)
+            self.assertTrue(_user_page_break_is_present(output_docx))
+            current_input = output_docx
+
+    def test_heading_direct_run_format_is_reapplied_without_rebuilding_xml(self):
+        input_docx = self.tmp_dir / "heading-input.docx"
+        outline_path = self.tmp_dir / "heading-outline.json"
+        default_style = self.tmp_dir / "heading-default.json"
+        custom_style = self.tmp_dir / "heading-custom.json"
+        _write_direct_format_heading_docx(input_docx)
+        _write_empty_outline(outline_path)
+        _write_full_style(default_style, body_size=12, margin=2.54)
+        _write_full_style(custom_style, body_size=15, margin=2.54)
+        custom = json.loads(custom_style.read_text(encoding="utf-8"))
+        custom["heading"]["1"].update(
+            {"zh_font": "微软雅黑", "en_font": "Calibri", "size_pt": 19, "bold": False}
+        )
+        custom_style.write_text(json.dumps(custom, ensure_ascii=False, indent=2), encoding="utf-8")
+        current_input = input_docx
+
+        for index, (style_path, en_font, zh_font, size_pt, bold) in enumerate(
+            (
+                (default_style, "Arial", "等线", 16, True),
+                (custom_style, "Calibri", "微软雅黑", 19, False),
+                (default_style, "Arial", "等线", 16, True),
+            ),
+            start=1,
+        ):
+            output_docx = self.tmp_dir / f"heading-output-{index}.docx"
+            manifest_path = self.tmp_dir / f"heading-manifest-{index}.json"
+            _write_manifest(
+                manifest_path,
+                input_docx=current_input,
+                outline_path=outline_path,
+                output_docx=output_docx,
+                style_path=style_path,
+            )
+
+            _run_manifest(manifest_path)
+
+            output = Document(str(output_docx))
+            heading = next(paragraph for paragraph in output.paragraphs if paragraph.text == "直接格式标题")
+            self.assertEqual(len(heading._element.findall(".//" + qn("w:bookmarkStart"))), 1)
+            self.assertEqual(len(heading._element.findall(".//" + qn("w:bookmarkEnd"))), 1)
+            self.assertEqual(len(heading._element.findall(".//" + qn("w:fldChar"))), 1)
+            for run in (run for run in heading.runs if run.text):
+                self.assertEqual(run.font.name, en_font)
+                self.assertAlmostEqual(run.font.size.pt, size_pt)
+                self.assertEqual(run.font.bold, bold)
+                fonts = run._element.get_or_add_rPr().find(qn("w:rFonts"))
+                self.assertEqual(fonts.get(qn("w:eastAsia")), zh_font)
+            current_input = output_docx
+
+    def test_primary_first_and_even_headers_are_formatted_once_per_part(self):
+        input_docx = self.tmp_dir / "headers-input.docx"
+        outline_path = self.tmp_dir / "headers-outline.json"
+        style_path = self.tmp_dir / "headers-style.json"
+        _write_empty_outline(outline_path)
+        _write_full_style(style_path, body_size=12, margin=2.54)
+        doc = Document()
+        doc.settings.odd_and_even_pages_header_footer = True
+        first_section = doc.sections[0]
+        first_section.different_first_page_header_footer = True
+        first_section.header.paragraphs[0].text = "旧主页面眉"
+        first_section.first_page_header.paragraphs[0].text = "旧首页页眉"
+        first_section.even_page_header.paragraphs[0].text = ""
+        second_section = doc.add_section(WD_SECTION.NEW_PAGE)
+        second_section.header.is_linked_to_previous = True
+        second_section.first_page_header.is_linked_to_previous = True
+        second_section.even_page_header.is_linked_to_previous = True
+        doc.add_paragraph("正文")
+        doc.save(input_docx)
+        current_input = input_docx
+
+        for index in (1, 2):
+            output_docx = self.tmp_dir / f"headers-output-{index}.docx"
+            manifest_path = self.tmp_dir / f"headers-manifest-{index}.json"
+            _write_manifest(
+                manifest_path,
+                input_docx=current_input,
+                outline_path=outline_path,
+                output_docx=output_docx,
+                style_path=style_path,
+            )
+
+            _run_manifest(manifest_path)
+
+            output = Document(str(output_docx))
+            seen = set()
+            for section in output.sections:
+                for header in (section.header, section.first_page_header, section.even_page_header):
+                    marker = id(header._element)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                    nonempty = [paragraph for paragraph in header.paragraphs if paragraph.text.strip()]
+                    self.assertEqual([paragraph.text for paragraph in nonempty], ["自定义页眉-测试项目"])
+                    self.assertAlmostEqual(nonempty[0].runs[0].font.size.pt, 8)
+                    self.assertEqual(nonempty[0].alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+            current_input = output_docx
+
     def _load_format_services(self):
         definitions = {
             "app.services.onlyoffice_documents": ("document_path", lambda _project_id: None),
@@ -579,14 +790,32 @@ class TechFormatCleanerTest(unittest.TestCase):
             module = ModuleType(module_name)
             setattr(module, attribute, value)
             stubs[module_name] = module
-        with patch.dict(sys.modules, stubs):
+        tracked_names = (*stubs, "app.services.technical_document_format")
+        missing = object()
+        originals = {name: sys.modules.get(name, missing) for name in tracked_names}
+        try:
+            sys.modules.update(stubs)
             sys.modules.pop("app.services.technical_document_format", None)
             format_module = importlib.import_module("app.services.technical_document_format")
             state_module = importlib.import_module("app.services.technical_document_state")
+        finally:
+            for name, original in originals.items():
+                if original is missing:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = original
         return format_module, state_module
 
     def test_invalid_overrides_fall_back_to_defaults(self):
+        module_names = (
+            "app.services.onlyoffice_documents",
+            "app.services.workspace_project_access",
+            "app.services.workspace_artifacts",
+            "app.services.technical_document_format",
+        )
+        before = {name: sys.modules.get(name) for name in module_names}
         format_module, _state_module = self._load_format_services()
+        self.assertEqual({name: sys.modules.get(name) for name in module_names}, before)
         base_path = (
             Path(__file__).resolve().parents[4]
             / "opencode"
