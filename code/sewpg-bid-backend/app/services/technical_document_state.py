@@ -17,6 +17,7 @@ def apply_technical_document_format_state(
     state.setdefault("onlyoffice", {})["documentKey"] = f"{project['id']}-v{next_version}"
     state["technicalFormatPreset"] = str(format_result.get("preset") or "standard")
     state["technicalFormatLabel"] = str(format_result.get("label") or "")
+    state["technicalFormatStyleOverrides"] = copy.deepcopy(format_result.get("styleOverrides") or {})
     state["technicalFormatSummary"] = copy.deepcopy(format_result.get("summary") or {})
     fill_state = project.get("fill_state") if isinstance(project.get("fill_state"), dict) else {}
     fill_state["lastTechnicalFormat"] = copy.deepcopy(format_result)

@@ -15,6 +15,7 @@ from typing import Any
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -93,6 +94,7 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "placeholderCount": int(report["placeholderCount"]),
         "orientation": report["orientation"],
         "riskCount": len(report["formatRisks"]),
+        "warnings": _build_warnings(report),
     }
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -142,13 +144,20 @@ def clean_docx(
     doc = Document(str(output_path))
     toc_present_before = document_has_toc(doc)
     toc_inserted = False
-    if not toc_present_before:
+    toc_cfg = style_spec.get("toc") if isinstance(style_spec.get("toc"), dict) else {}
+    if not toc_present_before and toc_cfg.get("insert_when_missing", True) is True:
         insert_toc_field(doc)
         toc_inserted = True
+        if toc_cfg.get("page_break_after", True) is False:
+            _remove_page_break_after_toc(doc)
 
     heading_style_result = _configure_heading_styles(doc, style_spec)
     heading_result = _promote_existing_headings(doc, outline_items, style_spec)
     internal_heading_result = _promote_body_internal_headings(doc, style_spec)
+    _apply_document_page_format(doc, style_spec.get("page"))
+    _apply_document_body_format(doc, style_spec)
+    _apply_document_table_format(doc, style_spec.get("table_cell"))
+    _apply_document_headers(doc, style_spec.get("header"), project_name)
     reapply_heading_fonts(doc, style_spec)
     strip_numPr_from_heading_styles(doc)
     strip_numPr_from_body(doc)
@@ -310,7 +319,7 @@ def document_has_toc(doc: Document) -> bool:
     return any((node.text or "").upper().find("TOC") >= 0 for node in doc.element.iter(qn("w:instrText")))
 
 
-def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 4) -> dict[str, Any]:
+def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 6) -> dict[str, Any]:
     configured: list[dict[str, Any]] = []
     heading_cfg = style_spec.get("heading", {})
     if not isinstance(heading_cfg, dict):
@@ -382,6 +391,147 @@ def _apply_style_format(style, cfg: dict[str, Any]) -> None:
         paragraph_format.left_indent = Cm(float(cfg["left_indent_cm"]))
     if "first_line_indent_chars" in cfg and "size_pt" in cfg:
         paragraph_format.first_line_indent = Pt(float(cfg["first_line_indent_chars"]) * float(cfg["size_pt"]))
+
+
+def _apply_document_page_format(doc: Document, page_cfg: Any) -> None:
+    if not isinstance(page_cfg, dict):
+        return
+    for section in doc.sections:
+        for key, attribute in (
+            ("top_cm", "top_margin"),
+            ("bottom_cm", "bottom_margin"),
+            ("left_cm", "left_margin"),
+            ("right_cm", "right_margin"),
+            ("header_top_cm", "header_distance"),
+            ("footer_bottom_cm", "footer_distance"),
+        ):
+            if key in page_cfg:
+                setattr(section, attribute, Cm(float(page_cfg[key])))
+
+
+def _apply_document_body_format(doc: Document, style_spec: dict[str, Any]) -> None:
+    body_cfg = style_spec.get("body")
+    caption_cfg = style_spec.get("caption")
+    if isinstance(body_cfg, dict):
+        try:
+            _apply_style_format(doc.styles["Normal"], body_cfg)
+        except KeyError:
+            pass
+    for paragraph in doc.paragraphs:
+        if _paragraph_heading_level(paragraph):
+            continue
+        cfg = caption_cfg if _looks_like_caption_or_table_title(paragraph.text) else body_cfg
+        if not isinstance(cfg, dict):
+            continue
+        _apply_paragraph_direct_format(paragraph, cfg)
+
+
+def _apply_document_table_format(doc: Document, table_cfg: Any) -> None:
+    if not isinstance(table_cfg, dict):
+        return
+    table_align = str(table_cfg.get("table_align") or "").lower()
+    alignment = {
+        "left": WD_TABLE_ALIGNMENT.LEFT,
+        "center": WD_TABLE_ALIGNMENT.CENTER,
+        "right": WD_TABLE_ALIGNMENT.RIGHT,
+    }.get(table_align)
+    for table in doc.tables:
+        if alignment is not None:
+            table.alignment = alignment
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    _apply_paragraph_direct_format(paragraph, table_cfg)
+
+
+def _apply_document_headers(doc: Document, header_cfg: Any, project_name: str) -> None:
+    if not isinstance(header_cfg, dict):
+        return
+    template = str(header_cfg.get("text_template") or "")
+    header_text = (
+        template.replace("{project_name}", project_name).replace("{projectName}", project_name)
+        if template
+        else ""
+    )
+    seen: set[int] = set()
+    for section in doc.sections:
+        header = section.header
+        marker = id(header._element)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        paragraphs = list(header.paragraphs)
+        if not paragraphs:
+            paragraphs = [header.add_paragraph()]
+        target = next((paragraph for paragraph in paragraphs if paragraph.text.strip()), paragraphs[0])
+        if header_text:
+            text_runs = [run for run in target.runs if run.text]
+            if text_runs:
+                text_runs[0].text = header_text
+                for run in text_runs[1:]:
+                    run.text = ""
+            else:
+                target.add_run(header_text)
+        for paragraph in paragraphs:
+            _apply_paragraph_direct_format(paragraph, header_cfg)
+
+
+def _apply_paragraph_direct_format(paragraph, cfg: dict[str, Any]) -> None:
+    _apply_paragraph_properties(paragraph.paragraph_format, cfg)
+    for run in paragraph.runs:
+        _apply_run_format(run, cfg)
+
+
+def _apply_paragraph_properties(paragraph_format, cfg: dict[str, Any]) -> None:
+    align = str(cfg.get("align") or "").lower()
+    paragraph_format.alignment = {
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "right": WD_ALIGN_PARAGRAPH.RIGHT,
+        "both": WD_ALIGN_PARAGRAPH.JUSTIFY,
+        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    }.get(align, paragraph_format.alignment)
+    if "space_before_pt" in cfg:
+        paragraph_format.space_before = Pt(float(cfg["space_before_pt"]))
+    if "space_after_pt" in cfg:
+        paragraph_format.space_after = Pt(float(cfg["space_after_pt"]))
+    if "line_spacing" in cfg:
+        paragraph_format.line_spacing = float(cfg["line_spacing"])
+    if "left_indent_cm" in cfg:
+        paragraph_format.left_indent = Cm(float(cfg["left_indent_cm"]))
+    if "first_line_indent_chars" in cfg and "size_pt" in cfg:
+        paragraph_format.first_line_indent = Pt(float(cfg["first_line_indent_chars"]) * float(cfg["size_pt"]))
+
+
+def _apply_run_format(run, cfg: dict[str, Any]) -> None:
+    if "en_font" in cfg:
+        run.font.name = str(cfg["en_font"])
+    if "size_pt" in cfg:
+        run.font.size = Pt(float(cfg["size_pt"]))
+    if "bold" in cfg:
+        run.font.bold = bool(cfg["bold"])
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    zh_font = str(cfg.get("zh_font") or cfg.get("en_font") or "")
+    en_font = str(cfg.get("en_font") or cfg.get("zh_font") or "")
+    if zh_font or en_font:
+        r_fonts.set(qn("w:eastAsia"), zh_font)
+        r_fonts.set(qn("w:ascii"), en_font)
+        r_fonts.set(qn("w:hAnsi"), en_font)
+        r_fonts.set(qn("w:cs"), en_font)
+
+
+def _remove_page_break_after_toc(doc: Document) -> None:
+    for paragraph in doc.paragraphs:
+        if not any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText"))):
+            continue
+        sibling = paragraph._element.getnext()
+        if sibling is not None and sibling.tag == qn("w:p") and sibling.findall(".//" + qn("w:br")):
+            sibling.getparent().remove(sibling)
+        return
 
 
 def _ensure_style_outline_level(style, level: int) -> None:
@@ -838,9 +988,19 @@ def _structural_risks(
         risks.append("存在异常一级标题，请检查章节层级。")
     if scan.get("empty_leaf_headings"):
         risks.append("存在空叶子章节，请检查是否缺正文或素材未拼入。")
-    if not risks:
-        risks.append("未发现脚本可识别的格式风险；仍建议在 Word/WPS 中打开后刷新目录并人工抽检。")
     return _dedupe(risks)
+
+
+def _build_warnings(report: dict[str, Any]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for index, message in enumerate(report.get("formatRisks") or [], start=1):
+        count = 1
+        if "未匹配标题" in message:
+            count = len(report.get("unmatchedHeadings") or [])
+        elif "占位符" in message:
+            count = int(report.get("placeholderCount") or 0)
+        warnings.append({"code": f"format_risk_{index}", "message": str(message), "count": count})
+    return warnings
 
 
 def _dedupe(items: list[str]) -> list[str]:

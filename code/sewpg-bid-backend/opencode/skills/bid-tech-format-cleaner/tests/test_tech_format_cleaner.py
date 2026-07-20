@@ -1,3 +1,6 @@
+import base64
+import copy
+import importlib
 import importlib.util
 import json
 import shutil
@@ -5,9 +8,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 from docx import Document
 from docx.enum.section import WD_ORIENT, WD_SECTION
+from docx.shared import Cm
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -148,6 +154,93 @@ def _write_manifest(
         ),
         encoding="utf-8",
     )
+
+
+def _write_full_format_docx(path: Path) -> None:
+    image_path = path.with_suffix(".png")
+    image_path.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+    )
+    doc = Document()
+    doc.add_paragraph("1 一级标题")
+    doc.add_paragraph("正文内容")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "表格内容"
+    doc.add_paragraph("表1 技术参数")
+    doc.add_picture(str(image_path), width=Cm(1))
+    section = doc.add_section(WD_SECTION.NEW_PAGE)
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = section.page_height, section.page_width
+    doc.add_paragraph("横版正文")
+    doc.save(path)
+
+
+def _write_full_style(path: Path, *, body_size: float, margin: float, insert_toc: bool = True) -> None:
+    style = {
+        "page": {
+            "top_cm": margin,
+            "bottom_cm": margin,
+            "left_cm": margin,
+            "right_cm": margin,
+            "header_top_cm": 1,
+            "footer_bottom_cm": 0.6,
+        },
+        "heading": {
+            "1": {
+                "zh_font": "等线",
+                "en_font": "Arial",
+                "size_pt": body_size + 4,
+                "bold": True,
+                "align": "center",
+                "space_before_pt": 6,
+                "space_after_pt": 6,
+                "line_spacing": 1.5,
+                "first_line_indent_chars": 0,
+                "left_indent_cm": 0,
+            }
+        },
+        "body": {
+            "zh_font": "宋体",
+            "en_font": "Arial",
+            "size_pt": body_size,
+            "bold": False,
+            "align": "both",
+            "space_before_pt": 0,
+            "space_after_pt": 0,
+            "line_spacing": 1.5,
+            "first_line_indent_chars": 2,
+        },
+        "table_cell": {
+            "zh_font": "宋体",
+            "en_font": "Arial",
+            "size_pt": body_size - 1,
+            "bold": False,
+            "align": "center",
+            "line_spacing": 1,
+            "table_align": "center",
+        },
+        "caption": {
+            "zh_font": "等线",
+            "en_font": "Arial",
+            "size_pt": body_size,
+            "bold": False,
+            "align": "center",
+            "line_spacing": 1.5,
+        },
+        "header": {
+            "zh_font": "宋体",
+            "en_font": "Arial",
+            "size_pt": 8,
+            "bold": False,
+            "align": "right",
+            "line_spacing": 1,
+            "text_template": "自定义页眉-{projectName}",
+        },
+        "toc": {"insert_when_missing": insert_toc, "page_break_after": True},
+    }
+    path.write_text(json.dumps(style, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class TechFormatCleanerTest(unittest.TestCase):
@@ -308,6 +401,163 @@ class TechFormatCleanerTest(unittest.TestCase):
         self.assertEqual(style_by_text["供应链能力保障"], "Heading 3")
         self.assertNotEqual(style_by_text["（1）签订产能协议"], "Heading 4")
         self.assertNotEqual(style_by_text["表C.1 总体技术参数与规格"], "Heading 3")
+
+
+    def test_applies_full_style_without_overwriting_input_or_losing_content(self):
+        input_docx = self.tmp_dir / "input.docx"
+        outline_path = self.tmp_dir / "outline.json"
+        style_path = self.tmp_dir / "style.json"
+        output_docx = self.tmp_dir / "output.docx"
+        manifest_path = self.tmp_dir / "manifest.json"
+        _write_full_format_docx(input_docx)
+        _write_outline(outline_path)
+        _write_full_style(style_path, body_size=16, margin=4, insert_toc=False)
+        _write_manifest(
+            manifest_path,
+            input_docx=input_docx,
+            outline_path=outline_path,
+            output_docx=output_docx,
+            style_path=style_path,
+        )
+        input_bytes = input_docx.read_bytes()
+
+        result = _run_manifest(manifest_path, response="details")
+
+        self.assertEqual(input_docx.read_bytes(), input_bytes)
+        output = Document(str(output_docx))
+        body = next(paragraph for paragraph in output.paragraphs if paragraph.text == "正文内容")
+        self.assertAlmostEqual(body.runs[0].font.size.pt, 16)
+        self.assertAlmostEqual(output.sections[0].top_margin.cm, 4, places=1)
+        self.assertAlmostEqual(output.tables[0].cell(0, 0).paragraphs[0].runs[0].font.size.pt, 15)
+        caption = next(paragraph for paragraph in output.paragraphs if paragraph.text == "表1 技术参数")
+        self.assertAlmostEqual(caption.runs[0].font.size.pt, 16)
+        self.assertEqual(len(output.inline_shapes), 1)
+        self.assertTrue(any(int(section.page_width) > int(section.page_height) for section in output.sections))
+        header_paragraph = next(
+            paragraph
+            for section in output.sections
+            for paragraph in section.header.paragraphs
+            if paragraph.text.strip()
+        )
+        self.assertEqual(header_paragraph.text, "自定义页眉-测试项目")
+        self.assertAlmostEqual(header_paragraph.runs[0].font.size.pt, 8)
+        self.assertFalse(result["summary"]["tocInserted"])
+        self.assertFalse(result["summary"]["tocPresent"])
+        self.assertIn("warnings", result["summary"])
+        for warning in result["summary"]["warnings"]:
+            self.assertEqual(set(warning), {"code", "message", "count"})
+
+    def test_default_custom_default_reapplies_body_style(self):
+        input_docx = self.tmp_dir / "chain-input.docx"
+        outline_path = self.tmp_dir / "chain-outline.json"
+        default_style = self.tmp_dir / "chain-default.json"
+        custom_style = self.tmp_dir / "chain-custom.json"
+        _write_full_format_docx(input_docx)
+        _write_outline(outline_path)
+        _write_full_style(default_style, body_size=12, margin=2.54)
+        _write_full_style(custom_style, body_size=16, margin=4)
+
+        current_input = input_docx
+        for index, (style_path, expected_size) in enumerate(
+            ((default_style, 12), (custom_style, 16), (default_style, 12)),
+            start=1,
+        ):
+            output_docx = self.tmp_dir / f"chain-output-{index}.docx"
+            manifest_path = self.tmp_dir / f"chain-manifest-{index}.json"
+            _write_manifest(
+                manifest_path,
+                input_docx=current_input,
+                outline_path=outline_path,
+                output_docx=output_docx,
+                style_path=style_path,
+            )
+            previous_bytes = current_input.read_bytes()
+            _run_manifest(manifest_path)
+            self.assertEqual(current_input.read_bytes(), previous_bytes)
+            output = Document(str(output_docx))
+            body = next(paragraph for paragraph in output.paragraphs if paragraph.text == "正文内容")
+            self.assertAlmostEqual(body.runs[0].font.size.pt, expected_size)
+            self.assertEqual(len(output.inline_shapes), 1)
+            self.assertEqual(output.tables[0].cell(0, 0).text, "表格内容")
+            current_input = output_docx
+
+    def _load_format_services(self):
+        definitions = {
+            "app.services.onlyoffice_documents": ("document_path", lambda _project_id: None),
+            "app.services.workspace_project_access": ("get_workspace_project_runtime_state", lambda *_a, **_k: {}),
+            "app.services.workspace_artifacts": ("technical_workspace_stage_dir", lambda *_a, **_k: None),
+        }
+        stubs = {}
+        for module_name, (attribute, value) in definitions.items():
+            module = ModuleType(module_name)
+            setattr(module, attribute, value)
+            stubs[module_name] = module
+        with patch.dict(sys.modules, stubs):
+            sys.modules.pop("app.services.technical_document_format", None)
+            format_module = importlib.import_module("app.services.technical_document_format")
+            state_module = importlib.import_module("app.services.technical_document_state")
+        return format_module, state_module
+
+    def test_invalid_overrides_fall_back_to_defaults(self):
+        format_module, _state_module = self._load_format_services()
+        base_path = (
+            Path(__file__).resolve().parents[4]
+            / "opencode"
+            / "skills"
+            / "bid-tech-assembler"
+            / "references"
+            / "heading_style.json"
+        )
+        default_spec = json.loads(base_path.read_text(encoding="utf-8"))
+        style_path = format_module._prepare_technical_format_style_spec(
+            "custom",
+            {"bodySizePt": 99, "pageTopCm": -1, "heading1Bold": "false", "insertToc": "false"},
+            self.tmp_dir,
+        )
+        actual = json.loads(style_path.read_text(encoding="utf-8"))
+        self.assertEqual(actual["body"]["size_pt"], default_spec["body"]["size_pt"])
+        self.assertEqual(actual["page"]["top_cm"], default_spec["page"]["top_cm"])
+        self.assertEqual(actual["heading"]["1"]["bold"], default_spec["heading"]["1"]["bold"])
+        self.assertEqual(actual["toc"]["insert_when_missing"], default_spec["toc"]["insert_when_missing"])
+
+        standard_path = format_module._prepare_technical_format_style_spec(
+            "standard",
+            {"bodySizePt": 16, "pageTopCm": 4},
+            self.tmp_dir,
+        )
+        self.assertEqual(json.loads(standard_path.read_text(encoding="utf-8")), default_spec)
+
+        valid_path = format_module._prepare_technical_format_style_spec(
+            "custom",
+            {"bodySizePt": 13, "pageTopCm": 3.5, "insertToc": False},
+            self.tmp_dir,
+        )
+        valid = json.loads(valid_path.read_text(encoding="utf-8"))
+        self.assertEqual(valid["body"]["size_pt"], 13)
+        self.assertEqual(valid["page"]["top_cm"], 3.5)
+        self.assertFalse(valid["toc"]["insert_when_missing"])
+
+    def test_latest_format_selection_is_persisted_in_document_state(self):
+        _format_module, state_module = self._load_format_services()
+        project = {
+            "id": "TECH-FORMAT",
+            "document_state": {"version": 1, "onlyoffice": {}},
+            "fill_state": {},
+        }
+        format_result = {
+            "preset": "custom",
+            "label": "自定义格式",
+            "styleOverrides": {"bodySizePt": 13},
+            "summary": {"matchedHeadingCount": 2, "warnings": []},
+        }
+        state = state_module.apply_technical_document_format_state(
+            project,
+            copy.deepcopy(format_result),
+            updated_at="2026-07-20T00:00:00Z",
+        )
+        self.assertEqual(state["technicalFormatPreset"], "custom")
+        self.assertEqual(state["technicalFormatStyleOverrides"], {"bodySizePt": 13})
+        self.assertEqual(state["technicalFormatSummary"], {"matchedHeadingCount": 2, "warnings": []})
 
 
 if __name__ == "__main__":
