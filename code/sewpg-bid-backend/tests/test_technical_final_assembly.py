@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 
@@ -32,6 +33,91 @@ def load_assembler_script(name: str):
 
 
 class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_merger_deduplicates_heading_from_first_usable_material(self) -> None:
+        merger = load_assembler_script("merger")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            library = root / "library"
+            corrupt = library / "corrupt.docx"
+            valid = library / "valid.docx"
+            output = root / "assembled.docx"
+
+            library.mkdir()
+            Document().save(template)
+            corrupt.write_bytes(b"not-a-docx")
+            valid_doc = Document()
+            valid_doc.add_paragraph("正常素材", style="Heading 2")
+            valid_doc.add_paragraph("这是首份可用素材的正文。")
+            valid_doc.save(valid)
+            plan = [
+                {
+                    "status": "MATCHED",
+                    "level": 2,
+                    "title": "正常素材",
+                    "chapter_no": "1.1",
+                    "chapter_no_flat": "1.1",
+                    "paths": ["missing.docx", corrupt.name, valid.name],
+                }
+            ]
+
+            stats = merger.merge(template, plan, library, {}, root / "prep", output)
+            result = Document(str(output))
+            matching_paragraphs = [
+                paragraph.text
+                for paragraph in result.paragraphs
+                if "正常素材" in paragraph.text
+            ]
+
+        self.assertEqual(matching_paragraphs, ["1.1  正常素材"])
+        self.assertEqual(stats["merged_materials"], 1)
+
+    def test_failed_compose_does_not_suppress_following_unmatched_child(self) -> None:
+        merger = load_assembler_script("merger")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            library = root / "library"
+            source = library / "parent.docx"
+            output = root / "assembled.docx"
+
+            library.mkdir()
+            Document().save(template)
+            source_doc = Document()
+            source_doc.add_paragraph("父章节", style="Heading 1")
+            source_doc.add_paragraph("待补子节", style="Heading 2")
+            source_doc.add_paragraph("尚未成功合并的正文。")
+            source_doc.save(source)
+            plan = [
+                {
+                    "status": "MATCHED",
+                    "level": 1,
+                    "title": "父章节",
+                    "chapter_no": "第一章",
+                    "chapter_no_flat": "1",
+                    "paths": [source.name],
+                },
+                {
+                    "status": "UNMATCHED",
+                    "level": 2,
+                    "title": "待补子节",
+                    "chapter_no": "1.1",
+                    "chapter_no_flat": "1.1",
+                    "paths": [],
+                },
+            ]
+
+            with patch.object(merger.Composer, "append", side_effect=RuntimeError("compose failed")):
+                stats = merger.merge(template, plan, library, {}, root / "prep", output)
+            result = Document(str(output))
+            text = "\n".join(paragraph.text for paragraph in result.paragraphs)
+
+        self.assertIn("1.1  待补子节", text)
+        self.assertIn("[缺失：待补子节——wiki 无匹配卡片，请人工处理]", text)
+        self.assertEqual(stats.get("superseded", 0), 0)
+
     def test_merger_keeps_going_when_materials_are_missing_or_corrupt(self) -> None:
         merger = load_assembler_script("merger")
 

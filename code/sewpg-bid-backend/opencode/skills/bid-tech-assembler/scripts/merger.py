@@ -376,18 +376,16 @@ def merge(
                 # 关键：S2 TOC 条目由 merger 手插为真正的导航 Heading。
                 # 素材内部 Heading 不能再整体降级；这里按当前 TOC 父级
                 # 相对映射到最终 3/4 级，避免最后 cleaner 从正文里猜层级。
-                # remove_first_if_match 只对本条 entry 的第一份素材启用（避免叠加场景下
-                # 两份素材首 heading 都被删）。
+                # remove_first_if_match 只对本条 entry 首份成功素材启用（避免前序失败
+                # 漏去重，也避免叠加场景下多份素材首 heading 都被删）。
                 try:
                     sub_doc = Document(str(prep))
-                    _collect_heading_titles(
-                        sub_doc,
-                        seen_titles_by_parent.setdefault(parent_chapter, set()),
-                    )
+                    material_heading_titles: set[str] = set()
+                    _collect_heading_titles(sub_doc, material_heading_titles)
                     remap_stats = remap_material_headings_to_navigation(
                         sub_doc,
                         toc_title=title,
-                        remove_first_if_match=(path_idx == 0),
+                        remove_first_if_match=(merged_for_entry == 0),
                         keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
                         parent_level=heading_level,
                         max_target_level=4,
@@ -410,6 +408,9 @@ def merge(
                     sub_doc2 = Document(str(inj_path))
                     _isolate_section(sub_doc2)
                     composer.append(sub_doc2)
+                    seen_titles_by_parent.setdefault(parent_chapter, set()).update(
+                        material_heading_titles
+                    )
                     stats["merged_materials"] += 1
                     merged_for_entry += 1
                 except Exception as e:
