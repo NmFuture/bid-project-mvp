@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from docx import Document
 from docx.enum.section import WD_ORIENT, WD_SECTION
+from docx.oxml.ns import qn
 from docx.shared import Cm
 
 
@@ -177,7 +178,14 @@ def _write_full_format_docx(path: Path) -> None:
     doc.save(path)
 
 
-def _write_full_style(path: Path, *, body_size: float, margin: float, insert_toc: bool = True) -> None:
+def _write_full_style(
+    path: Path,
+    *,
+    body_size: float,
+    margin: float,
+    insert_toc: bool = True,
+    toc_page_break_after: bool = True,
+) -> None:
     style = {
         "page": {
             "top_cm": margin,
@@ -238,9 +246,22 @@ def _write_full_style(path: Path, *, body_size: float, margin: float, insert_toc
             "line_spacing": 1,
             "text_template": "自定义页眉-{projectName}",
         },
-        "toc": {"insert_when_missing": insert_toc, "page_break_after": True},
+        "toc": {"insert_when_missing": insert_toc, "page_break_after": toc_page_break_after},
     }
     path.write_text(json.dumps(style, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _toc_is_followed_by_page_break(path: Path) -> bool:
+    doc = Document(str(path))
+    for paragraph in doc.paragraphs:
+        has_toc = any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText")))
+        if not has_toc:
+            continue
+        sibling = paragraph._element.getnext()
+        if sibling is None or sibling.tag != qn("w:p"):
+            return False
+        return bool(sibling.findall(".//" + qn("w:br")))
+    raise AssertionError("测试文档中未找到 TOC 域")
 
 
 class TechFormatCleanerTest(unittest.TestCase):
@@ -480,6 +501,72 @@ class TechFormatCleanerTest(unittest.TestCase):
             self.assertEqual(len(output.inline_shapes), 1)
             self.assertEqual(output.tables[0].cell(0, 0).text, "表格内容")
             current_input = output_docx
+
+    def test_existing_toc_page_break_can_be_disabled_and_restored(self):
+        input_docx = self.tmp_dir / "toc-input.docx"
+        outline_path = self.tmp_dir / "toc-outline.json"
+        _write_full_format_docx(input_docx)
+        _write_outline(outline_path)
+        initial = Document(str(input_docx))
+        initial.paragraphs[0].style = "Heading 1"
+        initial.save(input_docx)
+        current_input = input_docx
+
+        for index, expected_page_break in enumerate((True, False, True), start=1):
+            style_path = self.tmp_dir / f"toc-style-{index}.json"
+            output_docx = self.tmp_dir / f"toc-output-{index}.docx"
+            manifest_path = self.tmp_dir / f"toc-manifest-{index}.json"
+            _write_full_style(
+                style_path,
+                body_size=12,
+                margin=2.54,
+                toc_page_break_after=expected_page_break,
+            )
+            _write_manifest(
+                manifest_path,
+                input_docx=current_input,
+                outline_path=outline_path,
+                output_docx=output_docx,
+                style_path=style_path,
+            )
+
+            _run_manifest(manifest_path)
+
+            self.assertEqual(_toc_is_followed_by_page_break(output_docx), expected_page_break)
+            current_input = output_docx
+
+    def test_warning_counts_use_structured_scan_counts(self):
+        module_name = "bid_tech_format_cleaner_warning_test"
+        spec = importlib.util.spec_from_file_location(module_name, RUNNER_PATH)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+            warnings = module._build_warnings(
+                {
+                    "formatRisks": [
+                        "存在相邻重复标题，请检查素材首标题和目录标题是否重复。",
+                        "存在异常一级标题，请检查章节层级。",
+                        "存在空叶子章节，请检查是否缺正文或素材未拼入。",
+                    ],
+                    "unmatchedHeadings": [],
+                    "placeholderCount": 0,
+                },
+                {
+                    "dup_alerts": ["重复1", "重复2"],
+                    "invalid_h1": ["异常1", "异常2", "异常3"],
+                    "empty_leaf_headings": ["空1", "空2", "空3", "空4"],
+                },
+            )
+        finally:
+            sys.modules.pop(module_name, None)
+
+        counts = {warning["code"]: warning["count"] for warning in warnings}
+        self.assertEqual(counts["duplicate_heading"], 2)
+        self.assertEqual(counts["invalid_h1"], 3)
+        self.assertEqual(counts["empty_leaf_heading"], 4)
 
     def _load_format_services(self):
         definitions = {

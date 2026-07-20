@@ -94,7 +94,7 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "placeholderCount": int(report["placeholderCount"]),
         "orientation": report["orientation"],
         "riskCount": len(report["formatRisks"]),
-        "warnings": _build_warnings(report),
+        "warnings": report["warnings"],
     }
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -148,8 +148,7 @@ def clean_docx(
     if not toc_present_before and toc_cfg.get("insert_when_missing", True) is True:
         insert_toc_field(doc)
         toc_inserted = True
-        if toc_cfg.get("page_break_after", True) is False:
-            _remove_page_break_after_toc(doc)
+    _apply_toc_page_break(doc, toc_cfg.get("page_break_after", True) is True)
 
     heading_style_result = _configure_heading_styles(doc, style_spec)
     heading_result = _promote_existing_headings(doc, outline_items, style_spec)
@@ -231,6 +230,7 @@ def verify_cleaned_docx(
         "orientation": orientation_summary,
         "formatRisks": risks,
     }
+    report["warnings"] = _build_warnings(report, scan)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(_render_report(report, output_path, outline_path), encoding="utf-8")
     return report
@@ -524,14 +524,36 @@ def _apply_run_format(run, cfg: dict[str, Any]) -> None:
         r_fonts.set(qn("w:cs"), en_font)
 
 
-def _remove_page_break_after_toc(doc: Document) -> None:
+def _apply_toc_page_break(doc: Document, enabled: bool) -> None:
     for paragraph in doc.paragraphs:
         if not any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText"))):
             continue
         sibling = paragraph._element.getnext()
-        if sibling is not None and sibling.tag == qn("w:p") and sibling.findall(".//" + qn("w:br")):
+        while _is_dedicated_page_break(sibling):
+            if enabled:
+                return
+            next_sibling = sibling.getnext()
             sibling.getparent().remove(sibling)
+            sibling = next_sibling
+        if enabled:
+            page_break = OxmlElement("w:p")
+            run = OxmlElement("w:r")
+            br = OxmlElement("w:br")
+            br.set(qn("w:type"), "page")
+            run.append(br)
+            page_break.append(run)
+            paragraph._element.addnext(page_break)
         return
+
+
+def _is_dedicated_page_break(element) -> bool:
+    if element is None or element.tag != qn("w:p"):
+        return False
+    if any((node.text or "").strip() for node in element.iter(qn("w:t"))):
+        return False
+    if element.findall(".//" + qn("w:drawing")) or element.findall(".//" + qn("w:pict")):
+        return False
+    return any((node.get(qn("w:type")) or "page") == "page" for node in element.iter(qn("w:br")))
 
 
 def _ensure_style_outline_level(style, level: int) -> None:
@@ -991,15 +1013,40 @@ def _structural_risks(
     return _dedupe(risks)
 
 
-def _build_warnings(report: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_warnings(report: dict[str, Any], scan: dict[str, Any]) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = []
-    for index, message in enumerate(report.get("formatRisks") or [], start=1):
-        count = 1
-        if "未匹配标题" in message:
-            count = len(report.get("unmatchedHeadings") or [])
-        elif "占位符" in message:
-            count = int(report.get("placeholderCount") or 0)
-        warnings.append({"code": f"format_risk_{index}", "message": str(message), "count": count})
+
+    def add(code: str, message: str, count: int) -> None:
+        if count > 0:
+            warnings.append({"code": code, "message": message, "count": count})
+
+    if int(report.get("outlineCount") or 0) == 0:
+        add("outline_empty", "outline 为空，未能定位任何技术标标题。", 1)
+    add(
+        "unmatched_heading",
+        "存在未匹配标题；技术标 cleaner 未插入或删除正文，请人工核对缺失章节。",
+        len(report.get("unmatchedHeadings") or []),
+    )
+    if not report.get("tocPresent", False):
+        add("toc_missing", "未检测到 TOC 域，目录页需要人工补充。", 1)
+    if not report.get("headerCleaned", False):
+        add("header_not_cleaned", "页眉仍存在技术卷残留，请人工检查页眉。", 1)
+    add(
+        "placeholder",
+        "存在待填写或缺失占位符，请在共创阶段补齐。",
+        int(report.get("placeholderCount") or 0),
+    )
+    add(
+        "duplicate_heading",
+        "存在相邻重复标题，请检查素材首标题和目录标题是否重复。",
+        len(scan.get("dup_alerts") or []),
+    )
+    add("invalid_h1", "存在异常一级标题，请检查章节层级。", len(scan.get("invalid_h1") or []))
+    add(
+        "empty_leaf_heading",
+        "存在空叶子章节，请检查是否缺正文或素材未拼入。",
+        len(scan.get("empty_leaf_headings") or []),
+    )
     return warnings
 
 
