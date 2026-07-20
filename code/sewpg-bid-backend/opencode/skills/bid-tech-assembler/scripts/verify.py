@@ -404,6 +404,7 @@ def main():
     ap.add_argument("--params", type=Path, required=True)
     ap.add_argument("--report", type=Path, required=True)
     ap.add_argument("--review", type=Path, required=True)
+    ap.add_argument("--result", type=Path, default=None)
     args = ap.parse_args()
 
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
@@ -416,6 +417,9 @@ def main():
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(report, encoding="utf-8")
     args.review.write_text(review, encoding="utf-8")
+    if args.result:
+        args.result.parent.mkdir(parents=True, exist_ok=True)
+        args.result.write_text(json.dumps(scan, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"[OK] report → {args.report}")
     print(f"[OK] review → {args.review}")

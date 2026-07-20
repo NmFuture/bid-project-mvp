@@ -21,6 +21,8 @@
 - **Section 隔离**：`merger._isolate_section` 为每份素材在 body 开头插入 continuous section break 带自身 sectPr，防止多份单 section 素材被 docxcompose 吞进同一 section 后被后续 landscape 素材污染。
 - **纸张方向**：保留素材原始 page orientation（不强制竖版），素材里为宽表设的 landscape section 合入后仍是横版。
 - **素材方向由素材决定**：skill 不自动纠正 page orientation；某素材应横版却存成竖版属素材本身错误，需人工改源 docx 再重跑。
+- **单素材容错**：素材不存在、预处理失败或 compose 失败只增加 warning，不中断当前 plan；继续处理同节点及后续节点的其它素材。
+- **空节点兜底**：`MATCHED / ADAPTED` 节点没有任何成功合并的素材时，必须保留 S2 Heading 并插入简短占位段落，避免输出空章节。
 
 ## 表格与图表
 
@@ -30,6 +32,8 @@
 ## 验证守门
 
 - **空章节检测**：`verify.scan_docx` 体级遍历（段落 + 表格 + drawing/pict），叶子 heading 后既无文字又无表格/图片的章节列入 `needs_review.md`「空章节告警」——这是暴露 wiki 归位错 / 素材空框架的关键守门哨。
+- **结构化校验结果**：残留占位符、空章节、相邻重复标题、幽灵章节、非法 H1 和非法标题前缀除写入原 Markdown 报告外，还要写入校验结果 JSON，供 manifest runner 汇总到 `summary.verification` 和 `warnings`。
+- **warning 稳定结构**：manifest 返回的 `warnings[]` 每项只能包含 `code`、`message`、`count`；`summary.warningCount` 等于所有 `count` 之和。
 
 ## 与 format-cleaner 的共享契约
 

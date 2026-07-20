@@ -40,13 +40,14 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 | 技术标母版 | `templates/技术投标母版模板.docx` | 否（首次自动生成） |
 | 项目参数 | `<工作目录>/project_params.json` | 否（首次由 init_params 生成） |
 
-**非交互策略**：多份匹配自动选 mtime 最新那份，其它候选记入 `needs_review.md`；缺失 wiki 等必需项才中止（占位符无法兜底结构性缺失）。
+**非交互策略**：多份匹配自动选 mtime 最新那份，其它候选记入 `needs_review.md`；缺失 wiki 等必需输入才中止。单份素材不存在、损坏或合并失败时记录 warning 并继续，目录节点没有任何可用素材时保留 Heading 并插入简短占位提示。
 
 ## 输出约定
 
 - **位置**：工作目录下
 - **文件名**：`投标文件-正文_<项目简称>_<YYYYMMDDHHMM>.docx`
 - **附带**：`assembly_report.md`（对账报告）+ `needs_review.md`（人工补齐清单）
+- **返回契约**：始终包含 `outputFile`、`planFile`、`summary`、`warnings`；`summary.warningCount` 为各 warning 的 `count` 总和，`warnings[]` 每项只含 `code`、`message`、`count`
 
 ## 执行流程
 
@@ -122,7 +123,7 @@ python3 scripts/merger.py \
     --out /tmp/bid_merged.docx
 ```
 
-XML 级合并：relationship ID 去重、image 媒体合并、numbering.xml 兼容；[新增] 条目插占位；前言段作无编号 Heading 1；素材内部 Heading 只在匹配 S2 子目录时保留为导航 Heading，否则作为正文小标题保留，不进入 Word/OnlyOffice 导航。
+XML 级合并：relationship ID 去重、image 媒体合并、numbering.xml 兼容；[新增] 条目插占位；前言段作无编号 Heading 1；素材内部 Heading 只在匹配 S2 子目录时保留为导航 Heading，否则作为正文小标题保留，不进入 Word/OnlyOffice 导航。单份素材失败不阻断后续素材；一个目录节点的所有素材均失败时，保留该节点 Heading 并插入 `[缺失：...——没有可用素材，请补充后重试]`。
 
 ### 第 6 步：终检打磨
 
@@ -159,7 +160,7 @@ python3 scripts/verify.py \
 - [适配] 章节 — 字段替换已做，需核对结果
 - 第 0 步遗留的多候选冲突（如目录 docx 多份）
 
-`assembly_report.md` 只做装配审计（Heading 统计 / 幽灵章节 / 非法 H1 / 相邻重复），不含待办。
+`assembly_report.md` 只做装配审计（Heading 统计 / 幽灵章节 / 非法 H1 / 相邻重复），不含待办。Markdown 报告在后端消费者迁移完成前继续保留；相同检查结果同时进入 manifest 返回的 `summary.verification` 与 `warnings`。
 
 ## Backend Manifest 模式
 
@@ -179,7 +180,7 @@ manifest 会指定：
 - `projectParams` / `projectParamsPath`：项目参数预填与占位符写入
 - `outputFile`：最终正文 docx 目标路径
 
-`run_from_manifest.py` 只向 stdout 打印小型 JSON 摘要，完整报告留在 `assembly_report.md` 和 `needs_review.md`。
+`run_from_manifest.py` 只向 stdout 打印小型 JSON 摘要，完整报告留在 `assembly_report.md` 和 `needs_review.md`。摘要中的 `warnings` 至少覆盖素材缺失、素材合并失败、目录未匹配、残留占位符和格式风险；`assembly_plan.json` 继续保留已组装、未匹配、需复核和结构节点状态。
 
 ## 关键约束（策略级）
 

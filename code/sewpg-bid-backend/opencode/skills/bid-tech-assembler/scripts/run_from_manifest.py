@@ -113,6 +113,92 @@ def summarize_plan(plan_path: Path) -> dict[str, Any]:
     }
 
 
+def build_summary_and_warnings(
+    plan: list[dict[str, Any]],
+    merger_result: dict[str, Any],
+    scan: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    counts = Counter(str(item.get("status") or "") for item in plan if isinstance(item, dict))
+    used_paths = {
+        str(path)
+        for item in plan
+        if isinstance(item, dict) and str(item.get("status") or "") in {"MATCHED", "ADAPTED", "COVER"}
+        for path in item.get("paths") or []
+        if str(path).strip()
+    }
+    placeholder_count = len(scan.get("placeholders") or [])
+    empty_section_count = len(scan.get("empty_leaf_headings") or [])
+    duplicate_heading_count = len(scan.get("dup_alerts") or [])
+    abnormal_heading_count = sum(
+        len(scan.get(key) or [])
+        for key in ("ghost_chapters", "invalid_h1", "invalid_prefix")
+    )
+    format_risk_count = empty_section_count + duplicate_heading_count + abnormal_heading_count
+
+    warnings: list[dict[str, Any]] = []
+    for item in merger_result.get("warnings") or []:
+        if not isinstance(item, dict):
+            continue
+        count = int(item.get("count") or 0)
+        if count <= 0:
+            continue
+        warnings.append(
+            {
+                "code": str(item.get("code") or "MATERIAL_MERGE_FAILED"),
+                "message": str(item.get("message") or "素材处理失败，已跳过"),
+                "count": count,
+            }
+        )
+
+    unmatched_count = counts.get("UNMATCHED", 0)
+    if unmatched_count:
+        warnings.append(
+            {
+                "code": "DIRECTORY_UNMATCHED",
+                "message": f"{unmatched_count} 个目录节点未匹配到素材，已保留标题并插入占位提示",
+                "count": unmatched_count,
+            }
+        )
+    if placeholder_count:
+        warnings.append(
+            {
+                "code": "PLACEHOLDER_REMAINS",
+                "message": f"组装稿中仍有 {placeholder_count} 个占位符，需后续补充或清洗",
+                "count": placeholder_count,
+            }
+        )
+    if format_risk_count:
+        warnings.append(
+            {
+                "code": "FORMAT_RISK",
+                "message": (
+                    f"发现 {format_risk_count} 项格式风险"
+                    f"（空章节 {empty_section_count}、重复标题 {duplicate_heading_count}、"
+                    f"异常标题 {abnormal_heading_count}）"
+                ),
+                "count": format_risk_count,
+            }
+        )
+
+    summary = {
+        "total": len(plan),
+        "byStatus": dict(counts),
+        "usedPathCount": len(used_paths),
+        "assembledCount": int(merger_result.get("merged_materials") or 0),
+        "unmatchedCount": unmatched_count,
+        "needsReviewCount": counts.get("NEEDS_REVIEW", 0),
+        "structuralCount": counts.get("STRUCTURAL", 0),
+        "verification": {
+            "placeholderCount": placeholder_count,
+            "emptySectionCount": empty_section_count,
+            "duplicateHeadingCount": duplicate_heading_count,
+            "abnormalHeadingCount": abnormal_heading_count,
+        },
+        "warningCount": sum(item["count"] for item in warnings),
+    }
+    return summary, warnings
+
+
 def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     manifest = load_manifest(manifest_path)
     work_dir = as_path(manifest.get("workDir"), required=False) or manifest_path.parent
@@ -130,8 +216,10 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     plan_path = work_dir / "assembly_plan.json"
     gap_plan_path = as_path(manifest.get("gapPlanPath"), required=False)
     merged_path = work_dir / "bid_merged.docx"
+    merger_result_path = work_dir / "assembly_merge_result.json"
     report_path = work_dir / "assembly_report.md"
     review_path = work_dir / "needs_review.md"
+    verify_result_path = work_dir / "assembly_verify_result.json"
 
     project_params = manifest.get("projectParams")
     if isinstance(project_params, dict) and not params_path.exists():
@@ -174,6 +262,8 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             str(prep_dir),
             "--out",
             str(merged_path),
+            "--result",
+            str(merger_result_path),
         ]
     )
 
@@ -212,8 +302,15 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             str(report_path),
             "--review",
             str(review_path),
+            "--result",
+            str(verify_result_path),
         ]
     )
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    merger_result = json.loads(merger_result_path.read_text(encoding="utf-8"))
+    scan = json.loads(verify_result_path.read_text(encoding="utf-8"))
+    summary, warnings = build_summary_and_warnings(plan, merger_result, scan)
 
     return {
         "schema_version": "bid-tech-assembly-v1",
@@ -225,7 +322,8 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
         "outputFile": str(output_file),
         "assemblyReport": str(report_path),
         "needsReview": str(review_path),
-        "summary": summarize_plan(plan_path),
+        "summary": summary,
+        "warnings": warnings,
     }
 
 
@@ -249,6 +347,7 @@ def main() -> None:
             "needsReview": output["needsReview"],
             "planFile": output["planFile"],
             "summary": output["summary"],
+            "warnings": output["warnings"],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:

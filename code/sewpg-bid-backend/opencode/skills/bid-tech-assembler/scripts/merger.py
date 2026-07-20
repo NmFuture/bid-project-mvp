@@ -216,6 +216,11 @@ def merge(
         "inject_skipped_first": 0,
         "errors": 0,
     }
+    warning_counts = {
+        "MATERIAL_MISSING": 0,
+        "MATERIAL_MERGE_FAILED": 0,
+        "DIRECTORY_WITHOUT_MATERIAL": 0,
+    }
 
     # Step 0: 如果 plan 首条是 COVER，先处理它
     cover_entries = [e for e in plan if e.get("status") == "COVER"]
@@ -227,6 +232,7 @@ def merge(
             if not _path_exists(src):
                 log.warning(f"封面素材不存在: {src}")
                 stats["errors"] += 1
+                warning_counts["MATERIAL_MISSING"] += 1
                 continue
             prep = prep_dir / f"cover_{_hash_path(src)}_{src.name}"
             try:
@@ -238,6 +244,7 @@ def merge(
             except Exception as e:
                 log.exception(f"封面合并失败 {src.name}: {e}")
                 stats["errors"] += 1
+                warning_counts["MATERIAL_MERGE_FAILED"] += 1
 
     in_scope = [e for e in non_cover if e.get("status") != "OUT_OF_SCOPE"]
     log.info(f"in-scope entries: {len(in_scope)}/{len(non_cover)}")
@@ -344,11 +351,13 @@ def merge(
                 if parent_chapter:
                     current_parent_chapter = parent_chapter
 
+            merged_for_entry = 0
             for path_idx, path_rel in enumerate(entry.get("paths", [])):
                 src = lib_root / path_rel
                 if not _path_exists(src):
                     log.warning(f"  [{i}] 素材不存在: {src}")
                     stats["errors"] += 1
+                    warning_counts["MATERIAL_MISSING"] += 1
                     continue
 
                 size_mb = os.path.getsize(os.fspath(src)) / 1024 / 1024
@@ -361,6 +370,7 @@ def merge(
                 except Exception as e:
                     log.exception(f"  [{i}] preprocess 失败 {src.name}: {e}")
                     stats["errors"] += 1
+                    warning_counts["MATERIAL_MERGE_FAILED"] += 1
                     continue
 
                 # 关键：S2 TOC 条目由 merger 手插为真正的导航 Heading。
@@ -401,15 +411,37 @@ def merge(
                     _isolate_section(sub_doc2)
                     composer.append(sub_doc2)
                     stats["merged_materials"] += 1
+                    merged_for_entry += 1
                 except Exception as e:
                     log.exception(f"  [{i}] compose 失败 {src.name}: {e}")
                     stats["errors"] += 1
+                    warning_counts["MATERIAL_MERGE_FAILED"] += 1
+
+            if merged_for_entry == 0:
+                _add_body_paragraph(master_doc, f"[缺失：{title}——没有可用素材，请补充后重试]")
+                stats["inserted_placeholders"] += 1
+                warning_counts["DIRECTORY_WITHOUT_MATERIAL"] += 1
 
     # Save
     strip_numPr_from_heading_styles(master_doc)
     strip_numPr_from_body(master_doc)
     os.makedirs(os.fspath(out_path.parent), exist_ok=True)
     composer.save(str(out_path))
+
+    warning_messages = {
+        "MATERIAL_MISSING": "{count} 份素材不存在，已跳过",
+        "MATERIAL_MERGE_FAILED": "{count} 份素材处理或合并失败，已跳过",
+        "DIRECTORY_WITHOUT_MATERIAL": "{count} 个目录节点没有可用素材，已保留标题并插入占位提示",
+    }
+    stats["warnings"] = [
+        {
+            "code": code,
+            "message": warning_messages[code].format(count=count),
+            "count": count,
+        }
+        for code, count in warning_counts.items()
+        if count
+    ]
 
     log.info(f"merged → {out_path} ({os.path.getsize(os.fspath(out_path)) / 1024 / 1024:.1f} MB)")
     log.info(f"stats: {stats}")
@@ -424,6 +456,7 @@ def main():
     ap.add_argument("--params", type=Path, default=None)
     ap.add_argument("--prep-dir", type=Path, default=Path("/tmp/bid_prep"))
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--result", type=Path, default=None)
     args = ap.parse_args()
 
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
@@ -431,7 +464,10 @@ def main():
     if args.params and args.params.exists():
         params = json.loads(args.params.read_text(encoding="utf-8"))
 
-    merge(args.template, plan, args.lib, params, args.prep_dir, args.out)
+    result = merge(args.template, plan, args.lib, params, args.prep_dir, args.out)
+    if args.result:
+        args.result.parent.mkdir(parents=True, exist_ok=True)
+        args.result.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

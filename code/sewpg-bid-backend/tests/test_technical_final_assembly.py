@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+from docx import Document
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+ASSEMBLER_SCRIPTS = (
+    BACKEND_ROOT / "opencode" / "skills" / "bid-tech-assembler" / "scripts"
+)
+
+
+def load_assembler_script(name: str):
+    sys.path.insert(0, str(ASSEMBLER_SCRIPTS))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"test_technical_final_assembly_{name}",
+            ASSEMBLER_SCRIPTS / f"{name}.py",
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载 assembler 脚本: {name}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_merger_keeps_going_when_materials_are_missing_or_corrupt(self) -> None:
+        merger = load_assembler_script("merger")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            library = root / "library"
+            valid = library / "valid.docx"
+            corrupt = library / "corrupt.docx"
+            output = root / "assembled.docx"
+
+            library.mkdir()
+            Document().save(template)
+            valid_doc = Document()
+            valid_doc.add_paragraph("正常素材", style="Heading 2")
+            valid_doc.add_paragraph("这是可用的脱敏正文。")
+            valid_doc.save(valid)
+            corrupt.write_bytes(b"not-a-docx")
+
+            plan = [
+                {
+                    "status": "MATCHED",
+                    "level": 2,
+                    "title": "正常素材",
+                    "chapter_no": "1.1",
+                    "chapter_no_flat": "1.1",
+                    "paths": [valid.name],
+                },
+                {
+                    "status": "MATCHED",
+                    "level": 2,
+                    "title": "缺失素材",
+                    "chapter_no": "1.2",
+                    "chapter_no_flat": "1.2",
+                    "paths": ["missing.docx"],
+                },
+                {
+                    "status": "MATCHED",
+                    "level": 2,
+                    "title": "损坏素材",
+                    "chapter_no": "1.3",
+                    "chapter_no_flat": "1.3",
+                    "paths": [corrupt.name],
+                },
+            ]
+
+            stats = merger.merge(template, plan, library, {}, root / "prep", output)
+            result = Document(str(output))
+            text = "\n".join(paragraph.text for paragraph in result.paragraphs)
+
+        self.assertIn("这是可用的脱敏正文。", text)
+        self.assertIn("1.2  缺失素材", text)
+        self.assertIn("1.3  损坏素材", text)
+        self.assertIn("[缺失：缺失素材——没有可用素材，请补充后重试]", text)
+        self.assertIn("[缺失：损坏素材——没有可用素材，请补充后重试]", text)
+        self.assertEqual(stats["merged_materials"], 1)
+        self.assertEqual(
+            stats["warnings"],
+            [
+                {
+                    "code": "MATERIAL_MISSING",
+                    "message": "1 份素材不存在，已跳过",
+                    "count": 1,
+                },
+                {
+                    "code": "MATERIAL_MERGE_FAILED",
+                    "message": "1 份素材处理或合并失败，已跳过",
+                    "count": 1,
+                },
+                {
+                    "code": "DIRECTORY_WITHOUT_MATERIAL",
+                    "message": "2 个目录节点没有可用素材，已保留标题并插入占位提示",
+                    "count": 2,
+                },
+            ],
+        )
+
+    def test_runner_builds_stable_warning_summary_from_plan_and_verify_scan(self) -> None:
+        runner = load_assembler_script("run_from_manifest")
+        plan = [
+            {"status": "MATCHED", "paths": ["valid.docx"]},
+            {"status": "UNMATCHED", "paths": []},
+            {"status": "NEEDS_REVIEW", "paths": []},
+            {"status": "STRUCTURAL", "paths": []},
+        ]
+        merger_result = {
+            "merged_materials": 1,
+            "warnings": [
+                {"code": "MATERIAL_MISSING", "message": "素材不存在", "count": 1},
+                {"code": "MATERIAL_MERGE_FAILED", "message": "素材合并失败", "count": 1},
+            ],
+        }
+        scan = {
+            "placeholders": ["[待填写：参数]", "[缺失：章节]"],
+            "empty_leaf_headings": ["L2 1.2 空章节"],
+            "dup_alerts": ["L2 相邻重复：1.3 标题"],
+            "ghost_chapters": [],
+            "invalid_h1": ["错误一级标题"],
+            "invalid_prefix": [],
+        }
+
+        summary, warnings = runner.build_summary_and_warnings(plan, merger_result, scan)
+
+        self.assertEqual(summary["assembledCount"], 1)
+        self.assertEqual(summary["unmatchedCount"], 1)
+        self.assertEqual(summary["needsReviewCount"], 1)
+        self.assertEqual(summary["structuralCount"], 1)
+        self.assertEqual(summary["verification"]["placeholderCount"], 2)
+        self.assertEqual(summary["verification"]["emptySectionCount"], 1)
+        self.assertEqual(summary["verification"]["duplicateHeadingCount"], 1)
+        self.assertEqual(summary["verification"]["abnormalHeadingCount"], 1)
+        self.assertEqual(summary["warningCount"], sum(item["count"] for item in warnings))
+        self.assertEqual(
+            {item["code"] for item in warnings},
+            {
+                "MATERIAL_MISSING",
+                "MATERIAL_MERGE_FAILED",
+                "DIRECTORY_UNMATCHED",
+                "PLACEHOLDER_REMAINS",
+                "FORMAT_RISK",
+            },
+        )
+        self.assertTrue(all(set(item) == {"code", "message", "count"} for item in warnings))
+
+
+if __name__ == "__main__":
+    unittest.main()
