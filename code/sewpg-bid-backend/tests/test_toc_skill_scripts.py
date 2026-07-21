@@ -4617,7 +4617,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
+            with self.assertRaisesRegex(SystemExit, "模板目录不存在.*建议增加"):
                 outline_runner.finalize_manifest(manifest, manifest_path)
 
             payload = json_load(output)
@@ -4628,7 +4628,7 @@ class TocSkillScriptTests(unittest.TestCase):
             appendix["children"][0]["suggestion_reason"] = "招标文件新增独立表单。"
             output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
+            with self.assertRaisesRegex(SystemExit, "没有独立填写表格"):
                 outline_runner.finalize_manifest(manifest, manifest_path)
 
             appendix_inventory["items"][0]["following_table_count"] = 1
@@ -4646,8 +4646,9 @@ class TocSkillScriptTests(unittest.TestCase):
                 }
             )
             output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
-                outline_runner.finalize_manifest(manifest, manifest_path)
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["action_counts"], {"必要": 1, "建议增加": 3})
 
     def test_bid_outline_cli_accepts_navigation_options_after_manifest(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

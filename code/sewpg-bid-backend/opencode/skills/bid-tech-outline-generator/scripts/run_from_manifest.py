@@ -947,7 +947,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         else None
     )
     decisions: dict[str, Any] | None = None
-    appendix_decisions: list[dict[str, Any]] = []
+    appendix_decisions: list[dict[str, Any]] | None = None
     if structure is not None:
         try:
             require_composed = _requires_composed_outline(manifest)
@@ -1127,23 +1127,45 @@ def validate_technical_appendix(
             collect_appendix_paths(node.get("children") or [], node_path)
 
     collect_appendix_paths(nodes)
-    resolved_decisions = appendix_decisions or []
-    included = [item for item in resolved_decisions if item.get("decision") == "include"]
-    excluded = [item for item in resolved_decisions if item.get("decision") == "exclude"]
-    if not included:
-        if appendix_paths:
-            if excluded and len(appendix_paths) == 1 and appendix_paths[0][0] == (
-                len(nodes) - 1,
-            ):
-                raise SystemExit(
-                    "技术附表包含已排除 appendix_id: "
-                    + ", ".join(str(item["appendix_id"]) for item in excluded)
-                )
-            raise SystemExit("技术附表必须是唯一的最后一个根节点")
-        return
-    if len(appendix_paths) != 1 or appendix_paths[0][0] != (len(nodes) - 1,):
+    if appendix_paths and (
+        len(appendix_paths) != 1 or appendix_paths[0][0] != (len(nodes) - 1,)
+    ):
         raise SystemExit("技术附表必须是唯一的最后一个根节点")
-    appendix = appendix_paths[0][1]
+    if appendix_decisions is None:
+        if not appendix_paths:
+            appendix_inventory_path = work_dir / "tender_appendix_inventory.json"
+            if appendix_inventory_path.exists():
+                appendix_inventory = load_json_dict(
+                    appendix_inventory_path, "tenderAppendixInventoryFile"
+                )
+                if not isinstance(appendix_inventory.get("items"), list):
+                    raise SystemExit("tenderAppendixInventoryFile.items must be a list")
+            return
+        included: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
+        appendix = appendix_paths[0][1]
+    else:
+        included = [
+            item for item in appendix_decisions if item.get("decision") == "include"
+        ]
+        excluded = [
+            item for item in appendix_decisions if item.get("decision") == "exclude"
+        ]
+        if not included:
+            if appendix_paths:
+                if excluded:
+                    raise SystemExit(
+                        "技术附表包含已排除 appendix_id: "
+                        + ", ".join(str(item["appendix_id"]) for item in excluded)
+                    )
+                raise SystemExit("技术附表必须是唯一的最后一个根节点")
+            return
+        if not appendix_paths:
+            raise SystemExit(
+                "技术附表与最终附表决策不一致；缺失或顺序错误 appendix_id: "
+                + ", ".join(str(item["appendix_id"]) for item in included)
+            )
+        appendix = appendix_paths[0][1]
     children = appendix.get("children") or []
     for index, child in enumerate(children):
         if child.get("children"):
@@ -1204,7 +1226,9 @@ def validate_technical_appendix(
         extra_ids.extend(
             (matching_included_ids or ["未知"] * surplus_count)[:surplus_count]
         )
-    if excluded_ids or mismatched_ids or extra_ids:
+    if appendix_decisions is not None and (
+        excluded_ids or mismatched_ids or extra_ids
+    ):
         details: list[str] = []
         if mismatched_ids:
             details.append("缺失或顺序错误 appendix_id: " + ", ".join(mismatched_ids))
