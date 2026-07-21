@@ -12,7 +12,7 @@ from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
 from app.services.peripheral import PeripheralError
 from app.services.template_store import template_fallback_payload
-from app.services.technical_parse_assets import sync_technical_parse_appendices
+from app.services.technical_parse_assets import persist_technical_parse_result, sync_technical_parse_appendices
 from app.services.workspace_project_access import (
     create_workspace_project,
     delete_workspace_project,
@@ -162,10 +162,13 @@ class BidProjectService:
                 if isinstance(runtime_project.get("parse_result"), dict)
                 else {}
             )
-            project["technicalParseAssetSync"] = await sync_technical_parse_appendices(
-                runtime_project,
-                parse_result,
-            )
+            try:
+                project["technicalParseAssetSync"] = await sync_technical_parse_appendices(
+                    runtime_project,
+                    parse_result,
+                )
+            finally:
+                persist_technical_parse_result(project_id, parse_result)
         return project
 
     async def delete(self, project_id: str) -> dict[str, str]:
