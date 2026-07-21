@@ -158,6 +158,11 @@ async def get_technical_parse_progress(project_id: str) -> dict[str, Any]:
     return await technical_parse_service.progress(project_id)
 
 
+@router.get("/api/technical/projects/{project_id}/parse-results/appendices/material-sync")
+async def get_technical_appendix_material_sync(project_id: str) -> dict[str, Any]:
+    return technical_parse_service.appendix_material_sync_status(project_id)
+
+
 @router.post("/api/technical/projects/{project_id}/parse-results/cancel")
 async def cancel_technical_parse(project_id: str) -> dict[str, Any]:
     return await technical_parse_service.cancel(project_id)

@@ -99,6 +99,14 @@ def _run_job(job: dict[str, Any]) -> None:
                 "status": str(parse_progress.get("status") or ""),
                 "summary": str(parse_progress.get("summary") or ""),
             }
+        elif job_type == "technical_appendix_asset_sync":
+            from app.services.technical_parse_assets import run_technical_appendix_asset_sync_job
+
+            result = run_technical_appendix_asset_sync_job(project_id)
+            final_state = {
+                "status": "failed" if result.get("status") == "partial" else "success",
+                "summary": "部分旧素材删除失败，请重试。" if result.get("status") == "partial" else "",
+            }
         else:
             raise RuntimeError(f"Unknown job type: {job_type}")
     except Exception as exc:  # pragma: no cover - route job functions handle expected failures
@@ -118,6 +126,16 @@ def _run_job(job: dict[str, Any]) -> None:
         heartbeat.join(timeout=1)
         clear_job_inflight(job)
         release_generation_lock(job)
+        if job_type == "technical_appendix_asset_sync":
+            from app.services.job_queue import enqueue_generation_job
+            from app.services.technical_parse_assets import technical_appendix_material_sync_status
+
+            try:
+                sync_status = technical_appendix_material_sync_status(project_id)
+                if sync_status.get("status") == "pending":
+                    enqueue_generation_job(job_type, project_id, {})
+            except Exception:
+                logger.exception("Failed to inspect pending appendix sync for project %s", project_id)
 
 
 def main() -> None:

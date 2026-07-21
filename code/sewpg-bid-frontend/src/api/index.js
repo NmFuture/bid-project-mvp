@@ -361,6 +361,8 @@ export const technicalStagesAPI = {
 export const technicalParseAPI = {
   results: (projectId) => request(`/technical/projects/${projectId}/parse-results`),
   progress: (projectId) => request(`/technical/projects/${projectId}/parse-results/progress`),
+  appendixMaterialSync: (projectId) =>
+    request(`/technical/projects/${projectId}/parse-results/appendices/material-sync`),
   cancel: (projectId) => request(`/technical/projects/${projectId}/parse-results/cancel`, { method: 'POST' }),
   run: (projectId) => request(`/technical/projects/${projectId}/parse-results/run`, { method: 'POST' }),
   uploadAndRun: (projectId, data) =>

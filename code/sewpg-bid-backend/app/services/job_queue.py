@@ -16,7 +16,13 @@ QUEUE_KEY = "bid:jobs"
 JOB_KEY_PREFIX = "bid:job:"
 LOCK_KEY_PREFIX = "bid:lock:"
 INFLIGHT_KEY = "bid:jobs:inflight"
-KNOWN_JOB_TYPES = {"directory_generation", "fill_generation", "material_cleaning", "s1_parse"}
+KNOWN_JOB_TYPES = {
+    "directory_generation",
+    "fill_generation",
+    "material_cleaning",
+    "s1_parse",
+    "technical_appendix_asset_sync",
+}
 
 # 锁的续期/释放必须校验 owner 且原子执行：GET 之后再 EXPIRE/DEL 存在竞态，
 # 可能把同一项目里后来任务刚拿到的锁误续期或误删。

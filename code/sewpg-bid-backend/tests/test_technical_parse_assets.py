@@ -84,7 +84,7 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
     assert upload_calls[0]["project_id"] == "MAT-TECH-001"
     assert upload_calls[0]["project_code"] == "TECH-2026-001"
     assert upload_calls[0]["material_tier"] == "project"
-    assert upload_calls[0]["on_conflict"] == ""
+    assert upload_calls[0]["on_conflict"] == "overwrite"
     assert upload_calls[0]["files"] == [
         {
             "name": "待填写-附表A.1 投标机型总方案信息表.docx",
@@ -305,9 +305,8 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
     persist_state.assert_called_once_with(project)
 
 
-def test_technical_appendix_selection_persists_sync_state_after_sync_failure() -> None:
+def test_technical_appendix_selection_queues_sync_and_returns_compact_payload() -> None:
     from app.services.bid_parse_service import TechnicalParseService
-    from app.services.technical_parse_assets import TechnicalParseAssetError
 
     parse_result = {
         "status": "completed",
@@ -336,6 +335,8 @@ def test_technical_appendix_selection_persists_sync_state_after_sync_failure() -
     service = TechnicalParseService(_TechnicalProjectService(), "/api/technical/projects")
     selection_result = {
         "message": "已更新附表素材选择。",
+        "selectedCount": 1,
+        "appendixCount": 1,
         "parseResult": parse_result,
     }
 
@@ -343,16 +344,40 @@ def test_technical_appendix_selection_persists_sync_state_after_sync_failure() -
         "app.services.bid_parse_service.set_technical_appendix_asset_selected",
         return_value=selection_result,
     ), patch(
-        "app.services.bid_parse_service.sync_technical_parse_appendices",
-        new=AsyncMock(side_effect=TechnicalParseAssetError("索引校验失败")),
-    ), patch(
-        "app.services.bid_parse_service.persist_technical_parse_result",
-        return_value=parse_result,
-    ) as persist_parse_result:
+        "app.services.bid_parse_service.enqueue_generation_job",
+        return_value=type("Enqueue", (), {"queued": True, "job_id": "JOB-1", "locked": False, "unavailable": False})(),
+    ) as enqueue_job:
         result = asyncio.run(service.approve_appendix_asset("PRJ-TECH-001", "APPX-A", {"approved": True}))
 
-    persist_parse_result.assert_called_once_with("PRJ-TECH-001", parse_result)
-    assert result["materialSync"] == {"status": "failed", "message": "索引校验失败"}
+    enqueue_job.assert_called_once_with("technical_appendix_asset_sync", "PRJ-TECH-001", {})
+    assert "parseResult" not in result
+    assert result == {
+        "message": "已更新附表素材选择。",
+        "selectedCount": 1,
+        "appendixCount": 1,
+        "materialSync": {"status": "pending", "jobId": "JOB-1"},
+    }
+
+
+def test_worker_dispatches_technical_appendix_asset_sync_job() -> None:
+    from app.workers import redis_worker
+
+    with patch(
+        "app.services.technical_parse_assets.run_technical_appendix_asset_sync_job"
+    ) as sync_job, patch(
+        "app.services.technical_parse_assets.technical_appendix_material_sync_status",
+        return_value={"status": "synced"},
+    ):
+        redis_worker._run_job(
+            {
+                "id": "JOB-1",
+                "type": "technical_appendix_asset_sync",
+                "projectId": "PRJ-TECH-001",
+                "data": {},
+            }
+        )
+
+    sync_job.assert_called_once_with("PRJ-TECH-001")
 
 
 def test_technical_parse_job_does_not_archive_appendices_before_participation() -> None:

@@ -44,11 +44,10 @@ from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_sess
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, TECHNICAL_PARSE_PROFILE
 from app.services.technical_parse_assets import (
+    TECHNICAL_APPENDIX_SYNC_JOB_TYPE,
     TechnicalParseAssetError,
-    persist_technical_parse_result,
     set_all_technical_appendix_assets_selected,
     set_technical_appendix_asset_selected,
-    sync_technical_parse_appendices,
 )
 from app.services.job_queue import enqueue_generation_job, find_active_jobs_of_type, is_generation_locked
 from app.services.local_job_executor import submit_local_job
@@ -2438,25 +2437,38 @@ class BidParseService:
 
 
 class TechnicalParseService(BidParseService):
-    async def _sync_selection_if_participating(
+    def _queue_selection_sync_if_participating(
         self,
         project_id: str,
         result: dict[str, Any],
     ) -> dict[str, Any]:
-        project = self.ensure_project(project_id)
-        if str(project.get("reviewDecision") or "") != "participate":
-            return result
-        parse_result = result.get("parseResult") if isinstance(result.get("parseResult"), dict) else {}
-        try:
-            sync_result = await sync_technical_parse_appendices(project, parse_result)
-            result["materialSync"] = sync_result
-        except TechnicalParseAssetError as exc:
-            result["materialSync"] = {
-                "status": "failed",
-                "message": exc.detail,
+        participating = result.get("_participating")
+        if participating is None:
+            participating = str(self.ensure_project(project_id).get("reviewDecision") or "") == "participate"
+        compact_result = {
+            key: value for key, value in result.items() if key != "parseResult" and not key.startswith("_")
+        }
+        if not participating:
+            compact_result["materialSync"] = {"status": "not_required"}
+            return compact_result
+
+        enqueue_result = enqueue_generation_job(TECHNICAL_APPENDIX_SYNC_JOB_TYPE, project_id, {})
+        if enqueue_result.unavailable:
+            from app.services.technical_parse_assets import run_technical_appendix_asset_sync_job
+
+            submit_local_job(run_technical_appendix_asset_sync_job, project_id)
+            compact_result["materialSync"] = {"status": "pending", "local": True}
+        else:
+            compact_result["materialSync"] = {
+                "status": "pending",
+                **({"jobId": enqueue_result.job_id} if enqueue_result.job_id else {}),
             }
-        result["parseResult"] = persist_technical_parse_result(project_id, parse_result)
-        return result
+        return compact_result
+
+    def appendix_material_sync_status(self, project_id: str) -> dict[str, Any]:
+        from app.services.technical_parse_assets import technical_appendix_material_sync_status
+
+        return technical_appendix_material_sync_status(project_id)
 
     async def approve_appendix_asset(
         self,
@@ -2464,14 +2476,13 @@ class TechnicalParseService(BidParseService):
         appendix_id: str,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self.ensure_project(project_id)
         try:
             result = set_technical_appendix_asset_selected(
                 project_id,
                 appendix_id,
                 selected=bool((data or {}).get("approved", True)),
             )
-            return await self._sync_selection_if_participating(project_id, result)
+            return self._queue_selection_sync_if_participating(project_id, result)
         except TechnicalParseAssetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -2480,13 +2491,12 @@ class TechnicalParseService(BidParseService):
         project_id: str,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self.ensure_project(project_id)
         try:
             result = set_all_technical_appendix_assets_selected(
                 project_id,
                 selected=bool((data or {}).get("approved", True)),
             )
-            return await self._sync_selection_if_participating(project_id, result)
+            return self._queue_selection_sync_if_participating(project_id, result)
         except TechnicalParseAssetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

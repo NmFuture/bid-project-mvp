@@ -117,6 +117,11 @@ const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '�
 const appendixKey = (appendix, index = 0) =>
   String(appendix?.id || appendix?.title || `appendix-${index}`)
 
+const appendixMaterialSyncOf = (parseResult) => {
+  const state = parseResult?.structured?.technicalAppendixMaterialSync
+  return state && typeof state === 'object' ? state : { status: 'idle' }
+}
+
 const interpretationStatusClass = (status = '') => {
   if (status === 'found') return 'bg-secondary-container text-on-secondary-container'
   if (status === 'partial') return 'bg-primary/10 text-primary'
@@ -584,11 +589,13 @@ export default function TechnicalTenderReview({ showToast }) {
   const parseStoppedRef = useRef(false)
   const [savingAppendixId, setSavingAppendixId] = useState('')
   const [savingAllAppendices, setSavingAllAppendices] = useState(false)
+  const [appendixMaterialSync, setAppendixMaterialSync] = useState({ status: 'idle' })
 
   const refreshParseResult = useCallback(async () => {
     if (!selectedProjectId) return null
     const data = await technicalParseAPI.results(selectedProjectId)
     setParseData(data)
+    setAppendixMaterialSync(appendixMaterialSyncOf(data))
     return data
   }, [selectedProjectId])
 
@@ -668,6 +675,7 @@ export default function TechnicalTenderReview({ showToast }) {
       ])
       setProject(projectData)
       setParseData(parseResult)
+      setAppendixMaterialSync(appendixMaterialSyncOf(parseResult))
       setParseProgress((previous) => mergeMonotonicParseProgress(previous, progressResult))
     } catch (e) {
       setError(e?.message || '解析详情加载失败')
@@ -1179,16 +1187,27 @@ export default function TechnicalTenderReview({ showToast }) {
   const handleApproveAppendixAsset = async (appendixId, selected) => {
     if (!selectedProjectId || !appendixId) return
     setSavingAppendixId(appendixId)
+    setParseData((previous) => {
+      if (!previous?.structured?.appendices) return previous
+      return {
+        ...previous,
+        structured: {
+          ...previous.structured,
+          appendices: previous.structured.appendices.map((item) => (
+            item.id === appendixId ? { ...item, selectedForMaterial: selected } : item
+          )),
+        },
+      }
+    })
     try {
       const result = await technicalParseAPI.approveAppendixAsset(selectedProjectId, appendixId, { approved: selected })
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      if (['failed', 'partial'].includes(result?.materialSync?.status)) {
-        showToast?.(result.materialSync.message || '附表选择已保存，但素材库同步失败。', 'error')
-      } else {
-        showToast?.(selected ? '已纳入项目素材库。' : '已从项目素材库选择中移除。')
-      }
+      setAppendixMaterialSync(result?.materialSync || { status: 'idle' })
+      const syncing = result?.materialSync?.status === 'pending'
+      showToast?.(syncing
+        ? (selected ? '选择已保存，正在同步素材库。' : '选择已取消，正在同步素材库。')
+        : '附表选择已保存。')
     } catch (e) {
+      await refreshParseResult().catch(() => null)
       showToast?.(e?.message || '附表选择保存失败', 'error')
     } finally {
       setSavingAppendixId('')
@@ -1198,21 +1217,59 @@ export default function TechnicalTenderReview({ showToast }) {
   const handleApproveAllAppendixAssets = async (selected) => {
     if (!selectedProjectId || !appendices.length) return
     setSavingAllAppendices(true)
+    setParseData((previous) => {
+      if (!previous?.structured?.appendices) return previous
+      return {
+        ...previous,
+        structured: {
+          ...previous.structured,
+          appendices: previous.structured.appendices.map((item) => ({
+            ...item,
+            selectedForMaterial: selected,
+          })),
+        },
+      }
+    })
     try {
       const result = await technicalParseAPI.approveAllAppendixAssets(selectedProjectId, { approved: selected })
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      if (['failed', 'partial'].includes(result?.materialSync?.status)) {
-        showToast?.(result.materialSync.message || '附表选择已保存，但素材库同步失败。', 'error')
-      } else {
-        showToast?.(selected ? '已全选附表。' : '已清空附表选择。')
-      }
+      setAppendixMaterialSync(result?.materialSync || { status: 'idle' })
+      const syncing = result?.materialSync?.status === 'pending'
+      showToast?.(syncing
+        ? (selected ? '已全选附表，正在同步素材库。' : '已清空选择，正在同步素材库。')
+        : (selected ? '已全选附表。' : '已清空附表选择。'))
     } catch (e) {
+      await refreshParseResult().catch(() => null)
       showToast?.(e?.message || '附表选择保存失败', 'error')
     } finally {
       setSavingAllAppendices(false)
     }
   }
+
+  useEffect(() => {
+    if (!selectedProjectId || !['pending', 'running'].includes(appendixMaterialSync?.status)) return undefined
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const status = await technicalParseAPI.appendixMaterialSync(selectedProjectId)
+        if (cancelled) return
+        setAppendixMaterialSync(status)
+        if (status?.status === 'synced') {
+          await refreshParseResult()
+        } else if (status?.status === 'failed') {
+          await refreshParseResult().catch(() => null)
+          showToast?.(status.message || '附表选择已保存，但素材库同步失败。', 'error')
+        }
+      } catch {
+        // 短暂网络失败时保留“同步中”，下一轮继续查询。
+      }
+    }
+    poll()
+    const timer = setInterval(poll, 1000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [appendixMaterialSync?.status, refreshParseResult, selectedProjectId, showToast])
 
   const renderPickedFiles = () => {
     if (!tenderFiles.length) return null
@@ -1544,6 +1601,11 @@ export default function TechnicalTenderReview({ showToast }) {
                             <span className="whitespace-nowrap text-xs font-medium text-on-surface-variant">
                               已选择 {selectedAppendixCount}/{appendices.length}
                             </span>
+                            {['pending', 'running'].includes(appendixMaterialSync?.status) ? (
+                              <span className="whitespace-nowrap text-xs font-medium text-primary">同步中</span>
+                            ) : appendixMaterialSync?.status === 'failed' ? (
+                              <span className="whitespace-nowrap text-xs font-medium text-error" title={appendixMaterialSync.message || ''}>同步失败</span>
+                            ) : null}
                           </div>
                         ) : (
                           <span className="text-xs text-outline">{appendices.length} 个</span>
