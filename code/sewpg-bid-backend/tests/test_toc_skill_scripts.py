@@ -544,7 +544,14 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(parent["usage"], "chapter_master")
         self.assertEqual(parent["coverageRole"], "chapter_master")
         self.assertEqual(parent["matchedMaterials"][0]["id"], "RAW-0800")
-        for number in ["8.1", "8.2", "8.3"]:
+        # 金标反评 R3b：整章覆盖是默认值不是锁——8.1 自身存在剥修饰同名素材
+        # （固定-运输组织方案.docx），保留子节自主匹配，不被父章吞并。
+        own_child = next(item for item in plan["items"] if item["number"] == "8.1")
+        self.assertEqual(own_child["decision"], "ready")
+        self.assertEqual(own_child["status"], "matched")
+        self.assertEqual(own_child["matchedMaterials"][0]["id"], "RAW-0801")
+        self.assertEqual(own_child["fillTasks"], [])
+        for number in ["8.2", "8.3"]:
             child = next(item for item in plan["items"] if item["number"] == number)
             self.assertEqual(child["decision"], "ready")
             self.assertEqual(child["status"], "matched")

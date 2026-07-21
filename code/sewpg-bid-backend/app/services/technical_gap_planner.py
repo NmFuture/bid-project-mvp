@@ -440,17 +440,17 @@ def _run_async(awaitable: Any) -> Any:
     return result.get("value")
 
 
-def _evidence_segments_by_material_id() -> dict[str, list[dict[str, Any]]]:
-    """从已落盘的技术标索引 JSON 里收集 {material_id: evidenceSegments}。
+def _evidence_segments_by_material_id() -> dict[str, dict[str, Any]]:
+    """从已落盘的技术标索引 JSON 里收集 {material_id: {segments, outline}}。
 
-    片段由 A 层（technical_material_index 镜像/预览）确定性切分后挂在 file entry 上。
-    planner 走 raw_files 取素材（不读索引 JSON），故这里按 material_id 建映射，
-    供 _allowed_technical_material_index 回填。索引缺失/无片段时返回空映射，
-    planner 退化为原有的文件名/标题匹配，不报错。
+    片段与文档大纲由 A 层（technical_material_index 镜像/预览）确定性提取后挂在
+    file entry 上。planner 走 raw_files 取素材（不读索引 JSON），故这里按
+    material_id 建映射，供 _allowed_technical_material_index 回填。索引缺失时
+    返回空映射，planner 退化为原有的文件名/标题匹配，不报错。
     """
     from app.services.technical_material_index import load_technical_material_index
 
-    mapping: dict[str, list[dict[str, Any]]] = {}
+    mapping: dict[str, dict[str, Any]] = {}
     try:
         index = load_technical_material_index()
     except Exception:  # noqa: BLE001 - 索引读不到不应阻断缺口识别
@@ -465,9 +465,17 @@ def _evidence_segments_by_material_id() -> dict[str, list[dict[str, Any]]]:
                 if not isinstance(file_entry, dict):
                     continue
                 material_id = str(file_entry.get("id") or "").strip()
+                if not material_id:
+                    continue
                 segments = file_entry.get("evidenceSegments")
-                if material_id and isinstance(segments, list) and segments:
-                    mapping[material_id] = segments
+                outline = file_entry.get("documentOutline")
+                extras: dict[str, Any] = {}
+                if isinstance(segments, list) and segments:
+                    extras["segments"] = segments
+                if isinstance(outline, list) and outline:
+                    extras["outline"] = outline
+                if extras:
+                    mapping[material_id] = extras
     return mapping
 
 
@@ -516,10 +524,13 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
                 "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
                 "updatedAt": str(raw.get("updatedAt") or ""),
             }
-            # 回填证据片段（A 层确定性切分），供 planner 非附表分支做段落级召回。
-            segments = segments_by_id.get(material_id)
-            if segments:
-                entry["evidenceSegments"] = segments
+            # 回填证据片段与文档大纲（A 层确定性提取），供 planner 做段落级召回
+            # 与整章素材的标题树覆盖判定。
+            extras = segments_by_id.get(material_id) or {}
+            if extras.get("segments"):
+                entry["evidenceSegments"] = extras["segments"]
+            if extras.get("outline"):
+                entry["documentOutline"] = extras["outline"]
             items.append(entry)
     return items
 
