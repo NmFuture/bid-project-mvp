@@ -142,8 +142,12 @@ class RawFolderOperations:
             await session.flush()
 
     async def find_folder(self, session: Any, folder_path: str) -> RawFolder | None:
-        result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
-        return result.scalar_one_or_none()
+        result = await session.execute(
+            select(RawFolder)
+            .where(RawFolder.path == folder_path)
+            .order_by(RawFolder.id.asc())
+        )
+        return result.scalars().first()
 
     async def ensure_canonical_folder(self, session: Any, folder_path: str) -> RawFolder:
         normalized = str(folder_path or "").strip().strip("/")
@@ -183,8 +187,7 @@ class RawFolderOperations:
             parent_path = str(parent.path or "")
         path = f"{parent_path}/{name}".lstrip("/")
         await self.clear_default_folder_deletion(session, path)
-        result = await session.execute(select(RawFolder).where(RawFolder.path == path))
-        existing = result.scalar_one_or_none()
+        existing = await self.find_folder(session, path)
         if existing:
             return existing
         folder = RawFolder(
