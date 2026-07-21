@@ -35,6 +35,8 @@ AGENTIC_COMMANDS = {
     "decision-next",
     "decision-context",
     "decision-batch",
+    "appendix-next",
+    "appendix-decision-batch",
     "decisions",
     "compose",
     "validate",
@@ -102,7 +104,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-context|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]; decision-next <manifest> [--max-items 50] [--max-chars 12000]; decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-context|decision-batch|appendix-next|appendix-decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]; decision-next <manifest> [--max-items 50] [--max-chars 12000]; decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]; appendix-next <manifest> [--max-items 20]; appendix-decision-batch <manifest> '<batch-json>'"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -256,7 +258,14 @@ def dispatch_command(
         if not isinstance(chunk_ids, list):
             raise SystemExit("review JSON chunk_ids must be a list")
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
-    if command in {"decision-next", "decision-context", "decision-batch", "decisions"}:
+    if command in {
+        "decision-next",
+        "decision-context",
+        "decision-batch",
+        "appendix-next",
+        "appendix-decision-batch",
+        "decisions",
+    }:
         workflow_binding = _strict_workflow_binding(manifest, work_dir)
         if (
             workflow_binding is None
@@ -268,6 +277,34 @@ def dispatch_command(
             work_dir / "template_structure.json",
             "templateStructureFile",
         )
+        appendix_items = review_workflow.decision_appendix_items(work_dir)
+        if command == "appendix-next":
+            try:
+                max_items = int(_option_value(command_args, "--max-items", "20"))
+            except ValueError as exc:
+                raise SystemExit("appendix-next --max-items must be an integer") from exc
+            return decision_workflow.next_appendix_batch(
+                work_dir,
+                structure,
+                appendix_items,
+                max_items=max_items,
+                workflow_binding=workflow_binding,
+            )
+        if command == "appendix-decision-batch":
+            batch_text = _required_arg(command_args, 0, "appendix decision batch JSON")
+            try:
+                appendix_batch = json.loads(batch_text)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"appendix decision batch JSON is invalid: {exc}") from exc
+            if not isinstance(appendix_batch, dict):
+                raise SystemExit("appendix decision batch JSON must be an object")
+            return decision_workflow.submit_appendix_batch(
+                work_dir,
+                structure,
+                appendix_batch,
+                appendix_items,
+                workflow_binding=workflow_binding,
+            )
         if command == "decision-next":
             try:
                 max_items = int(_option_value(command_args, "--max-items", "50"))
@@ -303,6 +340,7 @@ def dispatch_command(
             return decision_workflow.finalize_decisions(
                 work_dir,
                 structure,
+                appendix_items=appendix_items,
                 workflow_binding=workflow_binding,
             )
         decisions_text = _required_arg(command_args, 0, "decision batch JSON")
@@ -316,7 +354,7 @@ def dispatch_command(
             work_dir,
             structure,
             decision_batch,
-            appendix_items=review_workflow.decision_appendix_items(work_dir),
+            appendix_items=appendix_items,
             comparison_context=review_workflow.decision_comparison_context(work_dir),
             workflow_binding=workflow_binding,
         )
@@ -848,6 +886,7 @@ def compose_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str,
                     structure,
                     decisions,
                     workflow_binding=workflow_proof,
+                    appendix_items=review_workflow.decision_appendix_items(work_dir),
                 )
             )
         outline, _ = outline_composer.build_composition(structure, decisions)
@@ -915,6 +954,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
                             structure,
                             decisions,
                             workflow_binding=workflow_proof,
+                            appendix_items=review_workflow.decision_appendix_items(work_dir),
                         )
                     )
                 outline_composer.validate_compose_report(

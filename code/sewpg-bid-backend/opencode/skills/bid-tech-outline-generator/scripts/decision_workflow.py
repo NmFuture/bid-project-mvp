@@ -9,10 +9,11 @@ from typing import Any
 import outline_composer
 
 
-STATE_SCHEMA = "technical-outline-decision-state.v3"
+STATE_SCHEMA = "technical-outline-decision-state.v4"
 LEGACY_STATE_SCHEMAS = {
     "technical-outline-decision-state.v1",
     "technical-outline-decision-state.v2",
+    "technical-outline-decision-state.v3",
 }
 STATE_FILE_NAME = "outline_decision_state.json"
 CONTEXT_SCHEMA = "outline-decision-context.v1"
@@ -57,6 +58,10 @@ def _empty_active_batch() -> dict[str, Any]:
     }
 
 
+def _empty_active_appendix_batch() -> dict[str, Any]:
+    return {"token": "", "appendix_ids": []}
+
+
 def _new_state(
     fingerprint: str,
     workflow_binding: dict[str, str] | None = None,
@@ -67,8 +72,11 @@ def _new_state(
         "tender_inputs_digest": _binding_value(workflow_binding, "tenderInputsDigest"),
         "headings_state_digest": _binding_value(workflow_binding, "headingsStateDigest"),
         "template_decisions": {},
+        "appendix_decisions": {},
         "additions": [],
         "active_batch": _empty_active_batch(),
+        "active_appendix_batch": _empty_active_appendix_batch(),
+        "appendix_inventory_digest": "",
         "finalized_decisions_digest": "",
     }
 
@@ -104,8 +112,10 @@ def _load_state(
         ):
             has_progress = bool(
                 state.get("template_decisions")
+                or state.get("appendix_decisions")
                 or state.get("additions")
                 or (state.get("active_batch") or {}).get("target_ids")
+                or (state.get("active_appendix_batch") or {}).get("appendix_ids")
             )
             if has_progress:
                 raise SystemExit("outline decision state does not match the current tender/headings inputs")
@@ -602,17 +612,302 @@ def submit_decision_batch(
     }
 
 
+def _normalized_appendix_inventory(
+    appendix_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    if not isinstance(appendix_items, list):
+        raise SystemExit("appendix inventory must be a list")
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, raw_item in enumerate(appendix_items):
+        if not isinstance(raw_item, dict):
+            raise SystemExit(f"appendix inventory items[{index}] must be an object")
+        appendix_id = str(raw_item.get("appendix_id") or "").strip()
+        if not appendix_id:
+            raise SystemExit(f"appendix inventory items[{index}].appendix_id is required")
+        if appendix_id in seen_ids:
+            raise SystemExit(f"appendix inventory appendix_id is duplicate: {appendix_id}")
+        seen_ids.add(appendix_id)
+        item = deepcopy(raw_item)
+        item["appendix_id"] = appendix_id
+        item["file_id"] = str(raw_item.get("file_id") or "").strip()
+        item["number"] = str(raw_item.get("number") or "")
+        item["title"] = str(raw_item.get("title") or "")
+        try:
+            item["following_table_count"] = int(
+                raw_item.get("following_table_count") or 0
+            )
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"appendix inventory items[{index}].following_table_count must be an integer"
+            ) from exc
+        normalized.append(item)
+    return normalized, _payload_digest(normalized)
+
+
+def _appendix_items_for_response(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "appendix_id": item["appendix_id"],
+            "file_id": item["file_id"],
+            "number": item["number"],
+            "title": item["title"],
+            "following_table_count": item["following_table_count"],
+        }
+        for item in items
+    ]
+
+
+def _appendix_batch_token(
+    fingerprint: str,
+    inventory_digest: str,
+    appendix_ids: list[str],
+    workflow_binding: dict[str, str] | None,
+) -> str:
+    return _payload_digest(
+        {
+            "input_fingerprint": fingerprint,
+            "tender_inputs_digest": _binding_value(
+                workflow_binding, "tenderInputsDigest"
+            ),
+            "headings_state_digest": _binding_value(
+                workflow_binding, "headingsStateDigest"
+            ),
+            "appendix_inventory_digest": inventory_digest,
+            "appendix_ids": appendix_ids,
+        }
+    )
+
+
+def _require_template_decisions_complete(
+    state: dict[str, Any], items: list[dict[str, Any]]
+) -> None:
+    if (state.get("active_batch") or {}).get("target_ids"):
+        raise SystemExit("appendix-next 请先完成模板逐项判断并提交当前批次")
+    decisions = state.get("template_decisions") or {}
+    expected_ids = [str(item["template_id"]) for item in items]
+    if set(decisions) != set(expected_ids):
+        raise SystemExit("appendix-next 请先完成模板逐项判断")
+
+
+def _reject_changed_appendix_inventory(
+    state: dict[str, Any], inventory_digest: str
+) -> None:
+    issued_digest = str(state.get("appendix_inventory_digest") or "")
+    if issued_digest and issued_digest != inventory_digest:
+        raise SystemExit("appendix inventory changed after batch token issuance")
+
+
+def next_appendix_batch(
+    work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    max_items: int = 20,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    if max_items < 1 or max_items > 20:
+        raise SystemExit("appendix-next max_items must be between 1 and 20")
+    annotated, template_items = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    _require_template_decisions_complete(state, template_items)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    by_id = {str(item["appendix_id"]): item for item in inventory}
+    decisions = state.get("appendix_decisions") or {}
+    unknown_decisions = set(decisions) - set(by_id)
+    if unknown_decisions:
+        raise SystemExit(
+            "appendix decision state contains unknown appendix_id: "
+            + ", ".join(sorted(unknown_decisions)[:20])
+        )
+    active = state.get("active_appendix_batch") or {}
+    active_ids = list(active.get("appendix_ids") or [])
+    if active_ids:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "batch_token": str(active.get("token") or ""),
+            "items": _appendix_items_for_response([by_id[item_id] for item_id in active_ids]),
+            "decided_count": len(decisions),
+            "remaining_count": len(inventory) - len(decisions),
+            "complete": False,
+        }
+    pending = [item for item in inventory if item["appendix_id"] not in decisions]
+    if not pending:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "batch_token": "",
+            "items": [],
+            "decided_count": len(decisions),
+            "remaining_count": 0,
+            "complete": True,
+        }
+    selected = pending[:max_items]
+    appendix_ids = [str(item["appendix_id"]) for item in selected]
+    token = _appendix_batch_token(
+        fingerprint, inventory_digest, appendix_ids, workflow_binding
+    )
+    state["appendix_inventory_digest"] = inventory_digest
+    state["active_appendix_batch"] = {
+        "token": token,
+        "appendix_ids": appendix_ids,
+    }
+    _write_json(_state_path(work_dir), state)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "batch_token": token,
+        "items": _appendix_items_for_response(selected),
+        "decided_count": len(decisions),
+        "remaining_count": len(inventory) - len(decisions),
+        "complete": False,
+    }
+
+
+def submit_appendix_batch(
+    work_dir: Path,
+    structure: dict[str, Any],
+    payload: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    annotated, template_items = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    _require_template_decisions_complete(state, template_items)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    active = state.get("active_appendix_batch") or {}
+    expected_ids = list(active.get("appendix_ids") or [])
+    token = str(payload.get("batch_token") or "")
+    if not expected_ids or token != str(active.get("token") or ""):
+        raise SystemExit(
+            "appendix-decision-batch must use the current appendix-next batch_token"
+        )
+    if token != _appendix_batch_token(
+        fingerprint, inventory_digest, expected_ids, workflow_binding
+    ):
+        raise SystemExit("appendix-decision-batch batch_token binding is invalid")
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise SystemExit("appendix-decision-batch items must be a list")
+    actual_ids = [
+        str(item.get("appendix_id") or "")
+        for item in raw_items
+        if isinstance(item, dict)
+    ]
+    if actual_ids != expected_ids or len(raw_items) != len(expected_ids):
+        raise SystemExit(
+            "appendix-decision-batch items must exactly match the current appendix-next batch"
+        )
+
+    inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
+    normalized_decisions: list[dict[str, Any]] = []
+    new_changes: list[dict[str, Any]] = []
+    existing_node_ids = {
+        str(item.get("node_id") or "") for item in state.get("additions") or []
+    }
+    for index, raw_item in enumerate(raw_items):
+        appendix_id = actual_ids[index]
+        decision = str(raw_item.get("decision") or "").strip()
+        reason = str(raw_item.get("reason") or "").strip()
+        if decision not in {"include", "exclude"}:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].decision must be include or exclude"
+            )
+        if not reason:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].reason is required"
+            )
+        if decision == "exclude":
+            if set(raw_item) != {"appendix_id", "decision", "reason"}:
+                raise SystemExit(
+                    f"appendix-decision-batch items[{index}] exclude has unsupported fields"
+                )
+            normalized_decisions.append(
+                {"appendix_id": appendix_id, "decision": decision, "reason": reason}
+            )
+            continue
+        node_id = str(raw_item.get("node_id") or "").strip()
+        parent_id = str(raw_item.get("parent_id") or "").strip()
+        if not node_id:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].node_id is required"
+            )
+        if not parent_id:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].parent_id is required"
+            )
+        if set(raw_item) != {
+            "appendix_id",
+            "decision",
+            "node_id",
+            "parent_id",
+            "reason",
+        }:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}] include has unsupported fields"
+            )
+        if node_id in existing_node_ids:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].node_id is duplicate: {node_id}"
+            )
+        existing_node_ids.add(node_id)
+        normalized_decisions.append(
+            {
+                "appendix_id": appendix_id,
+                "decision": decision,
+                "reason": reason,
+                "node_id": node_id,
+                "parent_id": parent_id,
+            }
+        )
+        appendix = inventory_by_id[appendix_id]
+        new_changes.append(
+            {
+                "operation": "add",
+                "node_id": node_id,
+                "parent_id": parent_id,
+                "number": appendix["number"],
+                "title": appendix["title"],
+                "suggestion_action": "建议增加",
+                "suggestion_reason": reason,
+            }
+        )
+
+    decisions = state.setdefault("appendix_decisions", {})
+    for item in normalized_decisions:
+        decisions[item["appendix_id"]] = item
+    state.setdefault("additions", []).extend(new_changes)
+    state["active_appendix_batch"] = _empty_active_appendix_batch()
+    state["finalized_decisions_digest"] = ""
+    _write_json(_state_path(work_dir), state)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "decided_count": len(decisions),
+        "remaining_count": len(inventory) - len(decisions),
+        "addition_count": len(state.get("additions") or []),
+        "complete": len(decisions) == len(inventory),
+    }
+
+
 def finalize_decisions(
     work_dir: Path,
     structure: dict[str, Any],
     *,
+    appendix_items: list[dict[str, Any]] | None = None,
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     annotated, items = _annotated_items(structure)
     fingerprint = annotated["input_fingerprint"]
     state = _load_state(work_dir, fingerprint, workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items or [])
+    _reject_changed_appendix_inventory(state, inventory_digest)
     if (state.get("active_batch") or {}).get("target_ids"):
         raise SystemExit("current decision-next batch has not been submitted")
+    if (state.get("active_appendix_batch") or {}).get("appendix_ids"):
+        raise SystemExit("current appendix-next batch has not been submitted")
     decisions_by_id = state.get("template_decisions") or {}
     missing = [
         str(item["template_id"])
@@ -621,6 +916,19 @@ def finalize_decisions(
     ]
     if missing:
         raise SystemExit("template decisions missing: " + ", ".join(missing[:20]))
+    appendix_decisions = state.get("appendix_decisions") or {}
+    expected_appendix_ids = [str(item["appendix_id"]) for item in inventory]
+    missing_appendix_ids = [
+        appendix_id
+        for appendix_id in expected_appendix_ids
+        if appendix_id not in appendix_decisions
+    ]
+    if missing_appendix_ids:
+        raise SystemExit(
+            "appendix decisions missing: " + ", ".join(missing_appendix_ids[:20])
+        )
+    if set(appendix_decisions) != set(expected_appendix_ids):
+        raise SystemExit("appendix decision state does not match the current inventory")
     decisions = {
         "schema_version": outline_composer.DECISIONS_SCHEMA,
         "input_fingerprint": fingerprint,
@@ -646,6 +954,7 @@ def validate_finalized_decisions(
     decisions: dict[str, Any],
     *,
     workflow_binding: dict[str, str],
+    appendix_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     annotated, items = _annotated_items(structure)
     fingerprint = annotated["input_fingerprint"]
@@ -670,8 +979,12 @@ def validate_finalized_decisions(
         workflow_binding, "headingsStateDigest"
     ):
         raise SystemExit("outline decision state does not match the completed headings state")
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items or [])
+    _reject_changed_appendix_inventory(state, inventory_digest)
     if (state.get("active_batch") or {}).get("target_ids"):
         raise SystemExit("current decision-next batch has not been submitted")
+    if (state.get("active_appendix_batch") or {}).get("appendix_ids"):
+        raise SystemExit("current appendix-next batch has not been submitted")
 
     decisions_by_id = state.get("template_decisions")
     if not isinstance(decisions_by_id, dict):
@@ -679,6 +992,12 @@ def validate_finalized_decisions(
     expected_ids = [str(item["template_id"]) for item in items]
     if set(decisions_by_id) != set(expected_ids):
         raise SystemExit("outline decision state does not contain all controlled template decisions")
+    appendix_decisions = state.get("appendix_decisions")
+    if not isinstance(appendix_decisions, dict):
+        raise SystemExit("outline decision state appendix_decisions is invalid")
+    expected_appendix_ids = [str(item["appendix_id"]) for item in inventory]
+    if set(appendix_decisions) != set(expected_appendix_ids):
+        raise SystemExit("outline decision state does not contain all appendix decisions")
     expected_decisions = {
         "schema_version": outline_composer.DECISIONS_SCHEMA,
         "input_fingerprint": fingerprint,
