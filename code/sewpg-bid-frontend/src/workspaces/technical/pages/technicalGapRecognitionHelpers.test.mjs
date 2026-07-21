@@ -111,6 +111,16 @@ test('目录标签：99分（文件名精确命中）豁免确认自动就绪', 
   )
 })
 
+test('目录标签：自动就绪也可人工撤销（产品反馈 2026-07-21：撤销要真正生效，不是无操作）', () => {
+  // 未操作过：99 分自动就绪。
+  const autoReady = { id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  assert.equal(technicalGapTagOf(autoReady), 'ready')
+  // 人工撤销（humanConfirmed 显式为 false）：跳过自动就绪判定，按分数回落到「已匹配-待确认」。
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: false }), 'needs_refine')
+  // 撤销后再次人工确认：恢复已就绪。
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: true }), 'ready')
+})
+
 test('目录标签：除精确命中外，人工点「确认」是变已就绪的唯一途径（产品裁决 2026-07-21）', () => {
   // 选用素材/上传产物本身不再翻绿：点确认之前标签不变。
   assert.equal(

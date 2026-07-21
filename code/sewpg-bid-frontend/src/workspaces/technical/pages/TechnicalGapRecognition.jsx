@@ -24,7 +24,6 @@ import {
   primaryBlankSource,
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
-  isTechnicalGapHumanConfirmed,
   technicalGapTagOf,
   technicalMatchScore,
   uniqueStrings,
@@ -126,20 +125,22 @@ function TechnicalTocActionBadge({ item, items }) {
 
 // 就绪确认控件（产品反馈 2026-07-21）：只在右侧详情面板标题旁对当前选中目录项渲染，
 // 且只有一个可点击控件——不再是「标签 + 按钮」两个元素。
-// 文件名精确命中自动就绪，无需人工确认，头部不渲染任何控件（状态已在左侧目录标签展示）。
-// 其余情况下按钮在「确认」与「已就绪（点击撤销）」间切换，是变「已就绪」的唯一人工入口。
+// UI 统一性（产品反馈）：已就绪的目录项也保留这个按钮，展示成「已点击过」的样式，
+// 不因为是文件名精确命中自动就绪就把控件藏起来。
+// 按钮在「确认」与「已就绪（可再点撤销）」间切换，是变「已就绪」的唯一人工入口；
+// 对自动就绪（非人工确认）的项点撤销只是把 humanConfirmed 显式落为 false，不影响其
+// 已就绪的展示（因为分数命中不依赖这个标记），所以视觉上不会有变化，属预期行为。
 function TechnicalGapReadyControl({ item, items, busy, onConfirmReady }) {
   const tag = technicalGapTagOf(item, items)
   const config = TECHNICAL_GAP_TAG_CONFIG[tag]
   if (!config) return null
-  const confirmed = tag === 'ready' && isTechnicalGapHumanConfirmed(item)
-  if (tag === 'ready' && !confirmed) return null
+  const confirmed = tag === 'ready'
   return (
     <Button
       type="button"
       onClick={() => onConfirmReady(item, !confirmed)}
       disabled={busy}
-      title={confirmed ? '人工确认的就绪状态，点击撤销' : '人工确认本章已就绪'}
+      title={confirmed ? '已就绪状态，点击撤销人工确认' : '人工确认本章已就绪'}
       size="sm"
       variant={confirmed ? 'secondary' : 'primary'}
     >
