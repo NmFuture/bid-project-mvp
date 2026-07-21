@@ -1580,11 +1580,13 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
     business_deleted: list[str] = []
     technical_deleted: list[str] = []
 
-    async def fake_business_delete(path: str) -> dict[str, object]:
+    async def fake_business_delete(path: str, *, expected_project_id: str = "") -> dict[str, object]:
+        assert expected_project_id == business_project_id
         business_deleted.append(path)
         return {"message": "business deleted", "folderPath": path}
 
-    async def fake_technical_delete(path: str) -> dict[str, object]:
+    async def fake_technical_delete(path: str, *, expected_project_id: str = "") -> dict[str, object]:
+        assert expected_project_id == technical_project_id
         technical_deleted.append(path)
         return {"message": "technical deleted", "folderPath": path}
 

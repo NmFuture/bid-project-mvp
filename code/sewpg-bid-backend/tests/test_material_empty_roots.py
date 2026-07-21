@@ -6,7 +6,8 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
 from app.services.material_raw_folder_operations import RawFolderOperations
-from app.services.material_raw_lifecycle_operations import create_raw_folder
+from app.services.material_raw_lifecycle_operations import create_raw_folder, delete_raw_folder
+from app.services.material_project_folder_migration import rename_project_folder_tree
 from app.services.material_folder_maintenance import bootstrap_project_material_folder
 from app.services.peripheral import PeripheralError
 
@@ -17,6 +18,12 @@ class _ScalarResult:
 
     def scalar_one_or_none(self):
         return self._value
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._value)
 
 
 class _CreateFolderSession:
@@ -41,6 +48,18 @@ class _CreateFolderSession:
 
     async def commit(self):
         return None
+
+
+class _MigrationSession:
+    def __init__(self, *results):
+        self._results = iter(_ScalarResult(result) for result in results)
+        self.commit_count = 0
+
+    async def execute(self, _statement):
+        return next(self._results)
+
+    async def commit(self):
+        self.commit_count += 1
 
 
 class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
@@ -93,6 +112,150 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["payload"]["path"], existing.path)
+
+    async def test_project_folder_bootstrap_renames_existing_folder_found_by_project_id(self) -> None:
+        session = object()
+        existing = SimpleNamespace(
+            id=21,
+            name="旧项目名称",
+            path="技术标/项目定制/旧项目名称",
+            project_id="PRJ-TECH-001",
+        )
+        rename_project_folder = AsyncMock(
+            return_value="技术标/项目定制/新项目名称",
+        )
+
+        result = await bootstrap_project_material_folder(
+            session,
+            project_id="PRJ-TECH-001",
+            project_name="新项目名称",
+            bid_type="技术标",
+            find_folder=AsyncMock(return_value=None),
+            find_project_folder=AsyncMock(return_value=existing),
+            rename_project_folder=rename_project_folder,
+            ensure_folder_path=AsyncMock(),
+        )
+
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/新项目名称")
+        rename_project_folder.assert_awaited_once_with(
+            session,
+            existing,
+            "技术标/项目定制/新项目名称",
+        )
+
+    async def test_project_folder_cleanup_rejects_folder_owned_by_another_project(self) -> None:
+        folder = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/同名项目",
+            bid_type="技术标",
+            project_id="PRJ-OTHER-001",
+        )
+        session = _CreateFolderSession([folder])
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            with self.assertRaises(PeripheralError) as context:
+                await delete_raw_folder(
+                    path=folder.path,
+                    bid_type="技术标",
+                    expected_project_id="PRJ-TECH-001",
+                    ensure_runtime_tables=AsyncMock(),
+                    purge_raw_file_objects=AsyncMock(),
+                    mark_default_folder_deleted=AsyncMock(),
+                    raw_tree=AsyncMock(return_value={"tree": []}),
+                    allow_protected=True,
+                )
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(context.exception.code, "PROJECT_FOLDER_OWNERSHIP_MISMATCH")
+
+    async def test_project_folder_cleanup_finds_renamed_folder_by_project_id(self) -> None:
+        folder = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/旧项目名称",
+            bid_type="技术标",
+            tier="project",
+            project_id="PRJ-TECH-001",
+        )
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+        session.execute.side_effect = (
+            _ScalarResult([folder]),
+            _ScalarResult([folder]),
+            _ScalarResult([]),
+        )
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            result = await delete_raw_folder(
+                path="技术标/项目定制/新项目名称",
+                bid_type="技术标",
+                expected_project_id="PRJ-TECH-001",
+                ensure_runtime_tables=AsyncMock(),
+                purge_raw_file_objects=AsyncMock(),
+                mark_default_folder_deleted=AsyncMock(),
+                raw_tree=AsyncMock(return_value={"tree": []}),
+                allow_protected=True,
+            )
+
+        self.assertEqual(result["folderPath"], "技术标/项目定制/旧项目名称")
+        session.delete.assert_awaited_once_with(folder)
+        session.commit.assert_awaited_once()
+
+    async def test_project_folder_rename_migrates_files_versions_and_metadata(self) -> None:
+        root = SimpleNamespace(
+            id=21,
+            name="旧项目名称",
+            path="技术标/项目定制/旧项目名称",
+            bid_type="技术标",
+            project_id="PRJ-TECH-001",
+            customer_name="华能",
+        )
+        child = SimpleNamespace(
+            id=22,
+            name="附表",
+            path="技术标/项目定制/旧项目名称/附表",
+            bid_type="技术标",
+            project_id="PRJ-TECH-001",
+            customer_name="华能",
+        )
+        item = SimpleNamespace(
+            id=31,
+            folder_id=22,
+            name="附表A.docx",
+            minio_key="raw/技术标/项目定制/旧项目名称/附表/附表A.docx",
+            minio_bucket="bid-materials",
+            ext_fields={"projectId": "PRJ-TECH-001"},
+        )
+        version = SimpleNamespace(
+            id=41,
+            file_id=31,
+            minio_key="raw/技术标/项目定制/旧项目名称/附表/附表A_v1.docx",
+        )
+        session = _MigrationSession([root, child], [item], [version])
+
+        with patch("app.services.material_project_folder_migration.minio_client") as minio:
+            result = await rename_project_folder_tree(
+                session,
+                root,
+                "技术标/项目定制/新项目名称",
+            )
+
+        self.assertEqual(result, "技术标/项目定制/新项目名称")
+        self.assertEqual(root.name, "新项目名称")
+        self.assertEqual(child.path, "技术标/项目定制/新项目名称/附表")
+        self.assertEqual(item.minio_key, "raw/技术标/项目定制/新项目名称/附表/附表A.docx")
+        self.assertEqual(version.minio_key, "raw/技术标/项目定制/新项目名称/附表/附表A_v1.docx")
+        self.assertEqual(item.ext_fields["sourceMinioKey"], item.minio_key)
+        self.assertEqual(item.ext_fields["projectId"], "PRJ-TECH-001")
+        self.assertEqual(session.commit_count, 1)
+        self.assertEqual(minio.copy_object.call_count, 2)
+        self.assertEqual(minio.remove_object.call_count, 2)
 
     async def test_project_folder_bootstrap_rejects_same_name_for_different_project(self) -> None:
         existing = SimpleNamespace(

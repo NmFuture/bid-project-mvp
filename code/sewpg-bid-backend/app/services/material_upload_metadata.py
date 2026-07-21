@@ -65,7 +65,7 @@ def build_raw_upload_ext_fields(
         or folder_customer_name
         or ("平台标准" if material_tier == "standard" else "")
     )
-    item_project_id = project_id or str(location.get("projectId") or "") or folder_project_id or ""
+    item_project_id = folder_project_id or project_id or str(location.get("projectId") or "") or ""
     item_project_code = project_code or item_project_id
     item_project_name = project_name
     identity = material_identity(

@@ -16,8 +16,10 @@ from app.services.material_folder_maintenance import (
     migrate_legacy_technical_folders,
     prune_empty_legacy_business_default_folders,
 )
+from app.services.material_project_folder_migration import rename_project_folder_tree
 from app.services.material_folder_scope import (
     canonical_raw_folder_metadata,
+    material_tier_root_path,
     raw_material_root_specs,
     raw_material_tier_folder_specs,
 )
@@ -61,6 +63,8 @@ class RawFolderOperations:
                 bid_type=bid_type,
                 find_folder=self.find_folder,
                 ensure_folder_path=self.ensure_folder_path,
+                find_project_folder=self.find_project_folder,
+                rename_project_folder=rename_project_folder_tree,
             )
             await session.commit()
             return result
@@ -146,6 +150,26 @@ class RawFolderOperations:
     async def find_folder(self, session: Any, folder_path: str) -> RawFolder | None:
         result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
         return result.scalar_one_or_none()
+
+    async def find_project_folder(self, session: Any, project_id: str, bid_type: str) -> RawFolder | None:
+        root_path = material_tier_root_path(bid_type, "project")
+        result = await session.execute(
+            select(RawFolder).where(
+                RawFolder.project_id == project_id,
+                RawFolder.bid_type == bid_type,
+                RawFolder.tier == "project",
+                RawFolder.path.like(f"{root_path}/%"),
+            )
+        )
+        expected_depth = len(root_path.split("/")) + 1
+        return next(
+            (
+                folder
+                for folder in result.scalars().all()
+                if len(str(folder.path or "").strip("/").split("/")) == expected_depth
+            ),
+            None,
+        )
 
     async def ensure_canonical_folder(self, session: Any, folder_path: str) -> RawFolder:
         normalized = str(folder_path or "").strip().strip("/")

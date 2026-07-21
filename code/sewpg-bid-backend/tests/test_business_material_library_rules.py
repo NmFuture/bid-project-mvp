@@ -126,6 +126,19 @@ class _FakePerformanceSession:
 
 
 class BusinessMaterialLibraryRulesTests(unittest.TestCase):
+    def test_project_upload_prefers_folder_project_id_over_display_path(self) -> None:
+        ext, _ = build_raw_upload_ext_fields(
+            file_name="项目素材.docx",
+            folder_path="技术标/项目定制/华能100MW风电项目",
+            folder_tier="project",
+            folder_project_id="PRJ-TECH-001",
+            requested_bid_type="技术标",
+            project_id="WORKSPACE-001",
+        )
+
+        self.assertEqual(ext["projectId"], "PRJ-TECH-001")
+        self.assertEqual(ext["projectCode"], "PRJ-TECH-001")
+
     def test_image_files_are_marked_original_only(self) -> None:
         status, message = clean_status_for_new_file("机型认证证书.png")
         self.assertEqual(status, "original_only")

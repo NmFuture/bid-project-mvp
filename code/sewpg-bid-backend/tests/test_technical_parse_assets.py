@@ -504,7 +504,12 @@ def test_technical_project_confirmation_archives_appendices_with_final_material_
             )
         )
 
-    sync_appendices.assert_awaited_once_with(runtime_project, parse_result)
+    sync_appendices.assert_awaited_once()
+    sync_project, synced_parse_result = sync_appendices.await_args.args
+    assert sync_project["materialProjectMode"] == "library"
+    assert sync_project["materialProjectId"] == "MAT-FINAL-001"
+    assert sync_project.get("reviewDecision") != "participate"
+    assert synced_parse_result is parse_result
     persist_parse_result.assert_called_once_with(project_id, parse_result)
     assert result["technicalParseAssetSync"] == {
         "status": "synced",
@@ -565,6 +570,83 @@ def test_technical_project_confirmation_persists_sync_state_after_failure() -> N
             asyncio.run(service.update(project_id, {"reviewDecision": "participate"}))
 
     persist_parse_result.assert_called_once_with(project_id, parse_result)
+
+
+def test_technical_project_confirmation_failure_does_not_persist_participate() -> None:
+    from app.services.bid_project_service import BidProjectService
+    from app.services.technical_parse_assets import TechnicalParseAssetError
+
+    project_id = "PRJ-TECH-001"
+    runtime_project = {
+        "id": project_id,
+        "bidType": "技术标",
+        "name": "华能100MW风电项目",
+        "reviewDecision": "pending",
+        "parse_result": {"status": "completed", "structured": {"appendices": []}},
+    }
+    service = BidProjectService(
+        bid_type="技术标",
+        not_found_message="技术标项目不存在。",
+        wrong_type_message="该接口仅支持技术标项目。",
+        delete_message="技术标项目已删除",
+        sync_technical_parse_assets=True,
+    )
+
+    with patch(
+        "app.services.bid_project_service.update_workspace_project",
+        return_value=runtime_project,
+    ) as update_project, patch.object(
+        service,
+        "ensure_project",
+        return_value=runtime_project,
+    ), patch(
+        "app.services.bid_project_service.sync_technical_parse_appendices",
+        new=AsyncMock(side_effect=TechnicalParseAssetError("索引校验失败")),
+    ), patch(
+        "app.services.bid_project_service.persist_technical_parse_result",
+        return_value=runtime_project["parse_result"],
+    ):
+        with pytest.raises(TechnicalParseAssetError, match="索引校验失败"):
+            asyncio.run(service.update(project_id, {"reviewDecision": "participate"}))
+
+    update_project.assert_not_called()
+
+
+def test_participated_project_rename_migrates_material_folder() -> None:
+    from app.services.bid_project_service import BidProjectService
+
+    project_id = "PRJ-TECH-001"
+    runtime_project = {
+        "id": project_id,
+        "bidType": "技术标",
+        "name": "旧项目名称",
+        "reviewDecision": "participate",
+    }
+    updated_project = {**runtime_project, "name": "新项目名称"}
+    bootstrap_material_folder = AsyncMock(
+        return_value={
+            "payload": {
+                "projectId": project_id,
+                "path": "技术标/项目定制/新项目名称",
+            }
+        }
+    )
+    service = BidProjectService(
+        bid_type="技术标",
+        not_found_message="技术标项目不存在。",
+        wrong_type_message="该接口仅支持技术标项目。",
+        delete_message="技术标项目已删除",
+        bootstrap_material_folder=bootstrap_material_folder,
+    )
+
+    with patch.object(service, "ensure_project", return_value=runtime_project), patch(
+        "app.services.bid_project_service.update_workspace_project",
+        return_value=updated_project,
+    ):
+        result = asyncio.run(service.update(project_id, {"name": "新项目名称"}))
+
+    bootstrap_material_folder.assert_awaited_once_with(project_id, "新项目名称")
+    assert result["materialFolderBootstrap"]["path"] == "技术标/项目定制/新项目名称"
 
 
 def test_technical_project_confirmation_bootstraps_named_material_folder() -> None:
