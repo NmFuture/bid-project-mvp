@@ -1480,38 +1480,10 @@ export default function TechnicalTenderReview({ showToast }) {
             )}
 
             <section className="border border-surface-container-high rounded-md overflow-hidden">
-              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center">
                 <div className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-[18px] text-primary">article</span>
                   <h4 className="text-sm font-semibold text-on-surface">附表 Word</h4>
-                </div>
-                <div className="flex items-center gap-2">
-                  {reviewConfig.showApproveAppendices && appendices.length ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleApproveAllAppendixAssets(true)}
-                        disabled={savingAllAppendices || Boolean(savingAppendixId) || selectedAppendixCount === appendices.length}
-                        className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        全选
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleApproveAllAppendixAssets(false)}
-                        disabled={savingAllAppendices || Boolean(savingAppendixId) || selectedAppendixCount === 0}
-                        className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        清空选择
-                      </button>
-                      <span className="text-xs font-medium text-on-surface-variant">
-                        已选择 {selectedAppendixCount}/{appendices.length}
-                      </span>
-                    </>
-                  ) : null}
-                  {!reviewConfig.showApproveAppendices ? (
-                    <span className="text-xs text-outline">{appendices.length} 个</span>
-                  ) : null}
                 </div>
               </div>
               {appendices.length ? (
@@ -1549,8 +1521,33 @@ export default function TechnicalTenderReview({ showToast }) {
                   )}
                   sidebar={(
                     <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
-                      <div className="border-b border-surface-container-high px-4 py-3">
-                        <p className="text-sm font-semibold text-on-surface">附表条目</p>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-container-high px-4 py-3">
+                        <p className="shrink-0 text-sm font-semibold text-on-surface">附表条目</p>
+                        {reviewConfig.showApproveAppendices ? (
+                          <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAllAppendixAssets(true)}
+                              disabled={savingAllAppendices || Boolean(savingAppendixId) || selectedAppendixCount === appendices.length}
+                              className="rounded-md bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              全选
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAllAppendixAssets(false)}
+                              disabled={savingAllAppendices || Boolean(savingAppendixId) || selectedAppendixCount === 0}
+                              className="rounded-md bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              清空选择
+                            </button>
+                            <span className="whitespace-nowrap text-xs font-medium text-on-surface-variant">
+                              已选择 {selectedAppendixCount}/{appendices.length}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-outline">{appendices.length} 个</span>
+                        )}
                       </div>
                       <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
                         {appendices.map((appendix, index) => {
