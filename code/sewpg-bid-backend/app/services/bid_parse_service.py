@@ -44,7 +44,6 @@ from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_sess
 from app.services.opencode_client import OpencodeClient
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, TECHNICAL_PARSE_PROFILE
 from app.services.technical_parse_assets import (
-    TECHNICAL_APPENDIX_SYNC_JOB_TYPE,
     TechnicalParseAssetError,
     set_all_technical_appendix_assets_selected,
     set_technical_appendix_asset_selected,
@@ -2437,38 +2436,9 @@ class BidParseService:
 
 
 class TechnicalParseService(BidParseService):
-    def _queue_selection_sync_if_participating(
-        self,
-        project_id: str,
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-        participating = result.get("_participating")
-        if participating is None:
-            participating = str(self.ensure_project(project_id).get("reviewDecision") or "") == "participate"
-        compact_result = {
-            key: value for key, value in result.items() if key != "parseResult" and not key.startswith("_")
-        }
-        if not participating:
-            compact_result["materialSync"] = {"status": "not_required"}
-            return compact_result
-
-        enqueue_result = enqueue_generation_job(TECHNICAL_APPENDIX_SYNC_JOB_TYPE, project_id, {})
-        if enqueue_result.unavailable:
-            from app.services.technical_parse_assets import run_technical_appendix_asset_sync_job
-
-            submit_local_job(run_technical_appendix_asset_sync_job, project_id)
-            compact_result["materialSync"] = {"status": "pending", "local": True}
-        else:
-            compact_result["materialSync"] = {
-                "status": "pending",
-                **({"jobId": enqueue_result.job_id} if enqueue_result.job_id else {}),
-            }
-        return compact_result
-
-    def appendix_material_sync_status(self, project_id: str) -> dict[str, Any]:
-        from app.services.technical_parse_assets import technical_appendix_material_sync_status
-
-        return technical_appendix_material_sync_status(project_id)
+    @staticmethod
+    def _compact_selection_result(result: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in result.items() if key != "parseResult" and not key.startswith("_")}
 
     async def approve_appendix_asset(
         self,
@@ -2482,7 +2452,7 @@ class TechnicalParseService(BidParseService):
                 appendix_id,
                 selected=bool((data or {}).get("approved", True)),
             )
-            return self._queue_selection_sync_if_participating(project_id, result)
+            return self._compact_selection_result(result)
         except TechnicalParseAssetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -2496,7 +2466,7 @@ class TechnicalParseService(BidParseService):
                 project_id,
                 selected=bool((data or {}).get("approved", True)),
             )
-            return self._queue_selection_sync_if_participating(project_id, result)
+            return self._compact_selection_result(result)
         except TechnicalParseAssetError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

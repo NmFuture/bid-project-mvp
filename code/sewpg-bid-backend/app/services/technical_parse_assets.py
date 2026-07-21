@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import copy
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from app.core.redis import RedisError, get_redis_client
 from app.services.bid_parse_state import update_parse_result_state
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.file_utils import safe_segment
@@ -21,8 +18,6 @@ from app.services.workspace_project_access import (
 
 
 TECHNICAL_APPENDIX_SYNC_SCHEMA_VERSION = "technical-appendix-material-sync-v1"
-TECHNICAL_APPENDIX_SYNC_JOB_TYPE = "technical_appendix_asset_sync"
-TECHNICAL_APPENDIX_SYNC_LOCK_PREFIX = "bid:state-lock:technical-appendix-sync:"
 
 
 class TechnicalParseAssetError(RuntimeError):
@@ -30,56 +25,6 @@ class TechnicalParseAssetError(RuntimeError):
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
-
-
-@contextmanager
-def _selection_state_lock(project_id: str):
-    """Serialize the short project-state writes shared by FastAPI and the worker."""
-
-    client = get_redis_client()
-    if client is None:
-        yield
-        return
-    lock = client.lock(
-        f"{TECHNICAL_APPENDIX_SYNC_LOCK_PREFIX}{project_id}",
-        timeout=30,
-        blocking_timeout=5,
-    )
-    try:
-        acquired = bool(lock.acquire())
-    except RedisError:
-        # Redis 不可用时仍保存选择，调用方会走本地后台任务兜底。
-        yield
-        return
-    if not acquired:
-        raise TechnicalParseAssetError("附表选择正在保存，请稍后重试。", 409)
-    try:
-        yield
-    finally:
-        try:
-            lock.release()
-        except RedisError:
-            pass
-
-
-def _sync_state(structured: dict[str, Any]) -> dict[str, Any]:
-    state = structured.get("technicalAppendixMaterialSync")
-    return copy.deepcopy(state) if isinstance(state, dict) else {}
-
-
-def _mark_selection_pending(structured: dict[str, Any], *, participating: bool) -> dict[str, Any]:
-    state = _sync_state(structured)
-    revision = max(0, int(state.get("selectionRevision") or 0)) + 1
-    state.update(
-        {
-            "schemaVersion": TECHNICAL_APPENDIX_SYNC_SCHEMA_VERSION,
-            "status": "pending" if participating else "not_required",
-            "selectionRevision": revision,
-            "message": "",
-        }
-    )
-    structured["technicalAppendixMaterialSync"] = state
-    return state
 
 
 def persist_technical_parse_result(project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
@@ -129,67 +74,34 @@ def set_technical_appendix_asset_selected(
     *,
     selected: bool,
 ) -> dict[str, Any]:
-    with _selection_state_lock(project_id):
-        project, parse_result, appendices = _technical_parse_selection_payload(project_id)
-        target = next((item for item in appendices if str(item.get("id") or "") == appendix_id), None)
-        if target is None:
-            raise TechnicalParseAssetError("未找到对应的技术标附表。", 404)
-        target["selectedForMaterial"] = bool(selected)
-        parse_result["structured"]["appendices"] = appendices
-        sync_state = _mark_selection_pending(
-            parse_result["structured"],
-            participating=str(project.get("reviewDecision") or "") == "participate",
-        )
-        persisted = _persist_selection(project, parse_result)
-        selected_count = sum(item.get("selectedForMaterial") is True for item in appendices)
+    project, parse_result, appendices = _technical_parse_selection_payload(project_id)
+    target = next((item for item in appendices if str(item.get("id") or "") == appendix_id), None)
+    if target is None:
+        raise TechnicalParseAssetError("未找到对应的技术标附表。", 404)
+    target["selectedForMaterial"] = bool(selected)
+    parse_result["structured"]["appendices"] = appendices
+    persisted = _persist_selection(project, parse_result)
+    selected_count = sum(item.get("selectedForMaterial") is True for item in appendices)
     return {
         "message": "已更新附表素材选择。",
         "selectedCount": selected_count,
         "appendixCount": len(appendices),
-        "materialSync": material_sync_status_payload(sync_state),
-        "_participating": str(project.get("reviewDecision") or "") == "participate",
         "parseResult": persisted,
     }
 
 
 def set_all_technical_appendix_assets_selected(project_id: str, *, selected: bool) -> dict[str, Any]:
-    with _selection_state_lock(project_id):
-        project, parse_result, appendices = _technical_parse_selection_payload(project_id)
-        for appendix in appendices:
-            appendix["selectedForMaterial"] = bool(selected)
-        parse_result["structured"]["appendices"] = appendices
-        sync_state = _mark_selection_pending(
-            parse_result["structured"],
-            participating=str(project.get("reviewDecision") or "") == "participate",
-        )
-        persisted = _persist_selection(project, parse_result)
+    project, parse_result, appendices = _technical_parse_selection_payload(project_id)
+    for appendix in appendices:
+        appendix["selectedForMaterial"] = bool(selected)
+    parse_result["structured"]["appendices"] = appendices
+    persisted = _persist_selection(project, parse_result)
     return {
         "message": "已全选附表。" if selected else "已清空附表选择。",
         "selectedCount": len(appendices) if selected else 0,
         "appendixCount": len(appendices),
-        "materialSync": material_sync_status_payload(sync_state),
-        "_participating": str(project.get("reviewDecision") or "") == "participate",
         "parseResult": persisted,
     }
-
-
-def material_sync_status_payload(state: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "status": str(state.get("status") or "idle"),
-        "selectionRevision": int(state.get("selectionRevision") or 0),
-        "syncedRevision": int(state.get("syncedRevision") or 0),
-        "message": str(state.get("message") or ""),
-    }
-
-
-def technical_appendix_material_sync_status(project_id: str) -> dict[str, Any]:
-    project, parse_result, appendices = _technical_parse_selection_payload(project_id)
-    _ = project
-    structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
-    payload = material_sync_status_payload(_sync_state(structured))
-    payload["selectedCount"] = sum(item.get("selectedForMaterial") is True for item in appendices)
-    payload["appendixCount"] = len(appendices)
-    return payload
 
 
 def _appendix_material_name(title: str) -> str:
@@ -394,99 +306,3 @@ async def sync_technical_parse_appendices(
         "items": current_items,
         "targetPath": target_path,
     }
-
-
-def _merge_sync_outcome(
-    project_id: str,
-    *,
-    synced_parse_result: dict[str, Any],
-    target_revision: int,
-    result: dict[str, Any] | None = None,
-    error: str = "",
-) -> bool:
-    """Persist only sync metadata onto the latest selection and report whether it is current."""
-
-    with _selection_state_lock(project_id):
-        project, latest_parse_result, latest_appendices = _technical_parse_selection_payload(project_id)
-        latest_structured = (
-            latest_parse_result.get("structured")
-            if isinstance(latest_parse_result.get("structured"), dict)
-            else {}
-        )
-        latest_state = _sync_state(latest_structured)
-        latest_revision = int(latest_state.get("selectionRevision") or 0)
-        synced_structured = (
-            synced_parse_result.get("structured")
-            if isinstance(synced_parse_result.get("structured"), dict)
-            else {}
-        )
-        synced_state = _sync_state(synced_structured)
-        latest_state.update(
-            {
-                "schemaVersion": TECHNICAL_APPENDIX_SYNC_SCHEMA_VERSION,
-                "items": copy.deepcopy(synced_state.get("items") or []),
-                "pendingDeleteIds": copy.deepcopy(synced_state.get("pendingDeleteIds") or []),
-                "syncedRevision": target_revision,
-            }
-        )
-        is_current = latest_revision == target_revision
-        if error and is_current:
-            latest_state.update({"status": "failed", "message": error})
-        elif is_current:
-            partial = str((result or {}).get("status") or "") == "partial"
-            latest_state.update(
-                {
-                    "status": "failed" if partial else "synced",
-                    "message": "部分旧素材删除失败，请重试。" if partial else "",
-                }
-            )
-        else:
-            latest_state.update({"status": "pending", "message": ""})
-
-        synced_items = {
-            str(item.get("appendixId") or ""): item
-            for item in latest_state.get("items") or []
-            if isinstance(item, dict) and str(item.get("appendixId") or "")
-        }
-        for appendix in latest_appendices:
-            appendix.pop("assetMaterialId", None)
-            appendix.pop("assetSyncStatus", None)
-            appendix_id = str(appendix.get("id") or "")
-            item = synced_items.get(appendix_id)
-            if appendix.get("selectedForMaterial") is True and isinstance(item, dict):
-                appendix["assetMaterialId"] = str(item.get("materialId") or "")
-                appendix["assetSyncStatus"] = "synced"
-        latest_structured["appendices"] = latest_appendices
-        latest_structured["technicalAppendixMaterialSync"] = latest_state
-        latest_parse_result["structured"] = latest_structured
-        _persist_selection(project, latest_parse_result)
-        return is_current
-
-
-async def _run_technical_appendix_asset_sync_job(project_id: str) -> dict[str, Any]:
-    while True:
-        project, parse_result, _appendices = _technical_parse_selection_payload(project_id)
-        structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
-        target_revision = int(_sync_state(structured).get("selectionRevision") or 0)
-        try:
-            result = await sync_technical_parse_appendices(project, parse_result)
-        except Exception as exc:
-            if not _merge_sync_outcome(
-                project_id,
-                synced_parse_result=parse_result,
-                target_revision=target_revision,
-                error=str(exc),
-            ):
-                continue
-            raise
-        if _merge_sync_outcome(
-            project_id,
-            synced_parse_result=parse_result,
-            target_revision=target_revision,
-            result=result,
-        ):
-            return result
-
-
-def run_technical_appendix_asset_sync_job(project_id: str) -> dict[str, Any]:
-    return asyncio.run(_run_technical_appendix_asset_sync_job(project_id))

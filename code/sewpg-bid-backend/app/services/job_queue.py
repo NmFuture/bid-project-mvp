@@ -21,7 +21,6 @@ KNOWN_JOB_TYPES = {
     "fill_generation",
     "material_cleaning",
     "s1_parse",
-    "technical_appendix_asset_sync",
 }
 
 # 锁的续期/释放必须校验 owner 且原子执行：GET 之后再 EXPIRE/DEL 存在竞态，

@@ -305,7 +305,7 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
     persist_state.assert_called_once_with(project)
 
 
-def test_technical_appendix_selection_queues_sync_and_returns_compact_payload() -> None:
+def test_technical_appendix_selection_only_saves_choice_and_returns_compact_payload() -> None:
     from app.services.bid_parse_service import TechnicalParseService
 
     parse_result = {
@@ -337,6 +337,7 @@ def test_technical_appendix_selection_queues_sync_and_returns_compact_payload() 
         "message": "已更新附表素材选择。",
         "selectedCount": 1,
         "appendixCount": 1,
+        "_participating": True,
         "parseResult": parse_result,
     }
 
@@ -349,35 +350,13 @@ def test_technical_appendix_selection_queues_sync_and_returns_compact_payload() 
     ) as enqueue_job:
         result = asyncio.run(service.approve_appendix_asset("PRJ-TECH-001", "APPX-A", {"approved": True}))
 
-    enqueue_job.assert_called_once_with("technical_appendix_asset_sync", "PRJ-TECH-001", {})
+    enqueue_job.assert_not_called()
     assert "parseResult" not in result
     assert result == {
         "message": "已更新附表素材选择。",
         "selectedCount": 1,
         "appendixCount": 1,
-        "materialSync": {"status": "pending", "jobId": "JOB-1"},
     }
-
-
-def test_worker_dispatches_technical_appendix_asset_sync_job() -> None:
-    from app.workers import redis_worker
-
-    with patch(
-        "app.services.technical_parse_assets.run_technical_appendix_asset_sync_job"
-    ) as sync_job, patch(
-        "app.services.technical_parse_assets.technical_appendix_material_sync_status",
-        return_value={"status": "synced"},
-    ):
-        redis_worker._run_job(
-            {
-                "id": "JOB-1",
-                "type": "technical_appendix_asset_sync",
-                "projectId": "PRJ-TECH-001",
-                "data": {},
-            }
-        )
-
-    sync_job.assert_called_once_with("PRJ-TECH-001")
 
 
 def test_technical_parse_job_does_not_archive_appendices_before_participation() -> None:
