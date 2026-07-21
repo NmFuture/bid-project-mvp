@@ -197,7 +197,7 @@ async def bootstrap_project_material_folder(
         )
         parent = await ensure_folder_path(
             session,
-            material_tier_folder_name("project"),
+            material_tier_folder_name_for_bid_type(normalized_bid_type, "project"),
             root_folder.id,
             "project",
             normalized_bid_type,

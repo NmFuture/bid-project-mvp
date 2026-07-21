@@ -10,6 +10,7 @@ import unittest
 from app.services import technical_material_index as tmi
 from app.services.technical_material_paths import (
     TECHNICAL_ALLOWED_WRITE_ROOTS,
+    ensure_technical_material_new_child_path,
     ensure_technical_material_write_path,
 )
 from app.services.peripheral import PeripheralError
@@ -75,6 +76,14 @@ class WritePathWhitelistTests(unittest.TestCase):
         # 旧名"项目素材"应被重写为"项目定制"
         result = ensure_technical_material_write_path("技术标/项目素材/某项目", "切分目标目录")
         self.assertTrue(result.startswith("技术标/项目定制"))
+
+    def test_new_child_parent_alias_is_rewritten_to_canonical_root(self) -> None:
+        result = ensure_technical_material_new_child_path(
+            "技术标/项目素材/PRJ-0001",
+            "补充资料",
+        )
+
+        self.assertEqual(result, "技术标/项目定制/PRJ-0001")
 
     def test_out_of_whitelist_path_raises(self) -> None:
         # 白名单外目录必须抛错（splitter 捕获后回落）

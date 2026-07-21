@@ -4160,17 +4160,17 @@ class ParsePipelineTests(unittest.TestCase):
 
     def test_delete_business_project_cleans_project_material_folder(self) -> None:
         project_id = self.create_business_project()
-        deleted_paths: list[str] = []
+        deleted_calls: list[tuple[str, str]] = []
 
-        def fake_delete_folder(path: str) -> dict[str, object]:
-            deleted_paths.append(path)
+        def fake_delete_folder(path: str, *, expected_project_id: str = "") -> dict[str, object]:
+            deleted_calls.append((path, expected_project_id))
             return {"message": "deleted", "folderPath": path, "deletedFileCount": 2}
 
         with patch("app.services.bid_project_state.run_workspace_material_folder_delete", side_effect=fake_delete_folder):
             deleted = self.client.delete(self.project_url(project_id))
 
         self.assertEqual(deleted.status_code, 200)
-        self.assertEqual(deleted_paths, [f"商务标/项目素材/{project_id}"])
+        self.assertEqual(deleted_calls, [(f"商务标/项目素材/{project_id}", project_id)])
 
     def test_parse_results_materializes_legacy_required_appendix_preview_docx(self) -> None:
         project_id = self.create_project()
