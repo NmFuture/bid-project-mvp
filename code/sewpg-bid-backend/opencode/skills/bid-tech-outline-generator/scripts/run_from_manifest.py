@@ -47,6 +47,12 @@ NAVIGATION_COMMANDS = frozenset(
     {"headings", "decision-next", "decision-context", "appendix-next"}
 )
 NAVIGATION_OUTPUT_HARD_LIMIT_BYTES = 24000
+NAVIGATION_RETRY_HINTS = {
+    "headings": "请减小 --page-size，并使用同一 --cursor 重试",
+    "decision-next": "请减小 --max-items 或 --max-chars 后重试",
+    "decision-context": "请减小 --max-chars，并使用同一 batch-token 和 --cursor 重试",
+    "appendix-next": "请减小 --max-items 后重试",
+}
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 NODE_KEYS = {
     "number",
@@ -77,6 +83,51 @@ APPENDIX_HEADING_PATTERN = re.compile(
 )
 
 
+class NavigationOutputBudgetError(SystemExit):
+    pass
+
+
+def _navigation_state_paths(command: str, work_dir: Path) -> tuple[Path, ...]:
+    if command == "headings":
+        return (work_dir / "tender_headings_state.json",)
+    if command in {"decision-next", "decision-context", "appendix-next"}:
+        return (work_dir / decision_workflow.STATE_FILE_NAME,)
+    return ()
+
+
+def _snapshot_navigation_state(command: str, work_dir: Path) -> dict[Path, bytes | None]:
+    return {
+        path: path.read_bytes() if path.is_file() else None
+        for path in _navigation_state_paths(command, work_dir)
+    }
+
+
+def _restore_navigation_state(snapshot: dict[Path, bytes | None]) -> None:
+    for path, original_bytes in snapshot.items():
+        if original_bytes is None:
+            path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rollback_path = path.with_suffix(path.suffix + ".rollback")
+        rollback_path.write_bytes(original_bytes)
+        rollback_path.replace(path)
+
+
+def _serialize_command_output(command: str, result: dict[str, Any]) -> str:
+    if command not in NAVIGATION_COMMANDS:
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    output = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    output_bytes = len(f"{output}\n".encode("utf-8"))
+    if output_bytes >= NAVIGATION_OUTPUT_HARD_LIMIT_BYTES:
+        raise NavigationOutputBudgetError(
+            "导航输出内部协议错误: "
+            f"command={command}, actual_bytes={output_bytes}, "
+            f"required_bytes<{NAVIGATION_OUTPUT_HARD_LIMIT_BYTES}; "
+            f"retry_hint={NAVIGATION_RETRY_HINTS[command]}"
+        )
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect and validate S2 technical outline artifacts.")
     parser.add_argument("args", nargs="*")
@@ -96,18 +147,14 @@ def main() -> int:
     if parsed_args.require_compose:
         manifest["_runtimeRequireComposedOutline"] = True
 
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    state_snapshot = _snapshot_navigation_state(command, work_dir)
     result = dispatch_command(command, manifest, manifest_path, command_args)
-    if command in NAVIGATION_COMMANDS:
-        output = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        output_bytes = len(f"{output}\n".encode("utf-8"))
-        if output_bytes >= NAVIGATION_OUTPUT_HARD_LIMIT_BYTES:
-            raise SystemExit(
-                "导航输出内部协议错误: "
-                f"command={command}, actual_bytes={output_bytes}, "
-                f"required_bytes<{NAVIGATION_OUTPUT_HARD_LIMIT_BYTES}"
-            )
-    else:
-        output = json.dumps(result, ensure_ascii=False, indent=2)
+    try:
+        output = _serialize_command_output(command, result)
+    except NavigationOutputBudgetError:
+        _restore_navigation_state(state_snapshot)
+        raise
     print(output)
     return 0
 

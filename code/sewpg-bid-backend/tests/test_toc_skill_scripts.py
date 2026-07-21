@@ -1223,6 +1223,222 @@ class TocSkillScriptTests(unittest.TestCase):
             {"headings", "decision-next", "decision-context", "appendix-next"},
         )
 
+    def test_bid_outline_headings_output_limit_rolls_back_state_and_can_retry(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=2,
+                heading_text="超长目录标题" * 800,
+            )
+            chunks = json_load(root / "tender_review_chunks.json")
+            chunks["input_fingerprint"] = "headings-rollback-input"
+            (root / "tender_review_chunks.json").write_text(
+                json.dumps(chunks, ensure_ascii=False), encoding="utf-8"
+            )
+            files_by_id, _ = outline_runner.review_workflow._collect_heading_files(chunks)
+            state_path = root / "tender_headings_state.json"
+            headings_state = json_load(state_path)
+            headings_state["input_fingerprint"] = "headings-rollback-input"
+            headings_state["headings_catalog_digest"] = (
+                outline_runner.review_workflow._heading_catalog_digest(files_by_id, [])
+            )
+            state_path.write_text(
+                json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
+            )
+            state_before = state_path.read_bytes()
+
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "headings",
+                    str(manifest_path),
+                    "--page-size",
+                    "2",
+                ],
+            ), redirect_stdout(stdout), self.assertRaisesRegex(
+                SystemExit, r"command=headings, actual_bytes=\d+"
+            ) as raised:
+                outline_runner.main()
+
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertRegex(str(raised.exception), r"--page-size.*--cursor")
+
+            retry_stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "headings",
+                    str(manifest_path),
+                    "--cursor",
+                    "0",
+                    "--page-size",
+                    "1",
+                ],
+            ), redirect_stdout(retry_stdout):
+                outline_runner.main()
+            retry = json.loads(retry_stdout.getvalue())
+
+        self.assertEqual(retry["cursor"], "0")
+        self.assertEqual(retry["next_cursor"], "1")
+        self.assertEqual(retry["returned_heading_count"], 1)
+
+    def test_bid_outline_appendix_output_limit_rolls_back_state_and_can_retry(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path = write_decision_context_fixture(root, heading_count=0)
+
+            decision_stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "decision-next",
+                    str(manifest_path),
+                    "--max-items",
+                    "1",
+                ],
+            ), redirect_stdout(decision_stdout):
+                outline_runner.main()
+            decision_batch = json.loads(decision_stdout.getvalue())
+
+            decision_payload = json.dumps(
+                {
+                    "batch_token": decision_batch["batch_token"],
+                    "items": [
+                        {
+                            "target_id": decision_batch["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                }
+            )
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "decision-batch",
+                    str(manifest_path),
+                    decision_payload,
+                ],
+            ), redirect_stdout(io.StringIO()):
+                outline_runner.main()
+
+            long_title = "超长技术响应附表" * 500
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "number": f"附表A.{index}",
+                                "title": long_title,
+                                "following_table_count": 1,
+                            }
+                            for index in range(1, 3)
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            state_path = root / outline_runner.decision_workflow.STATE_FILE_NAME
+            state_before = state_path.read_bytes()
+
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "appendix-next",
+                    str(manifest_path),
+                    "--max-items",
+                    "2",
+                ],
+            ), redirect_stdout(stdout), self.assertRaisesRegex(
+                SystemExit, r"command=appendix-next, actual_bytes=\d+"
+            ) as raised:
+                outline_runner.main()
+
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertIn("--max-items", str(raised.exception))
+
+            retry_stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "appendix-next",
+                    str(manifest_path),
+                    "--max-items",
+                    "1",
+                ],
+            ), redirect_stdout(retry_stdout):
+                outline_runner.main()
+            retry = json.loads(retry_stdout.getvalue())
+
+        self.assertEqual(len(retry["items"]), 1)
+        self.assertEqual(retry["remaining_count"], 2)
+
+    def test_bid_outline_navigation_output_limit_counts_linux_lf_boundary(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "s2_input.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+
+            below_limit = {"payload": "x" * 23984}
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                ["run_from_manifest.py", "headings", str(manifest_path)],
+            ), patch.object(
+                outline_runner, "dispatch_command", return_value=below_limit
+            ), redirect_stdout(stdout):
+                outline_runner.main()
+            self.assertEqual(len(stdout.getvalue().encode("utf-8")), 23999)
+            self.assertTrue(stdout.getvalue().endswith("\n"))
+            self.assertFalse(stdout.getvalue().endswith("\r\n"))
+
+            at_limit = {"payload": "x" * 23985}
+            decision_state_path = (
+                manifest_path.parent / outline_runner.decision_workflow.STATE_FILE_NAME
+            )
+
+            def write_new_state(*_args, **_kwargs):
+                decision_state_path.write_bytes(b"new navigation state")
+                return at_limit
+
+            for command in ("decision-next", "decision-context"):
+                with self.subTest(command=command), patch.object(
+                    sys,
+                    "argv",
+                    ["run_from_manifest.py", command, str(manifest_path)],
+                ), patch.object(
+                    outline_runner, "dispatch_command", side_effect=write_new_state
+                ), redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                    SystemExit, rf"command={command}, actual_bytes=24000"
+                ):
+                    outline_runner.main()
+                self.assertFalse(decision_state_path.exists())
+
     def test_bid_outline_cli_runtime_compose_gate_cannot_be_disabled_by_manifest(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
