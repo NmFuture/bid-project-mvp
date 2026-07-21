@@ -891,6 +891,20 @@ def submit_appendix_batch(
             }
         )
 
+    template_decisions = state.get("template_decisions") or {}
+    candidate_decisions = {
+        "schema_version": outline_composer.DECISIONS_SCHEMA,
+        "input_fingerprint": fingerprint,
+        "template_decisions": deepcopy(
+            [template_decisions[str(item["template_id"])] for item in template_items]
+        ),
+        "changes": deepcopy(additions) + deepcopy(new_changes),
+    }
+    try:
+        outline_composer.build_composition(structure, candidate_decisions)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     decisions = state.setdefault("appendix_decisions", {})
     for item in normalized_decisions:
         decisions[item["appendix_id"]] = item

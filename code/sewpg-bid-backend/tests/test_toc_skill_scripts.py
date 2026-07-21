@@ -2704,6 +2704,116 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIn("APP-0020", message)
         self.assertNotIn("APP-0021", message)
 
+    def test_bid_outline_appendix_submit_validates_complete_composition_atomically(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix E.1",
+                "title": "Validated form",
+                "following_table_count": 1,
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure, comparison_context={"files": []}
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "TPL-0001",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "技术附表",
+                            "reason": "Conflicts with the template node ID.",
+                        },
+                        {
+                            "node_id": "ADD-INVALID-EXISTING",
+                            "parent_id": None,
+                            "number": "",
+                            "title": "Invalid existing change",
+                            "reason": "Empty number must be rejected by the builder.",
+                        },
+                    ],
+                },
+                comparison_context={"files": []},
+            )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+
+            def include_payload(parent_id: str) -> dict:
+                return {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "node_id": "ADD-APPENDIX-E1",
+                            "parent_id": parent_id,
+                            "reason": "Required controlled form.",
+                        }
+                    ],
+                }
+
+            conflicting_state = json_load(root / "outline_decision_state.json")
+            with self.assertRaisesRegex(SystemExit, "duplicate decision node_id: TPL-0001"):
+                decision_workflow.submit_appendix_batch(
+                    root, structure, include_payload("TPL-0001"), inventory
+                )
+            self.assertEqual(
+                json_load(root / "outline_decision_state.json"), conflicting_state
+            )
+
+            corrected_parent_state = json.loads(json.dumps(conflicting_state))
+            corrected_parent_state["additions"][0]["node_id"] = "ADD-TECH-APPENDIX"
+            (root / "outline_decision_state.json").write_text(
+                json.dumps(corrected_parent_state, ensure_ascii=False), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(SystemExit, "changes\\[1\\]\\.number"):
+                decision_workflow.submit_appendix_batch(
+                    root,
+                    structure,
+                    include_payload("ADD-TECH-APPENDIX"),
+                    inventory,
+                )
+            self.assertEqual(
+                json_load(root / "outline_decision_state.json"), corrected_parent_state
+            )
+
+            corrected_parent_state["additions"][1]["number"] = "3"
+            (root / "outline_decision_state.json").write_text(
+                json.dumps(corrected_parent_state, ensure_ascii=False), encoding="utf-8"
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                include_payload("ADD-TECH-APPENDIX"),
+                inventory,
+            )
+            decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            final_state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
+        self.assertEqual(final_state["appendix_decisions"]["APP-0001"]["decision"], "include")
+
     def test_bid_outline_decisions_reject_add_or_move_under_collapsed_parent(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
