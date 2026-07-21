@@ -1906,7 +1906,7 @@ class GapReviewFlowTests(unittest.TestCase):
                     {
                         "id": "RAW-0473",
                         "name": "定制-风资源评估与机位排布方案.docx",
-                        "folderPath": "技术标/项目定制/S4-S6联调项目/技术标-风资源评估与机位排布方案",
+                        "folderPath": "技术标/项目定制/MAT-HN-CHIFENG-001/技术标-风资源评估与机位排布方案",
                         "materialTier": "project",
                         "hasCleanedWord": True,
                         "cleanedFileName": "定制-风资源评估与机位排布方案.docx",
@@ -1934,7 +1934,7 @@ class GapReviewFlowTests(unittest.TestCase):
             [
                 "技术标/标准文件",
                 "技术标/客户定制/华能集团",
-                "技术标/项目定制/S4-S6联调项目",
+                "技术标/项目定制/MAT-HN-CHIFENG-001",
             ],
         )
         self.assertEqual(manifest["materialIndex"][0]["id"], "RAW-0473")

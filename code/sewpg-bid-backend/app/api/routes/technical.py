@@ -626,10 +626,7 @@ async def technical_raw_files(
 
 @router.post("/api/technical/materials/raw/folders/bootstrap")
 async def technical_raw_bootstrap_folders(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.raw_bootstrap_folders(
-        project_id=str(data.get("projectId") or ""),
-        project_name=str(data.get("projectName") or ""),
-    )
+    return await technical_material_store.raw_bootstrap_folders(project_id=str(data.get("projectId") or ""))
 
 
 @router.post("/api/technical/materials/raw/folders")

@@ -56,7 +56,7 @@ def ensure_technical_material_new_child_path(parent_path: str, folder_name: str,
             "TECHNICAL_MATERIAL_ROOT_CHILD_REQUIRED",
         )
     if normalized_parent != TECHNICAL_BID_TYPE:
-        ensure_technical_material_write_path(normalized_parent, label)
+        normalized_parent = ensure_technical_material_write_path(normalized_parent, label)
     return normalized_parent
 
 

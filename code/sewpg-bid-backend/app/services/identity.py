@@ -5,7 +5,6 @@ import re
 from typing import Any
 
 from app.services.bid_type import BID_TYPES, BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
-from app.services.file_utils import safe_segment
 
 
 CUSTOMER_REGISTRY = [
@@ -269,11 +268,6 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
     )
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
     project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
-    project_folder_name = (
-        safe_segment(identity.get("bidProjectName") or project.get("name"), project_id)
-        if bid_type == TECHNICAL_BID_TYPE
-        else project_id
-    )
     standard_root = material_scope_root_name(bid_type, "standard")
     customer_root = material_scope_root_name(bid_type, "customer")
     project_root = material_scope_root_name(bid_type, "project")
@@ -304,9 +298,8 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
                 "key": "project",
                 "label": project_root,
                 "materialTier": "project",
-                "path": f"{bid_type}/{project_root}/{project_folder_name}",
+                "path": f"{bid_type}/{project_root}/{project_id}",
                 "projectId": project_id,
-                "folderName": project_folder_name,
                 "projectCode": str(identity.get("projectCode") or ""),
                 "projectName": str(identity.get("projectName") or ""),
                 "identityMatchedBy": "project",

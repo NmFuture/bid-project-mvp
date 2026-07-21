@@ -255,10 +255,9 @@ class TechnicalMaterialStore:
                 options.append(tag)
         return options
 
-    async def raw_bootstrap_folders(self, project_id: str, project_name: str = "") -> dict[str, Any]:
+    async def raw_bootstrap_folders(self, project_id: str) -> dict[str, Any]:
         return await self._refresh_index(self._with_urls(await material_store.raw_bootstrap_folders(
             project_id=project_id,
-            project_name=project_name,
             bid_type=TECHNICAL_BID_TYPE,
         )))
 

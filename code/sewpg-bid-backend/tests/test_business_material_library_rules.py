@@ -126,10 +126,10 @@ class _FakePerformanceSession:
 
 
 class BusinessMaterialLibraryRulesTests(unittest.TestCase):
-    def test_project_upload_prefers_folder_project_id_over_display_path(self) -> None:
+    def test_project_upload_prefers_folder_project_id_over_requested_project_id(self) -> None:
         ext, _ = build_raw_upload_ext_fields(
             file_name="项目素材.docx",
-            folder_path="技术标/项目定制/华能100MW风电项目",
+            folder_path="技术标/项目定制/PRJ-TECH-001",
             folder_tier="project",
             folder_project_id="PRJ-TECH-001",
             requested_bid_type="技术标",

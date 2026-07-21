@@ -40,7 +40,7 @@ class BidProjectService:
         clear_turbine_model: bool = False,
         sync_business_parse_assets: bool = False,
         sync_technical_parse_assets: bool = False,
-        bootstrap_material_folder: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        bootstrap_material_folder: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.bid_type = bid_type
         self.not_found_message = not_found_message
@@ -115,7 +115,7 @@ class BidProjectService:
                 str(current_project.get("reviewDecision") or "").strip().lower() == "participate"
                 and any(
                     field in (data or {})
-                    for field in ("name", "materialProjectId", "materialProjectName", "materialProjectMode")
+                    for field in ("materialProjectId", "materialProjectMode")
                 )
             )
         )
@@ -125,12 +125,11 @@ class BidProjectService:
             material_project_id = str(
                 identity.get("projectId") or project_id
             )
-            project_name = str(candidate_project.get("name") or identity.get("bidProjectName") or "").strip()
             project_scope = next(
                 (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
                 {},
             )
-            bootstrap_result = await self.bootstrap_material_folder(material_project_id, project_name)
+            bootstrap_result = await self.bootstrap_material_folder(material_project_id)
             bootstrap_payload = (
                 bootstrap_result.get("payload")
                 if isinstance(bootstrap_result, dict) and isinstance(bootstrap_result.get("payload"), dict)
@@ -270,14 +269,11 @@ class BidProjectService:
         }
 
 
-async def _bootstrap_technical_material_folder(
-    material_project_id: str,
-    project_name: str,
-) -> dict[str, Any]:
+async def _bootstrap_technical_material_folder(material_project_id: str) -> dict[str, Any]:
     # 延迟导入：technical_material_store 依赖链较重，避免模块加载期循环引用。
     from app.services.technical_material_store import technical_material_store
 
-    return await technical_material_store.raw_bootstrap_folders(material_project_id, project_name)
+    return await technical_material_store.raw_bootstrap_folders(material_project_id)
 
 
 business_project_service = BidProjectService(

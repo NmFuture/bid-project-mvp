@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 
 from app.services.material_raw_folder_operations import RawFolderOperations
 from app.services.material_raw_lifecycle_operations import create_raw_folder, delete_raw_folder
-from app.services.material_project_folder_migration import rename_project_folder_tree
 from app.services.material_folder_maintenance import bootstrap_project_material_folder
 from app.services.peripheral import PeripheralError
 
@@ -50,24 +49,12 @@ class _CreateFolderSession:
         return None
 
 
-class _MigrationSession:
-    def __init__(self, *results):
-        self._results = iter(_ScalarResult(result) for result in results)
-        self.commit_count = 0
-
-    async def execute(self, _statement):
-        return next(self._results)
-
-    async def commit(self):
-        self.commit_count += 1
-
-
 class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
-    async def test_technical_project_folder_uses_project_name_and_keeps_internal_id(self) -> None:
+    async def test_technical_project_folder_uses_stable_project_id(self) -> None:
         parent = SimpleNamespace(id=20, path="技术标/项目定制")
         project_folder = SimpleNamespace(
             id=21,
-            path="技术标/项目定制/华能-100MW 风电项目",
+            path="技术标/项目定制/PRJ-TECH-001",
             project_id="PRJ-TECH-001",
         )
         find_folder = AsyncMock(side_effect=(None, parent))
@@ -77,17 +64,16 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         result = await bootstrap_project_material_folder(
             session,
             project_id="PRJ-TECH-001",
-            project_name="华能/100MW 风电项目",
             bid_type="技术标",
             find_folder=find_folder,
             ensure_folder_path=ensure_folder_path,
         )
 
         self.assertEqual(result["payload"]["projectId"], "PRJ-TECH-001")
-        self.assertEqual(result["payload"]["path"], "技术标/项目定制/华能-100MW 风电项目")
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/PRJ-TECH-001")
         ensure_folder_path.assert_awaited_once_with(
             session,
-            "华能-100MW 风电项目",
+            "PRJ-TECH-001",
             parent.id,
             "project",
             "技术标",
@@ -98,14 +84,13 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
     async def test_project_folder_bootstrap_is_idempotent_for_same_project(self) -> None:
         existing = SimpleNamespace(
             id=21,
-            path="技术标/项目定制/华能风电项目",
+            path="技术标/项目定制/PRJ-TECH-001",
             project_id="PRJ-TECH-001",
         )
 
         result = await bootstrap_project_material_folder(
             object(),
             project_id="PRJ-TECH-001",
-            project_name="华能风电项目",
             bid_type="技术标",
             find_folder=AsyncMock(return_value=existing),
             ensure_folder_path=AsyncMock(),
@@ -113,40 +98,10 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(result["payload"]["path"], existing.path)
 
-    async def test_project_folder_bootstrap_renames_existing_folder_found_by_project_id(self) -> None:
-        session = object()
-        existing = SimpleNamespace(
-            id=21,
-            name="旧项目名称",
-            path="技术标/项目定制/旧项目名称",
-            project_id="PRJ-TECH-001",
-        )
-        rename_project_folder = AsyncMock(
-            return_value="技术标/项目定制/新项目名称",
-        )
-
-        result = await bootstrap_project_material_folder(
-            session,
-            project_id="PRJ-TECH-001",
-            project_name="新项目名称",
-            bid_type="技术标",
-            find_folder=AsyncMock(return_value=None),
-            find_project_folder=AsyncMock(return_value=existing),
-            rename_project_folder=rename_project_folder,
-            ensure_folder_path=AsyncMock(),
-        )
-
-        self.assertEqual(result["payload"]["path"], "技术标/项目定制/新项目名称")
-        rename_project_folder.assert_awaited_once_with(
-            session,
-            existing,
-            "技术标/项目定制/新项目名称",
-        )
-
     async def test_project_folder_cleanup_rejects_folder_owned_by_another_project(self) -> None:
         folder = SimpleNamespace(
             id=21,
-            path="技术标/项目定制/同名项目",
+            path="技术标/项目定制/PRJ-OTHER-001",
             bid_type="技术标",
             project_id="PRJ-OTHER-001",
         )
@@ -171,10 +126,10 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 409)
         self.assertEqual(context.exception.code, "PROJECT_FOLDER_OWNERSHIP_MISMATCH")
 
-    async def test_project_folder_cleanup_finds_renamed_folder_by_project_id(self) -> None:
+    async def test_project_folder_cleanup_finds_folder_by_project_id_for_legacy_path(self) -> None:
         folder = SimpleNamespace(
             id=21,
-            path="技术标/项目定制/旧项目名称",
+            path="技术标/项目定制/PRJ-TECH-001",
             bid_type="技术标",
             tier="project",
             project_id="PRJ-TECH-001",
@@ -193,7 +148,7 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
             return_value=session,
         ):
             result = await delete_raw_folder(
-                path="技术标/项目定制/新项目名称",
+                path="技术标/项目素材/PRJ-TECH-001",
                 bid_type="技术标",
                 expected_project_id="PRJ-TECH-001",
                 ensure_runtime_tables=AsyncMock(),
@@ -203,86 +158,16 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
                 allow_protected=True,
             )
 
-        self.assertEqual(result["folderPath"], "技术标/项目定制/旧项目名称")
+        self.assertEqual(result["folderPath"], "技术标/项目定制/PRJ-TECH-001")
         session.delete.assert_awaited_once_with(folder)
         session.commit.assert_awaited_once()
-
-    async def test_project_folder_rename_migrates_files_versions_and_metadata(self) -> None:
-        root = SimpleNamespace(
-            id=21,
-            name="旧项目名称",
-            path="技术标/项目定制/旧项目名称",
-            bid_type="技术标",
-            project_id="PRJ-TECH-001",
-            customer_name="华能",
-        )
-        child = SimpleNamespace(
-            id=22,
-            name="附表",
-            path="技术标/项目定制/旧项目名称/附表",
-            bid_type="技术标",
-            project_id="PRJ-TECH-001",
-            customer_name="华能",
-        )
-        item = SimpleNamespace(
-            id=31,
-            folder_id=22,
-            name="附表A.docx",
-            minio_key="raw/技术标/项目定制/旧项目名称/附表/附表A.docx",
-            minio_bucket="bid-materials",
-            ext_fields={"projectId": "PRJ-TECH-001"},
-        )
-        version = SimpleNamespace(
-            id=41,
-            file_id=31,
-            minio_key="raw/技术标/项目定制/旧项目名称/附表/附表A_v1.docx",
-        )
-        session = _MigrationSession([root, child], [item], [version])
-
-        with patch("app.services.material_project_folder_migration.minio_client") as minio:
-            result = await rename_project_folder_tree(
-                session,
-                root,
-                "技术标/项目定制/新项目名称",
-            )
-
-        self.assertEqual(result, "技术标/项目定制/新项目名称")
-        self.assertEqual(root.name, "新项目名称")
-        self.assertEqual(child.path, "技术标/项目定制/新项目名称/附表")
-        self.assertEqual(item.minio_key, "raw/技术标/项目定制/新项目名称/附表/附表A.docx")
-        self.assertEqual(version.minio_key, "raw/技术标/项目定制/新项目名称/附表/附表A_v1.docx")
-        self.assertEqual(item.ext_fields["sourceMinioKey"], item.minio_key)
-        self.assertEqual(item.ext_fields["projectId"], "PRJ-TECH-001")
-        self.assertEqual(session.commit_count, 1)
-        self.assertEqual(minio.copy_object.call_count, 2)
-        self.assertEqual(minio.remove_object.call_count, 2)
-
-    async def test_project_folder_bootstrap_rejects_same_name_for_different_project(self) -> None:
-        existing = SimpleNamespace(
-            id=22,
-            path="技术标/项目定制/同名项目",
-            project_id="PRJ-OTHER-001",
-        )
-
-        with self.assertRaises(PeripheralError) as context:
-            await bootstrap_project_material_folder(
-                object(),
-                project_id="PRJ-TECH-001",
-                project_name="同名项目",
-                bid_type="技术标",
-                find_folder=AsyncMock(return_value=existing),
-                ensure_folder_path=AsyncMock(),
-            )
-
-        self.assertEqual(context.exception.status_code, 409)
-        self.assertEqual(context.exception.code, "PROJECT_FOLDER_NAME_CONFLICT")
 
     async def test_technical_project_bootstrap_creates_canonical_project_customization_parent(self) -> None:
         root = SimpleNamespace(id=1, path="技术标")
         parent = SimpleNamespace(id=2, path="技术标/项目定制")
         project_folder = SimpleNamespace(
             id=3,
-            path="技术标/项目定制/华能风电项目",
+            path="技术标/项目定制/PRJ-TECH-001",
             project_id="PRJ-TECH-001",
         )
         ensure_folder_path = AsyncMock(side_effect=(root, parent, project_folder))
@@ -290,13 +175,12 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         result = await bootstrap_project_material_folder(
             object(),
             project_id="PRJ-TECH-001",
-            project_name="华能风电项目",
             bid_type="技术标",
             find_folder=AsyncMock(side_effect=(None, None)),
             ensure_folder_path=ensure_folder_path,
         )
 
-        self.assertEqual(result["payload"]["path"], "技术标/项目定制/华能风电项目")
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/PRJ-TECH-001")
         self.assertEqual(ensure_folder_path.await_args_list[1].args[1], "项目定制")
 
     async def test_technical_root_does_not_precreate_tier_folders(self) -> None:

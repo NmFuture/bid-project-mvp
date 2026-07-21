@@ -7,7 +7,6 @@ from sqlalchemy import select
 
 from app.models.materials import RawFile, RawFolder
 from app.services.bid_type import BUSINESS_BID_TYPE
-from app.services.file_utils import safe_segment
 from app.services.material_folder_scope import (
     business_customized_child_tier_for_parent_folder_path,
     business_customized_subfolder_specs,
@@ -28,8 +27,6 @@ from app.services.peripheral import PeripheralError
 
 EnsureFolderPath = Callable[..., Awaitable[RawFolder]]
 FindFolder = Callable[[Any, str], Awaitable[RawFolder | None]]
-FindProjectFolder = Callable[[Any, str, str], Awaitable[RawFolder | None]]
-RenameProjectFolder = Callable[[Any, RawFolder, str], Awaitable[str]]
 EnsureCanonicalFolder = Callable[[Any, str], Awaitable[RawFolder]]
 ClearDefaultFolderDeletion = Callable[[Any, str], Awaitable[None]]
 
@@ -174,50 +171,17 @@ async def bootstrap_project_material_folder(
     session: Any,
     *,
     project_id: str,
-    project_name: str = "",
     bid_type: str,
     find_folder: FindFolder,
     ensure_folder_path: EnsureFolderPath,
-    find_project_folder: FindProjectFolder | None = None,
-    rename_project_folder: RenameProjectFolder | None = None,
 ) -> dict[str, Any]:
     clean_id = safe_folder_segment(project_id, "")
     if not clean_id:
         raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
-    folder_name = safe_segment(project_name, clean_id)
     normalized_bid_type = normalize_material_bid_type(bid_type)
-    root_path = f"{material_tier_root_path(normalized_bid_type, 'project')}/{folder_name}"
+    root_path = f"{material_tier_root_path(normalized_bid_type, 'project')}/{clean_id}"
 
-    existing = await find_folder(session, root_path)
-    owned_folder = (
-        await find_project_folder(session, clean_id, normalized_bid_type)
-        if find_project_folder is not None
-        else None
-    )
-    if owned_folder is not None:
-        owned_path = str(getattr(owned_folder, "path", "") or "").strip().strip("/")
-        if owned_path != root_path:
-            if existing is not None and getattr(existing, "id", None) != getattr(owned_folder, "id", None):
-                raise PeripheralError(
-                    409,
-                    f"项目定制目录名称已被其他项目使用：{folder_name}",
-                    "PROJECT_FOLDER_NAME_CONFLICT",
-                )
-            if rename_project_folder is None:
-                raise PeripheralError(500, "项目素材目录迁移能力未配置。", "PROJECT_FOLDER_RENAME_UNAVAILABLE")
-            root_path = await rename_project_folder(session, owned_folder, root_path)
-        return {"message": "项目目录骨架已存在。", "payload": {"projectId": clean_id, "path": root_path}}
-
-    if existing:
-        existing_project_id = str(getattr(existing, "project_id", "") or "").strip()
-        if existing_project_id and existing_project_id != clean_id:
-            raise PeripheralError(
-                409,
-                f"项目定制目录名称已被其他项目使用：{folder_name}",
-                "PROJECT_FOLDER_NAME_CONFLICT",
-            )
-        if not existing_project_id:
-            existing.project_id = clean_id
+    if await find_folder(session, root_path):
         return {"message": "项目目录骨架已存在。", "payload": {"projectId": clean_id, "path": root_path}}
 
     parent = await find_folder(session, material_tier_root_path(normalized_bid_type, "project"))
@@ -240,7 +204,7 @@ async def bootstrap_project_material_folder(
             None,
             material_tier_folder_sort_order("project"),
         )
-    project_folder = await ensure_folder_path(session, folder_name, parent.id, "project", normalized_bid_type, clean_id, 0)
+    project_folder = await ensure_folder_path(session, clean_id, parent.id, "project", normalized_bid_type, clean_id, 0)
     if normalized_bid_type == BUSINESS_BID_TYPE:
         await ensure_business_customized_subfolders(
             session,

@@ -1601,7 +1601,7 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
         store.delete_project(technical_project_id)
 
     assert business_deleted == [f"商务标/项目素材/{business_project_id}"]
-    assert technical_deleted == ["技术标/项目定制/技术标删除项目素材测试"]
+    assert technical_deleted == [f"技术标/项目定制/{technical_project_id}"]
 
 
 def test_project_material_cleanup_facades_only_accept_project_roots() -> None:
