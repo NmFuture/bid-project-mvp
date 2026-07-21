@@ -284,6 +284,22 @@ def _prepare_toc_json(
     parse_storage: dict[str, Any],
     work_dir: Path,
 ) -> Path:
+    nodes = list(outline_state.get("nodes") or [])
+    if nodes:
+        output = {
+            "schema_version": "bid-toc-json-v1",
+            "document_title": f"{project.get('name') or project_id}投标文件总目录",
+            "project": {
+                "owner": project.get("customerName") or "",
+                "name": project.get("name") or project_id,
+                "code": project.get("projectCode") or project_id,
+            },
+            "items": _outline_nodes_to_toc_items(nodes),
+        }
+        target = work_dir / settings.s2_toc_output_file_name
+        target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
     directory_state = project.get("directory_state") if isinstance(project.get("directory_state"), dict) else {}
     opencode_output = directory_state.get("opencodeOutput") or {}
     candidates = [
@@ -303,23 +319,7 @@ def _prepare_toc_json(
             shutil.copy2(path, target)
             return target
 
-    nodes = list(outline_state.get("nodes") or [])
-    if not nodes:
-        raise ValueError("S2 目录 JSON 不存在，且 S3 当前目录为空，暂时无法拼装正文。")
-
-    output = {
-        "schema_version": "bid-toc-json-v1",
-        "document_title": f"{project.get('name') or project_id}投标文件总目录",
-        "project": {
-            "owner": project.get("customerName") or "",
-            "name": project.get("name") or project_id,
-            "code": project.get("projectCode") or project_id,
-        },
-        "items": _outline_nodes_to_toc_items(nodes),
-    }
-    target = work_dir / settings.s2_toc_output_file_name
-    target.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
-    return target
+    raise ValueError("S2 目录 JSON 不存在，且 S3 当前目录为空，暂时无法拼装正文。")
 
 
 def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
@@ -461,7 +461,16 @@ def _gap_plan_has_resolved_artifacts(plan: dict[str, Any]) -> bool:
 def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", level: int = 1) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for index, node in enumerate(nodes, start=1):
-        number = f"{prefix}.{index}" if prefix else str(index)
+        decimal_number = f"{prefix}.{index}" if prefix else str(index)
+        source_number = str(
+            node.get("tocNumber") or node.get("number") or node.get("toc_number") or ""
+        ).strip()
+        if re.fullmatch(r"第\s*[^\s]+\s*章", source_number):
+            number = f"第{index}章"
+        elif re.match(r"^(?:技术)?附表|^副表|^附件", source_number, flags=re.IGNORECASE):
+            number = source_number
+        else:
+            number = decimal_number
         items.append(
             {
                 "order": len(items),
@@ -475,7 +484,7 @@ def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", l
         )
         children = node.get("children") or []
         if isinstance(children, list):
-            items.extend(_outline_nodes_to_toc_items(children, number, level + 1))
+            items.extend(_outline_nodes_to_toc_items(children, decimal_number, level + 1))
     return items
 
 

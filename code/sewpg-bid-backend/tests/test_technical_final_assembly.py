@@ -28,13 +28,197 @@ def load_assembler_script(name: str):
         if spec is None or spec.loader is None:
             raise RuntimeError(f"无法加载 assembler 脚本: {name}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        previous = sys.modules.get(spec.name)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            if previous is None:
+                sys.modules.pop(spec.name, None)
+            else:
+                sys.modules[spec.name] = previous
         return module
     finally:
         sys.path.pop(0)
 
 
 class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_prepare_toc_json_uses_confirmed_outline_tree_instead_of_opencode_numbers(self) -> None:
+        from app.services import tech_assembly
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            opencode_toc = root / "opencode-toc.json"
+            opencode_toc.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"level": 1, "number": "9", "title": "旧第一章"},
+                            {"level": 2, "number": "9.8", "title": "旧子节"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            work_dir = root / "assembly"
+            work_dir.mkdir()
+            outline_state = {
+                "nodes": [
+                    {
+                        "id": "OL-1",
+                        "title": "第一章",
+                        "tocNumber": "第9章",
+                        "children": [
+                            {"id": "OL-1-1", "title": "第一节", "tocNumber": "9.8", "children": []},
+                            {"id": "OL-1-2", "title": "第二节", "tocNumber": "2.4", "children": []},
+                        ],
+                    }
+                ]
+            }
+            project = {
+                "id": "PRJ-TEST",
+                "name": "测试项目",
+                "directory_state": {"opencodeOutput": {"tocJsonPath": str(opencode_toc)}},
+            }
+
+            output_path = tech_assembly._prepare_toc_json(
+                "PRJ-TEST",
+                project,
+                outline_state,
+                {},
+                work_dir,
+            )
+            output = json.loads(output_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                [(item["number"], item["title"]) for item in output["items"]],
+                [("第1章", "第一章"), ("1.1", "第一节"), ("1.2", "第二节")],
+            )
+
+    def test_chapter_master_replaces_descendants_and_numbers_material_headings(self) -> None:
+        merger = load_assembler_script("merger")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            library = root / "library"
+            library.mkdir()
+            source_path = library / "source-1.7.docx"
+            source = Document()
+            source.add_paragraph("投标方案优势说明", style="Heading 2")
+            source.add_paragraph("投标机组技术路线优势", style="Heading 5")
+            source.add_paragraph("正文一")
+            source.add_paragraph("低风速全碳叶片机组优势", style="Heading 5")
+            source.add_paragraph("碳纤维叶片介绍", style="Heading 5")
+            source.save(source_path)
+
+            template_path = root / "template.docx"
+            Document().save(template_path)
+            output_path = root / "assembled.docx"
+            plan = [
+                {
+                    "status": "MATCHED",
+                    "level": 2,
+                    "chapter_no": "1.7",
+                    "chapter_no_flat": "1.7",
+                    "title": "投标方案优势说明",
+                    "paths": [source_path.name],
+                    "is_preface": False,
+                    "is_appendix": False,
+                    "coverage_role": "chapter_master",
+                },
+                {
+                    "status": "NEEDS_REVIEW",
+                    "level": 3,
+                    "chapter_no": "1.7.1",
+                    "chapter_no_flat": "1.7.1",
+                    "title": "投标方案整体优势",
+                    "paths": [],
+                    "is_preface": False,
+                    "is_appendix": False,
+                },
+                {
+                    "status": "NEEDS_REVIEW",
+                    "level": 3,
+                    "chapter_no": "1.7.2",
+                    "chapter_no_flat": "1.7.2",
+                    "title": "技术路线优势",
+                    "paths": [],
+                    "is_preface": False,
+                    "is_appendix": False,
+                },
+            ]
+
+            stats = merger.merge(template_path, plan, library, {}, root / "prep", output_path)
+            assembled = Document(output_path)
+            headings = [
+                paragraph.text.strip().replace("  ", " ")
+                for paragraph in assembled.paragraphs
+                if (paragraph.style.name or "").startswith("Heading")
+            ]
+
+            self.assertEqual(
+                headings,
+                [
+                    "1.7 投标方案优势说明",
+                    "1.7.1 投标机组技术路线优势",
+                    "1.7.2 低风速全碳叶片机组优势",
+                    "1.7.3 碳纤维叶片介绍",
+                ],
+            )
+            self.assertEqual(stats["superseded"], 2)
+
+    def test_apply_gap_plan_carries_existing_chapter_coverage_into_assembly_plan(self) -> None:
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-PARENT",
+                                "number": "1.7",
+                                "title": "投标方案优势说明",
+                                "coverageRole": "chapter_master",
+                                "matchedMaterials": [{"path": "source-1.7.docx"}],
+                            },
+                            {
+                                "id": "GAP-CHILD",
+                                "number": "1.7.1",
+                                "title": "投标方案整体优势",
+                                "coverageRole": "covered_by_parent",
+                                "coveredByParent": "GAP-PARENT",
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no": "1.7",
+                    "chapter_no_flat": "1.7",
+                    "title": "投标方案优势说明",
+                    "status": "UNMATCHED",
+                },
+                {
+                    "chapter_no": "1.7.1",
+                    "chapter_no_flat": "1.7.1",
+                    "title": "投标方案整体优势",
+                    "status": "NEEDS_REVIEW",
+                },
+            ]
+
+            result = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+            self.assertEqual(result[0]["coverage_role"], "chapter_master")
+            self.assertEqual(result[1]["coverage_role"], "covered_by_parent")
+            self.assertEqual(result[1]["covered_by_parent"], "GAP-PARENT")
+
     def test_init_params_accepts_unified_turbine_fields_and_unknown_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

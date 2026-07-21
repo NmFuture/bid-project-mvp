@@ -690,6 +690,12 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         gap_item = by_number.get(number) or by_title.get(title)
         if not gap_item:
             continue
+        entry["coverage_role"] = str(
+            gap_item.get("coverageRole") or gap_item.get("coverage_role") or ""
+        ).strip()
+        entry["covered_by_parent"] = str(
+            gap_item.get("coveredByParent") or gap_item.get("covered_by_parent") or ""
+        ).strip()
         paths = _gap_plan_paths(gap_item)
         if not paths and _gap_plan_item_is_structural(gap_item):
             entry["paths"] = []

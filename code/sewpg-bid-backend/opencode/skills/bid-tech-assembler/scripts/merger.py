@@ -45,7 +45,7 @@ from copy import deepcopy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
-from numbering_fixer import remap_material_headings_to_navigation, strip_numPr_from_body, strip_numPr_from_heading_styles
+from numbering_fixer import inject_prefix_to_headings, remap_material_headings_to_navigation, strip_numPr_from_body, strip_numPr_from_heading_styles
 
 
 def _path_exists(path: Path) -> bool:
@@ -249,6 +249,15 @@ def merge(
     in_scope = [e for e in non_cover if e.get("status") != "OUT_OF_SCOPE"]
     log.info(f"in-scope entries: {len(in_scope)}/{len(non_cover)}")
 
+    chapter_master_prefixes = {
+        str(entry.get("chapter_no_flat") or "").strip()
+        for entry in non_cover
+        if str(entry.get("coverage_role") or entry.get("coverageRole") or "").strip() == "chapter_master"
+        and entry.get("status") in ("MATCHED", "ADAPTED")
+        and entry.get("paths")
+        and str(entry.get("chapter_no_flat") or "").strip()
+    }
+
     # 状态：记录"当前父章节号"。appendix (附 xxx) 素材用这个作 parent
     current_parent_chapter = ""
     # 每个父章节下已经由素材 inject 生成的子 heading pure titles（去前缀去空白）
@@ -281,6 +290,12 @@ def merge(
         level = entry["level"]
         title = entry["title"]
         chapter_no = entry.get("chapter_no") or ""
+        chapter_no_flat = str(entry.get("chapter_no_flat") or "").strip()
+
+        if any(chapter_no_flat.startswith(f"{prefix}.") for prefix in chapter_master_prefixes):
+            stats.setdefault("superseded", 0)
+            stats["superseded"] += 1
+            continue
 
         if status == "OUT_OF_SCOPE":
             stats["skipped_oos"] += 1
@@ -382,24 +397,39 @@ def merge(
                     sub_doc = Document(str(prep))
                     material_heading_titles: set[str] = set()
                     _collect_heading_titles(sub_doc, material_heading_titles)
-                    remap_stats = remap_material_headings_to_navigation(
-                        sub_doc,
-                        toc_title=title,
-                        remove_first_if_match=(merged_for_entry == 0),
-                        keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
-                        parent_level=heading_level,
-                        max_target_level=4,
-                    )
-                    if remap_stats["skipped_first"]:
-                        stats["inject_skipped_first"] += 1
-                    stats.setdefault("material_headings_remapped", 0)
-                    stats["material_headings_remapped"] += remap_stats["remapped"]
-                    stats.setdefault("material_bold_subheadings_promoted", 0)
-                    stats["material_bold_subheadings_promoted"] += remap_stats["bold_subheadings"]
-                    stats.setdefault("material_headings_kept", 0)
-                    stats["material_headings_kept"] += remap_stats.get("kept", 0)
-                    stats.setdefault("material_headings_demoted", 0)
-                    stats["material_headings_demoted"] += remap_stats.get("demoted", 0)
+                    is_chapter_master = str(
+                        entry.get("coverage_role") or entry.get("coverageRole") or ""
+                    ).strip() == "chapter_master"
+                    if is_chapter_master:
+                        inject_stats = inject_prefix_to_headings(
+                            sub_doc,
+                            parent_chapter,
+                            toc_title=title,
+                            skip_first_if_match=(merged_for_entry == 0),
+                        )
+                        if inject_stats["skipped_first"]:
+                            stats["inject_skipped_first"] += 1
+                        stats.setdefault("material_headings_injected", 0)
+                        stats["material_headings_injected"] += inject_stats["injected"]
+                    else:
+                        remap_stats = remap_material_headings_to_navigation(
+                            sub_doc,
+                            toc_title=title,
+                            remove_first_if_match=(merged_for_entry == 0),
+                            keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
+                            parent_level=heading_level,
+                            max_target_level=4,
+                        )
+                        if remap_stats["skipped_first"]:
+                            stats["inject_skipped_first"] += 1
+                        stats.setdefault("material_headings_remapped", 0)
+                        stats["material_headings_remapped"] += remap_stats["remapped"]
+                        stats.setdefault("material_bold_subheadings_promoted", 0)
+                        stats["material_bold_subheadings_promoted"] += remap_stats["bold_subheadings"]
+                        stats.setdefault("material_headings_kept", 0)
+                        stats["material_headings_kept"] += remap_stats.get("kept", 0)
+                        stats.setdefault("material_headings_demoted", 0)
+                        stats["material_headings_demoted"] += remap_stats.get("demoted", 0)
 
                     # 保存处理后的副本
                     inj_path = prep_dir / f"inj_{_hash_path(src)}_{src.name}"
