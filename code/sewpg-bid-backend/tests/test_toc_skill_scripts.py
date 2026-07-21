@@ -115,6 +115,9 @@ def write_decision_context_fixture(
     root: Path,
     *,
     heading_count: int = 80,
+    heading_text: str | None = None,
+    template_count: int = 1,
+    template_title: str = "技术方案",
 ) -> tuple[dict, Path]:
     manifest_path = root / "s2_input.json"
     manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
@@ -123,7 +126,14 @@ def write_decision_context_fixture(
         json.dumps(
             {
                 "schema_version": "template-structure.v1",
-                "items": [{"number": "第1章", "title": "技术方案", "level": 1}],
+                "items": [
+                    {
+                        "number": f"第{index}章",
+                        "title": f"{template_title}{index}",
+                        "level": 1,
+                    }
+                    for index in range(1, template_count + 1)
+                ],
             },
             ensure_ascii=False,
         ),
@@ -134,7 +144,7 @@ def write_decision_context_fixture(
             "type": "paragraph",
             "evidence_id": f"TEN-1:B{index:06d}",
             "body_index": index,
-            "text": f"{index} 招标技术要求 " + ("详细条款" * 70),
+            "text": heading_text or f"{index} 招标技术要求 " + ("详细条款" * 70),
             "toc_level": 1,
             "heading_level": 0,
             "structural_title_level": 1,
@@ -1701,15 +1711,24 @@ class TocSkillScriptTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            manifest, manifest_path = write_decision_context_fixture(root)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                template_count=50,
+                template_title="超长中文技术方案章节" * 30,
+            )
 
             batch = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
             )
 
-        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":"))
+        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
         context = batch["comparison_context"]
         self.assertLess(len(compact), 24000)
+        self.assertGreater(len(batch["items"]), 0)
+        self.assertLess(len(batch["items"]), 50)
+        self.assertEqual(batch["remaining_count"], 50)
         self.assertEqual(context["heading_count"], 80)
         self.assertEqual(context["cursor"], "0")
         self.assertTrue(context["next_cursor"])
@@ -1720,6 +1739,111 @@ class TocSkillScriptTests(unittest.TestCase):
             set(context["files"][0]["items"][0]),
             {"evidence_id", "level", "text"},
         )
+
+    def test_bid_outline_decision_next_context_budget_failure_is_atomic_and_recoverable(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=1,
+                heading_text="X" * 15000,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "between 1000 and 20000"):
+                outline_runner.dispatch_command(
+                    "decision-next",
+                    manifest,
+                    manifest_path,
+                    ["--max-chars", "20001"],
+                )
+            with self.assertRaisesRegex(SystemExit, "提高.*20000"):
+                outline_runner.dispatch_command(
+                    "decision-next", manifest, manifest_path, []
+                )
+            state = json_load(root / "outline_decision_state.json")
+            self.assertEqual(state["active_batch"]["target_ids"], [])
+
+            batch = outline_runner.dispatch_command(
+                "decision-next",
+                manifest,
+                manifest_path,
+                ["--max-chars", "20000"],
+            )
+
+        self.assertTrue(batch["comparison_context"]["complete"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=1,
+                heading_text="X" * 21000,
+            )
+            with self.assertRaisesRegex(
+                SystemExit,
+                "超过协议硬上限 20000 字节，无法分页返回",
+            ):
+                outline_runner.dispatch_command(
+                    "decision-next",
+                    manifest,
+                    manifest_path,
+                    ["--max-chars", "20000"],
+                )
+
+    def test_bid_outline_decision_context_replays_pages_and_decision_next_resumes(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(root)
+            first = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            repeated_first = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            replayed_first = outline_runner.dispatch_command(
+                "decision-context",
+                manifest,
+                manifest_path,
+                [first["batch_token"], "--cursor", "0"],
+            )
+
+            self.assertEqual(repeated_first, first)
+            self.assertEqual(replayed_first, first["comparison_context"])
+            cursor = first["comparison_context"]["next_cursor"]
+            last_page = first["comparison_context"]
+            while cursor:
+                last_page = outline_runner.dispatch_command(
+                    "decision-context",
+                    manifest,
+                    manifest_path,
+                    [first["batch_token"], "--cursor", cursor],
+                )
+                if last_page["complete"]:
+                    state = json_load(root / "outline_decision_state.json")
+                    self.assertFalse(state["active_batch"]["context_complete"])
+                replayed = outline_runner.dispatch_command(
+                    "decision-context",
+                    manifest,
+                    manifest_path,
+                    [first["batch_token"], "--cursor", cursor],
+                )
+                self.assertEqual(replayed, last_page)
+                if last_page["complete"]:
+                    state = json_load(root / "outline_decision_state.json")
+                    self.assertTrue(state["active_batch"]["context_complete"])
+                cursor = last_page["next_cursor"]
+
+            resumed = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+        self.assertTrue(last_page["complete"])
+        self.assertEqual(resumed["batch_token"], first["batch_token"])
+        self.assertEqual(resumed["comparison_context"], last_page)
 
     def test_bid_outline_decision_context_requires_current_batch_token_and_cursor(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1744,7 +1868,11 @@ class TocSkillScriptTests(unittest.TestCase):
                     "decision-context",
                     manifest,
                     manifest_path,
-                    [batch["batch_token"], "--cursor", "0"],
+                    [
+                        batch["batch_token"],
+                        "--cursor",
+                        str(int(next_cursor) + 1),
+                    ],
                 )
 
     def test_bid_outline_decision_batch_rejects_unread_context_pages(self) -> None:
@@ -2678,6 +2806,16 @@ class TocSkillScriptTests(unittest.TestCase):
 
             decision_batch = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "decision-context",
+                manifest,
+                manifest_path,
+                [
+                    decision_batch["batch_token"],
+                    "--cursor",
+                    decision_batch["comparison_context"]["cursor"],
+                ],
             )
             outline_runner.dispatch_command(
                 "decision-batch",

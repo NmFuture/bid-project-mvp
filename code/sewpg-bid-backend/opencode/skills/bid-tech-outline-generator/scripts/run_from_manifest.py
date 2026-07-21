@@ -102,7 +102,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-context|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]; decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-context|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]; decision-next <manifest> [--max-items 50] [--max-chars 12000]; decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -269,11 +269,20 @@ def dispatch_command(
             "templateStructureFile",
         )
         if command == "decision-next":
-            max_items = int(_option_value(command_args, "--max-items", "50"))
+            try:
+                max_items = int(_option_value(command_args, "--max-items", "50"))
+                max_context_chars = int(
+                    _option_value(command_args, "--max-chars", "12000")
+                )
+            except ValueError as exc:
+                raise SystemExit(
+                    "decision-next --max-items and --max-chars must be integers"
+                ) from exc
             return decision_workflow.next_decision_batch(
                 work_dir,
                 structure,
                 max_items=max_items,
+                max_context_chars=max_context_chars,
                 comparison_context=review_workflow.decision_comparison_context(work_dir),
                 workflow_binding=workflow_binding,
             )
