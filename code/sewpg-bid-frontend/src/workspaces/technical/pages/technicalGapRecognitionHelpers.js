@@ -35,12 +35,14 @@ export const isStructuralItem = (item) => (
     || asArray(item?.usages).includes('structural')
 )
 
-// —— 目录标签（v2）：标签是「候选池 × 素材形态 × 人工操作」的派生视图 ——
-// 产品裁决（2026-07-16）：
+// —— 目录标签（v3）：标签是「候选池 × 素材形态 × 人工确认」的派生视图 ——
+// 产品裁决（2026-07-16 / 2026-07-21）：
 // - AI 填写是素材的二次编辑，不是目录项的状态；目录只看匹配到的素材。
 // - 待填写素材靠命名纪律识别：文件名前缀「待填写-」；解析生成的附表空表天然待填写。
 // - 99 分专用于「文件名精确命中」（自动定案并默认选中），30~98 为同档启发式匹配。
-// - 人操作过（上传/选用/确认）即已就绪。
+// - 变「已就绪」的唯一途径是人工点目录节点的「确认」（humanConfirmed）；仅文件名精确
+//   命中豁免确认自动就绪。选材/上传/AI填写只改内容，点确认之前标签不变。
+// - 后端 recompute 会在选材/上传后把 decision 翻成 ready，因此这里不再信任 decision=ready。
 export const TECHNICAL_GAP_READY_SCORE = 0.99
 export const TECHNICAL_GAP_WEAK_SCORE = 0.3
 
@@ -58,13 +60,8 @@ export const isFillTemplateMaterial = (material) => (
     .some((value) => String(value || '').trim().startsWith('待填写-'))
 )
 
-// 人操作过（或 AI 产物已过门禁）：口径对齐后端 technical_gap_artifact_is_s7_ready——
-// 非 AI 产物（人工上传/选用素材）直接算数；AI 产物需人工确认或质检通过。
-const hasReadyArtifact = (item) => asObjectArray(item?.resolvedArtifacts).some((artifact) => {
-  if (String(artifact?.source || '') !== 'ai_fill') return true
-  if (String(artifact?.qualityGate || '') === 'human_confirmed') return true
-  return String(artifact?.qualityReport?.status || '') === 'passed'
-})
+// 目录节点级人工确认：点目录右侧「确认」小框后由后端落 humanConfirmed。
+export const isTechnicalGapHumanConfirmed = (item) => Boolean(item?.humanConfirmed)
 
 const candidatePool = (item) => [
   ...asObjectArray(item?.matchedMaterials),
@@ -80,16 +77,18 @@ const hasFillMaterial = (item) => (
 
 const ownTechnicalGapTag = (item) => {
   if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
-  if (hasReadyArtifact(item)) return 'ready'
+  if (isTechnicalGapHumanConfirmed(item)) return 'ready'
   if (hasFillMaterial(item)) return 'needs_fill'
   const pool = candidatePool(item)
-  const decision = String(item?.decision || '')
-  if (decision === 'ready') {
-    // 后端仅在文件名精确命中时自动定案；无匹配也无覆盖来源的 ready 是空骨架，不算任务。
-    return pool.length ? 'ready' : ''
-  }
   const best = pool.reduce((max, material) => Math.max(max, technicalMatchScore(material)), 0)
+  // 文件名精确命中（0.99）豁免人工确认，自动已就绪。
   if (best >= TECHNICAL_GAP_READY_SCORE) return 'ready'
+  // 初判 ready 且无候选无产物的空骨架不算任务（decision 可能被终审改写，仅用于识别空骨架）。
+  if (
+    String(item?.decision || '') === 'ready'
+    && !pool.length
+    && !asObjectArray(item?.resolvedArtifacts).length
+  ) return ''
   if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_refine'
   return 'needs_material'
 }
@@ -97,7 +96,7 @@ const ownTechnicalGapTag = (item) => {
 export const technicalGapTagOf = (item, allItems = []) => {
   if (!item) return ''
   const parentId = String(item?.coveredByParent || '').trim()
-  if (parentId && !hasReadyArtifact(item)) {
+  if (parentId && !isTechnicalGapHumanConfirmed(item)) {
     const parent = asObjectArray(allItems).find((entry) => String(entry?.id || '') === parentId)
     if (parent) return ownTechnicalGapTag(parent)
   }

@@ -359,6 +359,44 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap artifact not found")
 
+    def confirm_ready(
+        self,
+        project_id: str,
+        gap_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # 目录节点「确认」（产品裁决 2026-07-21）：除文件名精确命中自动就绪外，目录项变
+        # 「已就绪」的唯一途径是人工点确认；确认无前置条件，以人的判断为准，可撤销。
+        # 只落 humanConfirmed 人工背书标记，不改写 decision/status 终审结果。
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别。")
+            plan_item = find_technical_gap_plan_item(gap_state, gap_id)
+            if plan_item is None:
+                raise KeyError(gap_id)
+            payload = data or {}
+            confirmed = payload.get("confirmed", True) is not False
+            operator = str(payload.get("operator") or "当前用户")
+            timestamp = now_iso()
+            plan_item["humanConfirmed"] = confirmed
+            plan_item["humanConfirmedAt"] = timestamp if confirmed else ""
+            plan_item["humanConfirmedBy"] = operator if confirmed else ""
+            plan_item.setdefault("reviewNotes", []).append(
+                f"人工确认已就绪：{operator}" if confirmed else f"撤销就绪确认：{operator}"
+            )
+            self._refresh_gap_integrity(project, gap_state)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(gap_state.get("plan") or {})
+            persist_technical_gap_project(project)
+            return {
+                "message": "本章已人工确认就绪。" if confirmed else "已撤销本章的就绪确认。",
+                "item": copy.deepcopy(plan_item),
+                "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap not found")
+
     async def select_material(
         self,
         project_id: str,
