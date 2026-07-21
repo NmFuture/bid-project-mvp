@@ -279,6 +279,12 @@ def dispatch_command(
         )
         appendix_items = review_workflow.decision_appendix_items(work_dir)
         if command == "appendix-next":
+            if command_args and (
+                len(command_args) != 2 or command_args[0] != "--max-items"
+            ):
+                raise SystemExit(
+                    "appendix-next usage: appendix-next <manifest> [--max-items 20]"
+                )
             try:
                 max_items = int(_option_value(command_args, "--max-items", "20"))
             except ValueError as exc:
@@ -291,6 +297,10 @@ def dispatch_command(
                 workflow_binding=workflow_binding,
             )
         if command == "appendix-decision-batch":
+            if len(command_args) != 1:
+                raise SystemExit(
+                    "appendix-decision-batch requires exactly one JSON payload"
+                )
             batch_text = _required_arg(command_args, 0, "appendix decision batch JSON")
             try:
                 appendix_batch = json.loads(batch_text)

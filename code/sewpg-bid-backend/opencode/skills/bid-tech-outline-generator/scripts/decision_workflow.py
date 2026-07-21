@@ -516,6 +516,14 @@ def submit_decision_batch(
     ]
     if actual_ids != expected_ids or len(raw_items) != len(expected_ids):
         raise SystemExit("decision-batch items must exactly match the current decision-next batch")
+    additions = payload.get("additions") or []
+    if not isinstance(additions, list):
+        raise SystemExit("decision-batch additions must be a list")
+    for index, addition in enumerate(additions):
+        if not isinstance(addition, dict):
+            raise SystemExit(f"decision-batch additions[{index}] must be an object")
+        if "appendix_id" in addition:
+            raise SystemExit("技术附表必须通过 appendix-decision-batch 决策")
     decisions = state.setdefault("template_decisions", {})
     for index, item in enumerate(raw_items):
         decision = str(item.get("decision") or "").strip()
@@ -541,20 +549,10 @@ def submit_decision_batch(
             normalized["tender_basis"] = deepcopy(item["tender_basis"])
         decisions[target_id] = normalized
 
-    additions = payload.get("additions") or []
-    if not isinstance(additions, list):
-        raise SystemExit("decision-batch additions must be a list")
     existing_ids = {
         str(item.get("node_id") or "") for item in state.get("additions") or []
     }
-    appendices_by_id = {
-        str(item.get("appendix_id") or ""): item
-        for item in appendix_items or []
-        if isinstance(item, dict) and str(item.get("appendix_id") or "")
-    }
     for index, addition in enumerate(additions):
-        if not isinstance(addition, dict):
-            raise SystemExit(f"decision-batch additions[{index}] must be an object")
         node_id = str(addition.get("node_id") or "").strip()
         reason = str(addition.get("reason") or "").strip()
         if not node_id or node_id in existing_ids:
@@ -563,29 +561,8 @@ def submit_decision_batch(
             )
         if not reason:
             raise SystemExit(f"decision-batch additions[{index}].reason is required")
-        appendix_id = str(addition.get("appendix_id") or "").strip()
-        if appendix_id:
-            appendix = appendices_by_id.get(appendix_id)
-            if appendix is None:
-                raise SystemExit(
-                    f"decision-batch additions[{index}].appendix_id is unknown: {appendix_id}"
-                )
-            unsupported = set(addition) - {
-                "node_id",
-                "parent_id",
-                "appendix_id",
-                "reason",
-                "tender_basis",
-            }
-            if unsupported:
-                raise SystemExit(
-                    f"decision-batch additions[{index}] appendix has unsupported fields"
-                )
-            number = str(appendix.get("number") or "")
-            title = str(appendix.get("title") or "")
-        else:
-            number = str(addition.get("number") or "")
-            title = str(addition.get("title") or "")
+        number = str(addition.get("number") or "")
+        title = str(addition.get("title") or "")
         change = {
             "operation": "add",
             "node_id": node_id,
@@ -805,9 +782,35 @@ def submit_appendix_batch(
     inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
     normalized_decisions: list[dict[str, Any]] = []
     new_changes: list[dict[str, Any]] = []
+    additions = state.get("additions") or []
     existing_node_ids = {
-        str(item.get("node_id") or "") for item in state.get("additions") or []
+        str(item.get("node_id") or "") for item in additions if isinstance(item, dict)
     }
+    template_node_ids = {
+        str(item.get("template_id") or "")
+        for item in annotated.get("items") or []
+        if isinstance(item, dict) and str(item.get("template_id") or "")
+    }
+    deleted_addition_ids = {
+        str(item.get("target_id") or item.get("node_id") or "")
+        for item in additions
+        if isinstance(item, dict)
+        and str(item.get("operation") or "") in {"delete", "suggest_delete"}
+    }
+    valid_roots = [
+        item
+        for item in additions
+        if isinstance(item, dict)
+        and str(item.get("operation") or "") == "add"
+        and not item.get("parent_id")
+        and str(item.get("title") or "") == "技术附表"
+        and str(item.get("node_id") or "")
+        and str(item.get("node_id") or "") not in deleted_addition_ids
+    ]
+    valid_root_id = (
+        str(valid_roots[0].get("node_id") or "") if len(valid_roots) == 1 else ""
+    )
+    batch_node_ids: set[str] = set()
     for index, raw_item in enumerate(raw_items):
         appendix_id = actual_ids[index]
         decision = str(raw_item.get("decision") or "").strip()
@@ -849,11 +852,23 @@ def submit_appendix_batch(
             raise SystemExit(
                 f"appendix-decision-batch items[{index}] include has unsupported fields"
             )
+        if node_id in template_node_ids:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].node_id conflicts with a template node: {node_id}"
+            )
         if node_id in existing_node_ids:
             raise SystemExit(
-                f"appendix-decision-batch items[{index}].node_id is duplicate: {node_id}"
+                f"appendix-decision-batch items[{index}].node_id conflicts with an existing addition: {node_id}"
             )
-        existing_node_ids.add(node_id)
+        if node_id in batch_node_ids:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].node_id is duplicate in the batch: {node_id}"
+            )
+        if not valid_root_id or parent_id != valid_root_id:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].parent_id must reference the unique valid root-level 技术附表 addition"
+            )
+        batch_node_ids.add(node_id)
         normalized_decisions.append(
             {
                 "appendix_id": appendix_id,

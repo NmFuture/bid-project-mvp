@@ -2098,7 +2098,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(batch["comparison_context"]["next_cursor"], "")
         self.assertTrue(batch["comparison_context"]["complete"])
 
-    def test_bid_outline_appendix_addition_copies_number_and_title_from_inventory(self) -> None:
+    def test_bid_outline_decision_batch_rejects_appendix_additions_outside_queue(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2139,42 +2139,48 @@ class TocSkillScriptTests(unittest.TestCase):
             batch = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
             )
-            outline_runner.dispatch_command(
-                "decision-batch",
-                manifest,
-                manifest_path,
-                [
-                    json.dumps(
-                        {
-                            "batch_token": batch["batch_token"],
-                            "items": [
-                                {"target_id": batch["items"][0]["target_id"], "decision": "retain"}
-                            ],
-                            "additions": [
-                                {
-                                    "node_id": "ADD-TECH-APPENDIX",
-                                    "parent_id": None,
-                                    "number": "第2章",
-                                    "title": "技术附表",
-                                    "reason": "招标包含实际技术附表。",
-                                },
-                                {
-                                    "node_id": "ADD-APPENDIX-A1",
-                                    "parent_id": "ADD-TECH-APPENDIX",
-                                    "appendix_id": "APP-0001",
-                                    "reason": "招标结构化清单中的实际表单。",
-                                },
-                            ],
-                        },
-                        ensure_ascii=False,
-                    )
-                ],
-            )
+            with self.assertRaisesRegex(
+                SystemExit, "技术附表必须通过 appendix-decision-batch 决策"
+            ):
+                outline_runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": batch["items"][0]["target_id"],
+                                        "decision": "retain",
+                                    }
+                                ],
+                                "additions": [
+                                    {
+                                        "node_id": "ADD-TECH-APPENDIX",
+                                        "parent_id": None,
+                                        "number": "第2章",
+                                        "title": "技术附表",
+                                        "reason": "招标包含实际技术附表。",
+                                    },
+                                    {
+                                        "node_id": "ADD-APPENDIX-A1",
+                                        "parent_id": "ADD-TECH-APPENDIX",
+                                        "appendix_id": "APP-0001",
+                                        "reason": "招标结构化清单中的实际表单。",
+                                    },
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
             state = json_load(root / "outline_decision_state.json")
 
-        appendix_change = state["additions"][1]
-        self.assertEqual(appendix_change["number"], "附表A.1")
-        self.assertEqual(appendix_change["title"], "投标机型总方案信息表")
+        self.assertEqual(state["additions"], [])
+        self.assertEqual(state["appendix_decisions"], {})
+        self.assertEqual(state["active_batch"]["target_ids"], ["TPL-0001"])
 
     def test_bid_outline_appendix_batches_require_explicit_include_or_exclude(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -2234,6 +2240,17 @@ class TocSkillScriptTests(unittest.TestCase):
                             ["--max-items", str(invalid_max_items)],
                         )
 
+            for invalid_args in (
+                ["--unknown"],
+                ["--max-items"],
+                ["--max-items", "2", "extra"],
+            ):
+                with self.subTest(invalid_args=invalid_args):
+                    with self.assertRaisesRegex(SystemExit, "appendix-next usage"):
+                        outline_runner.dispatch_command(
+                            "appendix-next", manifest, manifest_path, invalid_args
+                        )
+
             batch = outline_runner.dispatch_command(
                 "appendix-next", manifest, manifest_path, ["--max-items", "2"]
             )
@@ -2244,6 +2261,31 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(batch["decided_count"], 0)
             self.assertEqual(batch["remaining_count"], 3)
             self.assertFalse(batch["complete"])
+
+            with self.assertRaisesRegex(
+                SystemExit, "appendix-decision-batch requires exactly one JSON payload"
+            ):
+                outline_runner.dispatch_command(
+                    "appendix-decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "appendix_id": item["appendix_id"],
+                                        "decision": "exclude",
+                                        "reason": "Not required.",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                            }
+                        ),
+                        "extra",
+                    ],
+                )
 
             invalid_item_lists = [
                 [
@@ -2328,7 +2370,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
 
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
-        decision_workflow = load_outline_script("decision_workflow")
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
         structure = {
             "schema_version": "template-structure.v1",
             "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
@@ -2366,6 +2408,15 @@ class TocSkillScriptTests(unittest.TestCase):
                             "decision": "retain",
                         }
                     ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-TECH-APPENDIX",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "技术附表",
+                            "reason": "Tender contains controlled appendices.",
+                        }
+                    ],
                 },
                 comparison_context={"files": []},
             )
@@ -2389,7 +2440,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     {"appendix_id": "APP-0002", "decision": "exclude", "reason": "No."},
                 ],
                 [
-                    {"appendix_id": "APP-0001", "decision": "include", "node_id": "ADD-B1", "parent_id": "ROOT", "reason": "Required."},
+                    {"appendix_id": "APP-0001", "decision": "include", "node_id": "ADD-B1", "parent_id": "ADD-TECH-APPENDIX", "reason": "Required."},
                     {"appendix_id": "APP-0002", "decision": "exclude"},
                 ],
             ]
@@ -2426,14 +2477,186 @@ class TocSkillScriptTests(unittest.TestCase):
                 inventory,
             )
             state = json_load(root / "outline_decision_state.json")
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
 
         self.assertEqual(state["schema_version"], "technical-outline-decision-state.v4")
         self.assertEqual(state["appendix_decisions"]["APP-0001"]["decision"], "include")
         self.assertEqual(state["appendix_decisions"]["APP-0001"]["reason"], "Tender requires the completed form.")
         self.assertEqual(state["appendix_decisions"]["APP-0002"]["decision"], "exclude")
-        self.assertEqual(len(state["additions"]), 1)
-        self.assertEqual(state["additions"][0]["number"], "Appendix B.1")
-        self.assertEqual(state["additions"][0]["title"], "Guaranteed data sheet")
+        self.assertEqual(len(state["additions"]), 2)
+        self.assertEqual(state["additions"][1]["number"], "Appendix B.1")
+        self.assertEqual(state["additions"][1]["title"], "Guaranteed data sheet")
+        self.assertTrue(finalized["decisionsFile"])
+
+    def test_bid_outline_appendix_include_requires_unique_valid_root_parent_atomically(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix D.{index}",
+                "title": f"Controlled form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure, comparison_context={"files": []}
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-TECH-APPENDIX",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "技术附表",
+                            "reason": "Valid root.",
+                        },
+                        {
+                            "node_id": "ADD-NESTED-APPENDIX",
+                            "parent_id": "TPL-0001",
+                            "number": "1.1",
+                            "title": "技术附表",
+                            "reason": "Nested candidate.",
+                        },
+                        {
+                            "node_id": "ADD-WRONG-TITLE",
+                            "parent_id": None,
+                            "number": "3",
+                            "title": "技术附件",
+                            "reason": "Wrong title candidate.",
+                        },
+                    ],
+                },
+                comparison_context={"files": []},
+            )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+            original_state = json_load(root / "outline_decision_state.json")
+
+            def include_payload(node_ids: list[str], parent_id: str) -> dict:
+                return {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": item["appendix_id"],
+                            "decision": "include",
+                            "node_id": node_ids[index],
+                            "parent_id": parent_id,
+                            "reason": "Required controlled form.",
+                        }
+                        for index, item in enumerate(batch["items"])
+                    ],
+                }
+
+            invalid_root_states = []
+            deleted_root_state = json.loads(json.dumps(original_state))
+            deleted_root_state["additions"].append(
+                {
+                    "operation": "suggest_delete",
+                    "target_id": "ADD-TECH-APPENDIX",
+                }
+            )
+            invalid_root_states.append(("deleted root", deleted_root_state))
+            duplicate_root_state = json.loads(json.dumps(original_state))
+            duplicate_root_state["additions"].append(
+                {
+                    "operation": "add",
+                    "node_id": "ADD-SECOND-TECH-APPENDIX",
+                    "parent_id": None,
+                    "number": "4",
+                    "title": "技术附表",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "Ambiguous root.",
+                }
+            )
+            invalid_root_states.append(("duplicate roots", duplicate_root_state))
+            for label, invalid_state in invalid_root_states:
+                with self.subTest(label=label):
+                    (root / "outline_decision_state.json").write_text(
+                        json.dumps(invalid_state, ensure_ascii=False), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(SystemExit, "parent_id"):
+                        decision_workflow.submit_appendix_batch(
+                            root,
+                            structure,
+                            include_payload(
+                                ["ADD-VALID-1", "ADD-VALID-2"],
+                                "ADD-TECH-APPENDIX",
+                            ),
+                            inventory,
+                        )
+                    self.assertEqual(
+                        json_load(root / "outline_decision_state.json"), invalid_state
+                    )
+            (root / "outline_decision_state.json").write_text(
+                json.dumps(original_state, ensure_ascii=False), encoding="utf-8"
+            )
+
+            invalid_cases = [
+                ("template node", ["TPL-0001", "ADD-VALID-2"], "ADD-TECH-APPENDIX"),
+                ("existing addition", ["ADD-TECH-APPENDIX", "ADD-VALID-2"], "ADD-TECH-APPENDIX"),
+                ("same batch", ["ADD-DUPLICATE", "ADD-DUPLICATE"], "ADD-TECH-APPENDIX"),
+                ("missing parent", ["ADD-VALID-1", "ADD-VALID-2"], "ADD-MISSING"),
+                ("nested parent", ["ADD-VALID-1", "ADD-VALID-2"], "ADD-NESTED-APPENDIX"),
+                ("wrong title", ["ADD-VALID-1", "ADD-VALID-2"], "ADD-WRONG-TITLE"),
+            ]
+            for label, node_ids, parent_id in invalid_cases:
+                with self.subTest(label=label):
+                    with self.assertRaisesRegex(SystemExit, "node_id|parent_id"):
+                        decision_workflow.submit_appendix_batch(
+                            root,
+                            structure,
+                            include_payload(node_ids, parent_id),
+                            inventory,
+                        )
+                    self.assertEqual(
+                        json_load(root / "outline_decision_state.json"), original_state
+                    )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": item["appendix_id"],
+                            "decision": "include",
+                            "node_id": f"ADD-VALID-{index}",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Required controlled form.",
+                        }
+                        for index, item in enumerate(batch["items"], start=1)
+                    ],
+                },
+                inventory,
+            )
+            final_state = json_load(root / "outline_decision_state.json")
+            decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+
+        self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
+        self.assertEqual(set(final_state["appendix_decisions"]), {"APP-0001", "APP-0002"})
 
     def test_bid_outline_decisions_reject_unjudged_appendix_candidates(self) -> None:
         decision_workflow = load_outline_script("decision_workflow")
@@ -3464,13 +3687,32 @@ class TocSkillScriptTests(unittest.TestCase):
                                     "number": "第2章",
                                     "title": "技术附表",
                                     "reason": "招标文件包含独立附表。",
-                                },
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            appendix_batch = outline_runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": appendix_batch["batch_token"],
+                            "items": [
                                 {
+                                    "appendix_id": "APP-0001",
+                                    "decision": "include",
                                     "node_id": "ADD-APPENDIX-A1",
                                     "parent_id": "ADD-APPENDIX",
-                                    "appendix_id": "APP-0001",
                                     "reason": "招标文件包含独立填写表格。",
-                                },
+                                }
                             ],
                         },
                         ensure_ascii=False,
