@@ -303,9 +303,7 @@ def next_decision_context_page(
         max_chars=max_chars,
     )
     active["context_next_cursor"] = page["next_cursor"]
-    active["context_complete"] = bool(
-        page["complete"] and int(page.get("heading_count") or 0) == 0
-    )
+    active["context_complete"] = bool(page["complete"])
     active["context_page"] = deepcopy(page)
     state["active_batch"] = active
     _write_json(_state_path(work_dir), state)
@@ -464,10 +462,7 @@ def next_decision_batch(
             "target_ids": target_ids,
             "context_digest": context_digest,
             "context_next_cursor": first_page["next_cursor"],
-            "context_complete": bool(
-                first_page["complete"]
-                and int(first_page.get("heading_count") or 0) == 0
-            ),
+            "context_complete": bool(first_page["complete"]),
             "context_page": deepcopy(first_page),
         }
         selected_response = response

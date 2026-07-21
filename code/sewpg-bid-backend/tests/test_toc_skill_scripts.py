@@ -2241,7 +2241,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     ["--max-chars", "20000"],
                 )
 
-    def test_bid_outline_decision_context_replays_pages_and_decision_next_resumes(self) -> None:
+    def test_bid_outline_decision_context_replays_pages_and_opens_batch(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2273,7 +2273,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 )
                 if last_page["complete"]:
                     state = json_load(root / "outline_decision_state.json")
-                    self.assertFalse(state["active_batch"]["context_complete"])
+                    self.assertTrue(state["active_batch"]["context_complete"])
                 replayed = outline_runner.dispatch_command(
                     "decision-context",
                     manifest,
@@ -2286,13 +2286,68 @@ class TocSkillScriptTests(unittest.TestCase):
                     self.assertTrue(state["active_batch"]["context_complete"])
                 cursor = last_page["next_cursor"]
 
-            resumed = outline_runner.dispatch_command(
-                "decision-next", manifest, manifest_path, []
+            result = outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": first["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                }
+                                for item in first["items"]
+                            ],
+                        }
+                    )
+                ],
             )
 
         self.assertTrue(last_page["complete"])
-        self.assertEqual(resumed["batch_token"], first["batch_token"])
-        self.assertEqual(resumed["comparison_context"], last_page)
+        self.assertEqual(result["decided_count"], len(first["items"]))
+
+    def test_bid_outline_decision_context_complete_first_page_opens_batch(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=1,
+                heading_text="Short tender heading",
+            )
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            state = json_load(root / "outline_decision_state.json")
+
+            self.assertTrue(batch["comparison_context"]["complete"])
+            self.assertTrue(state["active_batch"]["context_complete"])
+
+            result = outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                }
+                                for item in batch["items"]
+                            ],
+                        }
+                    )
+                ],
+            )
+
+        self.assertEqual(result["decided_count"], len(batch["items"]))
 
     def test_bid_outline_decision_context_requires_current_batch_token_and_cursor(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
