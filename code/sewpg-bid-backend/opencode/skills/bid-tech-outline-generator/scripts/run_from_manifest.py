@@ -33,6 +33,7 @@ AGENTIC_COMMANDS = {
     "review-chunk",
     "review-batch",
     "decision-next",
+    "decision-context",
     "decision-batch",
     "decisions",
     "compose",
@@ -101,7 +102,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-context|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]; decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -123,6 +124,30 @@ def _required_arg(args: list[str], index: int, label: str) -> str:
     if index >= len(args) or not str(args[index]).strip():
         raise SystemExit(f"{label} is required")
     return str(args[index]).strip()
+
+
+def _decision_context_args(args: list[str]) -> tuple[str, str, int]:
+    batch_token = _required_arg(args, 0, "decision-context batch-token")
+    values = {"--cursor": "0", "--max-chars": "12000"}
+    index = 1
+    while index < len(args):
+        option = str(args[index])
+        if option not in values:
+            raise SystemExit(
+                "decision-context only accepts --cursor and --max-chars options"
+            )
+        if index + 1 >= len(args):
+            raise SystemExit(f"decision-context {option} requires a value")
+        values[option] = str(args[index + 1])
+        index += 2
+    cursor = values["--cursor"].strip()
+    if not cursor.isdigit():
+        raise SystemExit("decision-context --cursor must be a non-negative integer")
+    try:
+        max_chars = int(values["--max-chars"])
+    except ValueError as exc:
+        raise SystemExit("decision-context --max-chars must be an integer") from exc
+    return batch_token, str(int(cursor)), max_chars
 
 
 def _requires_composed_outline(manifest: dict[str, Any]) -> bool:
@@ -231,7 +256,7 @@ def dispatch_command(
         if not isinstance(chunk_ids, list):
             raise SystemExit("review JSON chunk_ids must be a list")
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
-    if command in {"decision-next", "decision-batch", "decisions"}:
+    if command in {"decision-next", "decision-context", "decision-batch", "decisions"}:
         workflow_binding = _strict_workflow_binding(manifest, work_dir)
         if (
             workflow_binding is None
@@ -249,6 +274,17 @@ def dispatch_command(
                 work_dir,
                 structure,
                 max_items=max_items,
+                comparison_context=review_workflow.decision_comparison_context(work_dir),
+                workflow_binding=workflow_binding,
+            )
+        if command == "decision-context":
+            batch_token, cursor, max_chars = _decision_context_args(command_args)
+            return decision_workflow.next_decision_context_page(
+                work_dir,
+                structure,
+                batch_token,
+                cursor=cursor,
+                max_chars=max_chars,
                 comparison_context=review_workflow.decision_comparison_context(work_dir),
                 workflow_binding=workflow_binding,
             )
@@ -272,6 +308,7 @@ def dispatch_command(
             structure,
             decision_batch,
             appendix_items=review_workflow.decision_appendix_items(work_dir),
+            comparison_context=review_workflow.decision_comparison_context(work_dir),
             workflow_binding=workflow_binding,
         )
     if command == "compose":

@@ -9,8 +9,12 @@ from typing import Any
 import outline_composer
 
 
-STATE_SCHEMA = "technical-outline-decision-state.v1"
+STATE_SCHEMA = "technical-outline-decision-state.v2"
+LEGACY_STATE_SCHEMA = "technical-outline-decision-state.v1"
 STATE_FILE_NAME = "outline_decision_state.json"
+CONTEXT_SCHEMA = "outline-decision-context.v1"
+DEFAULT_CONTEXT_MAX_CHARS = 12000
+MAX_CONTEXT_MAX_CHARS = 20000
 
 
 def _payload_digest(payload: Any) -> str:
@@ -32,6 +36,16 @@ def _binding_value(binding: dict[str, str] | None, key: str) -> str:
     return str((binding or {}).get(key) or "").strip()
 
 
+def _empty_active_batch() -> dict[str, Any]:
+    return {
+        "token": "",
+        "target_ids": [],
+        "context_digest": "",
+        "context_next_cursor": "",
+        "context_complete": False,
+    }
+
+
 def _new_state(
     fingerprint: str,
     workflow_binding: dict[str, str] | None = None,
@@ -43,7 +57,7 @@ def _new_state(
         "headings_state_digest": _binding_value(workflow_binding, "headingsStateDigest"),
         "template_decisions": {},
         "additions": [],
-        "active_batch": {"token": "", "target_ids": []},
+        "active_batch": _empty_active_batch(),
         "finalized_decisions_digest": "",
     }
 
@@ -62,6 +76,8 @@ def _load_state(
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"outline decision state is invalid: {path}: {exc}") from exc
+    if isinstance(state, dict) and state.get("schema_version") == LEGACY_STATE_SCHEMA:
+        raise SystemExit("目录决策协议已升级，请重新生成目录")
     if not isinstance(state, dict) or state.get("schema_version") != STATE_SCHEMA:
         raise SystemExit(f"outline decision state schema is invalid: {path}")
     if state.get("input_fingerprint") != fingerprint:
@@ -100,6 +116,7 @@ def _annotated_items(structure: dict[str, Any]) -> tuple[dict[str, Any], list[di
 def _batch_token(
     fingerprint: str,
     target_ids: list[str],
+    context_digest: str,
     workflow_binding: dict[str, str] | None = None,
 ) -> str:
     payload = json.dumps(
@@ -108,12 +125,162 @@ def _batch_token(
             "tender_inputs_digest": _binding_value(workflow_binding, "tenderInputsDigest"),
             "headings_state_digest": _binding_value(workflow_binding, "headingsStateDigest"),
             "target_ids": target_ids,
+            "context_digest": context_digest,
         },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _normalized_context_files(
+    comparison_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for raw_file in (comparison_context or {}).get("files") or []:
+        if not isinstance(raw_file, dict):
+            continue
+        file_id = str(raw_file.get("file_id") or "").strip()
+        items = []
+        for raw_item in raw_file.get("items") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            items.append(
+                {
+                    "evidence_id": str(raw_item.get("evidence_id") or "").strip(),
+                    "level": int(raw_item.get("level") or 0),
+                    "text": str(raw_item.get("text") or "").strip(),
+                }
+            )
+        if file_id and items:
+            files.append({"file_id": file_id, "items": items})
+    return files
+
+
+def _context_digest(
+    files: list[dict[str, Any]],
+    workflow_binding: dict[str, str] | None,
+) -> str:
+    return _payload_digest(
+        {
+            "headings_state_digest": _binding_value(
+                workflow_binding,
+                "headingsStateDigest",
+            ),
+            "files": files,
+        }
+    )
+
+
+def _page_files(entries: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for file_id, item in entries:
+        if not files or files[-1]["file_id"] != file_id:
+            files.append({"file_id": file_id, "items": []})
+        files[-1]["items"].append(item)
+    return files
+
+
+def _context_page(
+    files: list[dict[str, Any]],
+    digest: str,
+    *,
+    cursor: int,
+    max_chars: int,
+) -> dict[str, Any]:
+    entries = [
+        (str(file_entry["file_id"]), deepcopy(item))
+        for file_entry in files
+        for item in file_entry["items"]
+    ]
+    selected: list[tuple[str, dict[str, Any]]] = []
+    next_index = cursor
+
+    def payload(candidate: list[tuple[str, dict[str, Any]]], end: int) -> dict[str, Any]:
+        complete = end >= len(entries)
+        return {
+            "schema_version": CONTEXT_SCHEMA,
+            "digest": digest,
+            "heading_count": len(entries),
+            "cursor": str(cursor),
+            "next_cursor": "" if complete else str(end),
+            "complete": complete,
+            "files": _page_files(candidate),
+        }
+
+    while next_index < len(entries):
+        candidate = [*selected, entries[next_index]]
+        candidate_payload = payload(candidate, next_index + 1)
+        compact_size = len(
+            json.dumps(
+                candidate_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        if compact_size > max_chars:
+            break
+        selected = candidate
+        next_index += 1
+
+    if not selected and next_index < len(entries):
+        raise SystemExit(
+            "单条招标目录上下文超过 decision-context --max-chars，"
+            "请提高 --max-chars 后重试"
+        )
+    return payload(selected, next_index)
+
+
+def next_decision_context_page(
+    work_dir: Path,
+    structure: dict[str, Any],
+    batch_token: str,
+    *,
+    cursor: str = "0",
+    max_chars: int = DEFAULT_CONTEXT_MAX_CHARS,
+    comparison_context: dict[str, Any] | None = None,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    if max_chars < 1000 or max_chars > MAX_CONTEXT_MAX_CHARS:
+        raise SystemExit("decision-context --max-chars must be between 1000 and 20000")
+    cursor_text = str(cursor).strip()
+    if not cursor_text.isdigit():
+        raise SystemExit("decision-context --cursor must be a non-negative integer")
+    normalized_cursor = str(int(cursor_text))
+
+    annotated, _ = _annotated_items(structure)
+    state = _load_state(work_dir, annotated["input_fingerprint"], workflow_binding)
+    active = state.get("active_batch") or {}
+    if not active.get("target_ids") or batch_token != str(active.get("token") or ""):
+        raise SystemExit(
+            "decision-context batch_token must match the current decision-next batch_token"
+        )
+    expected_cursor = str(active.get("context_next_cursor") or "")
+    if active.get("context_complete"):
+        raise SystemExit("decision-context for the current batch is already complete")
+    if normalized_cursor != expected_cursor:
+        raise SystemExit(
+            f"decision-context cursor must match the current cursor: {expected_cursor}"
+        )
+
+    files = _normalized_context_files(comparison_context)
+    digest = _context_digest(files, workflow_binding)
+    if digest != str(active.get("context_digest") or ""):
+        state["active_batch"] = _empty_active_batch()
+        _write_json(_state_path(work_dir), state)
+        raise SystemExit("招标目录上下文已变化，请重新执行 decision-next")
+    page = _context_page(
+        files,
+        digest,
+        cursor=int(normalized_cursor),
+        max_chars=max_chars,
+    )
+    active["context_next_cursor"] = page["next_cursor"]
+    active["context_complete"] = page["complete"]
+    state["active_batch"] = active
+    _write_json(_state_path(work_dir), state)
+    return page
 
 
 def next_decision_batch(
@@ -149,17 +316,33 @@ def next_decision_batch(
             "remaining_count": 0,
             "complete": True,
         }
-    token = _batch_token(fingerprint, target_ids, workflow_binding)
-    state["active_batch"] = {"token": token, "target_ids": target_ids}
+    context_files = _normalized_context_files(comparison_context)
+    context_digest = _context_digest(context_files, workflow_binding)
+    token = _batch_token(
+        fingerprint,
+        target_ids,
+        context_digest,
+        workflow_binding,
+    )
+    state["active_batch"] = {
+        "token": token,
+        "target_ids": target_ids,
+        "context_digest": context_digest,
+        "context_next_cursor": "0",
+        "context_complete": False,
+    }
     _write_json(_state_path(work_dir), state)
+    first_context_page = next_decision_context_page(
+        work_dir,
+        structure,
+        token,
+        comparison_context=comparison_context,
+        workflow_binding=workflow_binding,
+    )
     return {
         "schema_version": STATE_SCHEMA,
         "batch_token": token,
-        "comparison_context": comparison_context or {
-            "schema_version": "outline-comparison-context.v1",
-            "heading_count": 0,
-            "files": [],
-        },
+        "comparison_context": first_context_page,
         "items": [
             {
                 "target_id": target_id,
@@ -182,6 +365,7 @@ def submit_decision_batch(
     payload: dict[str, Any],
     *,
     appendix_items: list[dict[str, Any]] | None = None,
+    comparison_context: dict[str, Any] | None = None,
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     annotated, items = _annotated_items(structure)
@@ -192,6 +376,16 @@ def submit_decision_batch(
     token = str(payload.get("batch_token") or "")
     if not expected_ids or token != str(active.get("token") or ""):
         raise SystemExit("decision-batch must use the current decision-next batch_token")
+    current_context_digest = _context_digest(
+        _normalized_context_files(comparison_context),
+        workflow_binding,
+    )
+    if current_context_digest != str(active.get("context_digest") or ""):
+        state["active_batch"] = _empty_active_batch()
+        _write_json(_state_path(work_dir), state)
+        raise SystemExit("招标目录上下文已变化，请重新执行 decision-next")
+    if not active.get("context_complete"):
+        raise SystemExit("当前决策批次尚未读完招标目录上下文")
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         raise SystemExit("decision-batch items must be a list")
@@ -286,7 +480,7 @@ def submit_decision_batch(
         state.setdefault("additions", []).append(change)
         existing_ids.add(node_id)
 
-    state["active_batch"] = {"token": "", "target_ids": []}
+    state["active_batch"] = _empty_active_batch()
     state["finalized_decisions_digest"] = ""
     _write_json(_state_path(work_dir), state)
     decided_count = len(decisions)
@@ -352,6 +546,8 @@ def validate_finalized_decisions(
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"outline decision state is invalid: {path}: {exc}") from exc
+    if isinstance(state, dict) and state.get("schema_version") == LEGACY_STATE_SCHEMA:
+        raise SystemExit("目录决策协议已升级，请重新生成目录")
     if not isinstance(state, dict) or state.get("schema_version") != STATE_SCHEMA:
         raise SystemExit(f"outline decision state schema is invalid: {path}")
     if state.get("input_fingerprint") != fingerprint:
