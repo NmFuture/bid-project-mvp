@@ -381,6 +381,35 @@ def _collect_heading_files(
     return files_by_id, paragraph_locations
 
 
+def _paged_heading_files(
+    files_by_id: dict[str, dict[str, Any]],
+    *,
+    cursor: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int, bool, int]:
+    flattened: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+    for file_entry in files_by_id.values():
+        selected = file_entry["toc_items"] or file_entry["body_items"]
+        source = "toc" if file_entry["toc_items"] else "body_headings"
+        flattened.extend((file_entry, source, item) for item in selected)
+
+    page = flattened[cursor : cursor + page_size]
+    next_cursor = cursor + len(page)
+    complete = next_cursor >= len(flattened)
+    paged_files_by_id: dict[str, dict[str, Any]] = {}
+    for file_entry, source, item in page:
+        paged_files_by_id.setdefault(
+            file_entry["file_id"],
+            {
+                "file_id": file_entry["file_id"],
+                "file_name": file_entry["file_name"],
+                "source": source,
+                "items": [],
+            },
+        )["items"].append(item)
+    return list(paged_files_by_id.values()), next_cursor, complete, len(flattened)
+
+
 def _appendix_catalog_items(work_dir: Path) -> list[dict[str, Any]]:
     inventory_path = work_dir / "tender_appendix_inventory.json"
     if not inventory_path.is_file():
@@ -536,24 +565,10 @@ def tender_headings(
     headings_catalog_digest = _heading_catalog_digest(files_by_id, appendices)
     if clean_text(state.get("headings_catalog_digest")) != headings_catalog_digest:
         raise SystemExit("headings catalog does not match the prepared tender inputs")
-    fallback_items: list[tuple[str, dict[str, Any]]] = []
-    toc_files: list[dict[str, Any]] = []
-    body_file_names: dict[str, str] = {}
-    for file_entry in files_by_id.values():
-        if file_entry["toc_items"]:
-            toc_files.append(
-                {
-                    "file_id": file_entry["file_id"],
-                    "file_name": file_entry["file_name"],
-                    "source": "toc",
-                    "items": file_entry["toc_items"],
-                }
-            )
-            continue
-        body_file_names[file_entry["file_id"]] = file_entry["file_name"]
-        fallback_items.extend(
-            (file_entry["file_id"], item) for item in file_entry["body_items"]
-        )
+    source_heading_count = sum(
+        len(item["toc_items"] or item["body_items"])
+        for item in files_by_id.values()
+    )
 
     appendix_file_ids = {
         clean_text(item.get("file_id"))
@@ -573,16 +588,16 @@ def tender_headings(
     if headings_exhausted:
         if cursor != 0:
             raise SystemExit("headings cursor must be 0 after headings are exhausted")
-        page: list[tuple[str, dict[str, Any]]] = []
+        files: list[dict[str, Any]] = []
         next_cursor_value = 0
         pagination_complete = True
     else:
         expected_cursor = int(state.get("next_cursor") or 0)
-        if fallback_items and cursor != expected_cursor:
+        if source_heading_count and cursor != expected_cursor:
             raise SystemExit(f"headings cursor must be {expected_cursor}")
-        page = fallback_items[cursor : cursor + page_size]
-        next_cursor_value = cursor + len(page)
-        pagination_complete = next_cursor_value >= len(fallback_items)
+        files, next_cursor_value, pagination_complete, source_heading_count = (
+            _paged_heading_files(files_by_id, cursor=cursor, page_size=page_size)
+        )
 
     full_review_complete, full_review_pending_count, _ = _full_review_progress(
         work_dir,
@@ -590,17 +605,6 @@ def tender_headings(
         full_review_file_ids,
     )
     complete = pagination_complete and full_review_complete
-    body_files_by_id: dict[str, dict[str, Any]] = {}
-    for file_id, item in page:
-        body_files_by_id.setdefault(
-            file_id,
-            {
-                "file_id": file_id,
-                "file_name": body_file_names[file_id],
-                "source": "body_headings",
-                "items": [],
-            },
-        )["items"].append(item)
     full_review_files = [
         {
             "file_id": file_id,
@@ -610,11 +614,7 @@ def tender_headings(
         }
         for file_id in full_review_file_ids
     ]
-    files = [*toc_files, *body_files_by_id.values(), *full_review_files]
-    source_heading_count = sum(
-        len(item["toc_items"] or item["body_items"])
-        for item in files_by_id.values()
-    )
+    files.extend(full_review_files)
     write_json(
         state_path,
         {
@@ -642,7 +642,6 @@ def tender_headings(
         "full_review_pending_chunk_count": full_review_pending_count,
         "complete": complete,
         "files": files,
-        "appendices": appendices,
     }
 
 

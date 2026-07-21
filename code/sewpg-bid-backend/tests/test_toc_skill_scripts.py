@@ -2339,11 +2339,8 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertEqual(result["files"][0]["source"], "toc")
         self.assertTrue(result["complete"])
-        self.assertEqual(
-            [(item["number"], item["title"]) for item in result["appendices"]],
-            [("附表A.1", "技术参数表")],
-        )
-        self.assertTrue(result["appendices"][0]["evidence_id"].startswith("TEN-1:B"))
+        self.assertEqual(result["appendix_count"], 1)
+        self.assertNotIn("appendices", result)
         self.assertEqual(status["reviewed_chunk_count"], 0)
         self.assertEqual(status["pending_chunk_count"], status["chunk_count"])
 
@@ -2398,6 +2395,62 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertTrue(second["complete"])
         self.assertEqual(second["next_cursor"], "")
+
+    def test_bid_outline_headings_pages_toc_items_with_same_cursor_contract(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("Template", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            if "TOC 1" not in [style.name for style in tender_doc.styles]:
+                tender_doc.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+            for index in range(1, 6):
+                tender_doc.add_paragraph(f"Section {index} ........ {index}", style="TOC 1")
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            first = outline_runner.dispatch_command(
+                "headings", manifest, manifest_path, ["--page-size", "2"]
+            )
+            self.assertEqual(first["returned_heading_count"], 2)
+            self.assertEqual(first["next_cursor"], "2")
+            self.assertFalse(first["complete"])
+
+            second = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--cursor", first["next_cursor"], "--page-size", "2"],
+            )
+            self.assertEqual(second["returned_heading_count"], 2)
+            self.assertEqual(second["next_cursor"], "4")
+            self.assertFalse(second["complete"])
+
+            third = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--cursor", second["next_cursor"], "--page-size", "2"],
+            )
+            self.assertEqual(third["returned_heading_count"], 1)
+            self.assertEqual(third["next_cursor"], "")
+            self.assertTrue(third["complete"])
 
     def test_bid_outline_headings_requires_full_review_when_no_structure_exists(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
