@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -985,7 +987,10 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline review-batch",
             "s2outline status",
             "s2outline decision-next",
+            "s2outline decision-context",
             "s2outline decision-batch",
+            "s2outline appendix-next",
+            "s2outline appendix-decision-batch",
             "s2outline decisions",
             "s2outline compose",
             "自主选择",
@@ -1002,6 +1007,11 @@ class TocSkillScriptTests(unittest.TestCase):
             "自动生成或提交",
             "不得直接读取 `tender_review_chunks.json`",
             "items` 必须与最近一次 `decision-next`",
+            "目录页和正文标题都必须循环",
+            "comparison_context",
+            "未完成不得执行 `decision-batch`",
+            "每个附表必须显式选择 `include` 或 `exclude`",
+            "不得读取 OpenCode 私有 tool-output",
             "s2outline finalize",
         ):
             self.assertIn(principle, content)
@@ -1088,11 +1098,130 @@ class TocSkillScriptTests(unittest.TestCase):
 
         commands = (
             "prepare|template|headings|next-batch|read|window|table|tables|"
-            "review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize"
+            "review-batch|decision-next|decision-context|decision-batch|appendix-next|"
+            "appendix-decision-batch|decisions|compose|validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
         self.assertIn(f"usage: s2outline [{commands}] <manifest> [...]", dockerfile)
         self.assertIn('run_from_manifest.py --require-compose "$@"', dockerfile)
+
+    def test_bid_outline_agent_navigation_outputs_stay_below_hard_limit(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=300,
+                heading_text="招标技术要求",
+            )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "number": f"附表A.{index}",
+                                "title": f"技术响应表{index}",
+                                "following_table_count": 1,
+                            }
+                            for index in range(1, 65)
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            chunks = json_load(root / "tender_review_chunks.json")
+            chunks["input_fingerprint"] = "test-navigation-input"
+            (root / "tender_review_chunks.json").write_text(
+                json.dumps(chunks, ensure_ascii=False), encoding="utf-8"
+            )
+            files_by_id, _ = outline_runner.review_workflow._collect_heading_files(chunks)
+            inventory = json_load(root / "tender_appendix_inventory.json")
+            headings_state = json_load(root / "tender_headings_state.json")
+            headings_state["input_fingerprint"] = "test-navigation-input"
+            headings_state["headings_catalog_digest"] = (
+                outline_runner.review_workflow._heading_catalog_digest(
+                    files_by_id, inventory["items"]
+                )
+            )
+            (root / "tender_headings_state.json").write_text(
+                json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
+            )
+
+            stdout_sizes: dict[str, int] = {}
+
+            def invoke(command: str, *args: str) -> dict:
+                stdout = io.StringIO()
+                with patch.object(
+                    sys,
+                    "argv",
+                    ["run_from_manifest.py", command, str(manifest_path), *args],
+                ), redirect_stdout(stdout):
+                    outline_runner.main()
+                output = stdout.getvalue()
+                stdout_sizes[command] = len(output.encode("utf-8"))
+                self.assertLess(stdout_sizes[command], 24000, stdout_sizes)
+                self.assertNotIn("output truncated", output.lower())
+                return json.loads(output)
+
+            invoke("headings", "--page-size", "150")
+            decision_batch = invoke(
+                "decision-next", "--max-items", "1", "--max-chars", "12000"
+            )
+            next_cursor = decision_batch["comparison_context"]["next_cursor"]
+            self.assertTrue(next_cursor)
+            invoke(
+                "decision-context",
+                decision_batch["batch_token"],
+                "--cursor",
+                next_cursor,
+                "--max-chars",
+                "12000",
+            )
+
+            cursor = decision_batch["comparison_context"]["next_cursor"]
+            while cursor:
+                context = outline_runner.dispatch_command(
+                    "decision-context",
+                    manifest,
+                    manifest_path,
+                    [
+                        decision_batch["batch_token"],
+                        "--cursor",
+                        cursor,
+                        "--max-chars",
+                        "12000",
+                    ],
+                )
+                cursor = context["next_cursor"]
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": decision_batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": decision_batch["items"][0]["target_id"],
+                                    "decision": "retain",
+                                }
+                            ],
+                        }
+                    )
+                ],
+            )
+            appendix_batch = invoke("appendix-next", "--max-items", "20")
+
+        self.assertEqual(len(appendix_batch["items"]), 20)
+        self.assertEqual(
+            set(stdout_sizes),
+            {"headings", "decision-next", "decision-context", "appendix-next"},
+        )
 
     def test_bid_outline_cli_runtime_compose_gate_cannot_be_disabled_by_manifest(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

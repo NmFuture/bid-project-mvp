@@ -43,6 +43,10 @@ AGENTIC_COMMANDS = {
     "status",
     "finalize",
 }
+NAVIGATION_COMMANDS = frozenset(
+    {"headings", "decision-next", "decision-context", "appendix-next"}
+)
+NAVIGATION_OUTPUT_HARD_LIMIT_BYTES = 24000
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 NODE_KEYS = {
     "number",
@@ -93,7 +97,18 @@ def main() -> int:
         manifest["_runtimeRequireComposedOutline"] = True
 
     result = dispatch_command(command, manifest, manifest_path, command_args)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if command in NAVIGATION_COMMANDS:
+        output = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        output_bytes = len(f"{output}\n".encode("utf-8"))
+        if output_bytes >= NAVIGATION_OUTPUT_HARD_LIMIT_BYTES:
+            raise SystemExit(
+                "导航输出内部协议错误: "
+                f"command={command}, actual_bytes={output_bytes}, "
+                f"required_bytes<{NAVIGATION_OUTPUT_HARD_LIMIT_BYTES}"
+            )
+    else:
+        output = json.dumps(result, ensure_ascii=False, indent=2)
+    print(output)
     return 0
 
 

@@ -32,8 +32,11 @@ s2outline table <manifest> <tableId> --rows 1-24 [--max-chars 8000]
 s2outline tables <manifest> '<tableIds-json>' --rows 1-24 [--max-chars 8000]
 s2outline review-batch <manifest> '<review-json>'
 s2outline status <manifest>
-s2outline decision-next <manifest> [--max-items 50]
+s2outline decision-next <manifest> [--max-items 50] [--max-chars 12000]
+s2outline decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]
 s2outline decision-batch <manifest> '<batch-json>'
+s2outline appendix-next <manifest> [--max-items 20]
+s2outline appendix-decision-batch <manifest> '<batch-json>'
 s2outline decisions <manifest>
 s2outline compose <manifest>
 s2outline finalize <manifest>
@@ -46,7 +49,7 @@ s2outline finalize <manifest>
 - `tender_review_chunks.json`、`tender_review_state.json`：按正文顺序建立的段落/表格分块和可恢复进度。
 - `requirement_ledger.json`：由你的逐块判断累积形成的招标义务台账。
 
-`headings` 优先检查每个招标文件是否存在可靠 Word 目录。存在目录时只返回目录项；不存在目录时返回正文标题分页，使用返回的 `next_cursor` 继续读取。如果返回 `requires_full_review=true`，说明对应文件连正文标题或附表结构也没有，必须通过 `next-batch/review-batch` 完整审阅受控分块，再重跑 `headings`，直到 `complete=true`。`headings` 本身不读取表格内容，也不改变正文审阅进度。
+`headings` 优先检查每个招标文件是否存在可靠 Word 目录。目录页和正文标题都必须循环使用返回的 `next_cursor` 继续读取，直到 `complete=true`。如果返回 `requires_full_review=true`，说明对应文件连正文标题或附表结构也没有，必须通过 `next-batch/review-batch` 完整审阅受控分块，再重跑 `headings`。`headings` 本身不读取表格内容，也不改变正文审阅进度。
 
 不要绕过这些命令自由扫描原始 DOCX、XML 或全量审阅 JSON。不得直接读取 `tender_review_chunks.json`、`tender_review_state.json` 或 `requirement_ledger.json`；它们只供受控命令维护。受控导航把正文顺序、表格续读和已读覆盖变成可验证状态；是否构成目录节点仍由你判断。
 
@@ -64,7 +67,7 @@ s2outline finalize <manifest>
 
 ### 2. 先读全文结构，再自主详读
 
-执行 `s2outline headings`。如果返回 `source=toc`，该文件已有可靠目录，只读这些目录项即可；不要再为掌握结构而扫描正文 headings。如果返回 `source=body_headings`，按 `next_cursor` 继续调用。如果返回 `source=full_text_review`，持续执行 `next-batch/review-batch`，直到这些文件的分块全部审阅，再重跑 `headings`。必须最终得到 `complete=true`，才能进入决策。掌握结构后，再根据模板适用性、独立响应义务、评分点、专题方案和异常条款自主选择需要详读的章节。
+执行 `s2outline headings`。如果返回 `source=toc`，该文件已有可靠目录，不要再为掌握结构而扫描正文 headings；如果返回 `source=body_headings`，读取正文标题。两类来源都按 `next_cursor` 循环。如果返回 `source=full_text_review`，持续执行 `next-batch/review-batch`，直到这些文件的分块全部审阅，再重跑 `headings`。必须最终得到 `complete=true`，才能进入决策。掌握结构后，再根据模板适用性、独立响应义务、评分点、专题方案和异常条款自主选择需要详读的章节。
 
 - 用 `s2outline window` 从标题 evidenceId 展开上下文；需要完整段落时用 `s2outline read`。
 - 需要连续审阅一组正文时用 `s2outline next-batch`；判断完成后可用 `s2outline review-batch` 记录义务和处置。
@@ -114,9 +117,9 @@ s2outline finalize <manifest>
 
 ### 5. 受控分批提交并机械合成
 
-不得直接写入 `outputFile`、`outline_authoring_decisions.json` 或决策状态文件。不得现场编写临时 Python、Shell、heredoc、循环或临时 JSON 文件批量拼装 decisions，也不得把工具输出保存后交给脚本自动选择。每批必须由你读取后当场逐项判断。
+不得直接写入 `outputFile`、`outline_authoring_decisions.json` 或决策状态文件。不得现场编写临时 Python、Shell、heredoc、循环或临时 JSON 文件批量拼装 decisions，不得读取 OpenCode 私有 tool-output 代替分页，也不得把工具输出交给脚本自动选择。每批必须由你读取后当场逐项判断。
 
-先执行 `s2outline decision-next <manifest> --max-items 50` 获取一批固定模板节点。返回值中的 `comparison_context` 是精简招标目录树；必须把模板目录与招标目录放在一起同批对照，同时检查招标有而模板没有的独立目录候选。再把本批所有模板节点原样提交给 `decision-batch`：
+先执行 `s2outline decision-next <manifest> --max-items 50 --max-chars 12000` 获取一批固定模板节点。返回值中的 `comparison_context` 是精简招标目录树；若未完成，按 `next_cursor` 循环执行 `decision-context`，未完成不得执行 `decision-batch`。同批对照模板与招标目录并检查新增候选后，再把本批所有模板节点原样提交给 `decision-batch`：
 
 ```json
 {
@@ -136,10 +139,10 @@ s2outline finalize <manifest>
 - 每批先完整读取 `comparison_context`，不得脱离当前招标目录仅凭模板标题连续提交统一结论。
 - `retain` 不写理由；`suggest_delete` 必须写明确理由，可按需写 `tender_basis`。
 - `additions` 表示 `suggest_add`，必须给出唯一 `node_id`、父节点、编号、标题和理由；可靠招标依据按需写 `tender_basis`。
-- 附表新增只提交 `comparison_context.appendices` 中的 `appendix_id`，不要重写表号和标题；固定程序从现有结构化附表清单原样复制。
+- 附表判断只提交最近一次 `appendix-next` 返回项中的 `appendix_id`，不要重写表号和标题；固定程序从现有结构化附表清单原样复制。
 - 沿用模板编号，不自动全局重编号；新增编号由你的专业判断显式提交。
 
-重复执行 `decision-next` 和 `decision-batch`，直到 `remaining_count=0`。然后执行不带 JSON 参数的 `s2outline decisions <manifest>`，由固定程序汇总 decisions；再执行 `s2outline compose <manifest>`。未完成逐项判断时 `decisions` 必须失败，不能把漏判节点自动写成必要。
+重复执行 `decision-next/decision-context/decision-batch`，直到模板 `remaining_count=0`。随后循环执行 `appendix-next/appendix-decision-batch`；每个附表必须显式选择 `include` 或 `exclude`，不得默认纳入或排除。附表也完成后执行不带 JSON 参数的 `s2outline decisions <manifest>` 汇总，再执行 `s2outline compose <manifest>`。漏判节点或附表不得自动写成必要。
 
 `compose` 从模板骨架应用上述决策，生成 `outputFile` 和 `outline_compose_report.json`。报告按每个二级节点给出三级对照，用它确认模板三级节点均已输出。
 
@@ -177,7 +180,7 @@ s2outline finalize <manifest>
 - 最后一个根节点统一为“技术附表”，编号沿用模板末章样式。
 - 以独立表号、独立表名和独立填写区域识别实际表单；每张表作为“技术附表”的直接子节点并保留原编号。
 - 若“技术附表 A/B”只是容纳多张表的分组，分组标题本身不输出；所有实际表单扁平放入 `children`。
-- 通过 `decision-next` 的 `comparison_context.appendices` 掌握全部附表标题；它直接来自 `tender_appendix_inventory.json`，只包含 `following_table_count > 0` 的实际表单。按 `appendix_id` 提交即可，不要求读取全部附表内容；只有附表内容影响目录判断时才按需详读。父子标题不得同时输出。
+- 通过 `appendix-next` 分页掌握全部附表标题；它直接来自 `tender_appendix_inventory.json`，只包含 `following_table_count > 0` 的实际表单。按 `appendix_id` 向 `appendix-decision-batch` 提交即可，不要求读取全部附表内容；只有附表内容影响目录判断时才按需详读。父子标题不得同时输出。
 - 模板已有且适用的附表标为必要；招标新增且模板没有的附表标为建议增加；招标方参考表不输出。
 - 表内栏目、参数行和小计分组不得展开为目录子节点。
 
