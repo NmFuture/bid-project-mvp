@@ -37,6 +37,7 @@ from numbering_fixer import (
     normalize_heading_style_names,
     _replace_paragraph_text_preserve_format,
 )
+from docx_style_pruner import prune_unused_styles
 
 
 def _normalize_headings_by_outline_level(doc) -> int:
@@ -195,8 +196,10 @@ def preprocess(
     verbose: bool = False,
 ) -> dict:
     doc = Document(str(in_path))
+    style_prune = prune_unused_styles(doc)
 
     stats = {
+        "styles_pruned": style_prune["removed"],
         "heading_by_outline": _normalize_headings_by_outline_level(doc),
         "heading_normalize": normalize_heading_style_names(doc),
         "numPr_stripped": strip_numPr_from_body(doc),

@@ -46,6 +46,7 @@ from copy import deepcopy
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
 from numbering_fixer import inject_prefix_to_headings, remap_material_headings_to_navigation, strip_numPr_from_body, strip_numPr_from_heading_styles
+from docx_style_pruner import prune_unused_styles
 
 
 def _path_exists(path: Path) -> bool:
@@ -86,6 +87,34 @@ def _isolate_section(doc) -> bool:
 
 logging.basicConfig(level=logging.INFO, format="[merger] %(message)s")
 log = logging.getLogger("merger")
+
+
+class BatchComposer(Composer):
+    """将全量 ID 扫描延迟到所有素材追加完成之后。"""
+
+    def __init__(self, doc):
+        self._defer_global_ids = True
+        super().__init__(doc)
+
+    def renumber_bookmarks(self):
+        if not self._defer_global_ids:
+            super().renumber_bookmarks()
+
+    def renumber_docpr_ids(self):
+        if not self._defer_global_ids:
+            super().renumber_docpr_ids()
+
+    def renumber_nvpicpr_ids(self):
+        if not self._defer_global_ids:
+            super().renumber_nvpicpr_ids()
+
+    def finalize_global_ids(self):
+        if not self._defer_global_ids:
+            return
+        self._defer_global_ids = False
+        super().renumber_bookmarks()
+        super().renumber_docpr_ids()
+        super().renumber_nvpicpr_ids()
 
 
 # ---------- 工具 ----------
@@ -205,7 +234,8 @@ def merge(
     # 打开母版并清空 body（只保留 sectPr）
     master_doc = Document(str(template_path))
     _master_doc_clear_body(master_doc)
-    composer = Composer(master_doc)
+    prune_unused_styles(master_doc)
+    composer = BatchComposer(master_doc)
 
     stats = {
         "cover_merged": 0,
@@ -457,6 +487,7 @@ def merge(
     strip_numPr_from_heading_styles(master_doc)
     strip_numPr_from_body(master_doc)
     os.makedirs(os.fspath(out_path.parent), exist_ok=True)
+    composer.finalize_global_ids()
     composer.save(str(out_path))
 
     warning_messages = {

@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml.ns import qn
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +45,80 @@ def load_assembler_script(name: str):
 
 
 class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_prune_unused_styles_keeps_references_dependencies_and_pipeline_styles(self) -> None:
+        pruner = load_assembler_script("docx_style_pruner")
+        doc = Document()
+        base_style = doc.styles.add_style("Referenced Base", WD_STYLE_TYPE.PARAGRAPH)
+        used_style = doc.styles.add_style("Referenced Child", WD_STYLE_TYPE.PARAGRAPH)
+        used_style.base_style = base_style
+        doc.add_paragraph("正文", style=used_style)
+        for index in range(200):
+            doc.styles.add_style(f"Unused Style {index}", WD_STYLE_TYPE.PARAGRAPH)
+
+        before = len(doc.styles)
+        result = pruner.prune_unused_styles(doc)
+        remaining_by_id = {
+            style.get(qn("w:styleId")): style
+            for style in doc.styles.element.findall(qn("w:style"))
+        }
+        remaining_names = {
+            name.get(qn("w:val"))
+            for style in remaining_by_id.values()
+            if (name := style.find(qn("w:name"))) is not None
+        }
+
+        self.assertGreaterEqual(result["removed"], 200)
+        self.assertLess(len(doc.styles), before - 190)
+        self.assertIn(used_style.style_id, remaining_by_id)
+        self.assertIn(base_style.style_id, remaining_by_id)
+        self.assertIn("Normal", remaining_names)
+        self.assertIn("heading 6", {name.lower() for name in remaining_names})
+
+    def test_preprocess_removes_unused_style_baggage_from_saved_document(self) -> None:
+        preprocess = load_assembler_script("preprocess")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_path = root / "source.docx"
+            output_path = root / "output.docx"
+            source = Document()
+            source.add_paragraph("正文")
+            for index in range(200):
+                source.styles.add_style(f"Unused Style {index}", WD_STYLE_TYPE.PARAGRAPH)
+            source.save(source_path)
+
+            stats = preprocess.preprocess(source_path, output_path)
+            output = Document(output_path)
+
+        self.assertGreaterEqual(stats["styles_pruned"], 200)
+        self.assertLess(len(output.styles), 30)
+
+    def test_batch_composer_defers_global_renumbering_until_finalize(self) -> None:
+        merger = load_assembler_script("merger")
+        master = Document()
+        first = Document()
+        first.add_paragraph("first")
+        second = Document()
+        second.add_paragraph("second")
+
+        with (
+            patch.object(merger.Composer, "renumber_bookmarks", autospec=True) as bookmarks,
+            patch.object(merger.Composer, "renumber_docpr_ids", autospec=True) as docpr_ids,
+            patch.object(merger.Composer, "renumber_nvpicpr_ids", autospec=True) as nvpicpr_ids,
+        ):
+            composer = merger.BatchComposer(master)
+            composer.append(first)
+            composer.append(second)
+
+            self.assertEqual(bookmarks.call_count, 0)
+            self.assertEqual(docpr_ids.call_count, 0)
+            self.assertEqual(nvpicpr_ids.call_count, 0)
+
+            composer.finalize_global_ids()
+
+        self.assertEqual(bookmarks.call_count, 1)
+        self.assertEqual(docpr_ids.call_count, 1)
+        self.assertEqual(nvpicpr_ids.call_count, 1)
+
     def test_prepare_toc_json_uses_confirmed_outline_tree_instead_of_opencode_numbers(self) -> None:
         from app.services import tech_assembly
 
