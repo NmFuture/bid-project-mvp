@@ -5,8 +5,7 @@ from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.file_utils import safe_segment
-from app.services.identity import build_project_identity
-from app.services.material_folder_scope import project_material_root_path
+from app.services.identity import build_project_material_scope
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE
 from app.services.technical_material_index import rebuild_technical_material_index_strict
 from app.services.technical_material_store import technical_material_store
@@ -64,14 +63,21 @@ async def sync_technical_parse_appendices(
     if not files:
         return {"status": "skipped", "syncedCount": 0, "items": []}
 
-    identity = build_project_identity(project)
+    material_scope = build_project_material_scope(project)
+    identity = material_scope["identity"]
     material_project_id = str(identity.get("projectId") or "").strip()
     if not material_project_id:
         raise TechnicalParseAssetError("项目素材 ID 为空，无法同步技术标附表。")
 
-    await technical_material_store.raw_bootstrap_folders(material_project_id)
+    project_name = str(project.get("name") or identity.get("bidProjectName") or "").strip()
+    project_scope = next(
+        (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
+        {},
+    )
+    target_path = str(project_scope.get("path") or "").strip()
+    await technical_material_store.raw_bootstrap_folders(material_project_id, project_name)
     result = await technical_material_store.raw_upload(
-        target_path=project_material_root_path(TECHNICAL_BID_TYPE, material_project_id),
+        target_path=target_path,
         project_id=material_project_id,
         project_code=str(identity.get("projectCode") or material_project_id),
         project_name=str(identity.get("projectName") or project.get("name") or ""),
@@ -98,5 +104,5 @@ async def sync_technical_parse_appendices(
         "status": "synced",
         "syncedCount": len(uploaded_items),
         "items": uploaded_items,
-        "targetPath": project_material_root_path(TECHNICAL_BID_TYPE, material_project_id),
+        "targetPath": target_path,
     }

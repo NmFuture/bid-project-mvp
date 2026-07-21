@@ -48,6 +48,7 @@ class RawFolderOperations:
         self,
         *,
         project_id: str,
+        project_name: str = "",
         bid_type: str,
         session_factory: Any = async_session,
     ) -> dict[str, Any]:
@@ -56,6 +57,7 @@ class RawFolderOperations:
             result = await bootstrap_project_material_folder(
                 session,
                 project_id=project_id,
+                project_name=project_name,
                 bid_type=bid_type,
                 find_folder=self.find_folder,
                 ensure_folder_path=self.ensure_folder_path,

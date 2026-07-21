@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.models.materials import RawFile, RawFolder
 from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.file_utils import safe_segment
 from app.services.material_folder_scope import (
     business_customized_child_tier_for_parent_folder_path,
     business_customized_subfolder_specs,
@@ -171,6 +172,7 @@ async def bootstrap_project_material_folder(
     session: Any,
     *,
     project_id: str,
+    project_name: str = "",
     bid_type: str,
     find_folder: FindFolder,
     ensure_folder_path: EnsureFolderPath,
@@ -178,10 +180,21 @@ async def bootstrap_project_material_folder(
     clean_id = safe_folder_segment(project_id, "")
     if not clean_id:
         raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
+    folder_name = safe_segment(project_name, clean_id)
     normalized_bid_type = normalize_material_bid_type(bid_type)
-    root_path = f"{material_tier_root_path(normalized_bid_type, 'project')}/{clean_id}"
+    root_path = f"{material_tier_root_path(normalized_bid_type, 'project')}/{folder_name}"
 
-    if await find_folder(session, root_path):
+    existing = await find_folder(session, root_path)
+    if existing:
+        existing_project_id = str(getattr(existing, "project_id", "") or "").strip()
+        if existing_project_id and existing_project_id != clean_id:
+            raise PeripheralError(
+                409,
+                f"项目定制目录名称已被其他项目使用：{folder_name}",
+                "PROJECT_FOLDER_NAME_CONFLICT",
+            )
+        if not existing_project_id:
+            existing.project_id = clean_id
         return {"message": "项目目录骨架已存在。", "payload": {"projectId": clean_id, "path": root_path}}
 
     parent = await find_folder(session, material_tier_root_path(normalized_bid_type, "project"))
@@ -197,14 +210,14 @@ async def bootstrap_project_material_folder(
         )
         parent = await ensure_folder_path(
             session,
-            material_tier_folder_name("project"),
+            material_tier_folder_name_for_bid_type(normalized_bid_type, "project"),
             root_folder.id,
             "project",
             normalized_bid_type,
             None,
             material_tier_folder_sort_order("project"),
         )
-    project_folder = await ensure_folder_path(session, clean_id, parent.id, "project", normalized_bid_type, clean_id, 0)
+    project_folder = await ensure_folder_path(session, folder_name, parent.id, "project", normalized_bid_type, clean_id, 0)
     if normalized_bid_type == BUSINESS_BID_TYPE:
         await ensure_business_customized_subfolders(
             session,

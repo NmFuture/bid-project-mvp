@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 from app.services.material_raw_folder_operations import RawFolderOperations
 from app.services.material_raw_lifecycle_operations import create_raw_folder
+from app.services.material_folder_maintenance import bootstrap_project_material_folder
+from app.services.peripheral import PeripheralError
 
 
 class _ScalarResult:
@@ -42,6 +44,98 @@ class _CreateFolderSession:
 
 
 class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
+    async def test_technical_project_folder_uses_project_name_and_keeps_internal_id(self) -> None:
+        parent = SimpleNamespace(id=20, path="技术标/项目定制")
+        project_folder = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/华能-100MW 风电项目",
+            project_id="PRJ-TECH-001",
+        )
+        find_folder = AsyncMock(side_effect=(None, parent))
+        ensure_folder_path = AsyncMock(return_value=project_folder)
+        session = object()
+
+        result = await bootstrap_project_material_folder(
+            session,
+            project_id="PRJ-TECH-001",
+            project_name="华能/100MW 风电项目",
+            bid_type="技术标",
+            find_folder=find_folder,
+            ensure_folder_path=ensure_folder_path,
+        )
+
+        self.assertEqual(result["payload"]["projectId"], "PRJ-TECH-001")
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/华能-100MW 风电项目")
+        ensure_folder_path.assert_awaited_once_with(
+            session,
+            "华能-100MW 风电项目",
+            parent.id,
+            "project",
+            "技术标",
+            "PRJ-TECH-001",
+            0,
+        )
+
+    async def test_project_folder_bootstrap_is_idempotent_for_same_project(self) -> None:
+        existing = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/华能风电项目",
+            project_id="PRJ-TECH-001",
+        )
+
+        result = await bootstrap_project_material_folder(
+            object(),
+            project_id="PRJ-TECH-001",
+            project_name="华能风电项目",
+            bid_type="技术标",
+            find_folder=AsyncMock(return_value=existing),
+            ensure_folder_path=AsyncMock(),
+        )
+
+        self.assertEqual(result["payload"]["path"], existing.path)
+
+    async def test_project_folder_bootstrap_rejects_same_name_for_different_project(self) -> None:
+        existing = SimpleNamespace(
+            id=22,
+            path="技术标/项目定制/同名项目",
+            project_id="PRJ-OTHER-001",
+        )
+
+        with self.assertRaises(PeripheralError) as context:
+            await bootstrap_project_material_folder(
+                object(),
+                project_id="PRJ-TECH-001",
+                project_name="同名项目",
+                bid_type="技术标",
+                find_folder=AsyncMock(return_value=existing),
+                ensure_folder_path=AsyncMock(),
+            )
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(context.exception.code, "PROJECT_FOLDER_NAME_CONFLICT")
+
+    async def test_technical_project_bootstrap_creates_canonical_project_customization_parent(self) -> None:
+        root = SimpleNamespace(id=1, path="技术标")
+        parent = SimpleNamespace(id=2, path="技术标/项目定制")
+        project_folder = SimpleNamespace(
+            id=3,
+            path="技术标/项目定制/华能风电项目",
+            project_id="PRJ-TECH-001",
+        )
+        ensure_folder_path = AsyncMock(side_effect=(root, parent, project_folder))
+
+        result = await bootstrap_project_material_folder(
+            object(),
+            project_id="PRJ-TECH-001",
+            project_name="华能风电项目",
+            bid_type="技术标",
+            find_folder=AsyncMock(side_effect=(None, None)),
+            ensure_folder_path=ensure_folder_path,
+        )
+
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/华能风电项目")
+        self.assertEqual(ensure_folder_path.await_args_list[1].args[1], "项目定制")
+
     async def test_technical_root_does_not_precreate_tier_folders(self) -> None:
         ensure_runtime_tables = AsyncMock()
         operations = RawFolderOperations(ensure_runtime_tables=ensure_runtime_tables)

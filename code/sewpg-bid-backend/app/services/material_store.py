@@ -110,9 +110,15 @@ class MaterialStore:
             page_size=page_size,
         )
 
-    async def raw_bootstrap_folders(self, project_id: str, bid_type: str) -> dict[str, Any]:
+    async def raw_bootstrap_folders(
+        self,
+        project_id: str,
+        bid_type: str,
+        project_name: str = "",
+    ) -> dict[str, Any]:
         return await self._raw_folders.raw_bootstrap_folders(
             project_id=project_id,
+            project_name=project_name,
             bid_type=bid_type,
             session_factory=async_session,
         )

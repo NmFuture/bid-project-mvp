@@ -39,7 +39,7 @@ class BidProjectService:
         clear_turbine_model: bool = False,
         sync_business_parse_assets: bool = False,
         sync_technical_parse_assets: bool = False,
-        bootstrap_material_folder: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        bootstrap_material_folder: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.bid_type = bid_type
         self.not_found_message = not_found_message
@@ -106,11 +106,18 @@ class BidProjectService:
         )
         decision = str((data or {}).get("reviewDecision") or "").strip().lower()
         if self.bootstrap_material_folder is not None and decision == "participate":
+            material_scope = build_project_material_scope(project)
+            identity = material_scope["identity"]
             material_project_id = str(
-                build_project_material_scope(project)["identity"].get("projectId") or project_id
+                identity.get("projectId") or project_id
+            )
+            project_name = str(project.get("name") or identity.get("bidProjectName") or "").strip()
+            project_scope = next(
+                (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
+                {},
             )
             try:
-                await self.bootstrap_material_folder(material_project_id)
+                bootstrap_result = await self.bootstrap_material_folder(material_project_id, project_name)
             except PeripheralError as exc:
                 project["materialFolderBootstrap"] = {
                     "status": "failed",
@@ -123,10 +130,15 @@ class BidProjectService:
                     "message": str(exc),
                 }
             else:
+                bootstrap_payload = (
+                    bootstrap_result.get("payload")
+                    if isinstance(bootstrap_result, dict) and isinstance(bootstrap_result.get("payload"), dict)
+                    else {}
+                )
                 project["materialFolderBootstrap"] = {
                     "status": "ok",
                     "projectId": material_project_id,
-                    "path": project_material_root_path(self.bid_type, material_project_id),
+                    "path": str(bootstrap_payload.get("path") or project_scope.get("path") or ""),
                 }
         if self.sync_business_parse_assets and decision == "participate":
             try:
@@ -221,6 +233,10 @@ class BidProjectService:
         )
         material_project_code = str(identity.get("projectCode") or project.get("projectCode") or project["id"])
         material_project_id = str(identity.get("projectId") or project["id"])
+        project_scope = next(
+            (item for item in scope["readableScopes"] if item.get("key") == "project"),
+            {},
+        )
         return {
             "projectId": project["id"],
             "bidProjectId": project["id"],
@@ -231,7 +247,10 @@ class BidProjectService:
             "identity": identity,
             "turbineModel": project.get("turbineModel") or {},
             "turbineModelLabel": project.get("turbineModelLabel") or "",
-            "path": f"{bid_type}/项目素材/{material_project_id}",
+            "path": str(
+                project_scope.get("path")
+                or project_material_root_path(bid_type, material_project_id)
+            ),
             "bidType": bid_type,
             "readableScopes": scope["readableScopes"],
             "paths": scope["paths"],
@@ -239,11 +258,14 @@ class BidProjectService:
         }
 
 
-async def _bootstrap_technical_material_folder(material_project_id: str) -> dict[str, Any]:
+async def _bootstrap_technical_material_folder(
+    material_project_id: str,
+    project_name: str,
+) -> dict[str, Any]:
     # 延迟导入：technical_material_store 依赖链较重，避免模块加载期循环引用。
     from app.services.technical_material_store import technical_material_store
 
-    return await technical_material_store.raw_bootstrap_folders(material_project_id)
+    return await technical_material_store.raw_bootstrap_folders(material_project_id, project_name)
 
 
 business_project_service = BidProjectService(
