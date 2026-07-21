@@ -947,6 +947,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         else None
     )
     decisions: dict[str, Any] | None = None
+    appendix_decisions: list[dict[str, Any]] = []
     if structure is not None:
         try:
             require_composed = _requires_composed_outline(manifest)
@@ -958,15 +959,16 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
             if require_composed:
                 workflow_proof = _strict_workflow_binding(manifest, work_dir) or {}
                 if workflow_proof:
-                    workflow_proof.update(
-                        decision_workflow.validate_finalized_decisions(
-                            work_dir,
-                            structure,
-                            decisions,
-                            workflow_binding=workflow_proof,
-                            appendix_items=review_workflow.decision_appendix_items(work_dir),
-                        )
+                    decision_validation = decision_workflow.validate_finalized_decisions(
+                        work_dir,
+                        structure,
+                        decisions,
+                        workflow_binding=workflow_proof,
+                        appendix_items=review_workflow.decision_appendix_items(work_dir),
+                        include_appendix_decisions=True,
                     )
+                    appendix_decisions = decision_validation.pop("appendixDecisions")
+                    workflow_proof.update(decision_validation)
                 outline_composer.validate_compose_report(
                     work_dir=work_dir,
                     output_file=output_file,
@@ -988,7 +990,11 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
     action_counts: Counter[str] = Counter()
     total_nodes = validate_nodes(nodes, action_counts=action_counts)
     validate_tender_search_texts(nodes, manifest)
-    validate_technical_appendix(nodes, work_dir=work_dir)
+    validate_technical_appendix(
+        nodes,
+        work_dir=work_dir,
+        appendix_decisions=appendix_decisions,
+    )
     review_summary = (
         review_workflow.validate_review_completion(work_dir, nodes)
         if manifest.get("tenderFiles")
@@ -1105,8 +1111,109 @@ def validate_tender_search_texts(nodes: list[dict[str, Any]], manifest: dict[str
     validate(nodes, "nodes")
 
 
-def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) -> None:
-    indexes = [index for index, node in enumerate(nodes) if str(node.get("title") or "").strip() == "技术附表"]
+def validate_technical_appendix(
+    nodes: list[dict[str, Any]],
+    *,
+    work_dir: Path,
+    appendix_decisions: list[dict[str, Any]] | None = None,
+) -> None:
+    appendix_paths: list[tuple[tuple[int, ...], dict[str, Any]]] = []
+
+    def collect_appendix_paths(items: list[dict[str, Any]], path: tuple[int, ...] = ()) -> None:
+        for index, node in enumerate(items):
+            node_path = (*path, index)
+            if str(node.get("title") or "").strip() == "技术附表":
+                appendix_paths.append((node_path, node))
+            collect_appendix_paths(node.get("children") or [], node_path)
+
+    collect_appendix_paths(nodes)
+    resolved_decisions = appendix_decisions or []
+    included = [item for item in resolved_decisions if item.get("decision") == "include"]
+    excluded = [item for item in resolved_decisions if item.get("decision") == "exclude"]
+    if not included:
+        if appendix_paths:
+            if excluded and len(appendix_paths) == 1 and appendix_paths[0][0] == (
+                len(nodes) - 1,
+            ):
+                raise SystemExit(
+                    "技术附表包含已排除 appendix_id: "
+                    + ", ".join(str(item["appendix_id"]) for item in excluded)
+                )
+            raise SystemExit("技术附表必须是唯一的最后一个根节点")
+        return
+    if len(appendix_paths) != 1 or appendix_paths[0][0] != (len(nodes) - 1,):
+        raise SystemExit("技术附表必须是唯一的最后一个根节点")
+    appendix = appendix_paths[0][1]
+    children = appendix.get("children") or []
+    for index, child in enumerate(children):
+        if child.get("children"):
+            raise SystemExit(f"技术附表.children[{index}] must not contain table-field descendants")
+
+    expected_identities = [
+        (
+            str(item["appendix_id"]),
+            normalize_outline_identity(item.get("number")),
+            normalize_outline_identity(item.get("title")),
+        )
+        for item in included
+    ]
+    actual_identities = [
+        (
+            normalize_outline_identity(child.get("number")),
+            normalize_outline_identity(child.get("title")),
+        )
+        for child in children
+    ]
+    mismatched_ids = [
+        appendix_id
+        for index, (appendix_id, number, title) in enumerate(expected_identities)
+        if index >= len(actual_identities) or actual_identities[index] != (number, title)
+    ]
+    expected_counts = Counter(
+        (number, title) for _, number, title in expected_identities
+    )
+    actual_counts = Counter(actual_identities)
+    excluded_ids: list[str] = []
+    extra_ids: list[str] = []
+    for identity, actual_count in actual_counts.items():
+        surplus_count = actual_count - expected_counts[identity]
+        if surplus_count <= 0:
+            continue
+        matching_excluded_ids = [
+            str(item["appendix_id"])
+            for item in excluded
+            if (
+                normalize_outline_identity(item.get("number")),
+                normalize_outline_identity(item.get("title")),
+            )
+            == identity
+        ]
+        excluded_ids.extend(matching_excluded_ids[:surplus_count])
+        surplus_count -= len(matching_excluded_ids[:surplus_count])
+        if surplus_count <= 0:
+            continue
+        matching_included_ids = [
+            str(item["appendix_id"])
+            for item in included
+            if (
+                normalize_outline_identity(item.get("number")),
+                normalize_outline_identity(item.get("title")),
+            )
+            == identity
+        ]
+        extra_ids.extend(
+            (matching_included_ids or ["未知"] * surplus_count)[:surplus_count]
+        )
+    if excluded_ids or mismatched_ids or extra_ids:
+        details: list[str] = []
+        if mismatched_ids:
+            details.append("缺失或顺序错误 appendix_id: " + ", ".join(mismatched_ids))
+        if excluded_ids:
+            details.append("已排除但仍输出 appendix_id: " + ", ".join(excluded_ids))
+        if extra_ids:
+            details.append("重复或多余 appendix_id: " + ", ".join(extra_ids))
+        raise SystemExit("技术附表与最终附表决策不一致；" + "；".join(details))
+
     appendix_inventory_path = work_dir / "tender_appendix_inventory.json"
     inventory_items: list[dict[str, Any]] = []
     if appendix_inventory_path.exists():
@@ -1118,15 +1225,6 @@ def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) 
     positive_inventory_items = [
         item for item in inventory_items if int(item.get("following_table_count") or 0) > 0
     ]
-    if not indexes:
-        return
-    if indexes != [len(nodes) - 1]:
-        raise SystemExit("技术附表 must be the single last root node")
-    appendix = nodes[indexes[0]]
-    for index, child in enumerate(appendix.get("children") or []):
-        if child.get("children"):
-            raise SystemExit(f"技术附表.children[{index}] must not contain table-field descendants")
-
     template_structure_path = work_dir / "template_structure.json"
     if not template_structure_path.exists():
         return

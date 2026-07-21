@@ -984,7 +984,8 @@ def validate_finalized_decisions(
     *,
     workflow_binding: dict[str, str],
     appendix_items: list[dict[str, Any]] | None = None,
-) -> dict[str, str]:
+    include_appendix_decisions: bool = False,
+) -> dict[str, Any]:
     annotated, items = _annotated_items(structure)
     fingerprint = annotated["input_fingerprint"]
     path = _state_path(work_dir)
@@ -1038,4 +1039,26 @@ def validate_finalized_decisions(
         raise SystemExit("outline decisions do not match the controlled decision state")
     if str(state.get("finalized_decisions_digest") or "") != expected_digest:
         raise SystemExit("必须先执行 s2outline decisions 完成受控决策")
-    return {"decisionStateDigest": _payload_digest(state)}
+    result: dict[str, Any] = {"decisionStateDigest": _payload_digest(state)}
+    if include_appendix_decisions:
+        resolved_appendix_decisions: list[dict[str, Any]] = []
+        for item in inventory:
+            appendix_id = str(item["appendix_id"])
+            decision = appendix_decisions[appendix_id]
+            if not isinstance(decision, dict) or decision.get("decision") not in {
+                "include",
+                "exclude",
+            }:
+                raise SystemExit(
+                    f"outline decision state appendix decision is invalid: {appendix_id}"
+                )
+            resolved_appendix_decisions.append(
+                {
+                    "appendix_id": appendix_id,
+                    "number": item["number"],
+                    "title": item["title"],
+                    "decision": decision["decision"],
+                }
+            )
+        result["appendixDecisions"] = resolved_appendix_decisions
+    return result

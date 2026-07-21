@@ -219,6 +219,110 @@ def submit_outline_changes(outline_runner, manifest: dict, manifest_path: Path, 
 
 
 class TocSkillScriptTests(unittest.TestCase):
+    def _prepare_finalized_appendix_outline(
+        self,
+        root: Path,
+        decisions: list[str],
+        *,
+        mutate_state=None,
+    ) -> tuple[object, dict, Path]:
+        outline_runner = load_outline_script("run_from_manifest")
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        output = root / "toc.json"
+        manifest_path = root / "s2_input.json"
+
+        template_doc = Document()
+        template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+        template_doc.save(template)
+        tender_doc = Document()
+        for number, title in (("附表A.1", "技术参数表"), ("附表A.2", "供货范围表")):
+            tender_doc.add_paragraph(f"{number} {title}")
+            table = tender_doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "参数"
+            table.cell(0, 1).text = "要求"
+            table.cell(1, 0).text = "示例"
+            table.cell(1, 1).text = "投标人填写"
+        tender_doc.save(tender)
+        manifest = {
+            "workDir": str(root),
+            "templateFile": str(template),
+            "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+            "outputFile": str(output),
+            "requireComposedOutline": True,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        outline_runner.write_template_structure(manifest, manifest_path)
+        outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+        batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+        outline_runner.dispatch_command(
+            "decision-batch",
+            manifest,
+            manifest_path,
+            [
+                json.dumps(
+                    {
+                        "batch_token": batch["batch_token"],
+                        "items": [
+                            {"target_id": item["target_id"], "decision": "retain"}
+                            for item in batch["items"]
+                        ],
+                        "additions": [
+                            {
+                                "node_id": "ADD-APPENDIX",
+                                "parent_id": None,
+                                "number": "第2章",
+                                "title": "技术附表",
+                                "reason": "招标文件包含独立附表。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+        )
+        appendix_batch = outline_runner.dispatch_command(
+            "appendix-next", manifest, manifest_path, []
+        )
+        self.assertEqual(len(appendix_batch["items"]), len(decisions))
+        appendix_payload = []
+        for index, (item, decision) in enumerate(zip(appendix_batch["items"], decisions)):
+            payload = {
+                "appendix_id": item["appendix_id"],
+                "decision": decision,
+                "reason": "逐项核验招标附表。",
+            }
+            if decision == "include":
+                payload.update(
+                    {
+                        "node_id": f"ADD-APPENDIX-{index + 1}",
+                        "parent_id": "ADD-APPENDIX",
+                    }
+                )
+            appendix_payload.append(payload)
+        outline_runner.dispatch_command(
+            "appendix-decision-batch",
+            manifest,
+            manifest_path,
+            [
+                json.dumps(
+                    {
+                        "batch_token": appendix_batch["batch_token"],
+                        "items": appendix_payload,
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+        )
+        if mutate_state is not None:
+            state_path = root / "outline_decision_state.json"
+            state = json_load(state_path)
+            mutate_state(state, appendix_batch["items"])
+            state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+        outline_runner.compose_manifest(manifest, manifest_path)
+        return outline_runner, manifest, manifest_path
+
     def test_bid_gap_planner_routes_fill_template_material_to_ai_fill(self) -> None:
         gap_runner = load_gap_planner_script("run_from_manifest")
 
@@ -3838,6 +3942,96 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["summary"]["reviewCoverage"], 0.0)
         self.assertEqual(result["summary"]["unfinishedTableCount"], 1)
 
+    def test_bid_outline_finalize_rejects_nested_technical_appendix(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "technical-outline.v1",
+                        "nodes": [
+                            {
+                                "number": "第6章",
+                                "title": "技术方案",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [
+                                    {
+                                        "number": "6.6",
+                                        "title": "技术附表",
+                                        "suggestion_action": "建议增加",
+                                        "suggestion_reason": "招标包含技术附表。",
+                                        "children": [],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_finalize_rejects_missing_included_appendix(self) -> None:
+        def remove_included_addition(state: dict, _items: list[dict]) -> None:
+            state["additions"] = [
+                addition
+                for addition in state["additions"]
+                if addition.get("node_id") != "ADD-APPENDIX-1"
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outline_runner, manifest, manifest_path = self._prepare_finalized_appendix_outline(
+                root,
+                ["include", "exclude"],
+                mutate_state=remove_included_addition,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "APP-0001"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_finalize_rejects_excluded_appendix_in_output(self) -> None:
+        def exclude_included_addition(state: dict, items: list[dict]) -> None:
+            appendix_id = items[0]["appendix_id"]
+            state["appendix_decisions"][appendix_id] = {
+                "appendix_id": appendix_id,
+                "decision": "exclude",
+                "reason": "逐项核验后排除。",
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outline_runner, manifest, manifest_path = self._prepare_finalized_appendix_outline(
+                root,
+                ["include", "exclude"],
+                mutate_state=exclude_included_addition,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "APP-0001"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_finalize_accepts_exact_ai_appendix_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outline_runner, manifest, manifest_path = self._prepare_finalized_appendix_outline(
+                root,
+                ["include", "exclude"],
+            )
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
+
     def test_bid_outline_finalize_allows_missing_appendices_and_free_number_title_split(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
@@ -4423,7 +4617,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(SystemExit, "模板目录不存在.*建议增加"):
+            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
                 outline_runner.finalize_manifest(manifest, manifest_path)
 
             payload = json_load(output)
@@ -4434,7 +4628,7 @@ class TocSkillScriptTests(unittest.TestCase):
             appendix["children"][0]["suggestion_reason"] = "招标文件新增独立表单。"
             output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-            with self.assertRaisesRegex(SystemExit, "没有独立填写表格"):
+            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
                 outline_runner.finalize_manifest(manifest, manifest_path)
 
             appendix_inventory["items"][0]["following_table_count"] = 1
@@ -4452,9 +4646,8 @@ class TocSkillScriptTests(unittest.TestCase):
                 }
             )
             output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            result = outline_runner.finalize_manifest(manifest, manifest_path)
-
-        self.assertEqual(result["summary"]["action_counts"], {"必要": 1, "建议增加": 3})
+            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
 
     def test_bid_outline_cli_accepts_navigation_options_after_manifest(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
