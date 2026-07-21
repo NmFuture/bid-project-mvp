@@ -35,6 +35,65 @@ def load_assembler_script(name: str):
 
 
 class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_init_params_accepts_unified_turbine_fields_and_unknown_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            params_path = root / "project_params.json"
+            toc_path.write_text("{}", encoding="utf-8")
+            params_path.write_text(
+                json.dumps(
+                    {
+                        "project_name": "测试项目",
+                        "project_short": "测试项目",
+                        "client_name": "测试业主",
+                        "tender_no": "TEST-001",
+                        "turbine_model": "EW6.25-220",
+                        "turbine_platform": "",
+                        "rated_power_kw": "",
+                        "rotor_diameter_m": "",
+                        "turbine_layout": "",
+                        "future_extension": "",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ASSEMBLER_SCRIPTS / "init_params.py"),
+                    "--toc",
+                    str(toc_path),
+                    "--out",
+                    str(params_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            params = json.loads(params_path.read_text(encoding="utf-8"))
+            self.assertEqual(params["turbine_model"], "EW6.25-220")
+            self.assertIn("待填写", params["turbine_platform"])
+            self.assertEqual(params["future_extension"], "")
+
+    def test_preprocess_replaces_turbine_placeholders_with_unified_field_names(self) -> None:
+        preprocess = load_assembler_script("preprocess")
+        doc = Document()
+        doc.add_paragraph("机型：[机型号]；额定功率：[额定功率]")
+
+        replaced = preprocess.replace_placeholders(
+            doc,
+            {"turbine_model": "EW6.25-220", "rated_power_kw": "6250"},
+        )
+
+        self.assertEqual(replaced, 1)
+        self.assertEqual(doc.paragraphs[0].text, "机型：EW6.25-220；额定功率：6250")
+
     def test_runner_returns_structured_contract_without_markdown_reports(self) -> None:
         runner = load_assembler_script("run_from_manifest")
         with tempfile.TemporaryDirectory() as tmp:
