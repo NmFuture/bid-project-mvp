@@ -94,6 +94,10 @@ async def create_raw_folder(
         parent_id = parent.id if parent else None
         full_path = "/".join([p for p in [parent_path_text.strip("/"), name] if p])
 
+        result2 = await session.execute(select(RawFolder).where(RawFolder.path == full_path))
+        if result2.scalar_one_or_none():
+            raise PeripheralError(409, "目录已存在。", "RAW_FOLDER_EXISTS")
+
         await lock_raw_folder_path(session, full_path)
         result2 = await session.execute(select(RawFolder).where(RawFolder.path == full_path))
         if result2.scalar_one_or_none():

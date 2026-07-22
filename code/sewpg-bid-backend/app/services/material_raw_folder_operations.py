@@ -183,12 +183,19 @@ class RawFolderOperations:
             parent = await session.get(RawFolder, parent_id)
             parent_path = str(parent.path or "")
         path = f"{parent_path}/{name}".lstrip("/")
-        await lock_raw_folder_path(session, path)
+        result = await session.execute(select(RawFolder).where(RawFolder.path == path))
+        existing = result.scalar_one_or_none()
+        if existing:
+            await self.clear_default_folder_deletion(session, path)
+            return existing
+
         await self.clear_default_folder_deletion(session, path)
+        await lock_raw_folder_path(session, path)
         result = await session.execute(select(RawFolder).where(RawFolder.path == path))
         existing = result.scalar_one_or_none()
         if existing:
             return existing
+
         folder = RawFolder(
             parent_id=parent_id,
             name=name,

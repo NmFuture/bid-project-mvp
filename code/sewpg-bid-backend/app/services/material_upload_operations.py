@@ -45,15 +45,32 @@ MaterialTierResolver = Callable[[RawFolder | None], str]
 CleaningJobEnqueuer = Callable[[int], dict[str, Any]]
 
 
-def _safe_segment(value: str, fallback: str) -> str:
+def _safe_segment(value: str, fallback: str, *, preserve_leading_dot: bool = True) -> str:
     raw = str(value or "").strip()
     # 保留以 '.' 开头的隐藏文件名（如 .gitkeep）在 sanitize 后不丢失前导点
-    leading_dot = raw.startswith(".") and len(raw) > 1
+    leading_dot = preserve_leading_dot and raw.startswith(".") and len(raw) > 1
     text = re.sub(r"[\\/:*?\"<>|]+", "-", raw)
     text = re.sub(r"\s+", " ", text).strip(" .")
     if leading_dot and text and not text.startswith("."):
         text = "." + text
     return text or fallback
+
+
+def _normalize_relative_directory(value: str) -> str:
+    normalized = str(value or "").replace("\\", "/").strip("/")
+    segments = (
+        _safe_segment(segment, "", preserve_leading_dot=False)
+        for segment in normalized.split("/")
+    )
+    return "/".join(segment for segment in segments if segment)
+
+
+def _sorted_directory_prefixes(relative_directories: set[str]) -> list[str]:
+    prefixes: set[str] = set()
+    for relative_directory in relative_directories:
+        parts = [part for part in relative_directory.split("/") if part]
+        prefixes.update("/".join(parts[:index]) for index in range(1, len(parts) + 1))
+    return sorted(prefixes, key=lambda path: (path.count("/") + 1, path))
 
 
 async def upload_raw_files(
@@ -94,46 +111,96 @@ async def upload_raw_files(
     normalized_tier = str(target_plan.get("materialTier") or "")
     normalized_business_kind = normalize_business_material_kind(business_material_kind)
 
-    async with async_session() as session:
-        await ensure_runtime_tables(session)
-        if target_plan["mode"] == "auto":
-            base_folder = await ensure_material_target_folder(
-                session,
-                material_tier=normalized_tier,
-                bid_type=normalized_bid_type,
-                customer_name=str(target_plan.get("customerName") or ""),
-                project_id=str(target_plan.get("projectId") or ""),
-                ensure_folder_path=ensure_folder_path,
-                clear_default_folder_deletion=clear_default_folder_deletion,
+    if target_plan["mode"] == "error":
+        if target_plan["code"] == "BID_TYPE_REQUIRED":
+            raise PeripheralError(400, "素材上传必须指定技术标或商务标。", "RAW_UPLOAD_BID_TYPE_REQUIRED")
+        if target_plan["code"] == "CUSTOMER_NAME_REQUIRED":
+            raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
+        if target_plan["code"] == "PROJECT_ID_REQUIRED":
+            raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
+        raise PeripheralError(400, "上传目标目录无效。", "RAW_UPLOAD_TARGET_INVALID")
+
+    skipped_items: list[dict[str, str]] = []
+    prepared_inputs: list[dict[str, Any]] = []
+    for item in file_inputs:
+        relative_path = str(item.get("relativePath") or "").replace("\\", "/").strip("/")
+        relative_parts = [part for part in relative_path.split("/") if part]
+        relative_dir = _normalize_relative_directory("/".join(relative_parts[:-1]))
+        source_relative_path = "/".join(relative_parts) if relative_parts else ""
+        source_root_folder = relative_parts[0] if len(relative_parts) > 1 else ""
+
+        file_name = _safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
+        if not file_name or file_name.startswith("._") or file_name.lower() == ".ds_store":
+            continue
+        suffix = material_suffix(file_name)
+        if suffix in SHORTCUT_MATERIAL_SUFFIXES:
+            skipped_items.append({"name": file_name, "reason": "快捷方式文件没有实质内容，未存入素材库。"})
+            continue
+        if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
+            raise PeripheralError(
+                400,
+                f"文件 {file_name} 类型不支持。",
+                "RAW_FILE_TYPE_NOT_ALLOWED",
             )
-            target_path = base_folder.path
-        elif target_plan["mode"] == "error":
-            if target_plan["code"] == "BID_TYPE_REQUIRED":
-                raise PeripheralError(400, "素材上传必须指定技术标或商务标。", "RAW_UPLOAD_BID_TYPE_REQUIRED")
-            if target_plan["code"] == "CUSTOMER_NAME_REQUIRED":
-                raise PeripheralError(400, "客户素材必须填写客户名称。", "CUSTOMER_NAME_REQUIRED")
-            if target_plan["code"] == "PROJECT_ID_REQUIRED":
-                raise PeripheralError(400, "项目素材必须填写项目 ID。", "PROJECT_ID_REQUIRED")
-            raise PeripheralError(400, "上传目标目录无效。", "RAW_UPLOAD_TARGET_INVALID")
-        elif target_plan["mode"] == "tier-root":
-            result = await session.execute(select(RawFolder).where(RawFolder.path == target_plan["targetPath"]))
-            base_folder = result.scalar_one_or_none()
-            if base_folder is None:
-                base_folder = await ensure_material_target_folder(
-                    session,
-                    material_tier=str(target_plan["inferredTier"]),
-                    bid_type=normalized_bid_type,
-                    customer_name=str(target_plan.get("customerName") or ""),
-                    project_id=str(target_plan.get("projectId") or ""),
-                    ensure_folder_path=ensure_folder_path,
-                    clear_default_folder_deletion=clear_default_folder_deletion,
-                )
-            target_path = base_folder.path
-        elif target_plan["mode"] == "scoped-path":
-            result = await session.execute(select(RawFolder).where(RawFolder.path == target_plan["targetPath"]))
-            base_folder = result.scalar_one_or_none()
-            if base_folder is None:
-                canonical_folder = await ensure_material_target_folder(
+
+        upload = item.get("upload")
+        mime_type = str(item.get("mimeType") or item.get("type") or getattr(upload, "content_type", "") or "")
+        file_stream = None
+        file_data = b""
+        if upload is not None and hasattr(upload, "file"):
+            file_stream = upload.file
+            file_stream.seek(0, 2)
+            size = file_stream.tell()
+            file_stream.seek(0)
+        else:
+            raw_data = item.get("data") or b""
+            if isinstance(raw_data, str):
+                if raw_data.startswith("data:"):
+                    raw_data = raw_data.split(",", 1)[-1]
+                file_data = base64.b64decode(raw_data)
+            else:
+                file_data = raw_data if isinstance(raw_data, bytes) else b""
+            size = len(file_data)
+
+        if size <= 0:
+            skipped_items.append({"name": file_name, "reason": "文件内容为空（0 字节），未存入素材库。"})
+            continue
+        if size > settings.max_upload_file_size_bytes:
+            limit_mb = settings.max_upload_file_size_bytes // 1024 // 1024
+            raise PeripheralError(
+                413,
+                f"文件 {file_name} 超过 {limit_mb}MB 上限。",
+                "RAW_FILE_TOO_LARGE",
+            )
+
+        prepared_inputs.append(
+            {
+                "item": item,
+                "relativeDir": relative_dir,
+                "sourceRelativePath": source_relative_path,
+                "sourceRootFolder": source_root_folder,
+                "fileName": file_name,
+                "mimeType": mime_type,
+                "fileStream": file_stream,
+                "fileData": file_data,
+                "size": size,
+            }
+        )
+
+    async with async_session() as session:
+        uploaded_items: list[dict[str, Any]] = []
+        clean_job_targets: list[int] = []
+        # 本次已写入 MinIO 的新对象；任一环节失败时补偿删除，避免孤儿对象（H1）
+        written_object_keys: list[tuple[str, str]] = []
+        # 覆盖上传时旧 cleaned 对象延后到 DB commit 成功后再删，写失败不动旧对象（H2）
+        pending_cleaned_removals: list[dict[str, Any]] = []
+        materials_bucket = settings.minio_buckets["materials"]
+        try:
+            await ensure_runtime_tables(session)
+            directory_root: RawFolder
+            base_relative_dir = ""
+            if target_plan["mode"] == "auto":
+                directory_root = await ensure_material_target_folder(
                     session,
                     material_tier=normalized_tier,
                     bid_type=normalized_bid_type,
@@ -142,72 +209,86 @@ async def upload_raw_files(
                     ensure_folder_path=ensure_folder_path,
                     clear_default_folder_deletion=clear_default_folder_deletion,
                 )
-                target_resolution = resolve_raw_upload_canonical_target(
-                    str(target_plan["requestedPath"]),
-                    canonical_folder.path,
-                )
-                if target_resolution["mode"] == "nested":
-                    base_folder = await ensure_nested_folder(
+            elif target_plan["mode"] == "tier-root":
+                result = await session.execute(select(RawFolder).where(RawFolder.path == target_plan["targetPath"]))
+                directory_root = result.scalar_one_or_none()
+                if directory_root is None:
+                    directory_root = await ensure_material_target_folder(
                         session,
-                        canonical_folder,
-                        target_resolution["relativeDir"],
+                        material_tier=str(target_plan["inferredTier"]),
+                        bid_type=normalized_bid_type,
+                        customer_name=str(target_plan.get("customerName") or ""),
+                        project_id=str(target_plan.get("projectId") or ""),
+                        ensure_folder_path=ensure_folder_path,
+                        clear_default_folder_deletion=clear_default_folder_deletion,
                     )
-                elif target_resolution["mode"] == "canonical":
-                    base_folder = canonical_folder
+            elif target_plan["mode"] == "scoped-path":
+                result = await session.execute(select(RawFolder).where(RawFolder.path == target_plan["targetPath"]))
+                existing_target = result.scalar_one_or_none()
+                if existing_target is not None:
+                    directory_root = existing_target
                 else:
-                    raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
-            target_path = base_folder.path
-        else:
-            target_path = str(target_plan["targetPath"])
-            result = await session.execute(select(RawFolder).where(RawFolder.path == target_path))
-            base_folder = result.scalar_one_or_none()
-            if base_folder is None:
-                raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
-            normalized_tier = normalized_tier or infer_material_tier_from_folder(base_folder)
-
-        uploaded_items: list[dict[str, Any]] = []
-        clean_job_targets: list[int] = []
-        # 无实质内容的文件（快捷方式、0 字节）不入库，记录原因回传给用户
-        skipped_items: list[dict[str, str]] = []
-        # 本次已写入 MinIO 的新对象；任一环节失败时补偿删除，避免孤儿对象（H1）
-        written_object_keys: list[tuple[str, str]] = []
-        # 覆盖上传时旧 cleaned 对象延后到 DB commit 成功后再删，写失败不动旧对象（H2）
-        pending_cleaned_removals: list[dict[str, Any]] = []
-        materials_bucket = settings.minio_buckets["materials"]
-        try:
-            for item in file_inputs:
-                relative_path = str(item.get("relativePath") or "").replace("\\", "/").strip("/")
-                relative_parts = [part for part in relative_path.split("/") if part]
-                relative_dir = "/".join(relative_parts[:-1]) if len(relative_parts) > 1 else ""
-                source_relative_path = "/".join(relative_parts) if relative_parts else ""
-                source_root_folder = relative_parts[0] if len(relative_parts) > 1 else ""
-
-                file_name = _safe_segment(relative_parts[-1] if relative_parts else item.get("name") or "", "")
-                if not file_name:
-                    continue
-                # macOS 系统噪音文件（._* 前缀的 AppleDouble、.DS_Store），静默跳过，不入库
-                if file_name.startswith("._") or file_name.lower() == ".ds_store":
-                    continue
-                suffix = material_suffix(file_name)
-                if suffix in SHORTCUT_MATERIAL_SUFFIXES:
-                    skipped_items.append({"name": file_name, "reason": "快捷方式文件没有实质内容，未存入素材库。"})
-                    continue
-                if suffix not in MATERIAL_LIBRARY_ALLOWED_SUFFIXES:
-                    raise PeripheralError(
-                        400,
-                        f"文件 {file_name} 类型不支持。",
-                        "RAW_FILE_TYPE_NOT_ALLOWED",
+                    directory_root = await ensure_material_target_folder(
+                        session,
+                        material_tier=normalized_tier,
+                        bid_type=normalized_bid_type,
+                        customer_name=str(target_plan.get("customerName") or ""),
+                        project_id=str(target_plan.get("projectId") or ""),
+                        ensure_folder_path=ensure_folder_path,
+                        clear_default_folder_deletion=clear_default_folder_deletion,
                     )
+                    target_resolution = resolve_raw_upload_canonical_target(
+                        str(target_plan["requestedPath"]),
+                        directory_root.path,
+                    )
+                    if target_resolution["mode"] == "nested":
+                        base_relative_dir = _normalize_relative_directory(target_resolution["relativeDir"])
+                    elif target_resolution["mode"] != "canonical":
+                        raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
+            else:
+                result = await session.execute(select(RawFolder).where(RawFolder.path == target_plan["targetPath"]))
+                directory_root = result.scalar_one_or_none()
+                if directory_root is None:
+                    raise PeripheralError(404, "目标目录不存在。", "RAW_FOLDER_NOT_FOUND")
+                normalized_tier = normalized_tier or infer_material_tier_from_folder(directory_root)
 
-                folder = await ensure_nested_folder(session, base_folder, relative_dir)
+            required_relative_dirs = {base_relative_dir}
+            for prepared in prepared_inputs:
+                folder_key = "/".join(
+                    part for part in (base_relative_dir, str(prepared["relativeDir"])) if part
+                )
+                prepared["folderKey"] = folder_key
+                required_relative_dirs.add(folder_key)
 
+            folders_by_relative_dir = {"": directory_root}
+            for relative_dir in _sorted_directory_prefixes(required_relative_dirs):
+                parent_relative_dir, _, name = relative_dir.rpartition("/")
+                parent = folders_by_relative_dir[parent_relative_dir]
+                folders_by_relative_dir[relative_dir] = await ensure_folder_path(
+                    session,
+                    name,
+                    parent.id,
+                    parent.tier,
+                    parent.bid_type,
+                    parent.project_id,
+                    parent.sort_order or 0,
+                    customer_name=parent.customer_name,
+                )
+
+            # 目录锁只存活于这个短事务，MinIO 写入开始前已全部释放。
+            await session.commit()
+
+            for prepared in prepared_inputs:
+                item = prepared["item"]
+                folder = folders_by_relative_dir[str(prepared["folderKey"])]
+                file_name = str(prepared["fileName"])
+                mime_type = str(prepared["mimeType"])
+                size = int(prepared["size"])
                 result = await session.execute(
                     select(RawFile).where(RawFile.folder_id == folder.id, RawFile.name == file_name)
                 )
                 existing = result.scalar_one_or_none()
 
-                upload = item.get("upload")
-                mime_type = str(item.get("mimeType") or item.get("type") or getattr(upload, "content_type", "") or "")
                 minio_key = raw_object_key(folder.path, file_name)
                 common_ext, clean_status = build_raw_upload_ext_fields(
                     file_name=file_name,
@@ -225,21 +306,18 @@ async def upload_raw_files(
                     project_name=project_name,
                     source_minio_bucket=materials_bucket,
                     source_minio_key=minio_key,
-                    source_relative_path=source_relative_path or file_name,
-                    source_root_folder=source_root_folder,
+                    source_relative_path=str(prepared["sourceRelativePath"]) or file_name,
+                    source_root_folder=str(prepared["sourceRootFolder"]),
                     tags=item.get("tags", tags),
                 )
                 extra_ext_fields = item.get("extFields") if isinstance(item.get("extFields"), dict) else {}
                 if extra_ext_fields:
                     common_ext.update(copy.deepcopy(extra_ext_fields))
 
-                if upload is not None and hasattr(upload, "file"):
-                    file_stream = upload.file
-                    file_stream.seek(0, 2)
-                    size = file_stream.tell()
-                    file_stream.seek(0)
-
+                file_stream = prepared["fileStream"]
+                if file_stream is not None:
                     def upload_to_minio() -> str:
+                        file_stream.seek(0)
                         return minio_client.put_object_stream(
                             materials_bucket,
                             minio_key,
@@ -249,14 +327,7 @@ async def upload_raw_files(
                         )
 
                 else:
-                    raw_data = item.get("data") or b""
-                    if isinstance(raw_data, str):
-                        if raw_data.startswith("data:"):
-                            raw_data = raw_data.split(",", 1)[-1]
-                        file_data = base64.b64decode(raw_data)
-                    else:
-                        file_data = raw_data if isinstance(raw_data, bytes) else b""
-                    size = len(file_data)
+                    file_data = prepared["fileData"]
 
                     def upload_to_minio() -> str:
                         return minio_client.put_object(
@@ -265,17 +336,6 @@ async def upload_raw_files(
                             file_data,
                             content_type=mime_type or "application/octet-stream",
                         )
-
-                if size <= 0:
-                    skipped_items.append({"name": file_name, "reason": "文件内容为空（0 字节），未存入素材库。"})
-                    continue
-                if size > settings.max_upload_file_size_bytes:
-                    limit_mb = settings.max_upload_file_size_bytes // 1024 // 1024
-                    raise PeripheralError(
-                        413,
-                        f"文件 {file_name} 超过 {limit_mb}MB 上限。",
-                        "RAW_FILE_TOO_LARGE",
-                    )
 
                 if existing and on_conflict in RAW_UPLOAD_CONFLICT_ACTIONS:
                     await archive_raw_file_version(session, existing)
