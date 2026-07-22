@@ -8,7 +8,6 @@ services:
       BUSINESS_PDF_PARSE_ENGINE: docling
       BUSINESS_PDF_ENGINE_FALLBACK: none
       BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
-      DOCLING_ARTIFACTS_PATH: /data/docling-models
 
   worker:
     container_name: sewpg_bid_second_worker
@@ -16,7 +15,9 @@ services:
       BUSINESS_PDF_PARSE_ENGINE: docling
       BUSINESS_PDF_ENGINE_FALLBACK: none
       BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
-      DOCLING_ARTIFACTS_PATH: /data/docling-models
+
+  docling-worker:
+    container_name: sewpg_bid_second_docling_worker
 
   opencode:
     container_name: sewpg_bid_second_opencode

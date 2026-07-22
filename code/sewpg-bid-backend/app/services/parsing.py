@@ -647,6 +647,7 @@ def _parse_pdf_with_document_engine(
     file_path: Path,
     project_dir: Path,
     engine_fallback: str | None = None,
+    require_preparsed: bool = False,
 ) -> tuple[str, dict[str, Any], list[str]]:
     document_id = str(document.get("id") or "DOC-1")
     existing_document_nav_path = project_dir / f"{document_id}_document_nav.json"
@@ -657,10 +658,18 @@ def _parse_pdf_with_document_engine(
             existing_quality = json.loads(existing_quality_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             existing_quality = {}
+        if not isinstance(existing_quality, dict):
+            existing_quality = {}
+        expected_sha256 = str(document.get("sha256") or "")
+        expected_run_id = str(document.get("runId") or "")
+        source_matches = not expected_sha256 or str(existing_quality.get("sourceSha256") or "") == expected_sha256
+        run_matches = not expected_run_id or str(existing_quality.get("runId") or "") == expected_run_id
         if (
             isinstance(existing_quality, dict)
             and str(existing_quality.get("status") or "").lower() == "completed"
-            and not bool(existing_quality.get("fallbackUsed"))
+            and (require_preparsed or not bool(existing_quality.get("fallbackUsed")))
+            and source_matches
+            and run_matches
         ):
             document_nav = json.loads(existing_document_nav_path.read_text(encoding="utf-8"))
             metadata = {
@@ -682,6 +691,9 @@ def _parse_pdf_with_document_engine(
             page_count = len(document_nav.get("pages") or []) or "-"
             metadata["pageCount"] = page_count
             return text, metadata, list(quality.get("warnings") or [])
+
+    if require_preparsed:
+        raise RuntimeError(f"Docling Worker 未生成文档 {document_id} 的有效解析结果。")
 
     effective_fallback = engine_fallback if engine_fallback is not None else settings.business_pdf_engine_fallback
     engine = create_document_parse_engine(
@@ -6498,6 +6510,7 @@ def parse_tender_documents(
     bid_type: str,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    require_preparsed_pdf: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _raise_if_parse_cancelled(cancel_check)
     profile = resolve_parse_profile(bid_type)
@@ -6582,10 +6595,13 @@ def parse_tender_documents(
                             "name": file_record.get("name") or file_path.name,
                             "path": str(file_path),
                             "sourcePath": str(file_path),
+                            "sha256": str(file_record.get("sha256") or ""),
+                            "runId": str(file_record.get("runId") or ""),
                         },
                         file_path=file_path,
                         project_dir=project_dir,
                         engine_fallback="none" if profile.key == "technical" else None,
+                        require_preparsed=require_preparsed_pdf,
                     ),
                     heartbeat=report_pdf_extract_progress,
                     cancel_check=cancel_check,

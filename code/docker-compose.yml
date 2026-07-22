@@ -25,7 +25,6 @@ services:
       context: ./sewpg-bid-backend
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
     container_name: sewpg_bid_fastapi
     environment:
       APP_ENV: production
@@ -42,7 +41,6 @@ services:
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
-      BID_DOCLING_ARTIFACTS_PATH: ${BID_DOCLING_ARTIFACTS_PATH:-${DOCLING_ARTIFACTS_PATH:-/opt/docling-models}}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-32212254720}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.txt,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff}
@@ -63,6 +61,7 @@ services:
       REDIS_JOB_QUEUE_LOCK_TTL_SEC: ${REDIS_JOB_QUEUE_LOCK_TTL_SEC:-21600}
       REDIS_JOB_RESULT_TTL_SEC: ${REDIS_JOB_RESULT_TTL_SEC:-86400}
       REDIS_WORKER_POLL_TIMEOUT_SEC: ${REDIS_WORKER_POLL_TIMEOUT_SEC:-5}
+      REDIS_DOCLING_QUEUE_KEY: ${REDIS_DOCLING_QUEUE_KEY:-bid:jobs:docling}
       S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
       S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
       PARSE_PROGRESS_PERSIST_INTERVAL_SEC: ${PARSE_PROGRESS_PERSIST_INTERVAL_SEC:-2}
@@ -98,7 +97,6 @@ services:
       - uploads:/data/uploads
       - documents:/data/documents
       - parsed:/data/parsed
-      - docling_models:/data/docling-models
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
       interval: 15s
@@ -126,7 +124,6 @@ services:
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
-      BID_DOCLING_ARTIFACTS_PATH: ${BID_DOCLING_ARTIFACTS_PATH:-${DOCLING_ARTIFACTS_PATH:-/opt/docling-models}}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
       MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-32212254720}
       ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.txt,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff}
@@ -147,6 +144,7 @@ services:
       REDIS_JOB_QUEUE_LOCK_TTL_SEC: ${REDIS_JOB_QUEUE_LOCK_TTL_SEC:-21600}
       REDIS_JOB_RESULT_TTL_SEC: ${REDIS_JOB_RESULT_TTL_SEC:-86400}
       REDIS_WORKER_POLL_TIMEOUT_SEC: ${REDIS_WORKER_POLL_TIMEOUT_SEC:-5}
+      REDIS_DOCLING_QUEUE_KEY: ${REDIS_DOCLING_QUEUE_KEY:-bid:jobs:docling}
       S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
       S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
       PARSE_PROGRESS_PERSIST_INTERVAL_SEC: ${PARSE_PROGRESS_PERSIST_INTERVAL_SEC:-2}
@@ -178,13 +176,65 @@ services:
       - uploads:/data/uploads
       - documents:/data/documents
       - parsed:/data/parsed
-      - docling_models:/data/docling-models
     healthcheck:
       test: ["CMD", "python", "-c", "import app.workers.redis_worker"]
       interval: 30s
       timeout: 5s
       start_period: 10s
       retries: 3
+    restart: unless-stopped
+
+  docling-worker:
+    image: ${DOCLING_IMAGE:-sewpg-bid/docling-worker:${APP_IMAGE_TAG:-latest}}
+    build:
+      context: ./sewpg-bid-backend
+      dockerfile: Dockerfile.docling-worker
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PYTORCH_CPU_INDEX_URL: ${PYTORCH_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    container_name: sewpg_bid_docling_worker
+    command: ["python", "-m", "app.workers.docling_worker"]
+    environment:
+      APP_ENV: production
+      UPLOADS_DIR: /data/uploads
+      DOCUMENTS_DIR: /data/documents
+      PARSED_DIR: /data/parsed
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_DOCLING_QUEUE_KEY: ${REDIS_DOCLING_QUEUE_KEY:-bid:jobs:docling}
+      REDIS_JOB_LOCK_TTL_SEC: ${REDIS_JOB_LOCK_TTL_SEC:-7200}
+      REDIS_JOB_QUEUE_LOCK_TTL_SEC: ${REDIS_JOB_QUEUE_LOCK_TTL_SEC:-21600}
+      REDIS_JOB_RESULT_TTL_SEC: ${REDIS_JOB_RESULT_TTL_SEC:-86400}
+      REDIS_WORKER_POLL_TIMEOUT_SEC: ${REDIS_WORKER_POLL_TIMEOUT_SEC:-5}
+      BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
+      S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
+      S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
+      BID_DOCLING_ARTIFACTS_PATH: /opt/docling-models
+      OMP_NUM_THREADS: ${DOCLING_CPU_THREADS:-8}
+      MKL_NUM_THREADS: ${DOCLING_CPU_THREADS:-8}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads:/data/uploads:ro
+      - documents:/data/documents:ro
+      - parsed:/data/parsed
+    cpus: ${DOCLING_CPU_LIMIT:-8.0}
+    mem_limit: ${DOCLING_MEMORY_LIMIT:-32g}
+    init: true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from pathlib import Path; raise SystemExit(0 if Path('/tmp/docling-worker-ready').is_file() else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: ${DOCLING_HEALTHCHECK_START_PERIOD:-10m}
+    stop_grace_period: ${DOCLING_STOP_GRACE_PERIOD:-30m}
     restart: unless-stopped
 
   opencode:
@@ -336,7 +386,6 @@ volumes:
   uploads:
   documents:
   parsed:
-  docling_models:
   opencode_data:
   opencode_cache:
   onlyoffice_logs:

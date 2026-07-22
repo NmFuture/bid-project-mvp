@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import json
+import hashlib
+import importlib.metadata
 import importlib.util
+import json
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,8 @@ from app.services.document_parse_engine import DocumentParseEngine
 AUTO_DOCLING_MODE = "auto-layout-table-ocr"
 AUTO_DOCLING_PAGE_RANGE_MODE = "auto-layout-table-page-range"
 LOCAL_TEXT_LAYER_MODE = "local-text-layer"
+DOCLING_LOCKED_VERSION = "2.108.0"
+DOCLING_PIPELINE_OPTIONS_VERSION = "sewpg-docling-cpu-v1"
 _DOCLING_PAGE_WINDOW_MIN_SOURCE_PAGES = 120
 _DOCLING_PAGE_WINDOW_SKIP_FIRST_PAGES = 20
 _DOCLING_PAGE_WINDOW_MAX_PAGES = 120
@@ -48,6 +53,30 @@ _APPENDIX_START_MARKERS = (
     "投标机型总方案信息表",
 )
 _APPENDIX_HEADING_RE = re.compile(r"附表[A-I](?:[.．]\d+|[.．]|[0-9])")
+_DOCLING_CONVERTER_CACHE: dict[tuple[Any, ...], Any] = {}
+_DOCLING_CONVERTER_CACHE_LOCK = threading.Lock()
+_DOCLING_CONVERSION_LOCK = threading.Lock()
+
+
+def _docling_version() -> str:
+    try:
+        return importlib.metadata.version("docling")
+    except importlib.metadata.PackageNotFoundError:
+        return DOCLING_LOCKED_VERSION
+
+
+def docling_pipeline_fingerprint(mode: str) -> str:
+    payload = {
+        "doclingVersion": _docling_version(),
+        "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+        "mode": str(mode or AUTO_DOCLING_MODE),
+        "device": "cpu",
+        "ocrBackend": "rapidocr-onnxruntime",
+        "ocrLanguages": ["chinese", "english"],
+        "tableMode": "accurate",
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _docling_artifacts_path_is_usable(artifacts_path: Any) -> bool:
@@ -242,6 +271,19 @@ def _docling_document_to_markdown(document: Any) -> str:
 
 
 def _configure_docling_auto_pipeline_options(pipeline_options: Any) -> Any:
+    accelerator_options = getattr(pipeline_options, "accelerator_options", None)
+    try:
+        from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+
+        if accelerator_options is None and hasattr(pipeline_options, "accelerator_options"):
+            pipeline_options.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.CPU)
+        elif accelerator_options is not None and hasattr(accelerator_options, "device"):
+            accelerator_options.device = AcceleratorDevice.CPU
+    except (ImportError, AttributeError, TypeError):
+        # 测试替身或兼容版本没有 AcceleratorOptions 时，仍显式覆盖已有设备字段。
+        if accelerator_options is not None and hasattr(accelerator_options, "device"):
+            accelerator_options.device = "cpu"
+
     artifacts_path = getattr(settings, "docling_artifacts_path", None)
     artifacts_path_in_use = _docling_artifacts_path_is_usable(artifacts_path) and hasattr(pipeline_options, "artifacts_path")
     if artifacts_path_in_use:
@@ -295,26 +337,63 @@ def _configure_docling_auto_pipeline_options(pipeline_options: Any) -> Any:
     return pipeline_options
 
 
-def run_docling_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
+def _get_docling_converter(*, page_window_enabled: bool) -> Any:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
+    docling_mode = AUTO_DOCLING_PAGE_RANGE_MODE if page_window_enabled else AUTO_DOCLING_MODE
+    artifacts_path = str(getattr(settings, "docling_artifacts_path", "") or "")
+    cache_key = (
+        docling_mode,
+        docling_pipeline_fingerprint(docling_mode),
+        artifacts_path,
+        DocumentConverter,
+        PdfFormatOption,
+    )
+    with _DOCLING_CONVERTER_CACHE_LOCK:
+        converter = _DOCLING_CONVERTER_CACHE.get(cache_key)
+        if converter is not None:
+            return converter
+
+        pipeline_options = _configure_docling_auto_pipeline_options(PdfPipelineOptions())
+        if page_window_enabled:
+            if hasattr(pipeline_options, "do_ocr"):
+                pipeline_options.do_ocr = False
+            if hasattr(pipeline_options, "force_backend_text"):
+                pipeline_options.force_backend_text = True
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+        )
+        _DOCLING_CONVERTER_CACHE[cache_key] = converter
+        return converter
+
+
+def prewarm_docling_converters() -> None:
+    """在 worker 就绪前初始化两套固定 PDF pipeline，避免首份标书承担模型冷启动。"""
+
+    from docling.datamodel.base_models import InputFormat
+
+    with _DOCLING_CONVERSION_LOCK:
+        for page_window_enabled in (False, True):
+            converter = _get_docling_converter(page_window_enabled=page_window_enabled)
+            initialize_pipeline = getattr(converter, "initialize_pipeline", None)
+            if not callable(initialize_pipeline):
+                raise RuntimeError("当前 Docling 版本不支持 DocumentConverter.initialize_pipeline，无法完成预热")
+            initialize_pipeline(InputFormat.PDF)
+
+
+def run_docling_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    pipeline_options = _configure_docling_auto_pipeline_options(PdfPipelineOptions())
     page_window = _detect_pdf_appendix_page_range(pdf_path)
     convert_kwargs: dict[str, Any] = {}
     docling_mode = AUTO_DOCLING_MODE
     if page_window:
         convert_kwargs["page_range"] = tuple(page_window["pageRange"])
         docling_mode = AUTO_DOCLING_PAGE_RANGE_MODE
-        if hasattr(pipeline_options, "do_ocr"):
-            pipeline_options.do_ocr = False
-        if hasattr(pipeline_options, "force_backend_text"):
-            pipeline_options.force_backend_text = True
-    result = DocumentConverter(
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
-    ).convert(str(pdf_path), **convert_kwargs)
+    converter = _get_docling_converter(page_window_enabled=bool(page_window))
+    with _DOCLING_CONVERSION_LOCK:
+        result = converter.convert(str(pdf_path), **convert_kwargs)
     document = getattr(result, "document", None)
     if document is None:
         raise RuntimeError("Docling 未返回 document 结果")
@@ -335,6 +414,9 @@ def run_docling_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
         "convertedPageCount": converted_page_count,
         "tableCount": len(tables),
         "mode": docling_mode,
+        "doclingVersion": _docling_version(),
+        "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+        "pipelineFingerprint": docling_pipeline_fingerprint(docling_mode),
         "warnings": [],
     }
     if page_window:
@@ -454,6 +536,8 @@ class DoclingParseEngine(DocumentParseEngine):
         docling_output_dir.mkdir(parents=True, exist_ok=True)
         quality_path = docling_output_dir / "parse_quality.json"
         fallback_reason = ""
+        source_sha256 = str(document.get("sourceSha256") or document.get("sha256") or "").strip().lower()
+        run_id = str(document.get("runId") or "").strip()
 
         try:
             try:
@@ -480,14 +564,24 @@ class DoclingParseEngine(DocumentParseEngine):
                 "lowQualityPages": [],
                 "tableCount": 0,
                 "fallbackUsed": False,
+                "doclingVersion": _docling_version(),
+                "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+                "pipelineFingerprint": docling_pipeline_fingerprint(AUTO_DOCLING_MODE),
                 "warnings": [str(exc)],
             }
+            if source_sha256:
+                quality["sourceSha256"] = source_sha256
+            if run_id:
+                quality["runId"] = run_id
             quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
             return {
                 "documentParseEngine": "docling",
                 "status": "failed",
                 "doclingOutputDir": str(docling_output_dir),
                 "parseQualityPath": str(quality_path),
+                "doclingVersion": str(quality.get("doclingVersion") or ""),
+                "pipelineOptionsVersion": str(quality.get("pipelineOptionsVersion") or ""),
+                "pipelineFingerprint": str(quality.get("pipelineFingerprint") or ""),
                 "fallbackReason": str(exc),
             }
 
@@ -503,8 +597,19 @@ class DoclingParseEngine(DocumentParseEngine):
                 "markdownPath": str(conversion_result.get("markdownPath") or ""),
                 "jsonPath": str(conversion_result.get("jsonPath") or ""),
                 "doclingMode": docling_mode,
+                "doclingVersion": str(conversion_result.get("doclingVersion") or _docling_version()),
+                "pipelineOptionsVersion": str(
+                    conversion_result.get("pipelineOptionsVersion") or DOCLING_PIPELINE_OPTIONS_VERSION
+                ),
+                "pipelineFingerprint": str(
+                    conversion_result.get("pipelineFingerprint") or docling_pipeline_fingerprint(docling_mode)
+                ),
             }
         )
+        if source_sha256:
+            quality["sourceSha256"] = source_sha256
+        if run_id:
+            quality["runId"] = run_id
         for key in ("pageRange", "pageRangeReason", "sourcePageCount"):
             if key in conversion_result:
                 quality[key] = conversion_result[key]
@@ -523,5 +628,8 @@ class DoclingParseEngine(DocumentParseEngine):
             "markdownPath": str(conversion_result.get("markdownPath") or ""),
             "jsonPath": str(conversion_result.get("jsonPath") or ""),
             "doclingMode": docling_mode,
+            "doclingVersion": str(quality.get("doclingVersion") or ""),
+            "pipelineOptionsVersion": str(quality.get("pipelineOptionsVersion") or ""),
+            "pipelineFingerprint": str(quality.get("pipelineFingerprint") or ""),
             "text": nav_to_text(document_nav),
         }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import re
 import sqlite3
@@ -48,8 +49,7 @@ from app.services.technical_parse_assets import (
     set_all_technical_appendix_assets_selected,
     set_technical_appendix_asset_selected,
 )
-from app.services.job_queue import enqueue_generation_job, find_active_jobs_of_type, is_generation_locked
-from app.services.local_job_executor import submit_local_job
+from app.services.job_queue import enqueue_generation_job, is_generation_locked, request_job_cancel
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
 from app.services.parsing import (
     IMAGE_SUFFIXES,
@@ -106,21 +106,6 @@ def _parse_files_label(tender_files: list[dict[str, Any]]) -> str:
     return f"「{names[0]}」等 {len(names)} 个文件"
 
 
-def _s1_parse_global_busy_detail(project_id: str) -> str:
-    """同一时间只允许一个解析任务（opencode 全局并发=1）。发现其他项目的任务在
-    执行/排队时返回 409 文案（含正在解析的文件名），否则返回空串。"""
-
-    for job in find_active_jobs_of_type(S1_PARSE_JOB_TYPE):
-        if str(job.get("projectId") or "") == str(project_id):
-            continue  # 同项目冲突由项目锁 409 覆盖
-        data = job.get("data") if isinstance(job.get("data"), dict) else {}
-        tender_files = data.get("tenderFiles") if isinstance(data.get("tenderFiles"), list) else []
-        label = _parse_files_label(tender_files) if tender_files else ""
-        if label:
-            return f"当前正在解析{label}，每次只能解析一个任务，请等待完成后再发起。"
-        return "当前已有其他项目的解析任务在进行中，每次只能解析一个任务，请等待完成后再发起。"
-    return ""
-
 # 命中以下特征的异常按瞬时错误处理并自动重试；HTTPException（入参/状态类错误）与取消不重试。
 _RETRYABLE_PARSE_ERROR_MARKERS = (
     "429",
@@ -147,18 +132,29 @@ def _is_retryable_parse_error(exc: Exception) -> bool:
 
 
 def _schedule_s1_parse_job(project_id: str, data: dict[str, Any]) -> tuple[str, str]:
-    """调度 S1 解析任务：优先 Redis 队列，Redis 不可用时降级本地串行线程（与目录/正文生成一致）。
+    """调度 S1 解析任务；独立 Docling Worker 要求 Redis 必须可用。"""
 
-    返回 (mode, job_id)：queued=已入队；local=本地兜底；locked=同项目已有任务。
-    """
-
+    bid_type = require_bid_type(data.get("__bidType"))
+    service = business_parse_service if bid_type == BUSINESS_PARSE_PROFILE.bid_type else technical_parse_service
     queue_result = enqueue_generation_job(S1_PARSE_JOB_TYPE, project_id, data)
     if queue_result.queued:
+        service.bind_parse_run(project_id, queue_result.job_id)
         return "queued", queue_result.job_id
     if queue_result.locked:
         return "locked", ""
-    submit_local_job(_run_s1_parse_job, project_id, data)
-    return "local", ""
+    service.update_parse_progress(
+        project_id,
+        status="failed",
+        percentage=100,
+        summary="解析队列暂不可用，请稍后重试。",
+        event_step="failed",
+        event_level="error",
+        event_message="解析队列暂不可用，请稍后重试。",
+        phase_key="failed",
+        phase_label="解析失败",
+        phase_percent=100,
+    )
+    raise HTTPException(status_code=503, detail="解析队列暂不可用，请稍后重试。")
 
 
 def _run_s1_parse_job(project_id: str, data: dict[str, Any]) -> None:
@@ -230,6 +226,7 @@ async def _save_one_upload(
     temp_path = target_dir / f".{stored_name}.part"
 
     size = 0
+    digest = hashlib.sha256()
     try:
         with temp_path.open("wb") as handle:
             while True:
@@ -245,6 +242,7 @@ async def _save_one_upload(
                             f"{format_size_mb(settings.max_upload_file_size_bytes)}。"
                         ),
                     )
+                digest.update(chunk)
                 handle.write(chunk)
         if size <= 0:
             raise HTTPException(status_code=400, detail=f"文件 {display_name} 为空。")
@@ -264,6 +262,7 @@ async def _save_one_upload(
         "size_label": format_size_mb(size),
         "content_type": upload.content_type or "",
         "path": str(path),
+        "sha256": digest.hexdigest(),
     }
 
 
@@ -1867,6 +1866,18 @@ class BidParseService:
             persist_workspace_project_state(project)
         return progress
 
+    def bind_parse_run(self, project_id: str, run_id: str) -> None:
+        project = self.require_project_for_update(project_id)
+        progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
+        progress["runId"] = str(run_id)
+        project["parse_progress"] = progress
+        persist_workspace_project_state(project)
+
+    def is_current_parse_run(self, project_id: str, run_id: str) -> bool:
+        progress = self.parse_progress(project_id)
+        current = str(progress.get("runId") or "")
+        return not current or current == str(run_id)
+
     def is_parse_cancel_requested(self, project_id: str) -> bool:
         project = self.require_project_for_update(project_id)
         progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
@@ -1951,6 +1962,7 @@ class BidParseService:
     def cancel_parse(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
+        request_job_cancel(str(progress.get("runId") or ""))
         trace = copy.deepcopy(progress.get("opencodeOutput")) if isinstance(progress.get("opencodeOutput"), dict) else {}
         session_id = str(trace.get("sessionId") or "").strip()
         opencode_abort = {
@@ -2113,6 +2125,10 @@ class BidParseService:
 
         tender_files = [item for item in (data.get("tenderFiles") or []) if isinstance(item, dict)]
         template_files = [item for item in (data.get("templateFiles") or []) if isinstance(item, dict)]
+        run_id = str(data.get("__runId") or "")
+        is_continuation = bool(data.get("__doclingPrepared"))
+        if run_id and not self.is_current_parse_run(project_id, run_id):
+            return
         if not tender_files:
             self.update_parse_progress(
                 project_id,
@@ -2128,28 +2144,42 @@ class BidParseService:
             )
             raise RuntimeError("解析任务缺少招标文件。")
 
-        # 从排队态进入运行态（重置进度与事件流），目标文件名随进度常驻。
-        self.start_parse_progress(project_id, file_names=_parse_file_names(tender_files))
-        # 补发上传阶段事件，保持与旧同步链路一致的进度事件词表。
-        if str(data.get("origin") or "") == "rerun":
-            upload_summary = "正在复用已上传招标文件进行解析。"
-            upload_event = f"复用 {len(tender_files)} 个已上传招标文件。"
+        if not is_continuation:
+            # 测试和非 Docker 调用仍可直接执行完整解析链路。
+            self.start_parse_progress(project_id, file_names=_parse_file_names(tender_files))
+            if run_id:
+                self.bind_parse_run(project_id, run_id)
+            if str(data.get("origin") or "") == "rerun":
+                upload_summary = "正在复用已上传招标文件进行解析。"
+                upload_event = f"复用 {len(tender_files)} 个已上传招标文件。"
+            else:
+                upload_summary = f"正在保存招标文件，已保存 {len(tender_files)} / {len(tender_files)}。"
+                upload_event = f"已保存 {len(tender_files)} 个招标文件。"
+            self.update_parse_progress(
+                project_id,
+                percentage=8,
+                summary=upload_summary,
+                event_step="upload",
+                event_message=upload_event,
+                phase_key="upload",
+                phase_label="上传文件中",
+                phase_percent=100,
+                current=len(tender_files),
+                total=len(tender_files),
+                stale_after_seconds=180,
+            )
         else:
-            upload_summary = f"正在保存招标文件，已保存 {len(tender_files)} / {len(tender_files)}。"
-            upload_event = f"已保存 {len(tender_files)} 个招标文件。"
-        self.update_parse_progress(
-            project_id,
-            percentage=8,
-            summary=upload_summary,
-            event_step="upload",
-            event_message=upload_event,
-            phase_key="upload",
-            phase_label="上传文件中",
-            phase_percent=100,
-            current=len(tender_files),
-            total=len(tender_files),
-            stale_after_seconds=180,
-        )
+            self.update_parse_progress(
+                project_id,
+                status="running",
+                summary="Docling 解析完成，正在继续结构化处理。",
+                event_step="docling_complete",
+                event_message="Docling 解析结果已就绪。",
+                phase_key="local_structure",
+                phase_label="结构化处理中",
+                phase_percent=0,
+                stale_after_seconds=1800,
+            )
         max_attempts = max(1, int(settings.s1_parse_job_max_attempts or 1))
         backoffs = tuple(settings.s1_parse_job_retry_backoff_sec) or (30, 120)
         attempt = 0
@@ -2174,6 +2204,7 @@ class BidParseService:
                     bid_type=self.project_service.bid_type,
                     progress_callback=_progress_callback(self, project_id),
                     cancel_check=cancel_check,
+                    require_preparsed_pdf=is_continuation,
                 )
                 self.raise_if_parse_cancel_requested(project_id)
             except ParseCancelledError:
@@ -2245,9 +2276,6 @@ class BidParseService:
             raise HTTPException(status_code=400, detail="当前项目还没有已上传的招标文件。")
         if is_generation_locked(S1_PARSE_JOB_TYPE, project_id):
             raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
-        busy_detail = _s1_parse_global_busy_detail(project_id)
-        if busy_detail:
-            raise HTTPException(status_code=409, detail=busy_detail)
         self._mark_parse_queued(
             project_id,
             f"解析任务已提交，将复用已上传的{_parse_files_label(tender_files)}重新解析。",
@@ -2275,9 +2303,6 @@ class BidParseService:
     ) -> dict[str, Any]:
         if is_generation_locked(S1_PARSE_JOB_TYPE, project_id):
             raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
-        busy_detail = _s1_parse_global_busy_detail(project_id)
-        if busy_detail:
-            raise HTTPException(status_code=409, detail=busy_detail)
         existing_tender, existing_template = self.parse_inputs(project_id, include_fallback=False)
         uploaded_tender_files = tender_files or []
         uploaded_template_files = template_files or []

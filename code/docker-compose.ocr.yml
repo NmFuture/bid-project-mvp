@@ -43,7 +43,14 @@ services:
       - "8000"
     volumes:
       - ${OCR_HF_CACHE_DIR:-./.localdata/ocr/huggingface}:/root/.cache/huggingface
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${OCR_GPU_DEVICE_ID:-1}"
+              capabilities: [gpu]
     ipc: host
     shm_size: ${OCR_SHM_SIZE:-8g}
     healthcheck:

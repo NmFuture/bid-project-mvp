@@ -1,0 +1,5 @@
+-c requirements-docling-lock.txt
+
+# 必须从 PyTorch CPU 专用索引安装；Dockerfile 会在构建时验证未链接 CUDA。
+torch==2.12.1+cpu
+torchvision==0.27.1+cpu

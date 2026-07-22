@@ -1,9 +1,29 @@
 from __future__ import annotations
 
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
 from app.services import job_queue, local_job_executor
+
+
+class _InternalJobRedis:
+    def __init__(self) -> None:
+        self.job_keys: set[str] = set()
+        self.queues: dict[str, list[str]] = {}
+        self.parent_statuses: dict[str, str] = {}
+
+    def eval(self, script: str, numkeys: int, *args):
+        assert script == job_queue._ENQUEUE_INTERNAL_JOB_SCRIPT
+        assert numkeys == 3
+        job_key, queue_key, parent_key = str(args[0]), str(args[1]), str(args[2])
+        if job_key in self.job_keys:
+            return 0
+        self.job_keys.add(job_key)
+        self.queues.setdefault(queue_key, []).append(str(args[9]))
+        if args[10]:
+            self.parent_statuses[parent_key] = str(args[10])
+        return 1
 
 
 def test_queued_job_lock_uses_finite_queue_ttl() -> None:
@@ -59,6 +79,114 @@ def test_running_job_lock_is_renewed_atomically_with_owner_check() -> None:
     )
 
 
+def test_running_job_lock_accepts_explicit_ttl() -> None:
+    client = MagicMock()
+    client.eval.return_value = 1
+    job = {"id": "job-1", "type": "s1_parse", "projectId": "project-1"}
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        renewed = job_queue.renew_generation_lock(job, ttl_sec=4321)
+
+    assert renewed is True
+    client.eval.assert_called_once_with(
+        job_queue._RENEW_IF_OWNER_SCRIPT,
+        1,
+        job_queue.generation_lock_key("s1_parse", "project-1"),
+        "job-1",
+        4321,
+    )
+
+
+def test_internal_docling_job_is_idempotent_and_uses_dedicated_queue() -> None:
+    client = _InternalJobRedis()
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        first = job_queue.enqueue_internal_job(
+            "s1_docling_batch",
+            "project-1",
+            {"runId": "run-1"},
+            job_id="run-1:docling",
+            parent_job_id="run-1",
+        )
+        duplicate = job_queue.enqueue_internal_job(
+            "s1_docling_batch",
+            "project-1",
+            {"runId": "run-1"},
+            job_id="run-1:docling",
+            parent_job_id="run-1",
+        )
+
+    assert first.queued is True
+    assert duplicate.queued is True
+    assert first.job_id == duplicate.job_id == "run-1:docling"
+    queued = client.queues[job_queue.DOCLING_QUEUE_KEY]
+    assert len(queued) == 1
+    payload = json.loads(queued[0])
+    assert payload["parentJobId"] == "run-1"
+    assert payload["data"] == {"runId": "run-1"}
+
+
+def test_internal_continuation_sets_parent_waiting_in_same_enqueue_script() -> None:
+    client = _InternalJobRedis()
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        result = job_queue.enqueue_internal_job(
+            "s1_parse_continue",
+            "project-1",
+            {"__runId": "run-1"},
+            job_id="run-1:continue",
+            parent_job_id="run-1",
+            parent_status="waiting_continuation",
+        )
+
+    assert result.queued is True
+    assert client.parent_statuses[job_queue._job_key("run-1")] == "waiting_continuation"
+    assert len(client.queues[job_queue.QUEUE_KEY]) == 1
+
+
+def test_dequeue_can_use_docling_queue() -> None:
+    client = MagicMock()
+    payload = {"id": "run-1:docling", "type": "s1_docling_batch", "projectId": "project-1"}
+    raw_payload = json.dumps(payload)
+    client.blmove.return_value = raw_payload
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        result = job_queue.dequeue_generation_job(timeout_sec=1, queue_key=job_queue.DOCLING_QUEUE_KEY)
+
+    assert result == {
+        **payload,
+        "__queueKey": job_queue.DOCLING_QUEUE_KEY,
+        "__processingPayload": raw_payload,
+    }
+    client.blmove.assert_called_once_with(
+        job_queue.DOCLING_QUEUE_KEY,
+        job_queue.processing_queue_key(job_queue.DOCLING_QUEUE_KEY),
+        1,
+        src="LEFT",
+        dest="RIGHT",
+    )
+
+
+def test_find_active_jobs_scans_default_and_docling_queues() -> None:
+    client = MagicMock()
+    client.hgetall.return_value = {}
+    docling_payload = json.dumps(
+        {"id": "run-1:docling", "type": "s1_docling_batch", "projectId": "project-1", "data": {}}
+    )
+    client.lrange.side_effect = lambda key, _start, _end: [docling_payload] if key == job_queue.DOCLING_QUEUE_KEY else []
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        active = job_queue.find_active_jobs_of_type("s1_docling_batch")
+
+    assert active == [{"id": "run-1:docling", "projectId": "project-1", "data": {}}]
+    assert [call.args[0] for call in client.lrange.call_args_list] == [
+        job_queue.QUEUE_KEY,
+        job_queue.processing_queue_key(job_queue.QUEUE_KEY),
+        job_queue.DOCLING_QUEUE_KEY,
+        job_queue.processing_queue_key(job_queue.DOCLING_QUEUE_KEY),
+    ]
+
+
 def test_renew_returns_false_when_lock_owned_by_other_job() -> None:
     client = MagicMock()
     client.eval.return_value = 0
@@ -66,6 +194,13 @@ def test_renew_returns_false_when_lock_owned_by_other_job() -> None:
 
     with patch.object(job_queue, "get_redis_client", return_value=client):
         assert job_queue.renew_generation_lock(job) is False
+
+
+def test_renew_returns_none_when_redis_is_unavailable() -> None:
+    job = {"id": "job-1", "type": "fill_generation", "projectId": "project-1"}
+
+    with patch.object(job_queue, "get_redis_client", return_value=None):
+        assert job_queue.renew_generation_lock(job) is None
 
 
 def test_release_lock_deletes_only_when_owner_matches() -> None:

@@ -15,7 +15,7 @@ if ! docker info --format '{{json .Runtimes}}' | grep -q '"nvidia"'; then
   cat >&2 <<'EOF'
 NVIDIA Docker runtime was not found.
 
-baidu/Unlimited-OCR is started by vLLM with "gpus: all", so this service
+baidu/Unlimited-OCR is started by vLLM on the configured OCR GPU, so this service
 requires an NVIDIA GPU host with NVIDIA Container Toolkit installed.
 
 The main product can still run without OCR:
@@ -32,5 +32,5 @@ COMPOSE_ARGS=(
   -f "${REPO_ROOT}/docker-compose.ocr.yml"
 )
 
-docker compose "${COMPOSE_ARGS[@]}" build fastapi worker opencode web
+docker compose "${COMPOSE_ARGS[@]}" build fastapi docling-worker opencode web
 docker compose "${COMPOSE_ARGS[@]}" up -d --no-build

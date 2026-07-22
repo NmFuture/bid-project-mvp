@@ -13,6 +13,7 @@ from app.main import app
 from app.core.config import settings
 from app.services import bid_parse_service
 from app.services.bid_parse_cancel import ParseCancelledError
+from app.services.job_queue import EnqueueResult
 from app.services.store import store
 from app.workers import redis_worker
 
@@ -117,35 +118,20 @@ class ParseAsyncJobTests(unittest.TestCase):
         # 目标文件名随进度常驻，供前端提醒用户当前解析对象
         self.assertEqual(progress["fileNames"], ["招标文件.docx"])
 
-    def test_upload_and_run_returns_409_with_file_name_when_another_parse_active(self) -> None:
+    def test_upload_and_run_allows_another_project_to_queue(self) -> None:
         project_id = self.create_project()
-        active_job = {
-            "id": "job-other-1",
-            "projectId": "PRJ-OTHER",
-            "data": {"tenderFiles": [{"name": "其他项目招标文件.docx"}]},
-        }
         with patch(
-            "app.services.bid_parse_service.find_active_jobs_of_type",
-            return_value=[active_job],
+            "app.services.bid_parse_service._schedule_s1_parse_job",
+            return_value=("queued", "job-second-project"),
         ):
             response = self.post_upload(project_id)
-        self.assertEqual(response.status_code, 409)
-        detail = response.json()["detail"]
-        self.assertIn("其他项目招标文件.docx", detail)
-        self.assertIn("每次只能解析一个任务", detail)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["jobId"], "job-second-project")
 
     def test_upload_and_run_ignores_active_job_of_same_project(self) -> None:
         project_id = self.create_project()
-        same_project_job = {
-            "id": "job-same-1",
-            "projectId": project_id,
-            "data": {"tenderFiles": [{"name": "本项目的文件.docx"}]},
-        }
-        # 同项目的活跃任务不触发全局互斥（由项目锁负责）；调度成功即放行。
+        # 同项目冲突由项目锁负责；调度成功即放行。
         with patch(
-            "app.services.bid_parse_service.find_active_jobs_of_type",
-            return_value=[same_project_job],
-        ), patch(
             "app.services.bid_parse_service._schedule_s1_parse_job",
             return_value=("queued", "job-same-queued"),
         ):
@@ -293,11 +279,17 @@ class ParseAsyncJobTests(unittest.TestCase):
 
     def test_worker_dispatches_s1_parse_job(self) -> None:
         project_id = self.create_project()
-        with patch("app.services.bid_parse_service._run_s1_parse_job") as job_mock:
+        with patch(
+            "app.services.docling_jobs.enqueue_docling_batch",
+            return_value=EnqueueResult(queued=True, job_id="job-dispatch-1:docling"),
+        ) as enqueue_mock, patch(
+            "app.workers.redis_worker.renew_generation_lock",
+            return_value=True,
+        ):
             redis_worker._run_job(
                 {"id": "job-dispatch-1", "type": "s1_parse", "projectId": project_id, "data": {"__bidType": "技术标"}}
             )
-        job_mock.assert_called_once_with(project_id, {"__bidType": "技术标"})
+        enqueue_mock.assert_called_once()
 
 
 if __name__ == "__main__":
