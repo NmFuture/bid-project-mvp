@@ -31,10 +31,8 @@ from docx import Document
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from numbering_fixer import (
-    strip_heading_prefixes_in_doc,
     strip_handwritten_numbering_in_body,
     strip_numPr_from_body,
-    normalize_heading_style_names,
     _replace_paragraph_text_preserve_format,
 )
 from docx_style_pruner import prune_unused_styles
@@ -200,10 +198,11 @@ def preprocess(
 
     stats = {
         "styles_pruned": style_prune["removed"],
-        "heading_by_outline": _normalize_headings_by_outline_level(doc),
-        "heading_normalize": normalize_heading_style_names(doc),
+        # 素材标题样式在编号阶段按有效 outline/basedOn 识别，这里不再改写样式。
+        "heading_by_outline": 0,
+        "heading_normalize": 0,
         "numPr_stripped": strip_numPr_from_body(doc),
-        "heading_prefix_strip": strip_heading_prefixes_in_doc(doc, only_heading_styles=True),
+        "heading_prefix_strip": 0,
         "body_handwritten_strip": strip_handwritten_numbering_in_body(doc, only_normal_style=True),
         "tag_strip": strip_tag_marks(doc),
         "placeholder_replace": replace_placeholders(doc, params or {}),

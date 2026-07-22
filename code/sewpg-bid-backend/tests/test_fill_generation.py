@@ -521,10 +521,63 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(skipped["status"], "completed")
         self.assertTrue(skipped["isSkipped"])
 
-    def test_s7_manifest_allows_missing_gap_plan_for_technical_bid(self) -> None:
+    def test_s7_uses_existing_gap_plan_without_review_confirmation(self) -> None:
         from app.services import tech_assembly
 
         project_id = self._prepare_project_after_outline()
+        project = store._require(project_id)
+        project["gap_state"] = {
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "GAP-1",
+                        "number": "1.1",
+                        "title": "技术方案",
+                        "matchedMaterials": [{"path": "技术标/通用素材/技术方案.docx"}],
+                    }
+                ],
+            },
+            "reviewConfirmed": False,
+            "integrity": {"status": "blocked", "blockingCount": 1},
+        }
+        store._persist_project(project)
+
+        work_dir = Path(self.temp_dir.name) / "s7-unconfirmed-plan"
+        gap_plan_path = tech_assembly._prepare_gap_plan(project_id, work_dir)
+
+        self.assertIsNotNone(gap_plan_path)
+        copied = json.loads(Path(gap_plan_path).read_text(encoding="utf-8"))
+        self.assertEqual(copied["items"][0]["matchedMaterials"][0]["path"], "技术标/通用素材/技术方案.docx")
+
+    def test_s7_without_gap_plan_fails_before_runtime_material_matching(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+
+        with patch.object(tech_assembly, "_prepare_gap_plan", return_value=None), \
+            patch.object(tech_assembly, "_prepare_wiki_dir") as prepare_wiki:
+            with self.assertRaisesRegex(ValueError, "请先完成素材匹配"):
+                tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+
+        prepare_wiki.assert_not_called()
+
+    def test_s7_manifest_requires_gap_plan_for_technical_bid(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        project = store._require(project_id)
+        project["gap_state"] = {
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "status": "ready",
+                "items": [],
+            },
+            "reviewConfirmed": False,
+            "integrity": {"status": "blocked", "blockingCount": 1},
+        }
+        store._persist_project(project)
         manifest_payloads = []
 
         def fake_prepare_wiki_dir(project, parse_storage, work_dir):
@@ -585,8 +638,8 @@ class FillGenerationTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(len(manifest_payloads), 1)
-        self.assertEqual(manifest_payloads[0]["gapPlanPath"], "")
-        self.assertEqual(result["assembly"]["gapPlanPath"], "")
+        self.assertTrue(Path(manifest_payloads[0]["gapPlanPath"]).exists())
+        self.assertEqual(result["assembly"]["gapPlanPath"], manifest_payloads[0]["gapPlanPath"])
         self.assertEqual(result["assembly"]["assemblyReport"], "")
         self.assertEqual(result["assembly"]["needsReview"], "")
         self.assertEqual(result["assembly"]["summary"]["warningCount"], 1)

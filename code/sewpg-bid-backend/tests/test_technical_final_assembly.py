@@ -280,20 +280,93 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                     "chapter_no_flat": "1.7",
                     "title": "投标方案优势说明",
                     "status": "UNMATCHED",
+                    "paths": ["wiki-guessed-parent.docx"],
                 },
                 {
                     "chapter_no": "1.7.1",
                     "chapter_no_flat": "1.7.1",
                     "title": "投标方案整体优势",
                     "status": "NEEDS_REVIEW",
+                    "paths": ["wiki-guessed-child.docx"],
                 },
             ]
 
             result = build_assembly.apply_gap_plan(plan, gap_plan_path)
 
+            self.assertEqual(len(result), 1)
             self.assertEqual(result[0]["coverage_role"], "chapter_master")
-            self.assertEqual(result[1]["coverage_role"], "covered_by_parent")
-            self.assertEqual(result[1]["covered_by_parent"], "GAP-PARENT")
+            self.assertEqual(result[0]["paths"], ["source-1.7.docx"])
+
+    def test_apply_gap_plan_clears_wiki_materials_without_selected_match(self) -> None:
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-6-6",
+                                "number": "6.6",
+                                "title": "技术附表",
+                                "coverageRole": "covered_by_parent",
+                                "coveredByParent": "GAP-6",
+                                "matchedMaterials": [],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no": "6.6",
+                    "chapter_no_flat": "6.6",
+                    "title": "技术附表",
+                    "status": "MATCHED",
+                    "paths": ["appendix-b.docx", "appendix-c.docx", "appendix-i.docx"],
+                    "shifts": [0, 0, 0],
+                    "attach_modes": ["normal", "normal", "normal"],
+                }
+            ]
+
+            result = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(result[0]["paths"], [])
+        self.assertEqual(result[0]["coverage_role"], "covered_by_parent")
+
+    def test_gap_plan_paths_uses_selected_material_when_fill_has_no_artifact(self) -> None:
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "fillTasks": [{"id": "FILL-1", "status": "pending"}],
+            "matchedMaterials": [{"path": "selected-material.docx"}],
+            "resolvedArtifacts": [],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), ["selected-material.docx"])
+
+    def test_gap_plan_paths_does_not_fallback_from_unreviewed_ai_artifact(self) -> None:
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [{"path": "selected-template.docx"}],
+            "resolvedArtifacts": [
+                {
+                    "source": "ai_fill",
+                    "path": "unreviewed-ai.docx",
+                    "s7Ready": False,
+                    "qualityReport": {"status": "needs_review"},
+                }
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), [])
 
     def test_init_params_accepts_unified_turbine_fields_and_unknown_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,6 +432,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             toc_file = root / "toc.json"
+            gap_plan_file = root / "gap-plan.json"
             wiki_dir = root / "wiki"
             library_dir = root / "library"
             template_file = root / "template.docx"
@@ -367,12 +441,14 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             wiki_dir.mkdir()
             library_dir.mkdir()
             toc_file.write_text("{}", encoding="utf-8")
+            gap_plan_file.write_text('{"items": []}', encoding="utf-8")
             Document().save(template_file)
             manifest_file.write_text(
                 json.dumps(
                     {
                         "workDir": str(root),
                         "tocJsonPath": str(toc_file),
+                        "gapPlanPath": str(gap_plan_file),
                         "wikiDir": str(wiki_dir),
                         "materialLibraryDir": str(library_dir),
                         "templateFile": str(template_file),
@@ -389,6 +465,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                 elif script == "init_params.py":
                     Path(command[command.index("--out") + 1]).write_text("{}", encoding="utf-8")
                 elif script == "build_assembly.py":
+                    self.assertEqual(Path(command[command.index("--gap-plan") + 1]), gap_plan_file)
                     Path(command[command.index("--out") + 1]).write_text(
                         json.dumps([{"status": "STRUCTURAL", "level": 1, "title": "技术方案", "paths": []}]),
                         encoding="utf-8",
@@ -429,6 +506,32 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             self.assertIsInstance(result["warnings"], list)
             self.assertFalse((root / "assembly_report.md").exists())
             self.assertFalse((root / "needs_review.md").exists())
+
+    def test_runner_rejects_manifest_without_gap_plan(self) -> None:
+        runner = load_assembler_script("run_from_manifest")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_file = root / "toc.json"
+            wiki_dir = root / "wiki"
+            library_dir = root / "library"
+            toc_file.write_text("{}", encoding="utf-8")
+            wiki_dir.mkdir()
+            library_dir.mkdir()
+            manifest_file = root / "manifest.json"
+            manifest_file.write_text(
+                json.dumps(
+                    {
+                        "workDir": str(root),
+                        "tocJsonPath": str(toc_file),
+                        "wikiDir": str(wiki_dir),
+                        "materialLibraryDir": str(library_dir),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "gapPlanPath"):
+                runner.run_from_manifest(manifest_file)
 
     def test_verify_returns_compact_json_without_markdown_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

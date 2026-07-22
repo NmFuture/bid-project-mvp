@@ -224,7 +224,8 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     toc_json = work_dir / "toc_entries.json"
     params_path = as_path(manifest.get("projectParamsPath"), required=False) or (work_dir / "project_params.json")
     plan_path = work_dir / "assembly_plan.json"
-    gap_plan_path = as_path(manifest.get("gapPlanPath"), required=False)
+    gap_plan_path = as_path(manifest.get("gapPlanPath"), required=True, label="gapPlanPath")
+    assert gap_plan_path is not None
     merged_path = work_dir / "bid_merged.docx"
     merger_result_path = work_dir / "assembly_merge_result.json"
     verify_result_path = work_dir / "assembly_verify_result.json"
@@ -248,8 +249,9 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             str(params_path),
             "--out",
             str(plan_path),
+            "--gap-plan",
+            str(gap_plan_path),
         ]
-        + (["--gap-plan", str(gap_plan_path)] if gap_plan_path and gap_plan_path.exists() else [])
     )
 
     template = ensure_master_template(manifest, work_dir)

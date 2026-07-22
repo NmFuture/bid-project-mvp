@@ -155,7 +155,8 @@ def clean_docx(
 
     heading_style_result = _configure_heading_styles(doc, style_spec)
     heading_result = _promote_existing_headings(doc, outline_items, style_spec)
-    internal_heading_result = _promote_body_internal_headings(doc, style_spec)
+    # 标题只来自现有 Heading/outline；Cleaner 不再根据加粗或文本形态猜标题。
+    internal_heading_result = {"promoted_headings": []}
     _apply_document_page_format(doc, style_spec.get("page"))
     _apply_document_body_format(doc, style_spec)
     _apply_document_table_format(doc, style_spec.get("table_cell"))
@@ -411,19 +412,22 @@ def _apply_document_page_format(doc: Document, page_cfg: Any) -> None:
 
 def _apply_document_body_format(doc: Document, style_spec: dict[str, Any]) -> None:
     body_cfg = style_spec.get("body")
-    caption_cfg = style_spec.get("caption")
-    if isinstance(body_cfg, dict):
-        try:
-            _apply_style_format(doc.styles["Normal"], body_cfg)
-        except KeyError:
-            pass
+    preserve_after_image = False
     for paragraph in doc.paragraphs:
         if _paragraph_heading_level(paragraph):
+            preserve_after_image = False
             continue
-        cfg = caption_cfg if _looks_like_caption_or_table_title(paragraph.text) else body_cfg
-        if not isinstance(cfg, dict):
+        if _paragraph_contains_visual(paragraph):
+            preserve_after_image = True
             continue
-        _apply_paragraph_direct_format(paragraph, cfg)
+        if preserve_after_image:
+            if paragraph.text.strip():
+                preserve_after_image = False
+            continue
+        if _is_preserved_layout_paragraph(paragraph):
+            continue
+        if isinstance(body_cfg, dict):
+            _apply_paragraph_direct_format(paragraph, body_cfg)
 
 
 def _apply_document_table_format(doc: Document, table_cfg: Any) -> None:
@@ -436,11 +440,23 @@ def _apply_document_table_format(doc: Document, table_cfg: Any) -> None:
         "right": WD_TABLE_ALIGNMENT.RIGHT,
     }.get(table_align)
     for table in doc.tables:
+        if _table_contains_visual(table):
+            continue
         if alignment is not None:
             table.alignment = alignment
         for row in table.rows:
             for cell in row.cells:
+                preserve_after_image = False
                 for paragraph in cell.paragraphs:
+                    if _paragraph_contains_visual(paragraph):
+                        preserve_after_image = True
+                        continue
+                    if preserve_after_image:
+                        if paragraph.text.strip():
+                            preserve_after_image = False
+                        continue
+                    if _is_preserved_layout_paragraph(paragraph):
+                        continue
                     _apply_paragraph_direct_format(paragraph, table_cfg)
 
 
@@ -519,7 +535,9 @@ def _apply_run_format(run, cfg: dict[str, Any]) -> None:
     if "size_pt" in cfg:
         run.font.size = Pt(float(cfg["size_pt"]))
     if "bold" in cfg:
-        run.font.bold = bool(cfg["bold"])
+        # 正文规则的非粗体是默认值，不能覆盖素材 Run 上已有的局部强调。
+        if bool(cfg["bold"]):
+            run.font.bold = True
     r_pr = run._element.get_or_add_rPr()
     r_fonts = r_pr.find(qn("w:rFonts"))
     if r_fonts is None:
@@ -718,20 +736,61 @@ def _promote_body_internal_headings(doc: Document, style_spec: dict[str, Any]) -
 
 
 def _paragraph_heading_level(paragraph) -> int:
+    p_pr = paragraph._p.find(qn("w:pPr"))
+    if p_pr is not None:
+        outline = p_pr.find(qn("w:outlineLvl"))
+        if outline is not None:
+            try:
+                value = int(outline.get(qn("w:val")))
+            except (TypeError, ValueError):
+                value = -1
+            if 0 <= value <= 8:
+                return value + 1
+
     style = getattr(paragraph, "style", None)
-    candidates = (
-        str(getattr(style, "name", "") or ""),
-        str(getattr(style, "style_id", "") or ""),
-    )
-    for value in candidates:
-        normalized = value.strip().lower()
-        match = re.search(r"heading\s*(\d+)", normalized)
+    visited: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", "") or "")
+        if style_id in visited:
+            break
+        visited.add(style_id)
+
+        style_name = str(getattr(style, "name", "") or "")
+        match = re.search(r"heading\s*(\d+)", style_name.strip().lower())
         if match:
             return max(1, min(int(match.group(1)), 9))
-        match = re.search(r"标题\s*(\d+)", value)
+        match = re.search(r"标题\s*(\d+)", style_name)
         if match:
             return max(1, min(int(match.group(1)), 9))
+
+        style_p_pr = style.element.find(qn("w:pPr"))
+        if style_p_pr is not None:
+            outline = style_p_pr.find(qn("w:outlineLvl"))
+            if outline is not None:
+                try:
+                    value = int(outline.get(qn("w:val")))
+                except (TypeError, ValueError):
+                    value = -1
+                if 0 <= value <= 8:
+                    return value + 1
+        style = getattr(style, "base_style", None)
     return 0
+
+
+def _paragraph_contains_visual(paragraph) -> bool:
+    return bool(paragraph._p.xpath(".//w:drawing|.//w:pict|.//w:object"))
+
+
+def _table_contains_visual(table) -> bool:
+    return bool(table._tbl.xpath(".//w:drawing|.//w:pict|.//w:object"))
+
+
+def _is_preserved_layout_paragraph(paragraph) -> bool:
+    style = getattr(paragraph, "style", None)
+    style_name = str(getattr(style, "name", "") or "").strip().lower()
+    if any(marker in style_name for marker in ("图片", "图注", "照片", "caption", "figure", "image")):
+        return True
+    return _looks_like_caption_or_table_title(paragraph.text)
 
 
 def _clean_paragraph_text(text: str) -> str:

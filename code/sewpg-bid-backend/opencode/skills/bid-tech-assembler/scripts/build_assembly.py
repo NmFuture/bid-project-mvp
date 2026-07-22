@@ -671,24 +671,26 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         return plan
 
     by_number: dict[str, dict] = {}
-    by_title: dict[str, dict] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         number = str(item.get("number") or "").strip()
-        title = _normalize_title(str(item.get("title") or ""))
         if number:
             by_number[number] = item
-        if title:
-            by_title[title] = item
-        if number and title:
-            by_title[_normalize_title(f"{number} {item.get('title') or ''}")] = item
 
     for entry in plan:
-        number = str(entry.get("chapter_no_flat") or entry.get("chapter_no") or "").strip()
-        title = _normalize_title(str(entry.get("title") or ""))
-        gap_item = by_number.get(number) or by_title.get(title)
+        entry["paths"] = []
+        entry["shifts"] = []
+        entry["attach_modes"] = []
+        number_candidates = (
+            str(entry.get("chapter_no") or "").strip(),
+            str(entry.get("chapter_no_flat") or "").strip(),
+        )
+        gap_item = next((by_number[number] for number in number_candidates if number in by_number), None)
         if not gap_item:
+            if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
+                entry["status"] = STATUS_UNMATCHED
+                entry["note"] = "gap plan 未选择素材"
             continue
         entry["coverage_role"] = str(
             gap_item.get("coverageRole") or gap_item.get("coverage_role") or ""
@@ -713,16 +715,33 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         entry["status"] = STATUS_ADAPTED if entry.get("field_replace") else STATUS_MATCHED
         entry["note"] = "来自缺口识别与处理计划"
         entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
-    return plan
+    return _drop_chapter_master_descendants(plan)
+
+
+def _drop_chapter_master_descendants(plan: list[dict]) -> list[dict]:
+    prefixes = {
+        str(item.get("chapter_no_flat") or "").strip()
+        for item in plan
+        if str(item.get("coverage_role") or "").strip() == "chapter_master"
+        and item.get("paths")
+        and str(item.get("chapter_no_flat") or "").strip()
+    }
+    if not prefixes:
+        return plan
+    return [
+        item
+        for item in plan
+        if not any(
+            str(item.get("chapter_no_flat") or "").strip().startswith(f"{prefix}.")
+            for prefix in prefixes
+        )
+    ]
 
 
 def _gap_plan_paths(item: dict) -> list[str]:
     paths: list[str] = []
-    has_ai_fill_flow = bool(item.get("fillTasks")) or any(
-        isinstance(artifact, dict) and str(artifact.get("source") or "") == "ai_fill"
-        for artifact in (item.get("resolvedArtifacts") or [])
-    )
-    keys = ("resolvedArtifacts",) if has_ai_fill_flow else ("matchedMaterials", "resolvedArtifacts")
+    resolved_artifacts = item.get("resolvedArtifacts") or []
+    keys = ("resolvedArtifacts",) if resolved_artifacts else ("matchedMaterials",)
     for key in keys:
         values = item.get(key) or []
         if not isinstance(values, list):
@@ -772,18 +791,17 @@ def main():
     ap.add_argument("--toc", type=Path, required=True)
     ap.add_argument("--wiki", type=Path, required=True, help="wiki 根目录（含 卡片/ index.md）")
     ap.add_argument("--params", type=Path, default=None, help="project_params.json（目前未用；占位）")
-    ap.add_argument("--gap-plan", type=Path, default=None, help="S4 缺口识别与处理计划 JSON")
+    ap.add_argument("--gap-plan", type=Path, required=True, help="S4 缺口识别与处理计划 JSON")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--summary", action="store_true", help="同时打印摘要到 stderr")
     args = ap.parse_args()
 
     toc = json.loads(args.toc.read_text(encoding="utf-8"))
-    cards = load_cards(args.wiki)
     params = {}
     if args.params and args.params.exists():
         params = json.loads(args.params.read_text(encoding="utf-8"))
 
-    plan = build_plan(toc, cards, params)
+    plan = build_plan(toc, [], params)
     plan = apply_gap_plan(plan, args.gap_plan)
     plan = rearrange_appendices(plan)
 

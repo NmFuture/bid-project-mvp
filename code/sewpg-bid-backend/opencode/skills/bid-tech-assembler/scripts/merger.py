@@ -45,7 +45,13 @@ from copy import deepcopy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
-from numbering_fixer import inject_prefix_to_headings, remap_material_headings_to_navigation, strip_numPr_from_body, strip_numPr_from_heading_styles
+from numbering_fixer import (
+    _paragraph_heading_level,
+    inject_prefix_to_headings,
+    remap_material_headings_to_navigation,
+    strip_numPr_from_body,
+    strip_numPr_from_heading_styles,
+)
 from docx_style_pruner import prune_unused_styles
 
 
@@ -94,7 +100,21 @@ class BatchComposer(Composer):
 
     def __init__(self, doc):
         self._defer_global_ids = True
-        super().__init__(doc)
+        super().__init__(doc, preserve_styles=True)
+
+    def _create_style_id_mapping(self, doc):
+        super()._create_style_id_mapping(doc)
+        for style in doc.styles:
+            for tag in ("w:basedOn", "w:next", "w:link"):
+                reference = style.element.find(qn(tag))
+                if reference is None:
+                    continue
+                source_id = reference.get(qn("w:val"))
+                if not source_id:
+                    continue
+                target_id = self.mapped_style_id(source_id)
+                if target_id:
+                    reference.set(qn("w:val"), target_id)
 
     def renumber_bookmarks(self):
         if not self._defer_global_ids:
@@ -197,8 +217,7 @@ def _collect_heading_titles(doc, target_set: set) -> None:
     # inject 后 text 形如 "5.8.7.1  xxx" 或 "4.1  xxx"；也可能是未被 inject 的原文
     prefix_strip = _re.compile(r"^\s*\d+(?:\.\d+){0,6}[\.\s　]+")
     for para in doc.paragraphs:
-        st = para.style.name if para.style else ""
-        if not (st.startswith("Heading") or st.startswith("标题")):
+        if _paragraph_heading_level(para) is None:
             continue
         t = (para.text or "").strip()
         if not t:
@@ -397,6 +416,7 @@ def merge(
                     current_parent_chapter = parent_chapter
 
             merged_for_entry = 0
+            material_heading_l1_offset = 0
             for path_idx, path_rel in enumerate(entry.get("paths", [])):
                 src = lib_root / path_rel
                 if not _path_exists(src):
@@ -420,7 +440,7 @@ def merge(
 
                 # 关键：S2 TOC 条目由 merger 手插为真正的导航 Heading。
                 # 素材内部 Heading 不能再整体降级；这里按当前 TOC 父级
-                # 相对映射到最终 3/4 级，避免最后 cleaner 从正文里猜层级。
+                # 相对映射到最终 3-6 级，避免最后 cleaner 从正文里猜层级。
                 # remove_first_if_match 只对本条 entry 首份成功素材启用（避免前序失败
                 # 漏去重，也避免叠加场景下多份素材首 heading 都被删）。
                 try:
@@ -430,12 +450,17 @@ def merge(
                     is_chapter_master = str(
                         entry.get("coverage_role") or entry.get("coverageRole") or ""
                     ).strip() == "chapter_master"
+                    next_material_heading_l1_offset = material_heading_l1_offset
                     if is_chapter_master:
                         inject_stats = inject_prefix_to_headings(
                             sub_doc,
                             parent_chapter,
                             toc_title=title,
                             skip_first_if_match=(merged_for_entry == 0),
+                            l1_offset=material_heading_l1_offset,
+                        )
+                        next_material_heading_l1_offset = inject_stats.get(
+                            "final_l1", material_heading_l1_offset
                         )
                         if inject_stats["skipped_first"]:
                             stats["inject_skipped_first"] += 1
@@ -447,15 +472,18 @@ def merge(
                             toc_title=title,
                             remove_first_if_match=(merged_for_entry == 0),
                             keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
+                            parent_chapter_no=parent_chapter,
                             parent_level=heading_level,
-                            max_target_level=4,
+                            max_target_level=6,
+                            l1_offset=material_heading_l1_offset,
+                        )
+                        next_material_heading_l1_offset = remap_stats.get(
+                            "final_l1", material_heading_l1_offset
                         )
                         if remap_stats["skipped_first"]:
                             stats["inject_skipped_first"] += 1
                         stats.setdefault("material_headings_remapped", 0)
                         stats["material_headings_remapped"] += remap_stats["remapped"]
-                        stats.setdefault("material_bold_subheadings_promoted", 0)
-                        stats["material_bold_subheadings_promoted"] += remap_stats["bold_subheadings"]
                         stats.setdefault("material_headings_kept", 0)
                         stats["material_headings_kept"] += remap_stats.get("kept", 0)
                         stats.setdefault("material_headings_demoted", 0)
@@ -468,6 +496,7 @@ def merge(
                     sub_doc2 = Document(str(inj_path))
                     _isolate_section(sub_doc2)
                     composer.append(sub_doc2)
+                    material_heading_l1_offset = next_material_heading_l1_offset
                     seen_titles_by_parent.setdefault(parent_chapter, set()).update(
                         material_heading_titles
                     )

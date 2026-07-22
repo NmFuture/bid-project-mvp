@@ -21,7 +21,6 @@ from app.services.onlyoffice_documents import document_path
 from app.services.bid_runtime_state import now_iso
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
 from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
-from app.services.technical_gap_review import build_technical_review_payload
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -66,9 +65,11 @@ def assemble_tech_bid_for_project_with_progress(
     work_dir = _prepare_work_dir(project_id, parse_storage)
     toc_json_path = _prepare_toc_json(project_id, project, outline_state, parse_storage, work_dir)
     gap_plan_path = _prepare_gap_plan(project_id, work_dir)
+    if not gap_plan_path:
+        raise ValueError("请先完成素材匹配，再组装技术标正文。")
     wiki_dir = _prepare_wiki_dir(project, parse_storage, work_dir)
-    gap_plan_card_count = _augment_wiki_with_gap_plan_cards(gap_plan_path, wiki_dir) if gap_plan_path else 0
-    synthesized_card_count = _augment_wiki_with_material_cards(toc_json_path, wiki_dir, project)
+    gap_plan_card_count = _augment_wiki_with_gap_plan_cards(gap_plan_path, wiki_dir)
+    synthesized_card_count = 0
     material_library_dir, material_cards = _export_material_library(wiki_dir, work_dir / "素材库")
     template_file = _select_template_file(template_file_records)
     project_params = _build_project_params(project, toc_json_path)
@@ -325,7 +326,6 @@ def _prepare_toc_json(
 def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
     technical_project = get_technical_gap_project_runtime_state(project_id)
     gap_state = ensure_technical_gap_state(technical_project)
-    review_state = build_technical_review_payload(technical_project, gap_state)
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     if not plan:
         recovered_plan_path = technical_workspace_stage_dir(project_id, "s4_gap_workdir") / "gap_plan.json"
@@ -337,14 +337,6 @@ def _prepare_gap_plan(project_id: str, work_dir: Path) -> Path | None:
         return None
     plan = json.loads(json.dumps(plan, ensure_ascii=False))
     plan = _with_recovered_ai_fill_artifacts(project_id, plan)
-    has_resolved_artifacts = _gap_plan_has_resolved_artifacts(plan)
-    if not bool(review_state.get("confirmed")):
-        if not has_resolved_artifacts:
-            return None
-    integrity = gap_state.get("integrity") if isinstance(gap_state.get("integrity"), dict) else {}
-    if integrity and str(integrity.get("status") or "") != "passed":
-        if not has_resolved_artifacts:
-            return None
     target = work_dir / "gap_plan.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
