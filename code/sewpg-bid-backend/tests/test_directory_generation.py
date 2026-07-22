@@ -1113,7 +1113,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                 _run_outline_skill(manifest_path, bid_type="技术标")
 
     def test_technical_compose_trusted_validation_reuses_appendix_inventory(self) -> None:
-        from app.services.outline_generation import _run_outline_skill
+        from app.services.outline_generation import (
+            _capture_trusted_technical_outline_input,
+            _run_outline_skill,
+            _validate_technical_compose_report,
+        )
 
         root = Path(self.temp_dir.name) / "compose-controlled-appendix"
         root.mkdir(parents=True, exist_ok=True)
@@ -1129,6 +1133,12 @@ class DirectoryGenerationTests(unittest.TestCase):
         table.cell(0, 1).text = "要求"
         table.cell(1, 0).text = "示例"
         table.cell(1, 1).text = "投标人填写"
+        tender_doc.add_paragraph("附表A.2 供货范围表")
+        table = tender_doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "设备"
+        table.cell(0, 1).text = "数量"
+        table.cell(1, 0).text = "示例"
+        table.cell(1, 1).text = "投标人填写"
         tender_doc.save(tender)
         manifest = {
             "bidType": "技术标",
@@ -1140,6 +1150,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         runner = load_technical_outline_runner()
+        trusted_input = _capture_trusted_technical_outline_input(manifest_path)
 
         def write_controlled_appendix_artifacts(_prompt: str, *args, **kwargs) -> dict:
             runner.write_template_structure(manifest, manifest_path)
@@ -1189,7 +1200,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             appendix_batch = runner.dispatch_command(
                 "appendix-next", manifest, manifest_path, []
             )
-            self.assertEqual(len(appendix_batch["items"]), 1)
+            self.assertEqual(len(appendix_batch["items"]), 2)
             runner.dispatch_command(
                 "appendix-decision-batch",
                 manifest,
@@ -1207,12 +1218,15 @@ class DirectoryGenerationTests(unittest.TestCase):
                             },
                             "items": [
                                 {
-                                    "appendix_id": appendix_batch["items"][0]["appendix_id"],
+                                    "appendix_id": item["appendix_id"],
                                     "decision": "include",
                                     "reason": "招标文件要求投标人填写。",
-                                    "node_id": "ADD-APPENDIX-1",
+                                    "node_id": f"ADD-APPENDIX-{index}",
                                     "parent_id": "ADD-TECH-APPENDIX",
                                 }
+                                for index, item in enumerate(
+                                    appendix_batch["items"], start=1
+                                )
                             ],
                         },
                         ensure_ascii=False,
@@ -1229,7 +1243,56 @@ class DirectoryGenerationTests(unittest.TestCase):
             result = _run_outline_skill(manifest_path, bid_type="技术标")
 
         self.assertEqual(result["nodes"][-1]["title"], "技术附表")
-        self.assertEqual(len(result["nodes"][-1]["children"]), 1)
+        self.assertEqual(len(result["nodes"][-1]["children"]), 2)
+
+        inventory_path = root / "tender_appendix_inventory.json"
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory["items"] = inventory["items"][:1]
+        inventory_path.write_text(json.dumps(inventory, ensure_ascii=False), encoding="utf-8")
+        chunks = json.loads((root / "tender_review_chunks.json").read_text(encoding="utf-8"))
+        files_by_id, _ = runner.review_workflow._collect_heading_files(chunks)
+        headings_state_path = root / "tender_headings_state.json"
+        headings_state = json.loads(headings_state_path.read_text(encoding="utf-8"))
+        headings_state["headings_catalog_digest"] = runner.review_workflow._heading_catalog_digest(
+            files_by_id,
+            inventory["items"],
+        )
+        headings_state["appendix_count"] = 1
+        headings_state_path.write_text(
+            json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
+        )
+        workflow_binding = runner.review_workflow.require_headings_complete(
+            root,
+            runner.tender_inputs(manifest),
+        )
+        state_path = root / "outline_decision_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        current_appendix_items = runner.review_workflow.decision_appendix_items(root)
+        state["appendix_inventory_digest"] = runner.decision_workflow._normalized_appendix_inventory(
+            current_appendix_items
+        )[1]
+        state["appendix_decisions"] = {
+            appendix_id: decision
+            for appendix_id, decision in state["appendix_decisions"].items()
+            if appendix_id == current_appendix_items[0]["appendix_id"]
+        }
+        state["additions"] = [
+            addition
+            for addition in state["additions"]
+            if addition.get("node_id") in {"ADD-TECH-APPENDIX", "ADD-APPENDIX-1"}
+        ]
+        state["headings_state_digest"] = workflow_binding["headingsStateDigest"]
+        state["finalized_decisions_digest"] = ""
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        runner.dispatch_command("decisions", manifest, manifest_path, [])
+        runner.compose_manifest(manifest, manifest_path)
+
+        with self.assertRaisesRegex(RuntimeError, "附表清单.*可信快照"):
+            _validate_technical_compose_report(
+                root,
+                output,
+                trusted_input=trusted_input,
+            )
 
     def test_generate_outline_rejects_agent_modified_manifest_before_publish(self) -> None:
         from app.services.outline_generation import generate_outline_for_project

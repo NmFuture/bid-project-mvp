@@ -73,6 +73,10 @@ def _capture_trusted_technical_outline_input(manifest_path: Path) -> dict[str, A
         structure = runner.extract_template_structure(template_file)
         raw_tender_files = manifest.get("tenderFiles")
         tender_files = copy.deepcopy(raw_tender_files) if isinstance(raw_tender_files, list) else []
+        appendix_inventory = runner.extract_tender_appendix_inventory(tender_files)
+        appendix_items = runner.review_workflow.decision_appendix_items_from_inventory(
+            appendix_inventory
+        )
         tender_inputs_digest = (
             runner.review_workflow.tender_input_fingerprint(tender_files)
             if tender_files
@@ -87,6 +91,7 @@ def _capture_trusted_technical_outline_input(manifest_path: Path) -> dict[str, A
         "templateStructure": copy.deepcopy(structure),
         "tenderFiles": tender_files,
         "tenderInputsDigest": tender_inputs_digest,
+        "appendixItems": copy.deepcopy(appendix_items),
     }
 
 
@@ -546,6 +551,16 @@ def _validate_technical_compose_report(
             )
             if current_tender_digest != trusted_tender_digest:
                 raise RuntimeError("技术标招标文件在 Opencode 执行期间被修改。")
+            trusted_appendix_items = trusted_input.get("appendixItems")
+            if not isinstance(trusted_appendix_items, list) or any(
+                not isinstance(item, dict) for item in trusted_appendix_items
+            ):
+                raise RuntimeError("技术标目录后端可信附表清单快照无效。")
+            workspace_appendix_items = (
+                runner.review_workflow.decision_appendix_items(work_dir)
+            )
+            if workspace_appendix_items != trusted_appendix_items:
+                raise RuntimeError("技术标目录工作区附表清单与后端可信快照不一致。")
             workflow_proof = runner.review_workflow.require_headings_complete(
                 work_dir,
                 trusted_tender_files,
@@ -556,9 +571,7 @@ def _validate_technical_compose_report(
                     trusted_structure,
                     decisions,
                     workflow_binding=workflow_proof,
-                    appendix_items=runner.review_workflow.decision_appendix_items(
-                        work_dir
-                    ),
+                    appendix_items=trusted_appendix_items,
                 )
             )
             composer.validate_compose_report(

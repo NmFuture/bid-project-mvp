@@ -508,6 +508,17 @@ def decision_appendix_items(work_dir: Path) -> list[dict[str, Any]]:
         or inventory.get("schema_version") != "tender-appendix-inventory.v1"
     ):
         raise SystemExit(f"tender appendix inventory schema is invalid: {inventory_path}")
+    return decision_appendix_items_from_inventory(inventory)
+
+
+def decision_appendix_items_from_inventory(
+    inventory: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if (
+        not isinstance(inventory, dict)
+        or inventory.get("schema_version") != "tender-appendix-inventory.v1"
+    ):
+        raise SystemExit("tender appendix inventory schema is invalid")
     result: list[dict[str, Any]] = []
     for item in inventory.get("items") or []:
         if not isinstance(item, dict) or int(item.get("following_table_count") or 0) < 1:
