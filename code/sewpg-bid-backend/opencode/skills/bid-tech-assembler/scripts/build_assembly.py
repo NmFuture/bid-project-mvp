@@ -41,8 +41,6 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 
 # ---------- 卡片加载 ----------
 
@@ -65,37 +63,6 @@ class Card:
     def scope_rank(self) -> int:
         # 通用在前=0, 定制在后=1
         return 0 if self.scope == "通用" else 1
-
-
-def load_cards(wiki_root: Path) -> list[Card]:
-    cards: list[Card] = []
-    for md in wiki_root.glob("卡片/**/*.md"):
-        text = md.read_text(encoding="utf-8")
-        m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
-        if not m:
-            continue
-        try:
-            fm = yaml.safe_load(m.group(1)) or {}
-        except yaml.YAMLError:
-            continue
-        if fm.get("deprecated"):
-            continue
-        c = Card(
-            name=str(fm.get("name", md.stem)),
-            path=str(fm.get("path", "")),
-            scope=str(fm.get("scope", "通用")),
-            category=str(fm.get("category", "")),
-            skeleton_section=str(fm.get("skeleton_section", "")),
-            skeleton_level=str(fm.get("skeleton_level", "")),
-            material_level_range=str(fm.get("material_level_range", "")),
-            heading_count=int(fm.get("heading_count", 0) or 0),
-            shift=int(fm.get("shift", 0) or 0),
-            attach_mode=str(fm.get("attach_mode", "normal") or "normal"),
-            deprecated=bool(fm.get("deprecated", False)),
-            card_file=str(md),
-        )
-        cards.append(c)
-    return cards
 
 
 def index_cards(cards: list[Card]) -> dict[str, list[Card]]:
@@ -671,12 +638,16 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         return plan
 
     by_number: dict[str, dict] = {}
+    by_numbered_title: dict[str, dict] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         number = str(item.get("number") or "").strip()
+        title = str(item.get("title") or "").strip()
         if number:
             by_number[number] = item
+        if number and title:
+            by_numbered_title[_normalize_title(f"{number} {title}")] = item
 
     for entry in plan:
         entry["paths"] = []
@@ -687,6 +658,8 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
             str(entry.get("chapter_no_flat") or "").strip(),
         )
         gap_item = next((by_number[number] for number in number_candidates if number in by_number), None)
+        if gap_item is None:
+            gap_item = by_numbered_title.get(_normalize_title(str(entry.get("title") or "")))
         if not gap_item:
             if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
                 entry["status"] = STATUS_UNMATCHED

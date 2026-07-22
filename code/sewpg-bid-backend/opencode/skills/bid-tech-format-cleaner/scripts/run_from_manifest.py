@@ -499,7 +499,8 @@ def _reapply_heading_direct_formats(doc: Document, style_spec: dict[str, Any]) -
             continue
         cfg = _heading_cfg(style_spec, level)
         if cfg:
-            _apply_paragraph_direct_format(paragraph, cfg)
+            _apply_paragraph_properties(paragraph.paragraph_format, cfg)
+            _apply_heading_run_format(paragraph, cfg)
 
 
 def _apply_paragraph_direct_format(paragraph, cfg: dict[str, Any]) -> None:

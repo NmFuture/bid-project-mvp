@@ -521,6 +521,14 @@ def remap_material_headings_to_navigation(
         if id(para._p) == first_to_remove_key:
             continue
 
+        if _looks_like_caption_or_table_title(para.text) or _looks_like_caption_or_table_title(pure):
+            if para.text != pure:
+                _replace_paragraph_text_preserve_format(para, pure)
+            _set_body_style_or_clear(para, doc)
+            _clear_direct_outline_and_numbering(para)
+            stats["demoted"] += 1
+            continue
+
         while heading_stack and heading_stack[-1][0] >= source_level:
             heading_stack.pop()
         relative_level = heading_stack[-1][1] + 1 if heading_stack else 1

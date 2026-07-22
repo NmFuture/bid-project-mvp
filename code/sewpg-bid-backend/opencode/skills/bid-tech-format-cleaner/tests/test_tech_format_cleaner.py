@@ -16,7 +16,7 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm
+from docx.shared import Cm, Pt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,7 +171,9 @@ def _write_full_format_docx(path: Path) -> None:
     doc.add_paragraph("正文内容")
     table = doc.add_table(rows=1, cols=1)
     table.cell(0, 0).text = "表格内容"
-    doc.add_paragraph("表1 技术参数")
+    caption = doc.add_paragraph("表1 技术参数")
+    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    caption.runs[0].font.size = Pt(10.5)
     doc.add_picture(str(image_path), width=Cm(1))
     section = doc.add_section(WD_SECTION.NEW_PAGE)
     section.orientation = WD_ORIENT.LANDSCAPE
@@ -546,7 +548,7 @@ class TechFormatCleanerTest(unittest.TestCase):
         self.assertEqual(style_by_text["附表B.1.1 风力发电机组供货范围清单"], "Heading 3")
         self.assertEqual(style_by_text["附表B.1.1.1 叶片供货范围"], "Heading 4")
 
-    def test_promotes_internal_material_headings_without_promoting_captions(self):
+    def test_does_not_guess_internal_material_headings_from_bold_text(self):
         input_docx = self.tmp_dir / "input.docx"
         outline_path = self.tmp_dir / "outline.json"
         style_path = self.tmp_dir / "style.json"
@@ -576,10 +578,10 @@ class TechFormatCleanerTest(unittest.TestCase):
 
         result = _run_manifest(manifest_path, response="details")
 
-        self.assertEqual(result["summary"]["internalHeadingCount"], 1)
+        self.assertEqual(result["summary"]["internalHeadingCount"], 0)
         output = Document(str(output_docx))
         style_by_text = {paragraph.text.strip(): paragraph.style.name for paragraph in output.paragraphs}
-        self.assertEqual(style_by_text["供应链能力保障"], "Heading 3")
+        self.assertNotEqual(style_by_text["供应链能力保障"], "Heading 3")
         self.assertNotEqual(style_by_text["（1）签订产能协议"], "Heading 4")
         self.assertNotEqual(style_by_text["表C.1 总体技术参数与规格"], "Heading 3")
 
@@ -611,7 +613,8 @@ class TechFormatCleanerTest(unittest.TestCase):
         self.assertAlmostEqual(output.sections[0].top_margin.cm, 4, places=1)
         self.assertAlmostEqual(output.tables[0].cell(0, 0).paragraphs[0].runs[0].font.size.pt, 15)
         caption = next(paragraph for paragraph in output.paragraphs if paragraph.text == "表1 技术参数")
-        self.assertAlmostEqual(caption.runs[0].font.size.pt, 16)
+        self.assertAlmostEqual(caption.runs[0].font.size.pt, 10.5)
+        self.assertEqual(caption.alignment, WD_ALIGN_PARAGRAPH.CENTER)
         self.assertEqual(len(output.inline_shapes), 1)
         self.assertTrue(any(int(section.page_width) > int(section.page_height) for section in output.sections))
         header_paragraph = next(
