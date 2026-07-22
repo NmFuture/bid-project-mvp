@@ -991,6 +991,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline decision-batch",
             "s2outline appendix-next",
             "s2outline appendix-decision-batch",
+            "root_addition",
+            "全部 `exclude` 时不建立",
+            "完整值",
             "s2outline decisions",
             "s2outline compose",
             "自主选择",
@@ -3098,7 +3101,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     (root / "outline_decision_state.json").write_text(
                         json.dumps(invalid_state, ensure_ascii=False), encoding="utf-8"
                     )
-                    with self.assertRaisesRegex(SystemExit, "parent_id"):
+                    with self.assertRaisesRegex(SystemExit, "parent_id|root_addition"):
                         decision_workflow.submit_appendix_batch(
                             root,
                             structure,
@@ -3161,6 +3164,432 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
         self.assertEqual(set(final_state["appendix_decisions"]), {"APP-0001", "APP-0002"})
+
+    def test_bid_outline_appendix_first_include_creates_root_and_later_batch_reuses_it(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix R.{index}",
+                "title": f"Controlled form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure, comparison_context={"files": []}
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                },
+                comparison_context={"files": []},
+            )
+
+            first = decision_workflow.next_appendix_batch(
+                root, structure, inventory, max_items=1
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": first["batch_token"],
+                    "root_addition": {
+                        "node_id": "ADD-TECH-APPENDIX",
+                        "parent_id": None,
+                        "number": "第7章",
+                        "title": "技术附表",
+                        "reason": "Tender contains controlled appendices.",
+                    },
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "node_id": "ADD-APP-0001",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Include first form.",
+                        }
+                    ],
+                },
+                inventory,
+            )
+            first_state = json_load(root / "outline_decision_state.json")
+            second = decision_workflow.next_appendix_batch(
+                root, structure, inventory, max_items=1
+            )
+            second_state = json_load(root / "outline_decision_state.json")
+
+            with self.assertRaisesRegex(SystemExit, "root_addition"):
+                decision_workflow.submit_appendix_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": second["batch_token"],
+                        "root_addition": {
+                            "node_id": "ADD-SECOND-ROOT",
+                            "parent_id": None,
+                            "number": "第8章",
+                            "title": "技术附表",
+                            "reason": "Duplicate root.",
+                        },
+                        "items": [
+                            {
+                                "appendix_id": "APP-0002",
+                                "decision": "include",
+                                "node_id": "ADD-APP-0002",
+                                "parent_id": "ADD-SECOND-ROOT",
+                                "reason": "Include second form.",
+                            }
+                        ],
+                    },
+                    inventory,
+                )
+            self.assertEqual(
+                json_load(root / "outline_decision_state.json"), second_state
+            )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": second["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0002",
+                            "decision": "include",
+                            "node_id": "ADD-APP-0002",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Include second form.",
+                        }
+                    ],
+                },
+                inventory,
+            )
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            decisions = json_load(Path(finalized["decisionsFile"]))
+            outline, _ = decision_workflow.outline_composer.build_composition(
+                structure, decisions
+            )
+            validation = decision_workflow.validate_finalized_decisions(
+                root,
+                structure,
+                decisions,
+                workflow_binding={},
+                appendix_items=inventory,
+                include_appendix_decisions=True,
+            )
+
+        self.assertEqual(
+            first_state["additions"][0],
+            {
+                "operation": "add",
+                "node_id": "ADD-TECH-APPENDIX",
+                "parent_id": None,
+                "number": "第7章",
+                "title": "技术附表",
+                "suggestion_action": "建议增加",
+                "suggestion_reason": "Tender contains controlled appendices.",
+            },
+        )
+        self.assertEqual(
+            outline["nodes"][-1],
+            {
+                "number": "第7章",
+                "title": "技术附表",
+                "suggestion_action": "建议增加",
+                "suggestion_reason": "Tender contains controlled appendices.",
+                "children": [
+                    {
+                        "number": "Appendix R.1",
+                        "title": "Controlled form 1",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "Include first form.",
+                        "children": [],
+                    },
+                    {
+                        "number": "Appendix R.2",
+                        "title": "Controlled form 2",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "Include second form.",
+                        "children": [],
+                    },
+                ],
+            },
+        )
+        self.assertEqual(
+            [item["decision"] for item in validation["appendixDecisions"]],
+            ["include", "include"],
+        )
+
+    def test_bid_outline_appendix_root_addition_validation_is_atomic(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix V.1",
+                "title": "Validated form",
+                "following_table_count": 1,
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure, comparison_context={"files": []}
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-EXISTING",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "Other section",
+                            "reason": "Existing non-appendix addition.",
+                        }
+                    ],
+                },
+                comparison_context={"files": []},
+            )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+            original_state = json_load(root / "outline_decision_state.json")
+
+            include_item = {
+                "appendix_id": "APP-0001",
+                "decision": "include",
+                "node_id": "ADD-APP-0001",
+                "parent_id": "ADD-TECH-APPENDIX",
+                "reason": "Required form.",
+            }
+            valid_root = {
+                "node_id": "ADD-TECH-APPENDIX",
+                "parent_id": None,
+                "number": "第7章",
+                "title": "技术附表",
+                "reason": "Required appendix root.",
+            }
+            invalid_payloads = [
+                ("root_addition", {"batch_token": batch["batch_token"], "items": [include_item]}),
+                (
+                    "reason",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {key: value for key, value in valid_root.items() if key != "reason"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "template node",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "node_id": "TPL-0001"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "existing addition",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "node_id": "ADD-EXISTING"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "parent_id",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "parent_id": "TPL-0001"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "number",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "number": ""},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "title",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "title": "技术附件"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "parent_id",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": valid_root,
+                        "items": [{**include_item, "parent_id": "ADD-WRONG-ROOT"}],
+                    },
+                ),
+                (
+                    "node_id",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": valid_root,
+                        "items": [{**include_item, "node_id": "ADD-TECH-APPENDIX"}],
+                    },
+                ),
+                (
+                    "root_addition",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": valid_root,
+                        "items": [
+                            {
+                                "appendix_id": "APP-0001",
+                                "decision": "exclude",
+                                "reason": "Not required.",
+                            }
+                        ],
+                    },
+                ),
+            ]
+            for message, payload in invalid_payloads:
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(SystemExit, message):
+                        decision_workflow.submit_appendix_batch(
+                            root, structure, payload, inventory
+                        )
+                    self.assertEqual(
+                        json_load(root / "outline_decision_state.json"), original_state
+                    )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "root_addition": valid_root,
+                    "items": [include_item],
+                },
+                inventory,
+            )
+            final_state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
+        self.assertEqual(len(final_state["additions"]), 3)
+
+    def test_bid_outline_appendix_all_exclude_finishes_without_root(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix X.{index}",
+                "title": f"Excluded form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 65)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure, comparison_context={"files": []}
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                },
+                comparison_context={"files": []},
+            )
+
+            while True:
+                batch = decision_workflow.next_appendix_batch(
+                    root, structure, inventory
+                )
+                if batch["complete"]:
+                    break
+                decision_workflow.submit_appendix_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": batch["batch_token"],
+                        "items": [
+                            {
+                                "appendix_id": item["appendix_id"],
+                                "decision": "exclude",
+                                "reason": "Not required by this tender.",
+                            }
+                            for item in batch["items"]
+                        ],
+                    },
+                    inventory,
+                )
+
+            state = json_load(root / "outline_decision_state.json")
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            decisions = json_load(Path(finalized["decisionsFile"]))
+            outline, _ = decision_workflow.outline_composer.build_composition(
+                structure, decisions
+            )
+            validation = decision_workflow.validate_finalized_decisions(
+                root,
+                structure,
+                decisions,
+                workflow_binding={},
+                appendix_items=inventory,
+                include_appendix_decisions=True,
+            )
+
+        self.assertEqual(state["additions"], [])
+        self.assertEqual(decisions["changes"], [])
+        self.assertNotIn("技术附表", json.dumps(outline, ensure_ascii=False))
+        self.assertEqual(len(validation["appendixDecisions"]), 64)
+        self.assertTrue(
+            all(item["decision"] == "exclude" for item in validation["appendixDecisions"])
+        )
 
     def test_bid_outline_decisions_reject_unjudged_appendix_candidates(self) -> None:
         decision_workflow = load_outline_script("decision_workflow")

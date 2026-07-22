@@ -773,6 +773,21 @@ def submit_appendix_batch(
         raise SystemExit(
             "appendix-decision-batch items must exactly match the current appendix-next batch"
         )
+    decision_values: list[str] = []
+    reasons: list[str] = []
+    for index, raw_item in enumerate(raw_items):
+        decision = str(raw_item.get("decision") or "").strip()
+        reason = str(raw_item.get("reason") or "").strip()
+        if decision not in {"include", "exclude"}:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].decision must be include or exclude"
+            )
+        if not reason:
+            raise SystemExit(
+                f"appendix-decision-batch items[{index}].reason is required"
+            )
+        decision_values.append(decision)
+        reasons.append(reason)
 
     inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
     normalized_decisions: list[dict[str, Any]] = []
@@ -805,19 +820,83 @@ def submit_appendix_batch(
     valid_root_id = (
         str(valid_roots[0].get("node_id") or "") if len(valid_roots) == 1 else ""
     )
+    has_include = "include" in decision_values
+    root_supplied = "root_addition" in payload
+    root_addition = payload.get("root_addition")
     batch_node_ids: set[str] = set()
+    if root_supplied:
+        if not has_include:
+            raise SystemExit(
+                "appendix-decision-batch root_addition must be omitted when the batch has no include"
+            )
+        if valid_root_id:
+            raise SystemExit(
+                "appendix-decision-batch root_addition must be omitted when a valid 技术附表 root already exists"
+            )
+        if valid_roots:
+            raise SystemExit(
+                "appendix-decision-batch root_addition cannot repair multiple valid 技术附表 roots"
+            )
+        if not isinstance(root_addition, dict):
+            raise SystemExit("appendix-decision-batch root_addition must be an object")
+        if set(root_addition) != {
+            "node_id",
+            "parent_id",
+            "number",
+            "title",
+            "reason",
+        }:
+            raise SystemExit(
+                "appendix-decision-batch root_addition must contain exactly node_id, parent_id, number, title and reason"
+            )
+        root_node_id = str(root_addition.get("node_id") or "").strip()
+        root_number = str(root_addition.get("number") or "").strip()
+        root_title = str(root_addition.get("title") or "")
+        root_reason = str(root_addition.get("reason") or "").strip()
+        if not root_node_id:
+            raise SystemExit("appendix-decision-batch root_addition.node_id is required")
+        if root_node_id in template_node_ids:
+            raise SystemExit(
+                "appendix-decision-batch root_addition.node_id conflicts with a template node: "
+                + root_node_id
+            )
+        if root_node_id in existing_node_ids:
+            raise SystemExit(
+                "appendix-decision-batch root_addition.node_id conflicts with an existing addition: "
+                + root_node_id
+            )
+        if root_addition.get("parent_id") is not None:
+            raise SystemExit("appendix-decision-batch root_addition.parent_id must be null")
+        if not root_number:
+            raise SystemExit("appendix-decision-batch root_addition.number is required")
+        if root_title != "技术附表":
+            raise SystemExit(
+                "appendix-decision-batch root_addition.title must be exactly 技术附表"
+            )
+        if not root_reason:
+            raise SystemExit("appendix-decision-batch root_addition.reason is required")
+        valid_root_id = root_node_id
+        batch_node_ids.add(root_node_id)
+        new_changes.append(
+            {
+                "operation": "add",
+                "node_id": root_node_id,
+                "parent_id": None,
+                "number": root_number,
+                "title": root_title,
+                "suggestion_action": "建议增加",
+                "suggestion_reason": root_reason,
+            }
+        )
+    elif has_include and not valid_root_id:
+        raise SystemExit(
+            "appendix-decision-batch root_addition is required for the first include when no unique valid 技术附表 root exists"
+        )
+
     for index, raw_item in enumerate(raw_items):
         appendix_id = actual_ids[index]
-        decision = str(raw_item.get("decision") or "").strip()
-        reason = str(raw_item.get("reason") or "").strip()
-        if decision not in {"include", "exclude"}:
-            raise SystemExit(
-                f"appendix-decision-batch items[{index}].decision must be include or exclude"
-            )
-        if not reason:
-            raise SystemExit(
-                f"appendix-decision-batch items[{index}].reason is required"
-            )
+        decision = decision_values[index]
+        reason = reasons[index]
         if decision == "exclude":
             if set(raw_item) != {"appendix_id", "decision", "reason"}:
                 raise SystemExit(

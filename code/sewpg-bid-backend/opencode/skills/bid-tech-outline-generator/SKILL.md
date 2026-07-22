@@ -117,32 +117,31 @@ s2outline finalize <manifest>
 
 ### 5. 受控分批提交并机械合成
 
-不得直接写入 `outputFile`、`outline_authoring_decisions.json` 或决策状态文件。不得现场编写临时 Python、Shell、heredoc、循环或临时 JSON 文件批量拼装 decisions，不得读取 OpenCode 私有 tool-output 代替分页，也不得把工具输出交给脚本自动选择。每批必须由你读取后当场逐项判断。
+不得直接写入 `outputFile`、`outline_authoring_decisions.json`，也不得直接读取或写入 `outline_decision_state.json` 等决策状态。不得现场编写临时 Python、Shell、heredoc、循环或临时 JSON 加工 decisions、state 或 `batch_token`，不得截断 token、不得读取 OpenCode 私有 tool-output 代替分页或让脚本自动选择。每批必须由你读取后当场逐项判断。
 
 先执行 `s2outline decision-next <manifest> --max-items 50 --max-chars 12000` 获取一批固定模板节点。返回值中的 `comparison_context` 是精简招标目录树；若未完成，按 `next_cursor` 循环执行 `decision-context`，未完成不得执行 `decision-batch`。同批对照模板与招标目录并检查新增候选后，再把本批所有模板节点原样提交给 `decision-batch`：
-
 ```json
 {
   "batch_token": "<decision-next 返回值>",
-  "items": [
-    {"target_id": "TPL-0001", "decision": "retain"},
-    {"target_id": "TPL-0002", "decision": "suggest_delete", "reason": "招标明确排除该供货范围"}
-  ],
-  "additions": [
-    {"node_id": "ADD-0001", "parent_id": "TPL-0003", "number": "1.2.3", "title": "专项报告", "reason": "招标明确要求独立提交"},
-    {"node_id": "ADD-APP-0001", "parent_id": "ADD-TECH-APPENDIX", "appendix_id": "APP-0001", "reason": "招标结构化清单中的实际表单"}
-  ]
+  "items": [{"target_id": "TPL-0001", "decision": "retain"}, {"target_id": "TPL-0002", "decision": "suggest_delete", "reason": "招标明确排除该供货范围"}],
+  "additions": [{"node_id": "ADD-0001", "parent_id": "TPL-0003", "number": "1.2.3", "title": "专项报告", "reason": "招标明确要求独立提交"}]
 }
 ```
-
 - `items` 必须与最近一次 `decision-next` 返回的节点完全一致，不得漏项、跨批或重复。
 - 每批先完整读取 `comparison_context`，不得脱离当前招标目录仅凭模板标题连续提交统一结论。
 - `retain` 不写理由；`suggest_delete` 必须写明确理由，可按需写 `tender_basis`。
 - `additions` 表示 `suggest_add`，必须给出唯一 `node_id`、父节点、编号、标题和理由；可靠招标依据按需写 `tender_basis`。
-- 附表判断只提交最近一次 `appendix-next` 返回项中的 `appendix_id`，不要重写表号和标题；固定程序从现有结构化附表清单原样复制。
 - 沿用模板编号，不自动全局重编号；新增编号由你的专业判断显式提交。
 
-重复执行 `decision-next/decision-context/decision-batch`，直到模板 `remaining_count=0`。随后循环执行 `appendix-next/appendix-decision-batch`；每个附表必须显式选择 `include` 或 `exclude`，不得默认纳入或排除。附表也完成后执行不带 JSON 参数的 `s2outline decisions <manifest>` 汇总，再执行 `s2outline compose <manifest>`。漏判节点或附表不得自动写成必要。
+重复执行 `decision-next/decision-context/decision-batch`，直到模板 `remaining_count=0`，再执行 `appendix-next`。每个附表必须显式选择 `include` 或 `exclude`；首个 `include` 且尚无唯一有效“技术附表”根时，必须在同一次 `appendix-decision-batch` 显式提交 `root_addition`：
+```json
+{
+  "batch_token": "<appendix-next 返回的完整值>",
+  "root_addition": {"node_id": "ADD-TECH-APPENDIX", "parent_id": null, "number": "第7章", "title": "技术附表", "reason": "本批首次纳入实际附表"},
+  "items": [{"appendix_id": "APP-0001", "decision": "include", "node_id": "ADD-APP-0001", "parent_id": "ADD-TECH-APPENDIX", "reason": "招标要求提交该表"}, {"appendix_id": "APP-0002", "decision": "exclude", "reason": "仅为参考表"}]
+}
+```
+已有唯一有效根时必须省略 `root_addition`，所有 `include.parent_id` 指向该根；本批全为 `exclude` 时也必须省略根，全流程均排除时不得创建“技术附表”。附表表号和标题由程序按 `appendix_id` 从清单复制，不得重写。循环至附表 `remaining_count=0` 后执行不带 JSON 的 `s2outline decisions <manifest>`，再执行 `s2outline compose <manifest>`；不得默认纳入、排除或把漏判项写成必要。
 
 `compose` 从模板骨架应用上述决策，生成 `outputFile` 和 `outline_compose_report.json`。报告按每个二级节点给出三级对照，用它确认模板三级节点均已输出。
 
@@ -177,7 +176,7 @@ s2outline finalize <manifest>
 
 ## 技术附表
 
-- 最后一个根节点统一为“技术附表”，编号沿用模板末章样式。
+- 至少 `include` 一项时才建立唯一根节点“技术附表”，编号沿用模板末章样式；全部 `exclude` 时不建立。
 - 以独立表号、独立表名和独立填写区域识别实际表单；每张表作为“技术附表”的直接子节点并保留原编号。
 - 若“技术附表 A/B”只是容纳多张表的分组，分组标题本身不输出；所有实际表单扁平放入 `children`。
 - 通过 `appendix-next` 分页掌握全部附表标题；它直接来自 `tender_appendix_inventory.json`，只包含 `following_table_count > 0` 的实际表单。按 `appendix_id` 向 `appendix-decision-batch` 提交即可，不要求读取全部附表内容；只有附表内容影响目录判断时才按需详读。父子标题不得同时输出。
