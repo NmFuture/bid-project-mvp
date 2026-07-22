@@ -1112,6 +1112,125 @@ class DirectoryGenerationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "招标文件.*修改"):
                 _run_outline_skill(manifest_path, bid_type="技术标")
 
+    def test_technical_compose_trusted_validation_reuses_appendix_inventory(self) -> None:
+        from app.services.outline_generation import _run_outline_skill
+
+        root = Path(self.temp_dir.name) / "compose-controlled-appendix"
+        root.mkdir(parents=True, exist_ok=True)
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        output = root / "toc.json"
+        manifest_path = root / "s2_input.json"
+        self._write_docx(template, [("第1章 技术方案", "Heading 1")])
+        tender_doc = Document()
+        tender_doc.add_paragraph("附表A.1 技术参数表")
+        table = tender_doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "参数"
+        table.cell(0, 1).text = "要求"
+        table.cell(1, 0).text = "示例"
+        table.cell(1, 1).text = "投标人填写"
+        tender_doc.save(tender)
+        manifest = {
+            "bidType": "技术标",
+            "workDir": str(root),
+            "templateFile": str(template),
+            "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+            "outputFile": str(output),
+            "requireComposedOutline": True,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        runner = load_technical_outline_runner()
+
+        def write_controlled_appendix_artifacts(_prompt: str, *args, **kwargs) -> dict:
+            runner.write_template_structure(manifest, manifest_path)
+            cursor = 0
+            while True:
+                headings = runner.dispatch_command(
+                    "headings", manifest, manifest_path, ["--cursor", str(cursor)]
+                )
+                if headings["complete"]:
+                    break
+                cursor = int(headings["next_cursor"])
+
+            while True:
+                batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
+                if batch["complete"]:
+                    break
+                context_cursor = 0
+                while True:
+                    context = runner.dispatch_command(
+                        "decision-context",
+                        manifest,
+                        manifest_path,
+                        [batch["batch_token"], "--cursor", str(context_cursor)],
+                    )
+                    if context["complete"]:
+                        break
+                    context_cursor = int(context["next_cursor"])
+                runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {"target_id": item["target_id"], "decision": "retain"}
+                                    for item in batch["items"]
+                                ],
+                                "additions": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
+
+            appendix_batch = runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            self.assertEqual(len(appendix_batch["items"]), 1)
+            runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": appendix_batch["batch_token"],
+                            "root_addition": {
+                                "node_id": "ADD-TECH-APPENDIX",
+                                "parent_id": None,
+                                "number": "第2章",
+                                "title": "技术附表",
+                                "reason": "招标文件包含受控附表。",
+                            },
+                            "items": [
+                                {
+                                    "appendix_id": appendix_batch["items"][0]["appendix_id"],
+                                    "decision": "include",
+                                    "reason": "招标文件要求投标人填写。",
+                                    "node_id": "ADD-APPENDIX-1",
+                                    "parent_id": "ADD-TECH-APPENDIX",
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            runner.dispatch_command("decisions", manifest, manifest_path, [])
+            return runner.compose_manifest(manifest, manifest_path)
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=write_controlled_appendix_artifacts,
+        ):
+            result = _run_outline_skill(manifest_path, bid_type="技术标")
+
+        self.assertEqual(result["nodes"][-1]["title"], "技术附表")
+        self.assertEqual(len(result["nodes"][-1]["children"]), 1)
+
     def test_generate_outline_rejects_agent_modified_manifest_before_publish(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
 

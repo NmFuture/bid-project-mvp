@@ -556,6 +556,9 @@ def _validate_technical_compose_report(
                     trusted_structure,
                     decisions,
                     workflow_binding=workflow_proof,
+                    appendix_items=runner.review_workflow.decision_appendix_items(
+                        work_dir
+                    ),
                 )
             )
             composer.validate_compose_report(
