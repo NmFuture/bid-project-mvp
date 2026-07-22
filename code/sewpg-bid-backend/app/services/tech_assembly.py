@@ -67,10 +67,15 @@ def assemble_tech_bid_for_project_with_progress(
     gap_plan_path = _prepare_gap_plan(project_id, work_dir)
     if not gap_plan_path:
         raise ValueError("请先完成素材匹配，再组装技术标正文。")
-    wiki_dir = _prepare_wiki_dir(project, parse_storage, work_dir)
-    gap_plan_card_count = _augment_wiki_with_gap_plan_cards(gap_plan_path, wiki_dir)
+    wiki_dir = work_dir / "wiki"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    material_library_dir = work_dir / "selected_materials"
+    assembly_gap_plan_path, material_cards = _stage_selected_gap_plan_materials(
+        gap_plan_path,
+        material_library_dir,
+    )
+    gap_plan_card_count = 0
     synthesized_card_count = 0
-    material_library_dir, material_cards = _export_material_library(wiki_dir, work_dir / "素材库")
     template_file = _select_template_file(template_file_records)
     project_params = _build_project_params(project, toc_json_path)
     turbine_model = project_turbine_model(project)
@@ -99,7 +104,7 @@ def assemble_tech_bid_for_project_with_progress(
         "bidType": bid_type,
         "workDir": str(work_dir),
         "tocJsonPath": str(toc_json_path),
-        "gapPlanPath": str(gap_plan_path) if gap_plan_path else "",
+        "gapPlanPath": str(assembly_gap_plan_path),
         "wikiDir": str(wiki_dir),
         "materialLibraryDir": str(material_library_dir),
         "templateFile": str(template_file) if template_file else "",
@@ -108,18 +113,26 @@ def assemble_tech_bid_for_project_with_progress(
         "projectTurbineModel": turbine_model,
         "outputFile": str(output_file),
     }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    if progress_callback:
-        progress_callback(
-            "calling_assembler",
-            {
-                "manifestPath": str(manifest_path),
-                "workDir": str(work_dir),
-            },
-        )
+        if progress_callback:
+            progress_callback(
+                "calling_assembler",
+                {
+                    "manifestPath": str(manifest_path),
+                    "workDir": str(work_dir),
+                },
+            )
+    except Exception:
+        _clear_selected_materials(material_library_dir)
+        raise
 
-    result = _run_assembler_manifest(manifest_path, progress_callback=progress_callback)
+    result = _run_assembler_with_selected_material_cleanup(
+        manifest_path,
+        material_library_dir,
+        progress_callback=progress_callback,
+    )
     assembled_path = Path(str(result.get("outputFile") or output_file))
     if not assembled_path.exists():
         raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
@@ -229,7 +242,7 @@ def assemble_tech_bid_for_project_with_progress(
             "workDir": str(work_dir),
             "manifestPath": str(manifest_path),
             "tocJsonPath": str(toc_json_path),
-            "gapPlanPath": str(gap_plan_path) if gap_plan_path else "",
+            "gapPlanPath": str(assembly_gap_plan_path),
             "wikiDir": str(wiki_dir),
             "materialLibraryDir": str(material_library_dir),
             "outputFile": str(final_output_path),
@@ -913,6 +926,93 @@ def _export_material_library(wiki_dir: Path, library_dir: Path) -> tuple[Path, l
         card_path.write_text(_replace_frontmatter_fields(text, updated_fields), encoding="utf-8")
         cards.append(card)
     return library_dir, cards
+
+
+def _stage_selected_gap_plan_materials(
+    gap_plan_path: Path,
+    staging_dir: Path,
+) -> tuple[Path, list[dict[str, Any]]]:
+    runtime_plan_path = gap_plan_path.with_name("assembly_gap_plan.json")
+    _clear_selected_materials(staging_dir)
+    if runtime_plan_path.exists():
+        runtime_plan_path.unlink()
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    plan = json.loads(gap_plan_path.read_text(encoding="utf-8"))
+    items = plan.get("items") if isinstance(plan, dict) else []
+    staged_materials: list[dict[str, Any]] = []
+    try:
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("coverageRole") or item.get("coverage_role") or "").strip() == "covered_by_parent":
+                continue
+
+            resolved_artifacts = item.get("resolvedArtifacts") or []
+            source_key = "resolvedArtifacts" if resolved_artifacts else "matchedMaterials"
+            sources = item.get(source_key) or []
+            for index, source in enumerate(sources if isinstance(sources, list) else [], start=1):
+                if not isinstance(source, dict):
+                    continue
+                if source_key == "resolvedArtifacts" and not technical_gap_artifact_is_s7_ready(source):
+                    continue
+
+                original_path = str(source.get("path") or source.get("docx") or "").strip()
+                source_name = str(
+                    source.get("fileName")
+                    or source.get("name")
+                    or Path(original_path).name
+                    or f"material-{index}.docx"
+                )
+                gap_id = _safe_filename(str(item.get("id") or item.get("number") or "gap"), "gap")
+                file_name = _safe_filename(source_name, f"material-{index}.docx")
+                relative_path = Path(gap_id) / f"{index:02d}-{file_name}"
+                target_path = staging_dir / relative_path
+                try:
+                    _copy_material_to_library(
+                        str(source.get("id") or ""),
+                        original_path,
+                        target_path,
+                    )
+                except Exception as exc:
+                    number = str(item.get("number") or item.get("id") or "未编号目录")
+                    raise RuntimeError(f"{number} 已选素材 {source_name} 准备失败：{exc}") from exc
+
+                source["path"] = relative_path.as_posix()
+                staged_materials.append(
+                    {
+                        "id": str(source.get("id") or ""),
+                        "title": source_name,
+                        "path": relative_path.as_posix(),
+                        "originalPath": original_path,
+                        "gapId": str(item.get("id") or ""),
+                        "available": True,
+                    }
+                )
+
+        runtime_plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+        return runtime_plan_path, staged_materials
+    except Exception:
+        _clear_selected_materials(staging_dir)
+        if runtime_plan_path.exists():
+            runtime_plan_path.unlink()
+        raise
+
+
+def _clear_selected_materials(staging_dir: Path) -> None:
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+
+
+def _run_assembler_with_selected_material_cleanup(
+    manifest_path: Path,
+    staging_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    try:
+        return _run_assembler_manifest(manifest_path, progress_callback=progress_callback)
+    finally:
+        _clear_selected_materials(staging_dir)
 
 
 def _copy_material_to_library(material_id: str, original_path: str, target_path: Path) -> None:
