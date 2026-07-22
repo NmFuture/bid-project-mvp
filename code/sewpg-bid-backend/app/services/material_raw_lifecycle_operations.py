@@ -103,6 +103,7 @@ async def delete_raw_folder(
     mark_default_folder_deleted: MarkDefaultFolderDeleted,
     raw_tree: RawTreeLoader,
     allow_protected: bool = False,
+    expected_project_id: str = "",
 ) -> dict[str, Any]:
     folder_path = str(path or "").strip().strip("/")
     if not folder_path:
@@ -111,12 +112,38 @@ async def delete_raw_folder(
         raise PeripheralError(400, "基础素材目录不允许删除。", "RAW_FOLDER_DELETE_PROTECTED")
     async with async_session() as session:
         await ensure_runtime_tables(session)
-        result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
-        folder = result.scalar_one_or_none()
+        clean_expected_project_id = str(expected_project_id or "").strip()
+        if clean_expected_project_id:
+            result = await session.execute(
+                select(RawFolder).where(
+                    RawFolder.project_id == clean_expected_project_id,
+                    RawFolder.bid_type == bid_type,
+                    RawFolder.tier == "project",
+                )
+            )
+            folder = next(
+                (
+                    candidate
+                    for candidate in result.scalars().all()
+                    if len(str(candidate.path or "").strip("/").split("/")) == 3
+                ),
+                None,
+            )
+        else:
+            result = await session.execute(select(RawFolder).where(RawFolder.path == folder_path))
+            folder = result.scalar_one_or_none()
         if folder is None:
             raise PeripheralError(404, "目录不存在。", "RAW_FOLDER_NOT_FOUND")
         if not raw_folder_matches_bid_type(folder, bid_type):
             raise PeripheralError(400, "目录不属于当前素材库。", "RAW_FOLDER_SCOPE")
+        folder_project_id = str(folder.project_id or "").strip()
+        if clean_expected_project_id and folder_project_id != clean_expected_project_id:
+            raise PeripheralError(
+                409,
+                "项目素材目录归属与待删除项目不一致。",
+                "PROJECT_FOLDER_OWNERSHIP_MISMATCH",
+            )
+        folder_path = str(folder.path or "").strip().strip("/")
 
         descendant_result = await session.execute(
             select(RawFolder).where(or_(RawFolder.path == folder.path, RawFolder.path.startswith(f"{folder.path}/")))

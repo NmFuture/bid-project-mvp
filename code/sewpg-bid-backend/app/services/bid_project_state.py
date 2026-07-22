@@ -437,6 +437,7 @@ def delete_project_side_effects(project_id: str, project: dict[str, Any]) -> Non
 
 def delete_project_material_folder(project: dict[str, Any]) -> None:
     scope = build_project_material_scope(project)
+    expected_project_id = str((scope.get("identity") or {}).get("projectId") or "").strip()
     for item in scope.get("readableScopes") or []:
         if str(item.get("key") or "") != "project":
             continue
@@ -448,7 +449,7 @@ def delete_project_material_folder(project: dict[str, Any]) -> None:
         ):
             continue
         try:
-            run_workspace_material_folder_delete(path)
+            run_workspace_material_folder_delete(path, expected_project_id=expected_project_id)
         except PeripheralError as exc:
             if exc.code == "RAW_FOLDER_NOT_FOUND":
                 return
@@ -456,16 +457,26 @@ def delete_project_material_folder(project: dict[str, Any]) -> None:
         return
 
 
-def run_workspace_material_folder_delete(path: str) -> dict[str, Any]:
+def run_workspace_material_folder_delete(path: str, *, expected_project_id: str = "") -> dict[str, Any]:
     normalized = str(path or "").strip().strip("/")
     if normalized.startswith(f"{BUSINESS_BID_TYPE}/"):
         from app.services.business_material_store import business_material_store
 
-        result = run_awaitable_sync(business_material_store.raw_cleanup_project_folder(normalized))
+        result = run_awaitable_sync(
+            business_material_store.raw_cleanup_project_folder(
+                normalized,
+                expected_project_id=expected_project_id,
+            )
+        )
     elif normalized.startswith(f"{TECHNICAL_BID_TYPE}/"):
         from app.services.technical_material_store import technical_material_store
 
-        result = run_awaitable_sync(technical_material_store.raw_cleanup_project_folder(normalized))
+        result = run_awaitable_sync(
+            technical_material_store.raw_cleanup_project_folder(
+                normalized,
+                expected_project_id=expected_project_id,
+            )
+        )
     else:
         raise PeripheralError(400, "项目素材目录必须位于技术标或商务标素材库。", "PROJECT_MATERIAL_PATH_REQUIRED")
     return result if isinstance(result, dict) else {}

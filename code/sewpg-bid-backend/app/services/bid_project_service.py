@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -7,12 +8,12 @@ from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
 
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
+from app.services.bid_project_state import update_project_state
 from app.services.business_parse_assets import BusinessParseAssetError, sync_approved_business_parse_assets
 from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
-from app.services.peripheral import PeripheralError
 from app.services.template_store import template_fallback_payload
-from app.services.technical_parse_assets import sync_technical_parse_appendices
+from app.services.technical_parse_assets import persist_technical_parse_result, sync_technical_parse_appendices
 from app.services.workspace_project_access import (
     create_workspace_project,
     delete_workspace_project,
@@ -97,63 +98,85 @@ class BidProjectService:
         )
 
     async def update(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        self.ensure_project(project_id)
+        current_project = self.ensure_project(project_id)
         payload = self.payload(data)
+        decision = str((data or {}).get("reviewDecision") or "").strip().lower()
+        candidate_payload = dict(payload)
+        candidate_payload.pop("reviewDecision", None)
+        candidate_project = update_project_state(
+            copy.deepcopy(current_project),
+            project_id,
+            candidate_payload,
+        )
+        bootstrap_status: dict[str, Any] | None = None
+        should_bootstrap = self.bootstrap_material_folder is not None and (
+            decision == "participate"
+            or (
+                str(current_project.get("reviewDecision") or "").strip().lower() == "participate"
+                and any(
+                    field in (data or {})
+                    for field in ("materialProjectId", "materialProjectMode")
+                )
+            )
+        )
+        if should_bootstrap:
+            material_scope = build_project_material_scope(candidate_project)
+            identity = material_scope["identity"]
+            material_project_id = str(
+                identity.get("projectId") or project_id
+            )
+            project_scope = next(
+                (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
+                {},
+            )
+            bootstrap_result = await self.bootstrap_material_folder(material_project_id)
+            bootstrap_payload = (
+                bootstrap_result.get("payload")
+                if isinstance(bootstrap_result, dict) and isinstance(bootstrap_result.get("payload"), dict)
+                else {}
+            )
+            bootstrap_status = {
+                "status": "ok",
+                "projectId": material_project_id,
+                "path": str(bootstrap_payload.get("path") or project_scope.get("path") or ""),
+            }
+        business_sync_status: dict[str, Any] | None = None
+        if self.sync_business_parse_assets and decision == "participate":
+            try:
+                sync_result = await sync_approved_business_parse_assets(project_id)
+            except BusinessParseAssetError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            business_sync_status = {
+                key: value
+                for key, value in sync_result.items()
+                if key != "parseResult"
+            }
+        technical_sync_status: dict[str, Any] | None = None
+        if self.sync_technical_parse_assets and decision == "participate":
+            parse_result = (
+                current_project.get("parse_result")
+                if isinstance(current_project.get("parse_result"), dict)
+                else {}
+            )
+            candidate_project["parse_result"] = parse_result
+            try:
+                technical_sync_status = await sync_technical_parse_appendices(
+                    candidate_project,
+                    parse_result,
+                )
+            finally:
+                persist_technical_parse_result(project_id, parse_result)
         project = update_workspace_project(
             project_id,
             payload,
             not_found_error=lambda _project_id: HTTPException(status_code=404, detail=self.not_found_message),
         )
-        decision = str((data or {}).get("reviewDecision") or "").strip().lower()
-        if self.bootstrap_material_folder is not None and decision == "participate":
-            material_project_id = str(
-                build_project_material_scope(project)["identity"].get("projectId") or project_id
-            )
-            try:
-                await self.bootstrap_material_folder(material_project_id)
-            except PeripheralError as exc:
-                project["materialFolderBootstrap"] = {
-                    "status": "failed",
-                    "message": exc.detail,
-                    "statusCode": exc.status_code,
-                }
-            except Exception as exc:  # noqa: BLE001 - 参与决策已落库，目录创建失败以响应字段显式暴露，不回滚决策
-                project["materialFolderBootstrap"] = {
-                    "status": "failed",
-                    "message": str(exc),
-                }
-            else:
-                project["materialFolderBootstrap"] = {
-                    "status": "ok",
-                    "projectId": material_project_id,
-                    "path": project_material_root_path(self.bid_type, material_project_id),
-                }
-        if self.sync_business_parse_assets and decision == "participate":
-            try:
-                sync_result = await sync_approved_business_parse_assets(project_id)
-            except BusinessParseAssetError as exc:
-                project["businessParseAssetSync"] = {
-                    "status": "failed",
-                    "message": exc.detail,
-                    "statusCode": exc.status_code,
-                }
-            else:
-                project["businessParseAssetSync"] = {
-                    key: value
-                    for key, value in sync_result.items()
-                    if key != "parseResult"
-                }
-        if self.sync_technical_parse_assets and decision == "participate":
-            runtime_project = self.ensure_project(project_id)
-            parse_result = (
-                runtime_project.get("parse_result")
-                if isinstance(runtime_project.get("parse_result"), dict)
-                else {}
-            )
-            project["technicalParseAssetSync"] = await sync_technical_parse_appendices(
-                runtime_project,
-                parse_result,
-            )
+        if bootstrap_status is not None:
+            project["materialFolderBootstrap"] = bootstrap_status
+        if business_sync_status is not None:
+            project["businessParseAssetSync"] = business_sync_status
+        if technical_sync_status is not None:
+            project["technicalParseAssetSync"] = technical_sync_status
         return project
 
     async def delete(self, project_id: str) -> dict[str, str]:
@@ -221,6 +244,10 @@ class BidProjectService:
         )
         material_project_code = str(identity.get("projectCode") or project.get("projectCode") or project["id"])
         material_project_id = str(identity.get("projectId") or project["id"])
+        project_scope = next(
+            (item for item in scope["readableScopes"] if item.get("key") == "project"),
+            {},
+        )
         return {
             "projectId": project["id"],
             "bidProjectId": project["id"],
@@ -231,7 +258,10 @@ class BidProjectService:
             "identity": identity,
             "turbineModel": project.get("turbineModel") or {},
             "turbineModelLabel": project.get("turbineModelLabel") or "",
-            "path": f"{bid_type}/项目素材/{material_project_id}",
+            "path": str(
+                project_scope.get("path")
+                or project_material_root_path(bid_type, material_project_id)
+            ),
             "bidType": bid_type,
             "readableScopes": scope["readableScopes"],
             "paths": scope["paths"],

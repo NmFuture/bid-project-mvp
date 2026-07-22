@@ -1298,7 +1298,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       }
 
       payload.append('targetPath', targetPath)
-      payload.append('projectId', '')
+      payload.append('projectId', linkedProjectId)
       payload.append('projectCode', '')
       payload.append('projectName', '')
       payload.append('bidType', uploadBidType)

@@ -191,16 +191,16 @@ class BusinessMaterialStore:
         )
         return self._with_urls(_force_business_tree(payload))
 
-    async def raw_cleanup_project_folder(self, path: str) -> dict[str, Any]:
+    async def raw_cleanup_project_folder(self, path: str, *, expected_project_id: str = "") -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
         parts = [part for part in normalized.split("/") if part]
         # 兼容旧目录名"项目定制"，与技术标一致（M3）
         if len(parts) != 3 or parts[0] != BUSINESS_BID_TYPE or parts[1] not in {"项目素材", "项目定制"}:
             raise PeripheralError(400, "只能清理商务标项目素材目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
-        payload = await material_store.raw_cleanup_project_folder(
-            normalized,
-            bid_type=BUSINESS_BID_TYPE,
-        )
+        cleanup_kwargs = {"bid_type": BUSINESS_BID_TYPE}
+        if expected_project_id:
+            cleanup_kwargs["expected_project_id"] = expected_project_id
+        payload = await material_store.raw_cleanup_project_folder(normalized, **cleanup_kwargs)
         return self._with_urls(_force_business_tree(payload))
 
     async def raw_update_file(

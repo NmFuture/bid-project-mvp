@@ -6,7 +6,9 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
 from app.services.material_raw_folder_operations import RawFolderOperations
-from app.services.material_raw_lifecycle_operations import create_raw_folder
+from app.services.material_raw_lifecycle_operations import create_raw_folder, delete_raw_folder
+from app.services.material_folder_maintenance import bootstrap_project_material_folder
+from app.services.peripheral import PeripheralError
 
 
 class _ScalarResult:
@@ -15,6 +17,12 @@ class _ScalarResult:
 
     def scalar_one_or_none(self):
         return self._value
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._value)
 
 
 class _CreateFolderSession:
@@ -42,6 +50,139 @@ class _CreateFolderSession:
 
 
 class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
+    async def test_technical_project_folder_uses_stable_project_id(self) -> None:
+        parent = SimpleNamespace(id=20, path="技术标/项目定制")
+        project_folder = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/PRJ-TECH-001",
+            project_id="PRJ-TECH-001",
+        )
+        find_folder = AsyncMock(side_effect=(None, parent))
+        ensure_folder_path = AsyncMock(return_value=project_folder)
+        session = object()
+
+        result = await bootstrap_project_material_folder(
+            session,
+            project_id="PRJ-TECH-001",
+            bid_type="技术标",
+            find_folder=find_folder,
+            ensure_folder_path=ensure_folder_path,
+        )
+
+        self.assertEqual(result["payload"]["projectId"], "PRJ-TECH-001")
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/PRJ-TECH-001")
+        ensure_folder_path.assert_awaited_once_with(
+            session,
+            "PRJ-TECH-001",
+            parent.id,
+            "project",
+            "技术标",
+            "PRJ-TECH-001",
+            0,
+        )
+
+    async def test_project_folder_bootstrap_is_idempotent_for_same_project(self) -> None:
+        existing = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/PRJ-TECH-001",
+            project_id="PRJ-TECH-001",
+        )
+
+        result = await bootstrap_project_material_folder(
+            object(),
+            project_id="PRJ-TECH-001",
+            bid_type="技术标",
+            find_folder=AsyncMock(return_value=existing),
+            ensure_folder_path=AsyncMock(),
+        )
+
+        self.assertEqual(result["payload"]["path"], existing.path)
+
+    async def test_project_folder_cleanup_rejects_folder_owned_by_another_project(self) -> None:
+        folder = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/PRJ-OTHER-001",
+            bid_type="技术标",
+            project_id="PRJ-OTHER-001",
+        )
+        session = _CreateFolderSession([folder])
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            with self.assertRaises(PeripheralError) as context:
+                await delete_raw_folder(
+                    path=folder.path,
+                    bid_type="技术标",
+                    expected_project_id="PRJ-TECH-001",
+                    ensure_runtime_tables=AsyncMock(),
+                    purge_raw_file_objects=AsyncMock(),
+                    mark_default_folder_deleted=AsyncMock(),
+                    raw_tree=AsyncMock(return_value={"tree": []}),
+                    allow_protected=True,
+                )
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(context.exception.code, "PROJECT_FOLDER_OWNERSHIP_MISMATCH")
+
+    async def test_project_folder_cleanup_finds_folder_by_project_id_for_legacy_path(self) -> None:
+        folder = SimpleNamespace(
+            id=21,
+            path="技术标/项目定制/PRJ-TECH-001",
+            bid_type="技术标",
+            tier="project",
+            project_id="PRJ-TECH-001",
+        )
+        session = AsyncMock()
+        session.__aenter__.return_value = session
+        session.__aexit__.return_value = False
+        session.execute.side_effect = (
+            _ScalarResult([folder]),
+            _ScalarResult([folder]),
+            _ScalarResult([]),
+        )
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            result = await delete_raw_folder(
+                path="技术标/项目素材/PRJ-TECH-001",
+                bid_type="技术标",
+                expected_project_id="PRJ-TECH-001",
+                ensure_runtime_tables=AsyncMock(),
+                purge_raw_file_objects=AsyncMock(),
+                mark_default_folder_deleted=AsyncMock(),
+                raw_tree=AsyncMock(return_value={"tree": []}),
+                allow_protected=True,
+            )
+
+        self.assertEqual(result["folderPath"], "技术标/项目定制/PRJ-TECH-001")
+        session.delete.assert_awaited_once_with(folder)
+        session.commit.assert_awaited_once()
+
+    async def test_technical_project_bootstrap_creates_canonical_project_customization_parent(self) -> None:
+        root = SimpleNamespace(id=1, path="技术标")
+        parent = SimpleNamespace(id=2, path="技术标/项目定制")
+        project_folder = SimpleNamespace(
+            id=3,
+            path="技术标/项目定制/PRJ-TECH-001",
+            project_id="PRJ-TECH-001",
+        )
+        ensure_folder_path = AsyncMock(side_effect=(root, parent, project_folder))
+
+        result = await bootstrap_project_material_folder(
+            object(),
+            project_id="PRJ-TECH-001",
+            bid_type="技术标",
+            find_folder=AsyncMock(side_effect=(None, None)),
+            ensure_folder_path=ensure_folder_path,
+        )
+
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/PRJ-TECH-001")
+        self.assertEqual(ensure_folder_path.await_args_list[1].args[1], "项目定制")
+
     async def test_technical_root_does_not_precreate_tier_folders(self) -> None:
         ensure_runtime_tables = AsyncMock()
         operations = RawFolderOperations(ensure_runtime_tables=ensure_runtime_tables)

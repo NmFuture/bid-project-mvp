@@ -145,6 +145,7 @@ const TECHNICAL_REVIEW_CONFIG = {
   appendixTitle: '附表空表产物',
   appendixSwitchHint: '空表 Word 已生成，可切换预览。',
   appendixEmptyHint: '未识别到附表要求。',
+  showApproveAppendices: true,
   scoringGroups: [
     ['technical', '技术评分标准'],
     ['price', '投标报价评分标准'],
@@ -164,19 +165,6 @@ const TECHNICAL_REVIEW_CONFIG = {
     { label: '供货范围', item: presence.supplyScope },
     { label: '考核条款', item: presence.assessmentTerms },
   ]),
-}
-
-const assetReviewStatusLabel = (value = '') => {
-  if (value === 'approved') return '已审核'
-  if (value === 'pending_review') return '待审核'
-  return '待审核'
-}
-
-const assetSyncStatusLabel = (value = '') => {
-  if (value === 'synced') return '已同步素材库'
-  if (value === 'failed') return '同步失败'
-  if (value === 'pending') return '待同步'
-  return '待确认参与后同步'
 }
 
 const appendixQualityLabel = (value = '') => {
@@ -880,6 +868,10 @@ export default function TechnicalTenderReview({ showToast }) {
   const appendices = Array.isArray(parseData?.structured?.appendices)
     ? parseData.structured.appendices
     : EMPTY_APPENDICES
+  const selectedAppendixCount = appendices.reduce(
+    (count, appendix) => count + (appendix?.selectedForMaterial === true ? 1 : 0),
+    0,
+  )
   const activeAppendixId = appendices.length && appendices.some((appendix, index) => appendixKey(appendix, index) === selectedAppendixId)
     ? selectedAppendixId
     : appendices.length
@@ -1184,31 +1176,54 @@ export default function TechnicalTenderReview({ showToast }) {
     }
   }
 
-  const handleApproveAppendixAsset = async (appendixId) => {
+  const handleApproveAppendixAsset = async (appendixId, selected) => {
     if (!selectedProjectId || !appendixId) return
     setSavingAppendixId(appendixId)
+    setParseData((previous) => {
+      if (!previous?.structured?.appendices) return previous
+      return {
+        ...previous,
+        structured: {
+          ...previous.structured,
+          appendices: previous.structured.appendices.map((item) => (
+            item.id === appendixId ? { ...item, selectedForMaterial: selected } : item
+          )),
+        },
+      }
+    })
     try {
-      const result = await technicalParseAPI.approveAppendixAsset(selectedProjectId, appendixId)
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      showToast?.(result?.message || '附表 Word 已审核通过。')
+      const result = await technicalParseAPI.approveAppendixAsset(selectedProjectId, appendixId, { approved: selected })
+      showToast?.(result?.message || '附表选择已保存。')
     } catch (e) {
-      showToast?.(e?.message || '附表 Word 审核失败', 'error')
+      await refreshParseResult().catch(() => null)
+      showToast?.(e?.message || '附表选择保存失败', 'error')
     } finally {
       setSavingAppendixId('')
     }
   }
 
-  const handleApproveAllAppendixAssets = async () => {
+  const handleApproveAllAppendixAssets = async (selected) => {
     if (!selectedProjectId || !appendices.length) return
     setSavingAllAppendices(true)
+    setParseData((previous) => {
+      if (!previous?.structured?.appendices) return previous
+      return {
+        ...previous,
+        structured: {
+          ...previous.structured,
+          appendices: previous.structured.appendices.map((item) => ({
+            ...item,
+            selectedForMaterial: selected,
+          })),
+        },
+      }
+    })
     try {
-      const result = await technicalParseAPI.approveAllAppendixAssets(selectedProjectId)
-      if (result?.parseResult) setParseData(result.parseResult)
-      else await refreshParseResult()
-      showToast?.(result?.message || '附表 Word 已批量审核通过。')
+      const result = await technicalParseAPI.approveAllAppendixAssets(selectedProjectId, { approved: selected })
+      showToast?.(result?.message || (selected ? '已全选附表。' : '已清空附表选择。'))
     } catch (e) {
-      showToast?.(e?.message || '附表 Word 批量审核失败', 'error')
+      await refreshParseResult().catch(() => null)
+      showToast?.(e?.message || '附表选择保存失败', 'error')
     } finally {
       setSavingAllAppendices(false)
     }
@@ -1480,33 +1495,10 @@ export default function TechnicalTenderReview({ showToast }) {
             )}
 
             <section className="border border-surface-container-high rounded-md overflow-hidden">
-              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center">
                 <div className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-[18px] text-primary">article</span>
                   <h4 className="text-sm font-semibold text-on-surface">附表 Word</h4>
-                </div>
-                <div className="flex items-center gap-2">
-                  {reviewConfig.showApproveAppendices && appendices.length ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => handleApproveAppendixAsset(selectedAppendix?.id)}
-                        disabled={savingAllAppendices || Boolean(savingAppendixId) || !selectedAppendix?.id}
-                        className="rounded-md bg-surface-container-high px-2.5 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {savingAppendixId ? '审核中...' : '审核当前'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleApproveAllAppendixAssets}
-                        disabled={savingAllAppendices || Boolean(savingAppendixId)}
-                        className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {savingAllAppendices ? '审核中...' : '审核全部'}
-                      </button>
-                    </>
-                  ) : null}
-                  <span className="text-xs text-outline">{appendices.length} 个</span>
                 </div>
               </div>
               {appendices.length ? (
@@ -1544,49 +1536,87 @@ export default function TechnicalTenderReview({ showToast }) {
                   )}
                   sidebar={(
                     <div className="appendix-preview-sidebar flex h-full min-h-0 flex-col">
-                      <div className="border-b border-surface-container-high px-4 py-3">
-                        <p className="text-sm font-semibold text-on-surface">附表条目</p>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-container-high px-4 py-3">
+                        <p className="shrink-0 text-sm font-semibold text-on-surface">附表条目</p>
+                        {reviewConfig.showApproveAppendices ? (
+                          <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAllAppendixAssets(true)}
+                              disabled={savingAllAppendices || Boolean(savingAppendixId) || selectedAppendixCount === appendices.length}
+                              className="rounded-md bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              全选
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAllAppendixAssets(false)}
+                              disabled={savingAllAppendices || Boolean(savingAppendixId) || selectedAppendixCount === 0}
+                              className="rounded-md bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              清空选择
+                            </button>
+                            <span className="whitespace-nowrap text-xs font-medium text-on-surface-variant">
+                              已选择 {selectedAppendixCount}/{appendices.length}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-outline">{appendices.length} 个</span>
+                        )}
                       </div>
                       <div className="appendix-preview-list min-h-0 flex-1 overflow-y-auto p-2">
                         {appendices.map((appendix, index) => {
                           const key = appendixKey(appendix, index)
                           const active = key === activeAppendixId
+                          const selectedForMaterial = appendix.selectedForMaterial === true
                           return (
-                            <button
+                            <div
                               key={key}
-                              type="button"
-                              aria-pressed={active}
-                              onClick={() => setSelectedAppendixId(key)}
                               className={[
-                                'mb-2 flex w-full flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                                'mb-2 flex w-full items-start rounded-md border transition-colors',
                                 active
                                   ? 'border-primary bg-primary/5 text-primary'
                                   : 'border-surface-container-high bg-white text-on-surface hover:border-outline-variant hover:bg-surface-container-low',
                               ].join(' ')}
                             >
-                              <span className="line-clamp-2 text-sm font-semibold">{appendix.title || '-'}</span>
-                              <span className="text-xs text-on-surface-variant">{appendix.sourceFile || '-'}</span>
-                              {appendix.templateTypeLabel || appendix.extractionQuality || appendix.extractionMode ? (
-                                <span className="text-xs text-on-surface-variant">
-                                  {[appendix.templateTypeLabel, appendixExtractionModeLabel(appendix.extractionMode), appendixQualityLabel(appendix.extractionQuality)]
-                                    .filter(Boolean)
-                                    .join(' · ')}
+                              <button
+                                type="button"
+                                aria-label={selectedForMaterial ? `取消选择${appendix.title || '附表'}` : `选择${appendix.title || '附表'}`}
+                                aria-pressed={selectedForMaterial}
+                                title={selectedForMaterial ? '取消纳入素材库' : '纳入素材库'}
+                                onClick={() => handleApproveAppendixAsset(appendix.id, !selectedForMaterial)}
+                                disabled={savingAllAppendices || Boolean(savingAppendixId) || !appendix.id}
+                                className="m-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <span className="material-symbols-outlined text-[20px]">
+                                  {selectedForMaterial ? 'check_box' : 'check_box_outline_blank'}
                                 </span>
-                              ) : null}
-                              <span className="text-xs text-outline">{appendix.workspacePath || appendix.docxPath || '-'}</span>
-                              {Array.isArray(appendix.qualityIssues) && appendix.qualityIssues.length ? (
-                                <span className="line-clamp-2 text-xs text-error">
-                                  {appendix.qualityIssues.join('；')}
+                              </button>
+                              <button
+                                type="button"
+                                aria-pressed={active}
+                                onClick={() => setSelectedAppendixId(key)}
+                                className="min-w-0 flex-1 px-1 py-2 pr-3 text-left"
+                              >
+                                <span className="flex flex-col items-start gap-1">
+                                  <span className="line-clamp-2 text-sm font-semibold">{appendix.title || '-'}</span>
+                                  <span className="text-xs text-on-surface-variant">{appendix.sourceFile || '-'}</span>
+                                  {appendix.templateTypeLabel || appendix.extractionQuality || appendix.extractionMode ? (
+                                    <span className="text-xs text-on-surface-variant">
+                                      {[appendix.templateTypeLabel, appendixExtractionModeLabel(appendix.extractionMode), appendixQualityLabel(appendix.extractionQuality)]
+                                        .filter(Boolean)
+                                        .join(' · ')}
+                                    </span>
+                                  ) : null}
+                                  <span className="text-xs text-outline">{appendix.workspacePath || appendix.docxPath || '-'}</span>
+                                  {Array.isArray(appendix.qualityIssues) && appendix.qualityIssues.length ? (
+                                    <span className="line-clamp-2 text-xs text-error">
+                                      {appendix.qualityIssues.join('；')}
+                                    </span>
+                                  ) : null}
                                 </span>
-                              ) : null}
-                              {reviewConfig.showApproveAppendices ? (
-                                <span className="text-xs text-outline">
-                                  {assetReviewStatusLabel(appendix.assetReviewStatus)}
-                                  {' · '}
-                                  {assetSyncStatusLabel(appendix.assetSyncStatus)}
-                                </span>
-                              ) : null}
-                            </button>
+                              </button>
+                            </div>
                           )
                         })}
                       </div>
