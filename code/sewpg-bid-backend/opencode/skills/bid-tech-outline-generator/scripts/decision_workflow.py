@@ -736,6 +736,17 @@ def next_appendix_batch(
     }
 
 
+def _required_json_string(value: Any, field_path: str) -> str:
+    if value is None:
+        raise SystemExit(f"{field_path} is required")
+    if not isinstance(value, str):
+        raise SystemExit(f"{field_path} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise SystemExit(f"{field_path} is required")
+    return normalized
+
+
 def submit_appendix_batch(
     work_dir: Path,
     structure: dict[str, Any],
@@ -764,30 +775,35 @@ def submit_appendix_batch(
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         raise SystemExit("appendix-decision-batch items must be a list")
-    actual_ids = [
-        str(item.get("appendix_id") or "")
-        for item in raw_items
-        if isinstance(item, dict)
-    ]
-    if actual_ids != expected_ids or len(raw_items) != len(expected_ids):
-        raise SystemExit(
-            "appendix-decision-batch items must exactly match the current appendix-next batch"
-        )
+    actual_ids: list[str] = []
     decision_values: list[str] = []
     reasons: list[str] = []
     for index, raw_item in enumerate(raw_items):
-        decision = str(raw_item.get("decision") or "").strip()
-        reason = str(raw_item.get("reason") or "").strip()
+        if not isinstance(raw_item, dict):
+            raise SystemExit(f"appendix-decision-batch items[{index}] must be an object")
+        appendix_id = _required_json_string(
+            raw_item.get("appendix_id"),
+            f"appendix-decision-batch items[{index}].appendix_id",
+        )
+        decision = _required_json_string(
+            raw_item.get("decision"),
+            f"appendix-decision-batch items[{index}].decision",
+        )
+        reason = _required_json_string(
+            raw_item.get("reason"),
+            f"appendix-decision-batch items[{index}].reason",
+        )
         if decision not in {"include", "exclude"}:
             raise SystemExit(
                 f"appendix-decision-batch items[{index}].decision must be include or exclude"
             )
-        if not reason:
-            raise SystemExit(
-                f"appendix-decision-batch items[{index}].reason is required"
-            )
+        actual_ids.append(appendix_id)
         decision_values.append(decision)
         reasons.append(reason)
+    if actual_ids != expected_ids or len(raw_items) != len(expected_ids):
+        raise SystemExit(
+            "appendix-decision-batch items must exactly match the current appendix-next batch"
+        )
 
     inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
     normalized_decisions: list[dict[str, Any]] = []
@@ -839,22 +855,40 @@ def submit_appendix_batch(
             )
         if not isinstance(root_addition, dict):
             raise SystemExit("appendix-decision-batch root_addition must be an object")
-        if set(root_addition) != {
+        root_fields = {
             "node_id",
             "parent_id",
             "number",
             "title",
             "reason",
-        }:
+        }
+        missing_root_fields = root_fields - set(root_addition)
+        if missing_root_fields:
             raise SystemExit(
-                "appendix-decision-batch root_addition must contain exactly node_id, parent_id, number, title and reason"
+                "appendix-decision-batch root_addition."
+                + sorted(missing_root_fields)[0]
+                + " is required"
             )
-        root_node_id = str(root_addition.get("node_id") or "").strip()
-        root_number = str(root_addition.get("number") or "").strip()
-        root_title = str(root_addition.get("title") or "")
-        root_reason = str(root_addition.get("reason") or "").strip()
-        if not root_node_id:
-            raise SystemExit("appendix-decision-batch root_addition.node_id is required")
+        if set(root_addition) - root_fields:
+            raise SystemExit(
+                "appendix-decision-batch root_addition has unsupported fields"
+            )
+        root_node_id = _required_json_string(
+            root_addition.get("node_id"),
+            "appendix-decision-batch root_addition.node_id",
+        )
+        root_number = _required_json_string(
+            root_addition.get("number"),
+            "appendix-decision-batch root_addition.number",
+        )
+        root_title = _required_json_string(
+            root_addition.get("title"),
+            "appendix-decision-batch root_addition.title",
+        )
+        root_reason = _required_json_string(
+            root_addition.get("reason"),
+            "appendix-decision-batch root_addition.reason",
+        )
         if root_node_id in template_node_ids:
             raise SystemExit(
                 "appendix-decision-batch root_addition.node_id conflicts with a template node: "
@@ -867,14 +901,10 @@ def submit_appendix_batch(
             )
         if root_addition.get("parent_id") is not None:
             raise SystemExit("appendix-decision-batch root_addition.parent_id must be null")
-        if not root_number:
-            raise SystemExit("appendix-decision-batch root_addition.number is required")
-        if root_title != "技术附表":
+        if root_addition["title"] != "技术附表":
             raise SystemExit(
                 "appendix-decision-batch root_addition.title must be exactly 技术附表"
             )
-        if not root_reason:
-            raise SystemExit("appendix-decision-batch root_addition.reason is required")
         valid_root_id = root_node_id
         batch_node_ids.add(root_node_id)
         new_changes.append(
@@ -906,16 +936,14 @@ def submit_appendix_batch(
                 {"appendix_id": appendix_id, "decision": decision, "reason": reason}
             )
             continue
-        node_id = str(raw_item.get("node_id") or "").strip()
-        parent_id = str(raw_item.get("parent_id") or "").strip()
-        if not node_id:
-            raise SystemExit(
-                f"appendix-decision-batch items[{index}].node_id is required"
-            )
-        if not parent_id:
-            raise SystemExit(
-                f"appendix-decision-batch items[{index}].parent_id is required"
-            )
+        node_id = _required_json_string(
+            raw_item.get("node_id"),
+            f"appendix-decision-batch items[{index}].node_id",
+        )
+        parent_id = _required_json_string(
+            raw_item.get("parent_id"),
+            f"appendix-decision-batch items[{index}].parent_id",
+        )
         if set(raw_item) != {
             "appendix_id",
             "decision",
