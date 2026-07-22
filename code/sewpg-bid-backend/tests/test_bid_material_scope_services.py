@@ -266,7 +266,8 @@ def test_technical_gap_review_helpers_are_removed_from_store() -> None:
     assert "def force_save_technical_review_document" in review_source
     assert "def confirm_technical_review" in review_source
     assert "def ensure_technical_review_document_state" in state_source
-    assert "build_technical_review_payload" in assembly_source
+    assert "build_technical_review_payload" not in assembly_source
+    assert "ensure_technical_gap_state" in assembly_source
     assert "store.get_review_items" not in assembly_source
     assert "store._require(project_id).get(\"gap_state\")" not in assembly_source
 
@@ -1580,11 +1581,13 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
     business_deleted: list[str] = []
     technical_deleted: list[str] = []
 
-    async def fake_business_delete(path: str) -> dict[str, object]:
+    async def fake_business_delete(path: str, *, expected_project_id: str = "") -> dict[str, object]:
+        assert expected_project_id == business_project_id
         business_deleted.append(path)
         return {"message": "business deleted", "folderPath": path}
 
-    async def fake_technical_delete(path: str) -> dict[str, object]:
+    async def fake_technical_delete(path: str, *, expected_project_id: str = "") -> dict[str, object]:
+        assert expected_project_id == technical_project_id
         technical_deleted.append(path)
         return {"message": "technical deleted", "folderPath": path}
 

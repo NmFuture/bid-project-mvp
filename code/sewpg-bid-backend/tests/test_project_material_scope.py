@@ -52,6 +52,7 @@ class ProjectMaterialScopeRouteTests(unittest.TestCase):
                 "技术标/项目定制/MAT-HN-001",
             ],
         )
+        self.assertEqual(payload["path"], "技术标/项目定制/MAT-HN-001")
         self.assertEqual([item["key"] for item in payload["readableScopes"]], ["standard", "customer", "project"])
         self.assertEqual(payload["identity"]["customerId"], "CUST-HUANENG")
         self.assertEqual(payload["identity"]["projectId"], "MAT-HN-001")
