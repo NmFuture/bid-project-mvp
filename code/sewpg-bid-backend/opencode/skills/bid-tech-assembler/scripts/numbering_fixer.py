@@ -108,11 +108,7 @@ def _direct_outline_level(para) -> Optional[int]:
     return None
 
 
-def _paragraph_heading_level(para) -> Optional[int]:
-    direct = _direct_outline_level(para)
-    if direct is not None:
-        return direct
-    style = para.style
+def _style_heading_level(style) -> Optional[int]:
     visited: set[str] = set()
     while style is not None:
         style_id = str(getattr(style, "style_id", "") or "")
@@ -138,6 +134,21 @@ def _paragraph_heading_level(para) -> Optional[int]:
                     return value + 1
         style = getattr(style, "base_style", None)
     return None
+
+
+def _paragraph_heading_level(para) -> Optional[int]:
+    direct = _direct_outline_level(para)
+    if direct is not None:
+        return direct
+    return _style_heading_level(para.style)
+
+
+def _num_pr_suppresses_numbering(num_pr) -> bool:
+    """Word uses direct numId=0 to suppress numbering inherited from a style."""
+    from docx.oxml.ns import qn
+
+    num_id = num_pr.find(qn("w:numId"))
+    return num_id is not None and num_id.get(qn("w:val")) == "0"
 
 
 def _replace_paragraph_text_preserve_format(para, new_text: str) -> None:
@@ -189,10 +200,12 @@ def _set_direct_heading_level(para, level: int) -> None:
     from docx.oxml.ns import qn
 
     p_pr = para._p.get_or_add_pPr()
-    for tag in ("w:outlineLvl", "w:numPr"):
-        element = p_pr.find(qn(tag))
-        if element is not None:
-            p_pr.remove(element)
+    outline = p_pr.find(qn("w:outlineLvl"))
+    if outline is not None:
+        p_pr.remove(outline)
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is not None and not _num_pr_suppresses_numbering(num_pr):
+        p_pr.remove(num_pr)
     outline = OxmlElement("w:outlineLvl")
     outline.set(qn("w:val"), str(max(1, min(int(level), 9)) - 1))
     p_pr.append(outline)
@@ -690,8 +703,7 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
     def _should_strip(para) -> bool:
         if not only_heading_styles:
             return True
-        st = para.style.name if para.style else ""
-        return _is_heading_style(st)
+        return _paragraph_heading_level(para) is not None
 
     for para in doc.paragraphs:
         if not _should_strip(para):
@@ -700,7 +712,7 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
         if pPr is None:
             continue
         numPr = pPr.find(qn("w:numPr"))
-        if numPr is not None:
+        if numPr is not None and not _num_pr_suppresses_numbering(numPr):
             pPr.remove(numPr)
             count += 1
     # 表格里的段落也要处理
@@ -714,7 +726,7 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
                     if pPr is None:
                         continue
                     numPr = pPr.find(qn("w:numPr"))
-                    if numPr is not None:
+                    if numPr is not None and not _num_pr_suppresses_numbering(numPr):
                         pPr.remove(numPr)
                         count += 1
     return count
@@ -734,18 +746,10 @@ def strip_numPr_from_heading_styles(doc) -> int:
     for style in doc.styles:
         if style.type != WD_STYLE_TYPE.PARAGRAPH:
             continue
-        style_name = style.name or ""
         pPr = style.element.find(qn("w:pPr"))
         if pPr is None:
             continue
-        outline = pPr.find(qn("w:outlineLvl"))
-        is_outline_heading = False
-        if outline is not None:
-            try:
-                is_outline_heading = 0 <= int(outline.get(qn("w:val"))) <= 8
-            except (TypeError, ValueError):
-                is_outline_heading = False
-        if not (_is_heading_style(style_name) or is_outline_heading):
+        if _style_heading_level(style) is None:
             continue
         numPr = pPr.find(qn("w:numPr"))
         if numPr is not None:
