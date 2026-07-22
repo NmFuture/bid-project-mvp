@@ -29,6 +29,8 @@ class _CreateFolderSession:
     def __init__(self, parent):
         self._results = iter((_ScalarResult(parent), _ScalarResult(None)))
         self.added = []
+        self.executed_statements = []
+        self.executed_parameters = []
 
     async def __aenter__(self):
         return self
@@ -36,7 +38,11 @@ class _CreateFolderSession:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def execute(self, _statement):
+    async def execute(self, _statement, *_args, **_kwargs):
+        self.executed_statements.append(str(_statement))
+        self.executed_parameters.append(_args[0] if _args else None)
+        if "pg_advisory_xact_lock" in str(_statement):
+            return _ScalarResult(None)
         return next(self._results)
 
     def add(self, value):
@@ -297,6 +303,75 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         self.assertEqual(session.added[0].parent_id, standard_root.id)
         self.assertEqual(session.added[0].path, "技术标/标准文件/自建目录")
         ensure_folder_path.assert_awaited_once()
+        self.assertIn("pg_advisory_xact_lock", session.executed_statements[1])
+        self.assertEqual(
+            session.executed_parameters[1],
+            {"lock_key": "raw-folder-path:技术标/标准文件/自建目录"},
+        )
+
+    async def test_creating_folder_under_missing_technical_standard_tier_creates_parent_path(self) -> None:
+        technical_root = SimpleNamespace(id=1, path="技术标")
+        standard_root = SimpleNamespace(
+            id=2,
+            path="技术标/标准文件",
+            tier="standard",
+            bid_type="技术标",
+            customer_name="平台标准",
+            project_id=None,
+        )
+        session = _CreateFolderSession(None)
+        ensure_folder_path = AsyncMock(side_effect=(technical_root, standard_root))
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            result = await create_raw_folder(
+                parent_path="技术标/标准文件",
+                folder_name="自建目录",
+                bid_type="技术标",
+                ensure_runtime_tables=AsyncMock(),
+                ensure_folder_path=ensure_folder_path,
+                raw_tree=AsyncMock(return_value={"tree": []}),
+            )
+
+        self.assertEqual(result["folderPath"], "技术标/标准文件/自建目录")
+        self.assertEqual(len(session.added), 1)
+        self.assertEqual(session.added[0].parent_id, standard_root.id)
+        self.assertEqual(ensure_folder_path.await_count, 2)
+        self.assertIn("pg_advisory_xact_lock", session.executed_statements[1])
+        self.assertEqual(
+            session.executed_parameters[1],
+            {"lock_key": "raw-folder-path:技术标/标准文件/自建目录"},
+        )
+        self.assertEqual(ensure_folder_path.await_args_list[0].args[1:], ("技术标", None, "standard", "技术标", None, 1))
+        self.assertEqual(
+            ensure_folder_path.await_args_list[1].args[1:],
+            ("标准文件", technical_root.id, "standard", "技术标", None, 1),
+        )
+        self.assertEqual(ensure_folder_path.await_args_list[1].kwargs, {"customer_name": "平台标准"})
+
+    async def test_ensure_folder_path_locks_normalized_full_path_before_lookup(self) -> None:
+        operations = RawFolderOperations(ensure_runtime_tables=AsyncMock())
+        session = _CreateFolderSession(None)
+        session.get = AsyncMock(return_value=SimpleNamespace(path="技术标/标准文件"))
+
+        folder = await operations.ensure_folder_path(
+            session,
+            "自建目录",
+            2,
+            "standard",
+            "技术标",
+            None,
+            1,
+        )
+
+        self.assertEqual(folder.path, "技术标/标准文件/自建目录")
+        self.assertIn("pg_advisory_xact_lock", session.executed_statements[0])
+        self.assertEqual(
+            session.executed_parameters[0],
+            {"lock_key": "raw-folder-path:技术标/标准文件/自建目录"},
+        )
 
 
 class MaterialInitSqlTests(TestCase):
