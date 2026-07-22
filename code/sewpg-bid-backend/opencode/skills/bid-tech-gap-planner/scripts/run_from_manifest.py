@@ -360,6 +360,9 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
                 "fillProfile": raw.get("fillProfile") if isinstance(raw.get("fillProfile"), dict) else {},
                 "evidenceSegments": list(evidence_segments) if isinstance(evidence_segments, list) else [],
                 "documentOutline": list(raw.get("documentOutline") or []) if isinstance(raw.get("documentOutline"), list) else [],
+                "wikiSummary": str(raw.get("wikiSummary") or ""),
+                "wikiCardText": str(raw.get("wikiCardText") or ""),
+                "wikiTags": [str(tag) for tag in (raw.get("wikiTags") or []) if str(tag).strip()],
                 "usage": "section_merge",
                 "matchReason": "允许素材范围内的素材索引候选",
                 "confidence": 0.74,
@@ -1276,9 +1279,13 @@ def route_folder_literal(
 
 
 def _material_topic_text(material: dict[str, Any]) -> str:
-    """素材的主题文本池：文件名 + 路径 + 片段 topicKeywords/keywords/title/summary。
+    """素材的主题文本池：文件名 + 路径 + 片段 topicKeywords/keywords/title/summary
+    + 素材 wiki 卡片文本（AI 摘要 / TLDR 预览 / 标签）。
 
     用于主题级弱关联召回——把「主题相关但文件名对不上」的素材也纳入打分。
+    素材 wiki 卡片是人工/AI 维护的素材知识层，其摘要与 TLDR 常点出章节主题词
+    （如「制动及安全系统说明，含…制动」命中章节「制动系统专题」），是文件名与
+    内部标题都对不上时的补充信号；只进入弱召回（候选建议），不影响确定性定案。
     """
     parts = [material_text(material)]
     for segment in material.get("evidenceSegments") or []:
@@ -1290,6 +1297,11 @@ def _material_topic_text(material: dict[str, Any]) -> str:
             value = segment.get(key)
             if isinstance(value, list):
                 parts.append(" ".join(str(v) for v in value))
+    parts.append(str(material.get("wikiSummary") or ""))
+    parts.append(str(material.get("wikiCardText") or ""))
+    wiki_tags = material.get("wikiTags")
+    if isinstance(wiki_tags, list):
+        parts.append(" ".join(str(tag) for tag in wiki_tags))
     return " ".join(parts)
 
 
@@ -1454,13 +1466,68 @@ def _tier_recall_bonus(material: dict[str, Any]) -> float:
     return 0.0
 
 
+_ALNUM_RUN_RE = re.compile(r"[a-z0-9]{5,}")
+
+
+def _distinctive_tokens(text: str) -> set[str]:
+    """从文本抽「有指向性的 token」：长度≥5 的英数字连写 + 中文 4-gram。
+
+    用于 wiki 卡片关键词召回：这类 token（如 'prognosticagent'、'健康管理'、
+    '故障预测'）几乎不会在无关素材里偶然出现，用它做标题↔素材的交集，既能召回
+    「文件名与内部标题都对不上、但主题词一致」的素材，又不会像整段 Jaccard 那样
+    被大段文本稀释、也不会像 2 字泛词那样满库误命中。纯字面、跨客户通用。
+    """
+    normalized = _tech_normalize_text(text)
+    if not normalized:
+        return set()
+    tokens: set[str] = set(_ALNUM_RUN_RE.findall(normalized))
+    chinese_only = re.sub(r"[^一-鿿]", "", normalized)
+    for start in range(0, max(0, len(chinese_only) - 3)):
+        tokens.add(chinese_only[start : start + 4])
+    return tokens
+
+
+def wiki_hint_recall_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """素材 wiki 卡片关键词召回：标题与素材 wiki 文本共享 ≥1 个指向性 token 即入候选。
+
+    素材 wiki 卡片的 TLDR/检索提示常直接点出章节主题词（'Prognostic-Agent'、
+    '故障预警'、'健康评估'），文件名与内部标题都对不上时靠这一路救回；只进候选、
+    不自动定案。命中越多排序越靠前。
+    """
+    title_tokens = _distinctive_tokens(title)
+    if not title_tokens:
+        return []
+    hits: list[dict[str, Any]] = []
+    for material in materials:
+        wiki_text = " ".join(
+            str(material.get(field) or "") for field in ("wikiSummary", "wikiCardText")
+        )
+        if not wiki_text.strip():
+            continue
+        shared = title_tokens & _distinctive_tokens(wiki_text)
+        if not shared:
+            continue
+        enriched = dict(material)
+        enriched["wikiHintScore"] = round(min(0.3 + 0.1 * (len(shared) - 1), 0.6), 3)
+        enriched["matchReason"] = "素材 wiki 卡片主题词命中章节标题（人工确认）"
+        hits.append(enriched)
+    hits.sort(key=lambda m: float(m.get("wikiHintScore") or 0), reverse=True)
+    return hits[:limit]
+
+
 def _weak_recall_rank(material: dict[str, Any]) -> float:
-    # 三路求和：多路同时命中（名称+片段+主题一致指向）的素材优先于单路命中的；
+    # 多路求和：多路同时命中（名称+片段+主题+wiki 主题词一致指向）的素材优先；
     # 项目/客户素材另有层级加成。
     return (
         float(material.get("topicRelevance") or 0)
         + float(material.get("nameSimilarity") or 0)
         + float(material.get("segmentRecallScore") or 0)
+        + float(material.get("wikiHintScore") or 0)
         + _tier_recall_bonus(material)
     )
 
@@ -1480,13 +1547,14 @@ def weak_recall_materials(
         topic_match_materials(materials, title),
         approx_name_match_materials(materials, title),
         segment_recall_materials(materials, title),
+        wiki_hint_recall_materials(materials, title),
     ):
         for material in pool:
             key = str(material.get("id") or material.get("path") or material.get("name") or "")
             if not key:
                 continue
             if key in merged:
-                for field in ("topicRelevance", "nameSimilarity", "segmentRecallScore"):
+                for field in ("topicRelevance", "nameSimilarity", "segmentRecallScore", "wikiHintScore"):
                     if material.get(field) is not None and merged[key].get(field) is None:
                         merged[key][field] = material[field]
             else:
