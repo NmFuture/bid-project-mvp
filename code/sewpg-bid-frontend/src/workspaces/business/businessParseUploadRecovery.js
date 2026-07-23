@@ -1,14 +1,17 @@
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const completedStatuses = new Set(['completed'])
-const failedStatuses = new Set(['failed', 'error', 'stale'])
+const failedStatuses = new Set(['failed', 'error', 'stale', 'cancelled'])
 
 const normalizeStatus = (progress) => String(progress?.status || '').toLowerCase()
 
 export const isUploadAndRunTimeout = (error) => error?.code === 'TIMEOUT'
 
+// 后端失败/停止时也会写 percentage=100，须先排除失败态再判断完成，
+// 否则重解析失败会被误判为成功并展示旧的 parse_result。
 export const isParseProgressCompleted = (progress) =>
-  completedStatuses.has(normalizeStatus(progress)) || Number(progress?.percentage || 0) >= 100
+  !failedStatuses.has(normalizeStatus(progress)) &&
+  (completedStatuses.has(normalizeStatus(progress)) || Number(progress?.percentage || 0) >= 100)
 
 export const isParseProgressFailed = (progress) => failedStatuses.has(normalizeStatus(progress))
 
@@ -68,7 +71,8 @@ export const pollParseProgressOnce = async ({
   let result = null
   let error = null
 
-  if (isParseProgressCompleted(progress)) {
+  // 失败态不拉取结果：重解析失败时后端不清旧 parse_result，拉到的旧成功结果会被误判为成功。
+  if (!isParseProgressFailed(progress) && isParseProgressCompleted(progress)) {
     try {
       result = parseClient.results ? await parseClient.results(projectId) : null
     } catch (caught) {
@@ -79,11 +83,12 @@ export const pollParseProgressOnce = async ({
 
   onProgress?.(progress)
 
-  if (isParseResultCompleted(result)) {
-    return { completed: true, failed: false, progress, result }
-  }
+  // 失败检查优先于完成检查，failed/error/stale/cancelled 直接按失败处理。
   if (isParseProgressFailed(progress)) {
     return { completed: false, failed: true, progress, result }
+  }
+  if (isParseResultCompleted(result)) {
+    return { completed: true, failed: false, progress, result }
   }
   return { completed: false, failed: false, progress, result, error }
 }

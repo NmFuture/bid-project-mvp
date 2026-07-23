@@ -2108,8 +2108,28 @@ class BidParseService:
             "progress": progress,
         }
 
+    def _fail_parse_progress(self, project_id: str, exc: Exception) -> None:
+        self.update_parse_progress(
+            project_id,
+            status="failed",
+            percentage=100,
+            summary=f"解析失败：{exc}",
+            event_step="failed",
+            event_level="error",
+            event_message=f"解析失败：{exc}",
+            phase_key="failed",
+            phase_label="解析失败",
+            phase_percent=100,
+        )
+
     def execute_s1_parse_job(self, project_id: str, data: dict[str, Any]) -> None:
         """后台执行 S1 解析（Redis worker/本地线程）：瞬时错误按配置退避自动重试，取消走协作式中止。"""
+
+        # 排队期间用户可能已取消：检查必须先于进度重置，否则 cancelled 状态会被
+        # start_parse_progress 整体抹掉，任务在取消后仍被执行。
+        if self.is_parse_cancel_requested(project_id):
+            self.cancel_parse(project_id)
+            return
 
         tender_files = [item for item in (data.get("tenderFiles") or []) if isinstance(item, dict)]
         template_files = [item for item in (data.get("templateFiles") or []) if isinstance(item, dict)]
@@ -2200,43 +2220,44 @@ class BidParseService:
                     # 本来就是全局串行，短暂阻塞可接受。
                     time.sleep(delay)
                     continue
-                self.update_parse_progress(
-                    project_id,
-                    status="failed",
-                    percentage=100,
-                    summary=f"解析失败：{exc}",
-                    event_step="failed",
-                    event_level="error",
-                    event_message=f"解析失败：{exc}",
-                    phase_key="failed",
-                    phase_label="解析失败",
-                    phase_percent=100,
-                )
+                self._fail_parse_progress(project_id, exc)
                 raise
-            self.raise_if_parse_cancel_requested(project_id)
-            _progress_callback(self, project_id)(
-                "result_persisting",
-                {"extractedCount": int(summary.get("extractedCount") or 0) if isinstance(summary, dict) else 0},
-            )
-            parse_result = self.complete_parse(
-                project_id,
-                tender_files,
-                template_files,
-                summary=summary,
-                parse_storage=parse_storage,
-            )
-            _progress_callback(self, project_id)(
-                "result_assets_materializing",
-                {"appendixCount": int(summary.get("appendixCount") or 0) if isinstance(summary, dict) else 0},
-            )
-            parse_result = self._materialize_completed_parse_result(project_id, parse_result)
-            parse_result = materialize_parse_appendix_docx_assets(
-                project_id,
-                parse_result,
-                bid_type=self.project_service.bid_type,
-            )
-            parse_result = self._promote_completed_parse_if_participating(project_id, parse_result)
-            self.finalize_parse_progress(project_id, parse_result, summary=summary)
+            # 后处理（结果落库/资产物化/进度收尾）与解析本体一样需要兜底：
+            # 异常时把进度置为 failed，否则项目进度永远停在 running，只能靠 stale 兜底。
+            try:
+                self.raise_if_parse_cancel_requested(project_id)
+                _progress_callback(self, project_id)(
+                    "result_persisting",
+                    {"extractedCount": int(summary.get("extractedCount") or 0) if isinstance(summary, dict) else 0},
+                )
+                parse_result = self.complete_parse(
+                    project_id,
+                    tender_files,
+                    template_files,
+                    summary=summary,
+                    parse_storage=parse_storage,
+                )
+                _progress_callback(self, project_id)(
+                    "result_assets_materializing",
+                    {"appendixCount": int(summary.get("appendixCount") or 0) if isinstance(summary, dict) else 0},
+                )
+                parse_result = self._materialize_completed_parse_result(project_id, parse_result)
+                parse_result = materialize_parse_appendix_docx_assets(
+                    project_id,
+                    parse_result,
+                    bid_type=self.project_service.bid_type,
+                )
+                parse_result = self._promote_completed_parse_if_participating(project_id, parse_result)
+                self.finalize_parse_progress(project_id, parse_result, summary=summary)
+            except ParseCancelledError:
+                self.cancel_parse(project_id)
+                return
+            except Exception as exc:
+                if self.is_parse_cancel_requested(project_id):
+                    self.cancel_parse(project_id)
+                    return
+                self._fail_parse_progress(project_id, exc)
+                raise
             return
 
     async def run_without_upload(self, project_id: str) -> dict[str, Any]:
