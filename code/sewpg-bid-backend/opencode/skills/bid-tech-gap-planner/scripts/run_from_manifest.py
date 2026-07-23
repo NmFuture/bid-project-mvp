@@ -1007,8 +1007,45 @@ def _material_stem_keys(material: dict[str, Any]) -> list[str]:
     return keys
 
 
+# 素材 Wiki 卡片（AI 生成）常在正文末尾附「全文目录」小节，逐行列出该素材内部的
+# 章节标题树。解析阶段未落 documentOutline/evidenceSegments 字段时，它是唯一可用的
+# 内部标题树来源，用于整章/整节覆盖判定。纯结构解析，不绑定单一客户/项目值。
+_WIKI_OUTLINE_HEADER_RE = re.compile(r"全文目录")
+_WIKI_CARD_SECTION_RE = re.compile(r"^(全文目录|检索提示|文件定位|核心要点|TLDR|来源|卡片在)")
+_wiki_outline_cache: dict[str, list[str]] = {}
+
+
+def wiki_outline_titles(material: dict[str, Any]) -> list[str]:
+    """从 wikiCardText 的「全文目录」小节提取素材内部标题（剥 markdown 列表符/缩进/附表编号）。"""
+    card = str(material.get("wikiCardText") or "")
+    if not card:
+        return []
+    cached = _wiki_outline_cache.get(card)
+    if cached is not None:
+        return cached
+    header = _WIKI_OUTLINE_HEADER_RE.search(card)
+    titles: list[str] = []
+    if header:
+        for raw in card[header.end():].splitlines():
+            line = re.sub(r"^[\s#>*\-+•·•●▪]+", "", raw).strip()
+            if not line:
+                continue
+            if _WIKI_CARD_SECTION_RE.match(line):
+                break
+            line = re.sub(r"^附表\s*[A-Za-z]?\.?\d*\s*", "", line).strip()
+            if 2 <= len(line) <= 40:
+                titles.append(line)
+    _wiki_outline_cache[card] = titles
+    return titles
+
+
+def material_has_extracted_outline(material: dict[str, Any]) -> bool:
+    """素材是否带解析阶段抽取的内部标题树字段（区别于仅 AI wiki 全文目录）。"""
+    return bool(material.get("documentOutline")) or bool(material.get("evidenceSegments"))
+
+
 def material_outline_keys(material: dict[str, Any]) -> list[str]:
-    """素材内部标题键列表：documentOutline 优先，evidenceSegments 标题兜底。"""
+    """素材内部标题键列表：documentOutline 优先，evidenceSegments 次之，wiki 全文目录兜底。"""
     keys: list[str] = []
     outline = material.get("documentOutline")
     if isinstance(outline, list):
@@ -1022,6 +1059,10 @@ def material_outline_keys(material: dict[str, Any]) -> list[str]:
             key = strip_title_decorations(segment.get("title"))
             if len(key) >= 3:
                 keys.append(key)
+    for title in wiki_outline_titles(material):
+        key = strip_title_decorations(title)
+        if len(key) >= 3:
+            keys.append(key)
     return keys
 
 
@@ -1079,6 +1120,9 @@ def outline_anchor_for_title(material: dict[str, Any] | None, title: str) -> dic
                 "segmentId": str(segment.get("segmentId") or ""),
                 "source": "evidenceSegments",
             }
+    for heading in wiki_outline_titles(material):
+        if _keys_equal_or_contained(title_key, strip_title_decorations(heading)):
+            return {"heading": heading, "source": "wikiOutline"}
     return {}
 
 
@@ -2287,9 +2331,14 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 )
 
                 def _master_acceptable(candidate: dict[str, Any]) -> bool:
-                    if is_evidence_file(candidate) or is_appendix_blank_for(candidate, title):
+                    if is_appendix_blank_for(candidate, title):
                         return False
                     coverage_ratio = outline_child_coverage(candidate, child_titles)
+                    # 证据类命名（评估/校核/试验报告等）默认是支撑附件、不作整章正文；
+                    # 但当其内部标题树（含 wiki 全文目录）覆盖过半子节时，它就是整册正文
+                    # 报告本体（如「风资源评估报告」覆盖整个风资源章），放行为整章素材。
+                    if is_evidence_file(candidate) and coverage_ratio < 0.5:
+                        return False
                     name_evidence = chapter_title_matches_file(candidate, title) or (
                         strong_title_material_match(candidate, title) == "name"
                     )
@@ -2325,8 +2374,16 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     gap_reason = "已匹配到整章待填写 Word，可填写后覆盖本章及其子节。"
                     next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
                 else:
+                    # 软章主：仅凭 wiki 全文目录（AI 生成）而非解析字段标题树或文件名硬命中
+                    # 入选的整章素材，只判「已匹配-待确认」交人工终审，不自动就绪；子节随父
+                    # 章继承同一决策。硬证据（文件名命中 / 解析字段标题树）仍自动就绪。
+                    master_soft = (
+                        not chapter_title_matches_file(matched_material, title)
+                        and strong_title_material_match(matched_material, title) != "name"
+                        and not material_has_extracted_outline(matched_material)
+                    )
                     status = "matched"
-                    decision = "ready"
+                    decision = "review_required" if master_soft else "ready"
                     usage = "chapter_master"
                     # 金标反评 D3：整章素材的备选并入同目录兄弟 + 弱召回现成素材
                     # （承诺函章的电量承诺书靠同义词组召回），人工可加选拼装；
@@ -2349,8 +2406,12 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                         if str(m.get("materialTier") or "").lower() == "project"
                     ][:4]
                     alternative_materials = alternative_materials[:4] + chapter_project_extras
-                    gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
-                    next_actions = ["s4_merge_material"]
+                    if master_soft:
+                        gap_reason = "wiki 全文目录显示本素材为整章正文，已匹配本章及子节，待人工确认。"
+                        next_actions = ["select_reference_material", "s4_merge_material", "manual_upload"]
+                    else:
+                        gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
+                        next_actions = ["s4_merge_material"]
                 parent_coverages[number_key] = {
                     "id": gap_id,
                     "title": title,
