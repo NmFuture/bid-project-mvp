@@ -135,12 +135,7 @@ def _cached_result_ready(project_dir: Path, document_id: str, source_sha256: str
         and str(quality.get("pipelineOptionsVersion") or "") == DOCLING_PIPELINE_OPTIONS_VERSION
     ):
         return False
-    if str(quality.get("runId") or "") != run_id:
-        quality["runId"] = run_id
-        temp_path = quality_path.with_suffix(".json.tmp")
-        temp_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(quality_path)
-    return True
+    return str(quality.get("runId") or "") == run_id
 
 
 def _clear_previous_result(project_dir: Path, document_id: str) -> None:

@@ -6609,7 +6609,14 @@ def parse_tender_documents(
                 page_count = parse_metadata.get("pageCount") or page_count
                 file_warnings.extend(engine_warnings)
                 pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
-                pdf_text_fallback_enabled = profile.key == "business" and settings.business_pdf_engine_fallback == "lightweight"
+                if profile.key == "technical":
+                    # Docling 只负责复杂附表页窗；技术标正文沿用原有全文文本层，
+                    # 避免长文档正文被附表页窗结果截断。
+                    text, pdf_meta = extract_pdf_text(file_path)
+                    parse_metadata["pageCount"] = pdf_meta["pageCount"]
+                    pdf_text_fallback_enabled = False
+                else:
+                    pdf_text_fallback_enabled = settings.business_pdf_engine_fallback == "lightweight"
             else:
                 text = ""
                 pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}

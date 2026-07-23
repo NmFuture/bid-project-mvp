@@ -2564,7 +2564,7 @@ class ParsePipelineTests(unittest.TestCase):
             new=fake_parse_pdf,
         ), patch(
             "app.services.parsing.extract_pdf_text",
-            return_value=("", {"pageCount": 2, "warnings": [], "requiresOcr": False}),
+            return_value=("招标文件全文正文", {"pageCount": 555, "warnings": [], "requiresOcr": False}),
         ):
             response = self.client.post(
                 self.parse_results_url(project_id, "/upload-and-run"),
@@ -2572,6 +2572,8 @@ class ParsePipelineTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sourceFiles"][0]["pageCount"], 555)
+        self.assertEqual(response.json()["sourceFiles"][0]["textLength"], len("招标文件全文正文"))
         appendices = response.json()["structured"]["appendices"]
         self.assertEqual(
             [item["title"] for item in appendices],
@@ -2617,7 +2619,7 @@ class ParsePipelineTests(unittest.TestCase):
             side_effect=AssertionError("technical PDF must not use local-text-layer fallback"),
         ), patch(
             "app.services.parsing.extract_pdf_text",
-            side_effect=AssertionError("technical PDF must not use lightweight text fallback"),
+            return_value=("技术标全文正文", {"pageCount": 1, "warnings": [], "requiresOcr": False}),
         ):
             _summary, storage = parsing_service.parse_tender_documents(
                 project_id,

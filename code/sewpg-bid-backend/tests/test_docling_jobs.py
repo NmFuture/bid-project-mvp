@@ -7,8 +7,36 @@ from unittest.mock import patch
 
 from app.core.config import settings
 from app.services.docling_engine import DOCLING_LOCKED_VERSION, DOCLING_PIPELINE_OPTIONS_VERSION
-from app.services.docling_jobs import execute_docling_batch
+from app.services.docling_jobs import _cached_result_ready, execute_docling_batch
 from app.services.job_queue import EnqueueResult
+
+
+def _write_cached_result(project_dir: Path, run_id: str) -> tuple[str, str]:
+    document_id = "TEN-1"
+    source_sha256 = "a" * 64
+    quality_path = project_dir / "document_parse" / "docling" / document_id / "parse_quality.json"
+    quality_path.parent.mkdir(parents=True, exist_ok=True)
+    quality_path.write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "sourceSha256": source_sha256,
+                "runId": run_id,
+                "doclingVersion": DOCLING_LOCKED_VERSION,
+                "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project_dir / f"{document_id}_document_nav.json").write_text("{}", encoding="utf-8")
+    return document_id, source_sha256
+
+
+def test_cached_docling_result_is_reused_only_for_same_run(tmp_path: Path) -> None:
+    document_id, source_sha256 = _write_cached_result(tmp_path, "run-1")
+
+    assert _cached_result_ready(tmp_path, document_id, source_sha256, "run-1") is True
+    assert _cached_result_ready(tmp_path, document_id, source_sha256, "run-2") is False
 
 
 def test_docling_batch_parses_shared_pdf_and_queues_continuation(tmp_path: Path) -> None:
