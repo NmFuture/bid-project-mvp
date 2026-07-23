@@ -742,6 +742,8 @@ export const performanceAPI = {
   category: (id) => request(`/materials/performance/categories/${id}`),
   deleteCategory: (id, data = {}) => request(`/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
   updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
+  updateItem: (categoryId, itemId, data) =>
+    request(`/materials/performance/categories/${categoryId}/items/${itemId}`, { method: 'PATCH', body: data }),
   uploadCategoryAttachment: (id, data) =>
     request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
   previewCategoryAttachment: (categoryId, attachmentId) =>
