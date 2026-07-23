@@ -45,6 +45,17 @@ def load_assembler_script(name: str):
 
 
 class TechnicalFinalAssemblyTests(unittest.TestCase):
+    def test_outline_title_keeps_business_number_without_separator(self) -> None:
+        from app.services.technical_gap_domain import technical_outline_number_and_title
+
+        self.assertEqual(
+            technical_outline_number_and_title(
+                {"tocNumber": "1", "title": "1号机组技术参数"},
+                "3",
+            ),
+            ("1", "1号机组技术参数"),
+        )
+
     def test_prune_unused_styles_keeps_references_dependencies_and_pipeline_styles(self) -> None:
         pruner = load_assembler_script("docx_style_pruner")
         doc = Document()
@@ -119,7 +130,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
         self.assertEqual(docpr_ids.call_count, 1)
         self.assertEqual(nvpicpr_ids.call_count, 1)
 
-    def test_prepare_toc_json_uses_confirmed_outline_tree_instead_of_opencode_numbers(self) -> None:
+    def test_prepare_toc_json_preserves_confirmed_outline_numbers_and_stable_fallbacks(self) -> None:
         from app.services import tech_assembly
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,13 +154,27 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                 "nodes": [
                     {
                         "id": "OL-1",
-                        "title": "第一章",
-                        "tocNumber": "第9章",
+                        "title": "第一章 技术方案",
+                        "tocNumber": "第一章",
                         "children": [
-                            {"id": "OL-1-1", "title": "第一节", "tocNumber": "9.8", "children": []},
-                            {"id": "OL-1-2", "title": "第二节", "tocNumber": "2.4", "children": []},
+                            {
+                                "id": "OL-1-1",
+                                "title": "总体设计",
+                                "tocNumber": "   ",
+                                "toc_number": "1.1",
+                                "children": [],
+                            },
+                            {"id": "OL-1-2", "title": "设备选型", "number": "1.2", "children": []},
+                            {"id": "OL-1-3", "title": "缺号子项", "children": []},
                         ],
-                    }
+                    },
+                    {
+                        "id": "OL-2",
+                        "title": "缺号章节",
+                        "children": [
+                            {"id": "OL-2-1", "title": "缺号孙项", "children": []},
+                        ],
+                    },
                 ]
             }
             project = {
@@ -169,8 +194,147 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
 
             self.assertEqual(
                 [(item["number"], item["title"]) for item in output["items"]],
-                [("第1章", "第一章"), ("1.1", "第一节"), ("1.2", "第二节")],
+                [
+                    ("第一章", "技术方案"),
+                    ("1.1", "总体设计"),
+                    ("1.2", "设备选型"),
+                    ("1.3", "缺号子项"),
+                    ("2", "缺号章节"),
+                    ("2.1", "缺号孙项"),
+                ],
             )
+
+    def test_chinese_chapter_number_keeps_selected_materials_through_gap_plan(self) -> None:
+        from app.services import tech_assembly, technical_gap_planner
+
+        parse_toc = load_assembler_script("parse_toc")
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work_dir = root / "assembly"
+            work_dir.mkdir()
+            outline_nodes = [
+                {
+                    "id": "OL-1",
+                    "title": "第一章技术方案",
+                    "tocNumber": "第一章",
+                    "children": [
+                        {
+                            "id": "OL-1-1",
+                            "title": "一、总体设计",
+                            "tocNumber": "一、",
+                            "children": [
+                                {
+                                    "id": "OL-1-1-1",
+                                    "title": "（一）设备选型",
+                                    "tocNumber": "（一）",
+                                    "children": [],
+                                }
+                            ],
+                        },
+                        {
+                            "id": "OL-1-2",
+                            "title": "第一节实施方案",
+                            "tocNumber": "第一节",
+                            "children": [],
+                        },
+                    ],
+                }
+            ]
+            s4_toc_items = technical_gap_planner._outline_nodes_to_toc_items(outline_nodes)
+            toc_path = tech_assembly._prepare_toc_json(
+                "PRJ-CHINESE-NUMBER",
+                {"id": "PRJ-CHINESE-NUMBER", "name": "中文章节号测试"},
+                {"nodes": outline_nodes},
+                {},
+                work_dir,
+            )
+            s7_toc_items = json.loads(toc_path.read_text(encoding="utf-8"))["items"]
+            self.assertEqual(
+                [item["number"] for item in s4_toc_items],
+                ["第一章", "一、", "（一）", "第一节"],
+            )
+            self.assertEqual(
+                [item["title"] for item in s4_toc_items],
+                ["技术方案", "总体设计", "设备选型", "实施方案"],
+            )
+            self.assertEqual(
+                [(item["number"], item["title"]) for item in s7_toc_items],
+                [(item["number"], item["title"]) for item in s4_toc_items],
+            )
+            self.assertEqual(
+                [item["chapter_no_flat"] for item in s7_toc_items],
+                ["1", "1.1", "1.1.1", "1.2"],
+            )
+            gap_plan_path = root / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                **item,
+                                "id": f"GAP-{index}",
+                                "matchedMaterials": [{"path": f"material-{index}.docx"}],
+                            }
+                            for index, item in enumerate(s4_toc_items, start=1)
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            toc_entries = parse_toc.parse_toc_json(toc_path)
+            result = build_assembly.apply_gap_plan(
+                build_assembly.build_plan(toc_entries, [], {}),
+                gap_plan_path,
+            )
+            chapter_master_path = root / "chapter-master-gap-plan.json"
+            chapter_master_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                **item,
+                                **({"coverageRole": "chapter_master"} if item["number"] == "一、" else {}),
+                                "id": f"MASTER-{index}",
+                                "matchedMaterials": [{"path": f"material-{index}.docx"}],
+                            }
+                            for index, item in enumerate(s4_toc_items, start=1)
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            chapter_master_result = build_assembly.apply_gap_plan(
+                build_assembly.build_plan(toc_entries, [], {}),
+                chapter_master_path,
+            )
+
+        self.assertEqual(
+            [item["chapter_no"] for item in result],
+            ["第一章", "一、", "（一）", "第一节"],
+        )
+        self.assertEqual(
+            [item["title"] for item in result],
+            ["技术方案", "总体设计", "设备选型", "实施方案"],
+        )
+        self.assertEqual(
+            [item["chapter_no_flat"] for item in result],
+            ["1", "1.1", "1.1.1", "1.2"],
+        )
+        self.assertEqual(
+            [item["paths"] for item in result],
+            [[f"material-{index}.docx"] for index in range(1, 5)],
+        )
+        self.assertEqual([item["status"] for item in result], ["MATCHED"] * 4)
+        self.assertEqual(
+            [item["chapter_no"] for item in chapter_master_result],
+            ["第一章", "一、", "第一节"],
+        )
 
     def test_chapter_master_replaces_descendants_and_numbers_material_headings(self) -> None:
         merger = load_assembler_script("merger")
