@@ -32,6 +32,27 @@ DEFAULT_TEMPLATE_TYPES = {
     "business": "商务标",
 }
 
+# 默认模板按技术标/商务标链路隔离：T 仅技术标，B 仅商务标，TB 两者皆可
+TEMPLATE_TYPES_BY_ROLE = {
+    "T": ("technical",),
+    "B": ("business",),
+    "TB": ("technical", "business"),
+}
+
+
+def template_types_for_user(user: dict[str, Any] | None) -> set[str] | None:
+    """返回用户角色可见的默认模板类型；无角色信息时返回 None，保持不过滤（避免锁死管理员）。"""
+    role = str((user or {}).get("role") or "").strip()
+    allowed = TEMPLATE_TYPES_BY_ROLE.get(role)
+    return set(allowed) if allowed else None
+
+
+def ensure_template_type_allowed(template_type: str, user: dict[str, Any] | None) -> None:
+    allowed = template_types_for_user(user)
+    if allowed is not None and template_type not in allowed:
+        label = DEFAULT_TEMPLATE_TYPES.get(template_type, template_type or "-")
+        raise PeripheralError(403, f"当前角色无权操作{label}默认模板", "DEFAULT_TEMPLATE_TYPE_FORBIDDEN")
+
 DEFAULT_LLM_MODEL_OPTIONS = [
     {"id": "deepseek-v4-flash", "label": "deepseek-v4-flash"},
     {"id": "deepseek-v4-pro", "label": "deepseek-v4-pro"},
@@ -218,11 +239,17 @@ class SystemSettingsService:
 
     def _write_opencode_runtime_config(self, config: dict[str, Any]) -> str:
         normalized = self._normalize_model_config("llm", config)
-        if not normalized.get("enabled"):
-            return ""
-        if not str(normalized.get("baseUrl") or "").strip():
-            return ""
-        if not str(normalized.get("modelId") or normalized.get("model") or "").strip():
+        active = (
+            bool(normalized.get("enabled"))
+            and bool(str(normalized.get("baseUrl") or "").strip())
+            and bool(str(normalized.get("modelId") or normalized.get("model") or "").strip())
+        )
+        if not active:
+            # 禁用或未配置完整时清除旧 runtime 文件，避免重启后 opencode 仍加载与 DB 相反的旧配置
+            try:
+                OPENCODE_RUNTIME_CONFIG_PATH.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("opencode runtime 配置文件删除失败：%s", OPENCODE_RUNTIME_CONFIG_PATH, exc_info=True)
             return ""
         OPENCODE_RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         runtime = self._opencode_runtime_config(normalized)
@@ -342,7 +369,8 @@ class SystemSettingsService:
         opencode_restart_required = False
         if kind == "llm":
             opencode_runtime_config_path = self._write_opencode_runtime_config(next_config)
-            opencode_restart_required = bool(opencode_runtime_config_path)
+            # opencode 仅在启动时加载一次配置，任何 LLM 配置变更（含禁用）都需重启后才生效
+            opencode_restart_required = True
         payload = {"message": "Config updated", "config": await self.get_model_config(kind)}
         if kind == "llm":
             payload["opencodeRuntimeConfigPath"] = opencode_runtime_config_path
@@ -480,8 +508,9 @@ class SystemSettingsService:
             "minioKey": asset.minio_key or "",
         }
 
-    async def default_templates_list(self) -> dict[str, Any]:
+    async def default_templates_list(self, user: dict[str, Any] | None = None) -> dict[str, Any]:
         await self._ensure_tables()
+        allowed_types = template_types_for_user(user)
         async with async_session() as session:
             # 返回全部版本（含未生效的历史模板），前端才能对旧版本执行“设为默认”或删除
             rows = (
@@ -491,10 +520,14 @@ class SystemSettingsService:
                     .order_by(TemplateAsset.table_key, desc(TemplateAsset.created_at), desc(TemplateAsset.id))
                 )
             ).scalars().all()
-        return {
-            "items": [self._template_asset_to_dict(row) for row in rows],
-            "templateTypes": [{"key": key, "label": label} for key, label in DEFAULT_TEMPLATE_TYPES.items()],
-        }
+        if allowed_types is not None:
+            rows = [row for row in rows if str(row.table_key or "") in allowed_types]
+        template_types = [
+            {"key": key, "label": label}
+            for key, label in DEFAULT_TEMPLATE_TYPES.items()
+            if allowed_types is None or key in allowed_types
+        ]
+        return {"items": [self._template_asset_to_dict(row) for row in rows], "templateTypes": template_types}
 
     async def default_template_upload(
         self,
@@ -510,6 +543,7 @@ class SystemSettingsService:
         await self._ensure_tables()
         if template_type not in DEFAULT_TEMPLATE_TYPES:
             raise PeripheralError(400, "无效的默认模板类型", "DEFAULT_TEMPLATE_TYPE_INVALID")
+        ensure_template_type_allowed(template_type, user)
         clean_name = safe_segment(file_name, "")
         if not clean_name:
             raise PeripheralError(400, "模板文件名不能为空", "DEFAULT_TEMPLATE_NAME_REQUIRED")
@@ -574,7 +608,7 @@ class SystemSettingsService:
             user=user,
             diff={"before": {}, "after": self._template_asset_to_dict(asset)},
         )
-        payload = await self.default_templates_list()
+        payload = await self.default_templates_list(user=user)
         payload.update({"message": "Uploaded", "item": next(item for item in payload["items"] if item["id"] == f"TPL-{asset.id:04d}")})
         return payload
 
@@ -592,6 +626,7 @@ class SystemSettingsService:
             ).scalar_one_or_none()
             if target is None:
                 raise PeripheralError(404, "默认模板不存在", "DEFAULT_TEMPLATE_NOT_FOUND")
+            ensure_template_type_allowed(str(target.table_key or ""), user)
             assets = (
                 await session.execute(
                     select(TemplateAsset).where(
@@ -615,7 +650,7 @@ class SystemSettingsService:
             user=user,
             diff={"before": before, "after": after},
         )
-        payload = await self.default_templates_list()
+        payload = await self.default_templates_list(user=user)
         payload.update({"message": "Activated", "item": next(item for item in payload["items"] if item["id"] == template_id)})
         return payload
 
@@ -633,6 +668,7 @@ class SystemSettingsService:
             ).scalar_one_or_none()
             if target is None:
                 raise PeripheralError(404, "默认模板不存在", "DEFAULT_TEMPLATE_NOT_FOUND")
+            ensure_template_type_allowed(str(target.table_key or ""), user)
             before = self._template_asset_to_dict(target)
             was_active = bool(target.is_active)
             table_key = str(target.table_key or "")
@@ -673,7 +709,7 @@ class SystemSettingsService:
             user=user,
             diff={"before": before, "after": {}},
         )
-        payload = await self.default_templates_list()
+        payload = await self.default_templates_list(user=user)
         payload.update({"message": "Deleted"})
         return payload
 
@@ -770,7 +806,7 @@ class SystemSettingsService:
             await self._check_postgres(),
             await self._check_minio(),
             await self._check_redis(),
-            await self._check_http("svc-opencode", "OpenCode 服务", settings.opencode_base_url),
+            await self._check_opencode(),
             await self._check_http("svc-onlyoffice", "OnlyOffice 文档服务", settings.onlyoffice_internal_url),
             await self._check_configured_gateway("svc-llm", "LLM 网关", "llm"),
             await self._check_configured_gateway("svc-ocr", "OCR 网关", "ocr"),
@@ -822,6 +858,80 @@ class SystemSettingsService:
             return {"id": item_id, "name": name, "status": status, "latency": f"{int((time.perf_counter() - start) * 1000)}ms", "uptime": "-", "detail": f"HTTP {response.status_code}"}
         except Exception as exc:
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(exc)}
+
+    async def _check_opencode(self) -> dict[str, Any]:
+        item = await self._check_http("svc-opencode", "OpenCode 服务", settings.opencode_base_url)
+        try:
+            warning = await self._opencode_config_warning()
+        except Exception:
+            # 一致性检查失败不影响服务可用性判断
+            logger.warning("opencode 配置一致性检查失败", exc_info=True)
+            warning = ""
+        if warning:
+            item["warning"] = warning
+        return item
+
+    async def _fetch_opencode_active_config(self) -> dict[str, Any] | None:
+        """读取 opencode 实际生效配置（GET /config）；接口不可用（旧版本/离线）时返回 None。"""
+        url = str(settings.opencode_base_url or "").rstrip("/")
+        if not url:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=False, trust_env=False) as client:
+                response = await client.get(f"{url}/config")
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    async def _opencode_config_warning(self) -> str:
+        """比对 opencode 实际生效配置与 DB 配置，不一致时返回 warning 文案（不判 failed，避免误报）。"""
+        config = await self.get_model_secret_config("llm")
+        active = bool(config.get("enabled")) and bool(str(config.get("baseUrl") or "").strip())
+        expected = self._opencode_runtime_config(config)
+        provider_id = next(iter(expected.get("provider") or {}), "")
+        expected_model = str(expected.get("model") or "")
+        expected_base_url = str(
+            (expected["provider"][provider_id].get("options") or {}).get("baseURL") or ""
+        ).rstrip("/") if provider_id else ""
+
+        opencode_config = await self._fetch_opencode_active_config()
+        if opencode_config is not None:
+            actual_model = str(opencode_config.get("model") or "")
+            actual_base_url = str(
+                ((opencode_config.get("provider") or {}).get(provider_id) or {}).get("options", {}).get("baseURL") or ""
+            ).rstrip("/") if provider_id else ""
+            if not active:
+                if expected_model and actual_model == expected_model and expected_base_url and actual_base_url == expected_base_url:
+                    return "系统设置已禁用 LLM，但 opencode 仍在使用已保存的模型配置，请重启 opencode 容器。"
+                return ""
+            if actual_model and actual_model != expected_model:
+                return f"opencode 当前生效模型（{actual_model}）与系统设置（{expected_model}）不一致，请重启 opencode 容器。"
+            if expected_base_url and actual_base_url and actual_base_url != expected_base_url:
+                return "opencode 当前生效的 Base URL 与系统设置不一致，请重启 opencode 容器。"
+            return ""
+
+        # /config 不可用时退化为 runtime 文件与 DB 配置比对
+        path = OPENCODE_RUNTIME_CONFIG_PATH
+        if not active:
+            if path.exists():
+                return "LLM 已禁用但 opencode runtime 配置文件仍存在，opencode 重启后仍会加载旧配置。"
+            return ""
+        if not path.exists():
+            return "opencode runtime 配置文件缺失，opencode 未按系统设置的 LLM 配置运行。"
+        try:
+            runtime = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return "opencode runtime 配置文件无法解析，与系统设置可能不一致。"
+        runtime_model = str(runtime.get("model") or "")
+        runtime_base_url = str(
+            ((runtime.get("provider") or {}).get(provider_id) or {}).get("options", {}).get("baseURL") or ""
+        ).rstrip("/") if provider_id else ""
+        if runtime_model != expected_model or (expected_base_url and runtime_base_url != expected_base_url):
+            return "opencode runtime 配置与系统设置不一致，请重启 opencode 容器后生效。"
+        return ""
 
     async def _check_configured_gateway(self, item_id: str, name: str, kind: str) -> dict[str, Any]:
         config = await self.get_model_secret_config(kind)

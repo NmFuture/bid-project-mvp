@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { settingsAPI } from '../api'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
+import { allowedTemplateTypesFor } from '../utils/permissions'
 
 const providerResponseMessage = (value) => {
   const text = String(value || '').trim()
@@ -29,7 +30,7 @@ const todayVersionLabel = () => {
   return `${now.getFullYear()}.${month}.${day}`
 }
 
-export default function Settings({ showToast = () => {} }) {
+export default function Settings({ showToast = () => {}, currentUser = null }) {
   const [activeSection, setActiveSection] = useState('defaultTemplates')
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -169,6 +170,20 @@ export default function Settings({ showToast = () => {} }) {
       || Boolean(ocrDraft.apiKey.trim())
   }, [ocr, ocrDraft])
 
+  // 默认模板按角色隔离：T 技术标 / B 商务标 / TB 全部；无角色信息不过滤
+  const allowedTemplateTypes = useMemo(() => allowedTemplateTypesFor(currentUser), [currentUser])
+  const visibleTemplateTypes = useMemo(
+    () => (allowedTemplateTypes ? defaultTemplateTypes.filter((item) => allowedTemplateTypes.includes(item.key)) : defaultTemplateTypes),
+    [allowedTemplateTypes, defaultTemplateTypes],
+  )
+  const visibleDefaultTemplates = useMemo(
+    () => (allowedTemplateTypes ? defaultTemplates.filter((item) => allowedTemplateTypes.includes(item.templateType)) : defaultTemplates),
+    [allowedTemplateTypes, defaultTemplates],
+  )
+  const effectiveUploadType = visibleTemplateTypes.some((item) => item.key === defaultTemplateUploadType)
+    ? defaultTemplateUploadType
+    : visibleTemplateTypes[0]?.key || defaultTemplateUploadType
+
   const handleSaveGateway = async () => {
     if (!gatewayDirty) return
     setGatewaySaving(true)
@@ -187,7 +202,9 @@ export default function Settings({ showToast = () => {} }) {
       setGateway(result.config)
       setGatewayTestResult(result.opencodeRestartRequired ? {
         success: true,
-        message: `配置已保存，并已生成 opencode 运行配置。请重启 opencode 容器后再生成目录。配置文件：${result.opencodeRuntimeConfigPath || '-'}`,
+        message: result.opencodeRuntimeConfigPath
+          ? `配置已保存，并已生成 opencode 运行配置。请重启 opencode 容器后再生成目录；健康检查会在 opencode 实际生效配置与保存配置不一致时给出 warning。配置文件：${result.opencodeRuntimeConfigPath}`
+          : '配置已保存，并已清除 opencode 运行配置。请重启 opencode 容器使其回退到环境变量/内置配置；健康检查会在 opencode 实际生效配置与保存配置不一致时给出 warning。',
         latencyMs: null,
       } : null)
       setGatewayDraft({
@@ -300,7 +317,7 @@ export default function Settings({ showToast = () => {} }) {
       const formData = new FormData()
       formData.append('file', file)
       formData.append('fileName', file.name)
-      formData.append('templateType', defaultTemplateUploadType)
+      formData.append('templateType', effectiveUploadType)
       formData.append('version', defaultTemplateUploadVersion || todayVersionLabel())
       const result = await settingsAPI.defaultTemplates.upload(formData)
       setDefaultTemplates(result.items || [])
@@ -633,11 +650,12 @@ export default function Settings({ showToast = () => {} }) {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <select
-                    value={defaultTemplateUploadType}
+                    value={effectiveUploadType}
                     onChange={(event) => setDefaultTemplateUploadType(event.target.value)}
-                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm"
+                    disabled={visibleTemplateTypes.length <= 1}
+                    className="h-10 px-3 bg-surface-container-highest border-none rounded-md text-sm disabled:opacity-60"
                   >
-                    {defaultTemplateTypes.map((item) => (
+                    {visibleTemplateTypes.map((item) => (
                       <option key={item.key} value={item.key}>{item.label}</option>
                     ))}
                   </select>
@@ -668,7 +686,7 @@ export default function Settings({ showToast = () => {} }) {
                 </div>
               </div>
 
-              {!defaultTemplates.length ? (
+              {!visibleDefaultTemplates.length ? (
                 <PageEmpty title="暂无系统默认模板" description="请上传技术标或商务标默认模板。" />
               ) : (
                 <div className="overflow-x-auto">
@@ -684,7 +702,7 @@ export default function Settings({ showToast = () => {} }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {defaultTemplates.map((item) => (
+                      {visibleDefaultTemplates.map((item) => (
                         <tr key={item.id} className="border-b border-surface-container-high/50">
                           <td className="px-3 py-3">{item.templateTypeLabel}</td>
                           <td className="px-3 py-3 text-on-surface">{item.name}</td>
