@@ -46,6 +46,47 @@ PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS = {
     "deliveryYear": ("delivery_year", "交货年"),
     "operationYear": ("operation_year", "投运年"),
 }
+PERFORMANCE_ITEM_ROW_VALUE_TEXT_FIELDS = {
+    "projectName": ("项目名称", ("项目名称", "合同名称", "工程名称"), ()),
+    "customerName": ("买方名称", ("买方名称", "业主", "客户", "采购方"), ("联系人", "电话")),
+    "partnerName": ("项目合作方单位", ("项目合作方单位", "合作方单位", "合作方"), ()),
+    "turbineModel": ("型号", ("型号和规格", "风机型号", "型号", "机型"), ("数量", "台数")),
+    "contractQuantity": ("合同台数", ("合同台数", "台数", "数量"), ("试运行", "试运", "240", "型号", "机型")),
+    "trialOperationQuantity": ("试运行台数", ("试运行台数", "试运行", "试运", "240小时"), ("型号", "机型")),
+    "commissionedCapacityMw": ("投运容量(MW)", ("投运容量", "容量"), ("总容量", "装机容量")),
+    "deliveryOrOperationTime": (
+        "交货期/投运时间",
+        (
+            "交货期/投运时间",
+            "交货/投运",
+            "交付/投运",
+            "投运时间",
+            "投运日期",
+            "并网时间",
+            "运行时间",
+            "交货期",
+            "交付时间",
+            "交货时间",
+            "交付日期",
+        ),
+        (),
+    ),
+    "contactInfo": ("联系人及电话", ("联系人", "联系方式", "电话"), ()),
+}
+PERFORMANCE_ITEM_ROW_VALUE_YEAR_FIELDS = {
+    "contractYear": ("合同时间", ("合同时间", "合同日期", "签约时间", "签订时间", "签订日期"), ()),
+    "deliveryYear": (
+        "交货时间",
+        ("交货期", "交付时间", "交货时间", "交付日期"),
+        ("交货期/投运时间", "交货/投运", "交付/投运"),
+    ),
+    "operationYear": (
+        "投运时间",
+        ("投运时间", "投运日期", "并网时间", "运行时间"),
+        ("交货期/投运时间", "交货/投运", "交付/投运"),
+    ),
+}
+PERFORMANCE_ITEM_ROW_VALUE_REPAIR_FIELDS = {"projectName", "turbineModel"}
 SUMMARY_ATTACHMENT_TYPE = "summary_table"
 CONTRACT_ATTACHMENT_TYPE = "contract_bundle"
 ITEM_CONTRACT_ATTACHMENT_TYPE = "contract_item"
@@ -1014,11 +1055,14 @@ class PerformancePackageService:
             raise PeripheralError(400, "没有需要更新的业绩明细字段。", "PERFORMANCE_ITEM_UPDATE_EMPTY")
         assignments: list[str] = []
         params: dict[str, Any] = {"category_id": numeric_category_id, "item_id": numeric_item_id}
+        text_updates: dict[str, str] = {}
         for field, column in PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS.items():
             if field not in payload:
                 continue
             assignments.append(f"{column} = :{column}")
-            params[column] = str(payload.get(field) or "").strip()
+            value = str(payload.get(field) or "").strip()
+            text_updates[field] = value
+            params[column] = value
         year_updates: dict[str, int | None] = {}
         for field, (column, label) in PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS.items():
             if field not in payload:
@@ -1032,7 +1076,7 @@ class PerformancePackageService:
             existing_result = await session.execute(
                 text(
                     """
-                    SELECT turbine_model, time_facts
+                    SELECT *
                     FROM performance_items
                     WHERE id = :item_id AND category_id = :category_id
                     """
@@ -1043,29 +1087,46 @@ class PerformancePackageService:
             if existing_row is None:
                 raise PeripheralError(404, "业绩明细不存在。", "PERFORMANCE_ITEM_NOT_FOUND")
             existing = dict(existing_row._mapping)
-            if "turbine_model" in params:
+            text_changes = {
+                field: value
+                for field, value in text_updates.items()
+                if value != str(existing.get(PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS[field]) or "").strip()
+            }
+            year_changes = {
+                field: year
+                for field, year in year_updates.items()
+                if year != existing.get(PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS[field][0])
+            }
+            row_values = _sync_performance_item_row_values(
+                existing.get("row_values"),
+                existing=existing,
+                text_updates=text_updates,
+                changed_text_fields=set(text_changes),
+                year_updates=year_changes,
+            )
+            original_row_values = dict(existing.get("row_values") or {})
+            if row_values != original_row_values:
+                assignments.append("row_values = CAST(:row_values AS JSONB)")
+                params["row_values"] = _json(row_values)
+            if "turbineModel" in text_changes:
                 assignments.append("turbine_models = CAST(:turbine_models AS JSONB)")
                 params["turbine_models"] = _json(_split_turbine_models(params["turbine_model"]))
-            time_facts_changed = False
+            previous_parsed_time_facts = _time_facts(original_row_values)
+            parsed_time_facts = _time_facts(row_values)
+            raw_time_keys = ("contractTimeRaw", "deliveryTimeRaw", "operationTimeRaw", "deliveryOrOperationTimeRaw")
+            time_facts_changed = bool(year_changes) or any(
+                previous_parsed_time_facts.get(key) != parsed_time_facts.get(key) for key in raw_time_keys
+            )
             time_facts = dict(existing.get("time_facts") or {})
-            if "delivery_or_operation_time" in params:
-                time_facts["deliveryOrOperationTimeRaw"] = params["delivery_or_operation_time"]
-                time_facts_changed = True
-            for field, year in year_updates.items():
-                time_facts[field] = year
-                time_facts_changed = True
             if time_facts_changed:
-                time_facts["years"] = _unique_ints(
-                    [
-                        time_facts.get("contractYear"),
-                        time_facts.get("deliveryYear"),
-                        time_facts.get("operationYear"),
-                        _extract_year(str(time_facts.get("contractTimeRaw") or "")),
-                        _extract_year(str(time_facts.get("deliveryTimeRaw") or "")),
-                        _extract_year(str(time_facts.get("operationTimeRaw") or "")),
-                        _extract_year(str(time_facts.get("deliveryOrOperationTimeRaw") or "")),
-                    ]
-                )
+                for key in raw_time_keys:
+                    time_facts[key] = parsed_time_facts.get(key) or ""
+                effective_years: list[int | None] = []
+                for field, (column, _label) in PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS.items():
+                    year = year_updates[field] if field in year_updates else existing.get(column)
+                    time_facts[field] = year
+                    effective_years.append(year)
+                time_facts["years"] = _unique_ints(effective_years)
                 assignments.append("time_facts = CAST(:time_facts AS JSONB)")
                 params["time_facts"] = _json(time_facts)
             result = await session.execute(
@@ -2375,6 +2436,106 @@ def _field_schema_item(header: str) -> dict[str, str]:
 def _field_key(header: str) -> str:
     normalized = re.sub(r"[^0-9A-Za-z一-龥]+", "_", str(header or "").strip()).strip("_")
     return normalized or "field"
+
+
+def _sync_performance_item_row_values(
+    row_values: Any,
+    *,
+    existing: dict[str, Any],
+    text_updates: dict[str, str],
+    changed_text_fields: set[str],
+    year_updates: dict[str, int | None],
+) -> dict[str, Any]:
+    original = dict(row_values or {})
+    updated = dict(original)
+    text_targets = {
+        field: _row_value_update_key(
+            original,
+            aliases=PERFORMANCE_ITEM_ROW_VALUE_TEXT_FIELDS[field][1],
+            excludes=PERFORMANCE_ITEM_ROW_VALUE_TEXT_FIELDS[field][2],
+            existing_value=existing.get(PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS[field]),
+        )
+        for field in text_updates
+    }
+    year_targets = {
+        field: _row_value_update_key(
+            original,
+            aliases=PERFORMANCE_ITEM_ROW_VALUE_YEAR_FIELDS[field][1],
+            excludes=PERFORMANCE_ITEM_ROW_VALUE_YEAR_FIELDS[field][2],
+            existing_value=existing.get(PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS[field][0]),
+            year_value=True,
+        )
+        for field in year_updates
+    }
+
+    for field, value in text_updates.items():
+        canonical = PERFORMANCE_ITEM_ROW_VALUE_TEXT_FIELDS[field][0]
+        target = text_targets[field]
+        should_repair = (
+            field in PERFORMANCE_ITEM_ROW_VALUE_REPAIR_FIELDS
+            and target is not None
+            and _normalize_empty(updated.get(target)) != _normalize_empty(value)
+        )
+        if field not in changed_text_fields and not should_repair:
+            continue
+        if target:
+            updated[target] = value
+        elif field in changed_text_fields and value:
+            updated[canonical] = value
+
+    for field, year in year_updates.items():
+        canonical = PERFORMANCE_ITEM_ROW_VALUE_YEAR_FIELDS[field][0]
+        target = year_targets[field]
+        if target:
+            updated[target] = _replace_row_value_year(updated.get(target), year)
+        elif year is not None:
+            updated[canonical] = f"{year}年"
+    return updated
+
+
+def _row_value_update_key(
+    row_values: dict[str, Any],
+    *,
+    aliases: tuple[str, ...],
+    excludes: tuple[str, ...],
+    existing_value: Any,
+    year_value: bool = False,
+) -> str | None:
+    candidates: list[tuple[tuple[int, int, str], str, Any]] = []
+    for raw_key, raw_value in row_values.items():
+        key = str(raw_key)
+        normalized_key = re.sub(r"\s+", "", key)
+        if any(exclude in normalized_key for exclude in excludes):
+            continue
+        matched_indexes = [index for index, alias in enumerate(aliases) if alias in normalized_key]
+        if not matched_indexes:
+            continue
+        alias_index = min(matched_indexes)
+        exact_match = 0 if normalized_key == aliases[alias_index] else 1
+        candidates.append(((alias_index, exact_match, normalized_key), key, raw_value))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+
+    def matches_existing(value: Any) -> bool:
+        if year_value:
+            return existing_value is not None and _extract_year(str(value or "")) == existing_value
+        normalized_existing = _normalize_empty(existing_value)
+        return bool(normalized_existing) and _normalize_empty(value) == normalized_existing
+
+    matching = [item for item in candidates if matches_existing(item[2])]
+    primary = matching[0] if matching else candidates[0]
+    return primary[1]
+
+
+def _replace_row_value_year(value: Any, year: int | None) -> str:
+    text_value = str(value or "").strip()
+    year_pattern = r"(?:19\d{2}|20\d{2}|2100)"
+    if year is None:
+        return re.sub(rf"{year_pattern}\s*年?", "", text_value, count=1).strip()
+    if re.search(year_pattern, text_value):
+        return re.sub(year_pattern, str(year), text_value, count=1)
+    return f"{year}年"
 
 
 def _core_values(row_values: dict[str, str]) -> dict[str, str]:
