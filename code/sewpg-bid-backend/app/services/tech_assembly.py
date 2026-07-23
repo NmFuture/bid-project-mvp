@@ -77,46 +77,47 @@ def assemble_tech_bid_for_project_with_progress(
         gap_plan_path,
         material_library_dir,
     )
-    gap_plan_card_count = 0
-    synthesized_card_count = 0
-    template_file = _select_template_file(template_file_records)
-    project_params = _build_project_params(project, toc_json_path)
-    turbine_model = project_turbine_model(project)
-
-    if progress_callback:
-        progress_callback(
-            "inputs_ready",
-            {
-                "tocJsonPath": str(toc_json_path),
-                "wikiCardCount": len(material_cards),
-                "exportedMaterialCount": len([item for item in material_cards if item.get("available")]),
-                "synthesizedMaterialCardCount": synthesized_card_count,
-                "gapPlanMaterialCardCount": gap_plan_card_count,
-            },
-        )
-
-    output_file = work_dir / f"{_safe_filename(str(project.get('name') or project_id), project_id)}_正文.docx"
-    manifest_path = work_dir / "s7_assembly_input.json"
-    bid_type = require_bid_type(
-        project.get("bidType"),
-        error_message="技术标正文拼装必须显式传入技术标项目。",
-    )
-    manifest = {
-        "projectId": project_id,
-        "projectName": str(project.get("name") or project_id),
-        "bidType": bid_type,
-        "workDir": str(work_dir),
-        "tocJsonPath": str(toc_json_path),
-        "gapPlanPath": str(assembly_gap_plan_path),
-        "wikiDir": str(wiki_dir),
-        "materialLibraryDir": str(material_library_dir),
-        "templateFile": str(template_file) if template_file else "",
-        "projectParamsPath": str(work_dir / "project_params.json"),
-        "projectParams": project_params,
-        "projectTurbineModel": turbine_model,
-        "outputFile": str(output_file),
-    }
+    assembler_owns_material_cleanup = False
     try:
+        gap_plan_card_count = 0
+        synthesized_card_count = 0
+        template_file = _select_template_file(template_file_records)
+        project_params = _build_project_params(project, toc_json_path)
+        turbine_model = project_turbine_model(project)
+
+        if progress_callback:
+            progress_callback(
+                "inputs_ready",
+                {
+                    "tocJsonPath": str(toc_json_path),
+                    "wikiCardCount": len(material_cards),
+                    "exportedMaterialCount": len([item for item in material_cards if item.get("available")]),
+                    "synthesizedMaterialCardCount": synthesized_card_count,
+                    "gapPlanMaterialCardCount": gap_plan_card_count,
+                },
+            )
+
+        output_file = work_dir / f"{_safe_filename(str(project.get('name') or project_id), project_id)}_正文.docx"
+        manifest_path = work_dir / "s7_assembly_input.json"
+        bid_type = require_bid_type(
+            project.get("bidType"),
+            error_message="技术标正文拼装必须显式传入技术标项目。",
+        )
+        manifest = {
+            "projectId": project_id,
+            "projectName": str(project.get("name") or project_id),
+            "bidType": bid_type,
+            "workDir": str(work_dir),
+            "tocJsonPath": str(toc_json_path),
+            "gapPlanPath": str(assembly_gap_plan_path),
+            "wikiDir": str(wiki_dir),
+            "materialLibraryDir": str(material_library_dir),
+            "templateFile": str(template_file) if template_file else "",
+            "projectParamsPath": str(work_dir / "project_params.json"),
+            "projectParams": project_params,
+            "projectTurbineModel": turbine_model,
+            "outputFile": str(output_file),
+        }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
         if progress_callback:
@@ -127,15 +128,24 @@ def assemble_tech_bid_for_project_with_progress(
                     "workDir": str(work_dir),
                 },
             )
-    except Exception:
-        _clear_selected_materials(material_library_dir)
+        assembler_owns_material_cleanup = True
+        result = _run_assembler_with_selected_material_cleanup(
+            manifest_path,
+            material_library_dir,
+            progress_callback=progress_callback,
+        )
+    except Exception as assembly_error:
+        try:
+            assembly_gap_plan_path.unlink(missing_ok=True)
+        except Exception as cleanup_error:
+            raise ExceptionGroup(
+                f"技术标组装失败，且未能清理运行态缺口计划：{assembly_gap_plan_path}",
+                [assembly_error, cleanup_error],
+            ) from assembly_error
         raise
-
-    result = _run_assembler_with_selected_material_cleanup(
-        manifest_path,
-        material_library_dir,
-        progress_callback=progress_callback,
-    )
+    finally:
+        if not assembler_owns_material_cleanup:
+            _clear_selected_materials(material_library_dir)
     assembled_path = Path(str(result.get("outputFile") or output_file))
     if not assembled_path.exists():
         raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
@@ -929,6 +939,28 @@ def _export_material_library(wiki_dir: Path, library_dir: Path) -> tuple[Path, l
     return library_dir, cards
 
 
+def _payload_is_docx(payload: dict[str, Any]) -> bool:
+    mime_type = str(payload.get("mimeType") or "")
+    file_name = str(payload.get("fileName") or "")
+    return "wordprocessingml" in mime_type or file_name.lower().endswith(".docx")
+
+
+def _cleanup_partial_download(target_path: Path, download_error: Exception) -> Exception:
+    cleanup_errors: list[Exception] = []
+    temp_path = target_path.with_suffix(f"{target_path.suffix}.download")
+    for partial_path in (target_path, temp_path):
+        try:
+            partial_path.unlink(missing_ok=True)
+        except Exception as cleanup_error:
+            cleanup_errors.append(cleanup_error)
+    if cleanup_errors:
+        return ExceptionGroup(
+            f"下载失败且未能清理部分文件：{target_path}",
+            [download_error, *cleanup_errors],
+        )
+    return download_error
+
+
 def _stage_selected_gap_plan_materials(
     gap_plan_path: Path,
     staging_dir: Path,
@@ -971,7 +1003,7 @@ def _stage_selected_gap_plan_materials(
                 target_path = staging_dir / relative_path
                 try:
                     _copy_material_to_library(
-                        str(source.get("id") or ""),
+                        str(source.get("materialId") or source.get("id") or ""),
                         original_path,
                         target_path,
                     )
@@ -1024,16 +1056,50 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
         return
 
     if material_id:
+        # 优先使用原始 Word：素材清洗版可能误改标题层级（把正文短句升为
+        # Heading），S7 只认原始 docx 真实的 Heading/outlineLvl/TOC，不猜层级。
+        raw_error: Exception | None = None
+        try:
+            candidate = _run_async(technical_material_store.raw_download_content(material_id))
+        except Exception as exc:
+            raw_error = exc
+        else:
+            if _payload_is_docx(candidate):
+                try:
+                    minio_client.download_file(
+                        str(candidate["bucket"]),
+                        str(candidate["key"]),
+                        target_path,
+                    )
+                except Exception as exc:
+                    raw_error = _cleanup_partial_download(target_path, exc)
+                else:
+                    return
+
+        # 原始文件缺失、实际下载失败或不是 docx（如 .doc）时回退清洗稿。
+        cleaned_error: Exception | None = None
         try:
             payload = _run_async(technical_material_store.raw_download_cleaned_content(material_id))
-        except Exception:
-            payload = _run_async(technical_material_store.raw_download_content(material_id))
-        mime_type = str(payload.get("mimeType") or "")
-        file_name = str(payload.get("fileName") or "")
-        if "wordprocessingml" not in mime_type and not file_name.lower().endswith(".docx"):
-            raise RuntimeError(f"素材 {material_id} 不是可拼装 docx。")
-        minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
-        return
+        except Exception as exc:
+            cleaned_error = exc
+        else:
+            if not _payload_is_docx(payload):
+                cleaned_error = RuntimeError(f"素材 {material_id} 不是可拼装 docx。")
+            else:
+                try:
+                    minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+                except Exception as exc:
+                    cleaned_error = _cleanup_partial_download(target_path, exc)
+                else:
+                    return
+
+        if cleaned_error is not None:
+            if raw_error is None:
+                raise cleaned_error
+            raise ExceptionGroup(
+                f"素材 {material_id} 原始 Word 与清洗稿均无法下载。",
+                [raw_error, cleaned_error],
+            )
     raise RuntimeError("卡片缺少 material_id，且 path 不是可读 docx。")
 
 

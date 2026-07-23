@@ -30,7 +30,11 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-from numbering_fixer import strip_numPr_from_body, strip_numPr_from_heading_styles
+from numbering_fixer import (
+    enforce_no_auto_numbering_on_numbered_headings,
+    strip_numPr_from_body,
+    strip_numPr_from_heading_styles,
+)
 
 
 # ---------- Step 1: 插 TOC 域 ----------
@@ -300,6 +304,10 @@ def main():
     reapply_heading_fonts(doc, style_cfg)
     strip_numPr_from_heading_styles(doc)
     strip_numPr_from_body(doc)
+    # 不变量：已写入文本编号的 Heading 不得再有有效 Word 自动编号
+    fixed = enforce_no_auto_numbering_on_numbered_headings(doc)
+    if fixed:
+        print(f"[invariant] 清除已编号 Heading 上的残留自动编号: {fixed} 处")
     doc.save(str(args.out))
 
     # zip 阶段：改页眉文字 + 注入 updateFields

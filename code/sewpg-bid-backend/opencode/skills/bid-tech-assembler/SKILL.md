@@ -176,6 +176,9 @@ manifest 会指定：
 ## 关键约束（策略级）
 
 - **编号方案**：Heading text 内嵌章节号（方案 B），不依赖 Word 多级列表
+- **素材来源**：普通 matchedMaterials 组装原始 Word（清洗版仅在原始文件不是 docx 或不可用时回退）；resolvedArtifacts 用已完成填写/质检的产物文件。标题只认原始 docx 真实的 Heading / outlineLvl / 真实 TOC，不按短文本、加粗或手写序号猜标题
+- **编号不变量**：已写入文本编号的 Heading 不得再有有效 Word 自动编号；源文档用来抑制样式隐藏编号的 `numId=0` 必须保留，正文项目符号与真实有序列表不动
+- **缺口素材契约**：S7 只消费 `matchedMaterials` 与 S7-ready `resolvedArtifacts`，不擅自用 `candidateMaterials`；候选未确认 / AI 填写未完成时写出显式占位提示
 - **"前言"段**：无编号 Heading 1
 - **（新增）/（适配）标签**：parse 阶段提取为 metadata，最终 docx 里剥除
 - **图表题注不重编号**、**纸张方向由素材决定**（skill 不自动纠正）

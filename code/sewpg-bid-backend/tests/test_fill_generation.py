@@ -656,6 +656,79 @@ class FillGenerationTests(unittest.TestCase):
         self.assertFalse(staging_dir.exists())
         self.assertFalse((root / "assembly_gap_plan.json").exists())
 
+    def test_stage_resolved_artifact_prefers_material_id_for_store_recovery(self) -> None:
+        from app.services import tech_assembly
+
+        root = Path(self.temp_dir.name) / "selected-artifact-material-id"
+        root.mkdir(parents=True)
+        gap_plan_path = root / "gap_plan.json"
+        gap_plan_path.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "GAP-0001",
+                            "number": "1.1",
+                            "resolvedArtifacts": [
+                                {
+                                    "id": "ART-0001",
+                                    "materialId": "RAW-0001",
+                                    "fileName": "已选素材.docx",
+                                    "path": str(root / "missing-artifact.docx"),
+                                    "source": "existing_material",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        staging_dir = root / "selected_materials"
+
+        def fake_copy(material_id: str, original_path: str, target_path: Path) -> None:
+            self.assertEqual(material_id, "RAW-0001")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(b"selected")
+
+        with patch.object(tech_assembly, "_copy_material_to_library", side_effect=fake_copy) as copy_material:
+            runtime_plan_path, staged_materials = tech_assembly._stage_selected_gap_plan_materials(
+                gap_plan_path,
+                staging_dir,
+            )
+
+        copy_material.assert_called_once()
+        self.assertTrue(runtime_plan_path.exists())
+        self.assertEqual(len(staged_materials), 1)
+        self.assertTrue((staging_dir / staged_materials[0]["path"]).exists())
+
+    def test_selected_materials_cleanup_after_pre_assembler_failure(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        gap_plan_path = Path(self.temp_dir.name) / "pre-assembler-gap-plan.json"
+        gap_plan_path.write_text('{"items": []}', encoding="utf-8")
+        runtime_plan_path = gap_plan_path.with_name("assembly_gap_plan.json")
+        staging_dirs: list[Path] = []
+
+        def fake_stage(_gap_plan_path: Path, staging_dir: Path):
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            (staging_dir / "selected.docx").write_bytes(b"selected")
+            runtime_plan_path.write_text('{"items": []}', encoding="utf-8")
+            staging_dirs.append(staging_dir)
+            return runtime_plan_path, []
+
+        with patch.object(tech_assembly, "_prepare_gap_plan", return_value=gap_plan_path), \
+            patch.object(tech_assembly, "_stage_selected_gap_plan_materials", side_effect=fake_stage), \
+            patch.object(tech_assembly, "_select_template_file", side_effect=RuntimeError("template failed")):
+            with self.assertRaisesRegex(RuntimeError, "template failed"):
+                tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+
+        self.assertEqual(len(staging_dirs), 1)
+        self.assertFalse(staging_dirs[0].exists())
+        self.assertFalse(runtime_plan_path.exists())
+
     def test_selected_materials_cleanup_after_assembler_success(self) -> None:
         from app.services import tech_assembly
 

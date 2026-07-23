@@ -143,12 +143,24 @@ def _paragraph_heading_level(para) -> Optional[int]:
     return _style_heading_level(para.style)
 
 
-def _num_pr_suppresses_numbering(num_pr) -> bool:
-    """Word uses direct numId=0 to suppress numbering inherited from a style."""
+def _numpr_num_id(num_pr) -> Optional[int]:
+    """读取 w:numPr 的 w:numId；numId=0 表示显式关闭自动编号。"""
     from docx.oxml.ns import qn
 
+    if num_pr is None:
+        return None
     num_id = num_pr.find(qn("w:numId"))
-    return num_id is not None and num_id.get(qn("w:val")) == "0"
+    if num_id is None:
+        return None
+    try:
+        return int(num_id.get(qn("w:val")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _num_pr_suppresses_numbering(num_pr) -> bool:
+    """Word uses direct numId=0 to suppress numbering inherited from a style."""
+    return _numpr_num_id(num_pr) == 0
 
 
 def _replace_paragraph_text_preserve_format(para, new_text: str) -> None:
@@ -218,16 +230,21 @@ def _clear_direct_outline_and_numbering(para) -> None:
     paragraph style. If a source H1 paragraph is later restyled to Heading 3 but
     keeps ``outlineLvl=0``, it still appears as a top-level item in the left
     outline pane.
+
+    ``w:numPr`` 只保留精确 numId=0 的抑制开关；缺失、非法或其它 numId
+    都按可能生效的自动编号移除，避免把隐藏的"一、二、三"重新激活。
     """
     from docx.oxml.ns import qn
 
     p_pr = para._p.find(qn("w:pPr"))
     if p_pr is None:
         return
-    for tag in ("w:outlineLvl", "w:numPr"):
-        el = p_pr.find(qn(tag))
-        if el is not None:
-            p_pr.remove(el)
+    outline = p_pr.find(qn("w:outlineLvl"))
+    if outline is not None:
+        p_pr.remove(outline)
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is not None and not _num_pr_suppresses_numbering(num_pr):
+        p_pr.remove(num_pr)
 
 
 def _set_body_style_or_clear(para, doc) -> None:
@@ -704,6 +721,8 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
 
     默认 only_heading_styles=True：只对 Heading 样式段剥，**保留正文列表**
     （"1)xxx; 2)xxx; ..." 这种 Word 自动编号列表，用户期望保留）。
+    Heading 识别含 basedOn 样式链（自定义"标题6-标书"这类）。
+    numId=0 是"显式关闭自动编号"的抑制开关，保留不剥。
     """
     from docx.oxml.ns import qn
     count = 0
@@ -713,15 +732,20 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
             return True
         return _paragraph_heading_level(para) is not None
 
+    def _strip_active_numpr(para) -> bool:
+        pPr = para._p.find(qn("w:pPr"))
+        if pPr is None:
+            return False
+        numPr = pPr.find(qn("w:numPr"))
+        if numPr is None or _num_pr_suppresses_numbering(numPr):
+            return False
+        pPr.remove(numPr)
+        return True
+
     for para in doc.paragraphs:
         if not _should_strip(para):
             continue
-        pPr = para._p.find(qn("w:pPr"))
-        if pPr is None:
-            continue
-        numPr = pPr.find(qn("w:numPr"))
-        if numPr is not None and not _num_pr_suppresses_numbering(numPr):
-            pPr.remove(numPr)
+        if _strip_active_numpr(para):
             count += 1
     # 表格里的段落也要处理
     for tbl in doc.tables:
@@ -730,12 +754,7 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
                 for para in cell.paragraphs:
                     if not _should_strip(para):
                         continue
-                    pPr = para._p.find(qn("w:pPr"))
-                    if pPr is None:
-                        continue
-                    numPr = pPr.find(qn("w:numPr"))
-                    if numPr is not None and not _num_pr_suppresses_numbering(numPr):
-                        pPr.remove(numPr)
+                    if _strip_active_numpr(para):
                         count += 1
     return count
 
@@ -746,6 +765,8 @@ def strip_numPr_from_heading_styles(doc) -> int:
     技术标正文使用"文本编号 + Heading 样式"的方案。如果母版 Heading
     style 仍绑定了多级列表，Word/OnlyOffice 会在显示层再自动加一次编号，
     形成 "1.7 1.7 标题"。此函数清掉样式级 numPr，保留字体、字号等样式。
+    识别范围：内置 Heading/标题 N、带 outlineLvl 的样式，以及 basedOn
+    链指向 Heading 的自定义样式（如"标题6-标书"）。
     """
     from docx.enum.style import WD_STYLE_TYPE
     from docx.oxml.ns import qn
@@ -760,10 +781,82 @@ def strip_numPr_from_heading_styles(doc) -> int:
         if _style_heading_level(style) is None:
             continue
         numPr = pPr.find(qn("w:numPr"))
-        if numPr is not None:
+        if numPr is not None and not _num_pr_suppresses_numbering(numPr):
             pPr.remove(numPr)
             count += 1
     return count
+
+
+# ---------- 最终不变量检查 ----------
+
+# 已写入文本编号的 Heading（"1.7.3.1 xxx"）
+_NUMBERED_HEADING_TEXT_RE = re.compile(r"^\s*\d+(?:\.\d+){0,6}\s+\S")
+
+
+def _style_chain_has_effective_numbering(style) -> bool:
+    """判断样式链是否会提供自动编号；最近的 numId=0 会抑制祖先编号。"""
+    from docx.oxml.ns import qn
+
+    seen: set[int] = set()
+    current = style
+    while current is not None:
+        element = getattr(current, "element", None)
+        if element is None or id(element) in seen:
+            break
+        seen.add(id(element))
+        p_pr = element.find(qn("w:pPr"))
+        num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
+        if num_pr is not None:
+            return not _num_pr_suppresses_numbering(num_pr)
+        current = getattr(current, "base_style", None)
+    return False
+
+
+def _ensure_direct_numbering_suppression(para) -> bool:
+    """在单个段落写入 numId=0，避免修改可能被正文列表共享的样式。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    p_pr = para._p.get_or_add_pPr()
+    num_pr = p_pr.find(qn("w:numPr"))
+    if _num_pr_suppresses_numbering(num_pr):
+        return False
+    if num_pr is None:
+        num_pr = p_pr.get_or_add_numPr()
+    num_id = num_pr.find(qn("w:numId"))
+    if num_id is None:
+        num_id = OxmlElement("w:numId")
+        num_pr.append(num_id)
+    num_id.set(qn("w:val"), "0")
+    return True
+
+
+def enforce_no_auto_numbering_on_numbered_headings(doc) -> int:
+    """不变量检查：已写入文本编号的 Heading 不得再存在有效 Word 自动编号。
+
+    S7 采用"文本编号 + Heading 样式"方案。若 Heading 段落仍挂有效自动编号
+    （段落 numPr numId>0，或样式/basedOn 链 numPr numId>0 且段落没有 numId=0
+    抑制），Word/OnlyOffice 会叠加第二套编号（如"一、二、三"）。
+    发现即在该标题段落写入 numId=0，返回修复数量；不修改可能被正文列表共享
+    的样式链，因此正文项目符号与真实有序列表不受影响。
+    """
+    from docx.oxml.ns import qn
+
+    fixed = 0
+    for para in doc.paragraphs:
+        if not _NUMBERED_HEADING_TEXT_RE.match(para.text or ""):
+            continue
+        if _paragraph_heading_level(para) is None:
+            continue
+        p_pr = para._p.find(qn("w:pPr"))
+        num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
+        if _num_pr_suppresses_numbering(num_pr):
+            continue
+        if num_pr is None and not _style_chain_has_effective_numbering(para.style):
+            continue
+        if _ensure_direct_numbering_suppression(para):
+            fixed += 1
+    return fixed
 
 
 if __name__ == "__main__":

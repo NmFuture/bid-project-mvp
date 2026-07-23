@@ -819,7 +819,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             text = "\n".join(paragraph.text for paragraph in result.paragraphs)
 
         self.assertIn("1.1  待补子节", text)
-        self.assertIn("[缺失：待补子节——wiki 无匹配卡片，请人工处理]", text)
+        self.assertIn("[缺失：待补子节——未匹配到素材，请人工处理]", text)
         self.assertEqual(stats.get("superseded", 0), 0)
 
     def test_merger_keeps_going_when_materials_are_missing_or_corrupt(self) -> None:
