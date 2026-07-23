@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
+
+import pytest
 
 from app.services import technical_material_index as tmi
 from app.services.bid_type import TECHNICAL_BID_TYPE
@@ -311,36 +314,64 @@ class WriteAndLoadTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.getenv("BID_RUN_INTEGRATION") == "1", "requires PostgreSQL, MinIO, and Redis")
+@pytest.mark.integration
 class TechnicalMaterialIndexIntegrationTests(unittest.IsolatedAsyncioTestCase):
     """端到端：建 3 级目录 + 上传后，索引随之更新；rebuild 失败不阻断主流程。"""
+
+    async def asyncSetUp(self) -> None:
+        from app.services.technical_material_store import technical_material_store
+
+        await technical_material_store.raw_tree()
+
+    async def _delete_folder_if_present(self, folder_path: str) -> None:
+        from app.services.technical_material_store import technical_material_store
+
+        try:
+            await technical_material_store.raw_delete_folder(folder_path)
+        except PeripheralError as exc:
+            if exc.status_code != 404:
+                raise
 
     async def test_rebuild_after_create_and_upload(self) -> None:
         from app.services.technical_material_store import technical_material_store
 
+        folder_name = f"集成测试目录-{uuid4().hex[:8]}"
+        folder_path = f"技术标/标准文件/{folder_name}"
         with TemporaryDirectory() as tmp:
             index_path = Path(tmp) / "technical_material_index.json"
             with patch.object(tmi, "TECHNICAL_MATERIAL_INDEX_PATH", index_path):
-                await technical_material_store.raw_create_folder("技术标/通用素材", "集成测试目录")
-                self.assertTrue(index_path.exists())
-                payload = json.loads(index_path.read_text(encoding="utf-8"))
-                paths = {
-                    folder["path"]
-                    for tier in payload["tiers"]
-                    for folder in tier["folders"]
-                }
-                self.assertIn("技术标/通用素材/集成测试目录", paths)
+                try:
+                    await technical_material_store.raw_create_folder("技术标/标准文件", folder_name)
+                    self.assertTrue(index_path.exists())
+                    payload = json.loads(index_path.read_text(encoding="utf-8"))
+                    paths = {
+                        folder["path"]
+                        for tier in payload["tiers"]
+                        for folder in tier["folders"]
+                    }
+                    self.assertIn(folder_path, paths)
+                finally:
+                    await self._delete_folder_if_present(folder_path)
 
     async def test_rebuild_failure_does_not_break_operation(self) -> None:
         from app.services.technical_material_store import technical_material_store
 
-        with patch.object(
-            tmi,
-            "rebuild_technical_material_index",
-            side_effect=RuntimeError("boom"),
-        ):
-            # 即便索引重建抛错，建目录主流程也应正常返回。
-            result = await technical_material_store.raw_create_folder("技术标/通用素材", "容错测试目录")
-            self.assertIn("tree", result)
+        folder_name = f"容错测试目录-{uuid4().hex[:8]}"
+        folder_path = f"技术标/标准文件/{folder_name}"
+        with TemporaryDirectory() as tmp:
+            index_path = Path(tmp) / "technical_material_index.json"
+            with patch.object(tmi, "TECHNICAL_MATERIAL_INDEX_PATH", index_path):
+                try:
+                    with patch.object(
+                        tmi,
+                        "rebuild_technical_material_index",
+                        side_effect=RuntimeError("boom"),
+                    ):
+                        # 即便索引重建抛错，建目录主流程也应正常返回。
+                        result = await technical_material_store.raw_create_folder("技术标/标准文件", folder_name)
+                        self.assertIn("tree", result)
+                finally:
+                    await self._delete_folder_if_present(folder_path)
 
 
 if __name__ == "__main__":

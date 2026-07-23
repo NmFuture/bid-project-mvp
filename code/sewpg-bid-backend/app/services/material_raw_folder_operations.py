@@ -21,6 +21,7 @@ from app.services.material_folder_scope import (
     raw_material_root_specs,
     raw_material_tier_folder_specs,
 )
+from app.services.material_raw_folder_lock import lock_raw_folder_path
 from app.services.material_taxonomy import RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS
 
 
@@ -182,11 +183,19 @@ class RawFolderOperations:
             parent = await session.get(RawFolder, parent_id)
             parent_path = str(parent.path or "")
         path = f"{parent_path}/{name}".lstrip("/")
+        result = await session.execute(select(RawFolder).where(RawFolder.path == path))
+        existing = result.scalar_one_or_none()
+        if existing:
+            await self.clear_default_folder_deletion(session, path)
+            return existing
+
         await self.clear_default_folder_deletion(session, path)
+        await lock_raw_folder_path(session, path)
         result = await session.execute(select(RawFolder).where(RawFolder.path == path))
         existing = result.scalar_one_or_none()
         if existing:
             return existing
+
         folder = RawFolder(
             parent_id=parent_id,
             name=name,

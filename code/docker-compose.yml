@@ -352,8 +352,8 @@ services:
     image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: sewpg_bid_redis
     command: ["redis-server", "--appendonly", "yes"]
-    expose:
-      - "6379"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
