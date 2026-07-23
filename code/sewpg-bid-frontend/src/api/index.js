@@ -335,7 +335,12 @@ export const technicalProjectsAPI = {
   },
   get: (id) => request(`/technical/projects/${id}`),
   create: (data) => request('/technical/projects', { method: 'POST', body: data }),
-  update: (id, data) => request(`/technical/projects/${id}`, { method: 'PUT', body: data }),
+  update: (id, data) => request(`/technical/projects/${id}`, {
+    method: 'PUT',
+    body: data,
+    timeoutMs: 5 * 60 * 1000,
+    retryCount: 0,
+  }),
   delete: (id) => request(`/technical/projects/${id}`, { method: 'DELETE' }),
   materialsPath: (id) => request(`/technical/projects/${id}/materials-path`),
   templateFallback: (id) => request(`/technical/projects/${id}/template-fallback`),
@@ -737,6 +742,8 @@ export const performanceAPI = {
   category: (id) => request(`/materials/performance/categories/${id}`),
   deleteCategory: (id, data = {}) => request(`/materials/performance/categories/${id}`, { method: 'DELETE', body: data }),
   updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
+  updateItem: (categoryId, itemId, data) =>
+    request(`/materials/performance/categories/${categoryId}/items/${itemId}`, { method: 'PATCH', body: data }),
   uploadCategoryAttachment: (id, data) =>
     request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
   previewCategoryAttachment: (categoryId, attachmentId) =>

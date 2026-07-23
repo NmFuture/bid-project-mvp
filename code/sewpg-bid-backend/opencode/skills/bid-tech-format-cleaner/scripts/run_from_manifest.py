@@ -15,6 +15,7 @@ from typing import Any
 from docx import Document
 from docx.enum.section import WD_ORIENT
 from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -56,6 +57,7 @@ from verify import scan_docx  # noqa: E402
 
 SCHEMA_VERSION = "bid-tech-format-clean-v1"
 REQUIRED_FIELDS = ("inputFile", "outlineFile", "outputFile", "projectName")
+TOC_BREAK_BOOKMARK = "_TECH_FORMAT_CLEANER_TOC_BREAK"
 
 
 def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[str, Any]:
@@ -69,8 +71,6 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
     outline_path = _resolve_manifest_path(manifest["outlineFile"], path)
     output_path = _resolve_manifest_path(manifest["outputFile"], path)
     style_path = _resolve_style_path(manifest.get("styleSpecPath"), path)
-    report_path = output_path.with_name("tech_format_clean_report.md")
-
     clean_result = clean_docx(
         input_file=input_path,
         outline_file=outline_path,
@@ -81,7 +81,6 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
     report = verify_cleaned_docx(
         output_file=output_path,
         outline_file=outline_path,
-        report_file=report_path,
         clean_result=clean_result,
     )
 
@@ -97,14 +96,16 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "placeholderCount": int(report["placeholderCount"]),
         "orientation": report["orientation"],
         "riskCount": len(report["formatRisks"]),
+        "warnings": report["warnings"],
     }
     result = {
         "schema_version": SCHEMA_VERSION,
         "inputFile": str(input_path),
         "outlineFile": str(outline_path),
         "outputFile": str(output_path),
-        "reportFile": str(report_path),
+        "reportFile": "",
         "summary": summary,
+        "warnings": report["warnings"],
     }
     if response != "summary":
         result["details"] = {
@@ -146,13 +147,25 @@ def clean_docx(
     doc = Document(str(output_path))
     toc_present_before = document_has_toc(doc)
     toc_inserted = False
-    if not toc_present_before:
+    toc_cfg = style_spec.get("toc") if isinstance(style_spec.get("toc"), dict) else {}
+    if not toc_present_before and toc_cfg.get("insert_when_missing", True) is True:
         insert_toc_field(doc)
         toc_inserted = True
+    _apply_toc_page_break(
+        doc,
+        toc_cfg.get("page_break_after", True) is True,
+        adopt_unmarked=toc_inserted,
+    )
 
     heading_style_result = _configure_heading_styles(doc, style_spec)
     heading_result = _promote_existing_headings(doc, outline_items, style_spec)
-    internal_heading_result = _promote_body_internal_headings(doc, style_spec)
+    # 标题只来自现有 Heading/outline；Cleaner 不再根据加粗或文本形态猜标题。
+    internal_heading_result = {"promoted_headings": []}
+    _apply_document_page_format(doc, style_spec.get("page"))
+    _apply_document_body_format(doc, style_spec)
+    _apply_document_table_format(doc, style_spec.get("table_cell"))
+    _apply_document_headers(doc, style_spec.get("header"), project_name)
+    _reapply_heading_direct_formats(doc, style_spec)
     reapply_heading_fonts(doc, style_spec)
     strip_numPr_from_heading_styles(doc)
     strip_numPr_from_body(doc)
@@ -190,12 +203,10 @@ def verify_cleaned_docx(
     *,
     output_file: str | Path,
     outline_file: str | Path,
-    report_file: str | Path,
     clean_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output_file)
     outline_path = Path(outline_file)
-    report_path = Path(report_file)
     scan = scan_docx(output_path)
     outline_items = flatten_outline(load_outline(outline_path))
     doc = Document(str(output_path))
@@ -229,8 +240,7 @@ def verify_cleaned_docx(
         "orientation": orientation_summary,
         "formatRisks": risks,
     }
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(_render_report(report, output_path, outline_path), encoding="utf-8")
+    report["warnings"] = _build_warnings(report, scan)
     return report
 
 
@@ -317,7 +327,7 @@ def document_has_toc(doc: Document) -> bool:
     return any((node.text or "").upper().find("TOC") >= 0 for node in doc.element.iter(qn("w:instrText")))
 
 
-def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 4) -> dict[str, Any]:
+def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 6) -> dict[str, Any]:
     configured: list[dict[str, Any]] = []
     heading_cfg = style_spec.get("heading", {})
     if not isinstance(heading_cfg, dict):
@@ -389,6 +399,270 @@ def _apply_style_format(style, cfg: dict[str, Any]) -> None:
         paragraph_format.left_indent = Cm(float(cfg["left_indent_cm"]))
     if "first_line_indent_chars" in cfg and "size_pt" in cfg:
         paragraph_format.first_line_indent = Pt(float(cfg["first_line_indent_chars"]) * float(cfg["size_pt"]))
+
+
+def _apply_document_page_format(doc: Document, page_cfg: Any) -> None:
+    if not isinstance(page_cfg, dict):
+        return
+    for section in doc.sections:
+        for key, attribute in (
+            ("top_cm", "top_margin"),
+            ("bottom_cm", "bottom_margin"),
+            ("left_cm", "left_margin"),
+            ("right_cm", "right_margin"),
+            ("header_top_cm", "header_distance"),
+            ("footer_bottom_cm", "footer_distance"),
+        ):
+            if key in page_cfg:
+                setattr(section, attribute, Cm(float(page_cfg[key])))
+
+
+def _apply_document_body_format(doc: Document, style_spec: dict[str, Any]) -> None:
+    body_cfg = style_spec.get("body")
+    preserve_after_image = False
+    for paragraph in doc.paragraphs:
+        if _paragraph_heading_level(paragraph):
+            preserve_after_image = False
+            continue
+        if _paragraph_contains_visual(paragraph):
+            preserve_after_image = True
+            continue
+        if preserve_after_image:
+            if paragraph.text.strip():
+                preserve_after_image = False
+            continue
+        if _is_preserved_layout_paragraph(paragraph):
+            continue
+        if isinstance(body_cfg, dict):
+            _apply_paragraph_direct_format(paragraph, body_cfg)
+
+
+def _apply_document_table_format(doc: Document, table_cfg: Any) -> None:
+    if not isinstance(table_cfg, dict):
+        return
+    table_align = str(table_cfg.get("table_align") or "").lower()
+    alignment = {
+        "left": WD_TABLE_ALIGNMENT.LEFT,
+        "center": WD_TABLE_ALIGNMENT.CENTER,
+        "right": WD_TABLE_ALIGNMENT.RIGHT,
+    }.get(table_align)
+    for table in doc.tables:
+        if _table_contains_visual(table):
+            continue
+        if alignment is not None:
+            table.alignment = alignment
+        for row in table.rows:
+            for cell in row.cells:
+                preserve_after_image = False
+                for paragraph in cell.paragraphs:
+                    if _paragraph_contains_visual(paragraph):
+                        preserve_after_image = True
+                        continue
+                    if preserve_after_image:
+                        if paragraph.text.strip():
+                            preserve_after_image = False
+                        continue
+                    if _is_preserved_layout_paragraph(paragraph):
+                        continue
+                    _apply_paragraph_direct_format(paragraph, table_cfg)
+
+
+def _apply_document_headers(doc: Document, header_cfg: Any, project_name: str) -> None:
+    if not isinstance(header_cfg, dict):
+        return
+    template = str(header_cfg.get("text_template") or "")
+    header_text = (
+        template.replace("{project_name}", project_name).replace("{projectName}", project_name)
+        if template
+        else ""
+    )
+    seen: set[Any] = set()
+    for section in doc.sections:
+        for header in (section.header, section.first_page_header, section.even_page_header):
+            marker = header._element
+            if marker in seen:
+                continue
+            seen.add(marker)
+            paragraphs = list(header.paragraphs)
+            if not paragraphs:
+                paragraphs = [header.add_paragraph()]
+            target = next((paragraph for paragraph in paragraphs if paragraph.text.strip()), paragraphs[0])
+            if header_text:
+                text_runs = [run for run in target.runs if run.text]
+                if text_runs:
+                    text_runs[0].text = header_text
+                    for run in text_runs[1:]:
+                        run.text = ""
+                else:
+                    target.add_run(header_text)
+            for paragraph in paragraphs:
+                _apply_paragraph_direct_format(paragraph, header_cfg)
+
+
+def _reapply_heading_direct_formats(doc: Document, style_spec: dict[str, Any]) -> None:
+    for paragraph in doc.paragraphs:
+        level = _paragraph_heading_level(paragraph)
+        if not level:
+            continue
+        cfg = _heading_cfg(style_spec, level)
+        if cfg:
+            _apply_paragraph_properties(paragraph.paragraph_format, cfg)
+            _apply_heading_run_format(paragraph, cfg)
+
+
+def _apply_paragraph_direct_format(paragraph, cfg: dict[str, Any]) -> None:
+    _apply_paragraph_properties(paragraph.paragraph_format, cfg)
+    for run in paragraph.runs:
+        _apply_run_format(run, cfg)
+
+
+def _apply_paragraph_properties(paragraph_format, cfg: dict[str, Any]) -> None:
+    align = str(cfg.get("align") or "").lower()
+    paragraph_format.alignment = {
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "right": WD_ALIGN_PARAGRAPH.RIGHT,
+        "both": WD_ALIGN_PARAGRAPH.JUSTIFY,
+        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    }.get(align, paragraph_format.alignment)
+    if "space_before_pt" in cfg:
+        paragraph_format.space_before = Pt(float(cfg["space_before_pt"]))
+    if "space_after_pt" in cfg:
+        paragraph_format.space_after = Pt(float(cfg["space_after_pt"]))
+    if "line_spacing" in cfg:
+        paragraph_format.line_spacing = float(cfg["line_spacing"])
+    if "left_indent_cm" in cfg:
+        paragraph_format.left_indent = Cm(float(cfg["left_indent_cm"]))
+    if "first_line_indent_chars" in cfg and "size_pt" in cfg:
+        paragraph_format.first_line_indent = Pt(float(cfg["first_line_indent_chars"]) * float(cfg["size_pt"]))
+
+
+def _apply_run_format(run, cfg: dict[str, Any]) -> None:
+    if "en_font" in cfg:
+        run.font.name = str(cfg["en_font"])
+    if "size_pt" in cfg:
+        run.font.size = Pt(float(cfg["size_pt"]))
+    if "bold" in cfg:
+        # 正文规则的非粗体是默认值，不能覆盖素材 Run 上已有的局部强调。
+        if bool(cfg["bold"]):
+            run.font.bold = True
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    zh_font = str(cfg.get("zh_font") or cfg.get("en_font") or "")
+    en_font = str(cfg.get("en_font") or cfg.get("zh_font") or "")
+    if zh_font or en_font:
+        r_fonts.set(qn("w:eastAsia"), zh_font)
+        r_fonts.set(qn("w:ascii"), en_font)
+        r_fonts.set(qn("w:hAnsi"), en_font)
+        r_fonts.set(qn("w:cs"), en_font)
+
+
+def _apply_toc_page_break(doc: Document, enabled: bool, *, adopt_unmarked: bool = False) -> None:
+    anchor = _toc_result_anchor(doc)
+    if anchor is None:
+        return
+    sibling = anchor.getnext()
+    if adopt_unmarked and _is_dedicated_page_break(sibling) and not _is_cleaner_toc_break(sibling):
+        next_sibling = sibling.getnext()
+        sibling.getparent().remove(sibling)
+        sibling = next_sibling
+    while _is_cleaner_toc_break(sibling):
+        next_sibling = sibling.getnext()
+        sibling.getparent().remove(sibling)
+        sibling = next_sibling
+    if enabled:
+        anchor.addnext(_make_cleaner_toc_break(doc))
+
+
+def _toc_result_anchor(doc: Document):
+    body = doc.element.body
+    instruction = next(
+        (node for node in body.iter(qn("w:instrText")) if "TOC" in (node.text or "").upper()),
+        None,
+    )
+    if instruction is None:
+        return None
+    toc_paragraph = None
+    outer_sdt = None
+    current = instruction.getparent()
+    while current is not None and current is not body:
+        if current.tag == qn("w:p") and toc_paragraph is None:
+            toc_paragraph = current
+        if current.tag == qn("w:sdt"):
+            outer_sdt = current
+        current = current.getparent()
+    if outer_sdt is not None:
+        return outer_sdt
+    if toc_paragraph is None:
+        return None
+    anchor = toc_paragraph
+    current = toc_paragraph
+    found_end = False
+    while current is not None and current.tag == qn("w:p"):
+        anchor = current
+        if any(node.get(qn("w:fldCharType")) == "end" for node in current.iter(qn("w:fldChar"))):
+            found_end = True
+            break
+        current = current.getnext()
+    if not found_end:
+        anchor = toc_paragraph
+    current = anchor.getnext()
+    while _is_toc_result_paragraph(current):
+        anchor = current
+        current = current.getnext()
+    return anchor
+
+
+def _is_toc_result_paragraph(element) -> bool:
+    if element is None or element.tag != qn("w:p"):
+        return False
+    p_pr = element.find(qn("w:pPr"))
+    p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
+    style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
+    return bool(re.match(r"^TOC\s*\d+$", style_id, flags=re.IGNORECASE))
+
+
+def _make_cleaner_toc_break(doc: Document):
+    bookmark_id = str(
+        max(
+            (int(node.get(qn("w:id"))) for node in doc.element.iter(qn("w:bookmarkStart")) if str(node.get(qn("w:id")) or "").isdigit()),
+            default=0,
+        )
+        + 1
+    )
+    page_break = OxmlElement("w:p")
+    bookmark_start = OxmlElement("w:bookmarkStart")
+    bookmark_start.set(qn("w:id"), bookmark_id)
+    bookmark_start.set(qn("w:name"), TOC_BREAK_BOOKMARK)
+    page_break.append(bookmark_start)
+    run = OxmlElement("w:r")
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    run.append(br)
+    page_break.append(run)
+    bookmark_end = OxmlElement("w:bookmarkEnd")
+    bookmark_end.set(qn("w:id"), bookmark_id)
+    page_break.append(bookmark_end)
+    return page_break
+
+
+def _is_cleaner_toc_break(element) -> bool:
+    if not _is_dedicated_page_break(element):
+        return False
+    return any(node.get(qn("w:name")) == TOC_BREAK_BOOKMARK for node in element.iter(qn("w:bookmarkStart")))
+
+
+def _is_dedicated_page_break(element) -> bool:
+    if element is None or element.tag != qn("w:p"):
+        return False
+    if any((node.text or "").strip() for node in element.iter(qn("w:t"))):
+        return False
+    if element.findall(".//" + qn("w:drawing")) or element.findall(".//" + qn("w:pict")):
+        return False
+    return any((node.get(qn("w:type")) or "page") == "page" for node in element.iter(qn("w:br")))
 
 
 def _ensure_style_outline_level(style, level: int) -> None:
@@ -470,20 +744,61 @@ def _promote_body_internal_headings(doc: Document, style_spec: dict[str, Any]) -
 
 
 def _paragraph_heading_level(paragraph) -> int:
+    p_pr = paragraph._p.find(qn("w:pPr"))
+    if p_pr is not None:
+        outline = p_pr.find(qn("w:outlineLvl"))
+        if outline is not None:
+            try:
+                value = int(outline.get(qn("w:val")))
+            except (TypeError, ValueError):
+                value = -1
+            if 0 <= value <= 8:
+                return value + 1
+
     style = getattr(paragraph, "style", None)
-    candidates = (
-        str(getattr(style, "name", "") or ""),
-        str(getattr(style, "style_id", "") or ""),
-    )
-    for value in candidates:
-        normalized = value.strip().lower()
-        match = re.search(r"heading\s*(\d+)", normalized)
+    visited: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", "") or "")
+        if style_id in visited:
+            break
+        visited.add(style_id)
+
+        style_name = str(getattr(style, "name", "") or "")
+        match = re.search(r"heading\s*(\d+)", style_name.strip().lower())
         if match:
             return max(1, min(int(match.group(1)), 9))
-        match = re.search(r"标题\s*(\d+)", value)
+        match = re.search(r"标题\s*(\d+)", style_name)
         if match:
             return max(1, min(int(match.group(1)), 9))
+
+        style_p_pr = style.element.find(qn("w:pPr"))
+        if style_p_pr is not None:
+            outline = style_p_pr.find(qn("w:outlineLvl"))
+            if outline is not None:
+                try:
+                    value = int(outline.get(qn("w:val")))
+                except (TypeError, ValueError):
+                    value = -1
+                if 0 <= value <= 8:
+                    return value + 1
+        style = getattr(style, "base_style", None)
     return 0
+
+
+def _paragraph_contains_visual(paragraph) -> bool:
+    return bool(paragraph._p.xpath(".//w:drawing|.//w:pict|.//w:object"))
+
+
+def _table_contains_visual(table) -> bool:
+    return bool(table._tbl.xpath(".//w:drawing|.//w:pict|.//w:object"))
+
+
+def _is_preserved_layout_paragraph(paragraph) -> bool:
+    style = getattr(paragraph, "style", None)
+    style_name = str(getattr(style, "name", "") or "").strip().lower()
+    if any(marker in style_name for marker in ("图片", "图注", "照片", "caption", "figure", "image")):
+        return True
+    return _looks_like_caption_or_table_title(paragraph.text)
 
 
 def _clean_paragraph_text(text: str) -> str:
@@ -845,9 +1160,44 @@ def _structural_risks(
         risks.append("存在异常一级标题，请检查章节层级。")
     if scan.get("empty_leaf_headings"):
         risks.append("存在空叶子章节，请检查是否缺正文或素材未拼入。")
-    if not risks:
-        risks.append("未发现脚本可识别的格式风险；仍建议在 Word/WPS 中打开后刷新目录并人工抽检。")
     return _dedupe(risks)
+
+
+def _build_warnings(report: dict[str, Any], scan: dict[str, Any]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+
+    def add(code: str, message: str, count: int) -> None:
+        if count > 0:
+            warnings.append({"code": code, "message": message, "count": count})
+
+    if int(report.get("outlineCount") or 0) == 0:
+        add("outline_empty", "outline 为空，未能定位任何技术标标题。", 1)
+    add(
+        "unmatched_heading",
+        "存在未匹配标题；技术标 cleaner 未插入或删除正文，请人工核对缺失章节。",
+        len(report.get("unmatchedHeadings") or []),
+    )
+    if not report.get("tocPresent", False):
+        add("toc_missing", "未检测到 TOC 域，目录页需要人工补充。", 1)
+    if not report.get("headerCleaned", False):
+        add("header_not_cleaned", "页眉仍存在技术卷残留，请人工检查页眉。", 1)
+    add(
+        "placeholder",
+        "存在待填写或缺失占位符，请在共创阶段补齐。",
+        int(report.get("placeholderCount") or 0),
+    )
+    add(
+        "duplicate_heading",
+        "存在相邻重复标题，请检查素材首标题和目录标题是否重复。",
+        len(scan.get("dup_alerts") or []),
+    )
+    add("invalid_h1", "存在异常一级标题，请检查章节层级。", len(scan.get("invalid_h1") or []))
+    add(
+        "empty_leaf_heading",
+        "存在空叶子章节，请检查是否缺正文或素材未拼入。",
+        len(scan.get("empty_leaf_headings") or []),
+    )
+    return warnings
 
 
 def _dedupe(items: list[str]) -> list[str]:

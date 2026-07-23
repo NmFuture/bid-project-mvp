@@ -96,8 +96,8 @@ def _decode_request_bytes(raw: Any) -> bytes | None:
 
 
 @router.get("/api/settings/default-templates")
-async def settings_default_templates_list(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return await system_settings_service.default_templates_list()
+async def settings_default_templates_list(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return await system_settings_service.default_templates_list(user=user)
 
 
 @router.post("/api/settings/default-templates")

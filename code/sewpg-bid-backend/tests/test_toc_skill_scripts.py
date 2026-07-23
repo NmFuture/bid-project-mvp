@@ -4924,7 +4924,7 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertFalse(any(".0." in item or item.endswith(".0") for item in headings))
 
-    def test_bid_assembler_inject_prefix_clears_stale_direct_outline(self) -> None:
+    def test_bid_assembler_inject_prefix_preserves_style_and_updates_navigation(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
 
         doc = Document()
@@ -4943,10 +4943,10 @@ class TocSkillScriptTests(unittest.TestCase):
         )
 
         remaining = [para for para in doc.paragraphs if "载荷仿真分析能力" in para.text][0]
-        self.assertEqual(remaining.style.name, "Heading 3")
+        self.assertEqual(remaining.style.name, "Heading 1")
         p_pr = remaining._p.find(qn("w:pPr"))
         self.assertIsNotNone(p_pr)
-        self.assertIsNone(p_pr.find(qn("w:outlineLvl")))
+        self.assertEqual(p_pr.find(qn("w:outlineLvl")).get(qn("w:val")), "2")
 
     def test_bid_assembler_demotes_material_headings_to_body(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
@@ -5051,11 +5051,15 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(stats["removed"], 1)
         self.assertEqual(stats["remapped"], 1)
-        self.assertEqual(stats["bold_subheadings"], 1)
+        self.assertEqual(stats["bold_subheadings"], 0)
         self.assertEqual(stats["demoted"], 1)
-        self.assertEqual(project_flow.style.name, "Heading 3")
+        self.assertEqual(project_flow.style.name, "Heading 1")
+        self.assertEqual(
+            project_flow._p.find(qn("w:pPr")).find(qn("w:outlineLvl")).get(qn("w:val")),
+            "2",
+        )
         self.assertFalse((list_item.style.name or "").startswith("Heading"))
-        self.assertEqual(static.style.name, "Heading 4")
+        self.assertFalse((static.style.name or "").startswith("Heading"))
         self.assertFalse((table_heading.style.name or "").startswith("Heading"))
 
     def test_bid_assembler_strips_heading_style_numbering(self) -> None:
@@ -5158,23 +5162,56 @@ class TocSkillScriptTests(unittest.TestCase):
 
         doc = Document()
         custom = self._make_hidden_numbered_custom_style(doc, "标题6-标书", "Heading 6", "7")
-        # 场景1：段落 numId>0 → 清除
+        # 场景1：段落 numId>0 → 改为段落级 numId=0
         active = doc.add_paragraph("1.7.3.1 总体技术路线", style="Heading 3")
         self._add_paragraph_numpr(active, "5")
         # 场景2：段落 numId=0 抑制仍在 → 不动
         suppressed = doc.add_paragraph("1.7.3.2 关键技术路线", style="标题6-标书")
         self._add_paragraph_numpr(suppressed, "0")
-        # 场景3：样式链编号且无段落抑制 → 清样式
-        doc.add_paragraph("1.7.3.3 其他技术路线", style="标题6-标书")
+        # 场景3：样式链编号且无段落抑制 → 只给当前段落加 numId=0
+        inherited = doc.add_paragraph("1.7.3.3 其他技术路线", style="标题6-标书")
 
         fixed = numbering_fixer.enforce_no_auto_numbering_on_numbered_headings(doc)
 
         self.assertEqual(fixed, 2)
-        self.assertIsNone(active._p.find(qn("w:pPr")).find(qn("w:numPr")))
+        active_num_pr = active._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(active_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
         suppressed_num_pr = suppressed._p.find(qn("w:pPr")).find(qn("w:numPr"))
         self.assertIsNotNone(suppressed_num_pr)
         self.assertEqual(suppressed_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
-        self.assertIsNone(custom.element.find(qn("w:pPr")).find(qn("w:numPr")))
+        inherited_num_pr = inherited._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(inherited_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        style_num_pr = custom.element.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(style_num_pr.find(qn("w:numId")).get(qn("w:val")), "7")
+
+    def test_bid_assembler_invariant_keeps_shared_body_list_style_numbering(self) -> None:
+        """标题局部抑制自动编号时，不得破坏同样式的正文列表。"""
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        shared = self._make_hidden_numbered_custom_style(
+            doc,
+            "共享正文列表",
+            "Normal",
+            "7",
+        )
+        heading = doc.add_paragraph("1.7.4 列表样式标题", style=shared)
+        heading_p_pr = heading._p.get_or_add_pPr()
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), "2")
+        heading_p_pr.append(outline)
+        body_item = doc.add_paragraph("正文列表项", style=shared)
+
+        fixed = numbering_fixer.enforce_no_auto_numbering_on_numbered_headings(doc)
+
+        self.assertEqual(fixed, 1)
+        heading_num_pr = heading._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(heading_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        style_num_pr = shared.element.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(style_num_pr.find(qn("w:numId")).get(qn("w:val")), "7")
+        body_p_pr = body_item._p.find(qn("w:pPr"))
+        self.assertIsNotNone(body_p_pr)
+        self.assertIsNone(body_p_pr.find(qn("w:numPr")))
 
     def test_material_cleaner_does_not_fabricate_heading_levels(self) -> None:
         """1.9 回归：清洗不按"带编号、文字较短"把正文猜成标题。"""
@@ -5192,6 +5229,23 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIsNone(body._p.find(qn("w:pPr")))
         # 真 Heading 仍剥手写前缀
         self.assertEqual(heading.text, "自主研发控制算法")
+
+    def test_material_cleaner_preserves_basedon_heading_level(self) -> None:
+        """自定义样式 basedOn Heading 6 时按真实层级清理，不按文本编号推断。"""
+        word_cleaner = load_material_cleaner_script("word_cleaner")
+
+        doc = Document()
+        custom = doc.styles.add_style("标题6-标书", WD_STYLE_TYPE.PARAGRAPH)
+        custom.base_style = doc.styles["Heading 6"]
+        heading = doc.add_paragraph("1.7 自定义技术路线", style=custom)
+
+        normalized = word_cleaner._strip_numbered_heading_prefixes(doc)
+
+        self.assertEqual(normalized, 1)
+        self.assertEqual(heading.text, "自定义技术路线")
+        self.assertEqual(heading.style.name, "Heading 6")
+        outline = heading._p.find(qn("w:pPr")).find(qn("w:outlineLvl"))
+        self.assertEqual(outline.get(qn("w:val")), "5")
 
     def test_bid_assembler_gap_plan_flags_unconfirmed_candidates(self) -> None:
         """1.1/4.7 回归：只有候选素材、未确认 matchedMaterials 时给出显式提示。"""
@@ -5544,7 +5598,7 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(
             headings,
-            ["1.9 上海电气优势简介", "基本情况", "载荷仿真分析能力"],
+            ["1.9 上海电气优势简介", "1.9.1 基本情况", "1.9.2 载荷仿真分析能力"],
         )
         self.assertIn("基本情况", text)
         self.assertIn("载荷仿真分析能力", text)

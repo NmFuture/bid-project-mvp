@@ -22,6 +22,30 @@ class OpencodeClientTests(unittest.TestCase):
         client.post.side_effect = side_effect
         return client
 
+    def test_repair_examples_keep_technical_reports_empty_and_business_reports_unchanged(self) -> None:
+        client = OpencodeClient()
+        prompts: list[str] = []
+
+        def fake_send_prompt(_session_id: str, prompt: str) -> dict:
+            prompts.append(prompt)
+            return {"parts": [{"type": "text", "text": "{}"}]}
+
+        with (
+            patch.object(client, "create_session", return_value={"id": "repair"}),
+            patch.object(client, "send_prompt", side_effect=fake_send_prompt),
+        ):
+            client._repair_json_payload("broken", "assembly")
+            client._repair_json_payload("broken", "business_format")
+
+        technical_prompt, business_prompt = prompts
+        self.assertIn('"assemblyReport":""', technical_prompt)
+        self.assertIn('"needsReview":""', technical_prompt)
+        self.assertIn('"summary":', technical_prompt)
+        self.assertIn('"warnings":[', technical_prompt)
+        self.assertNotIn("assembly_report.md", technical_prompt)
+        self.assertNotIn("needs_review.md", technical_prompt)
+        self.assertIn("business_format_clean_report.md", business_prompt)
+
     def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
         client = OpencodeClient()
         request = httpx.Request("POST", "http://opencode:4096/session")

@@ -274,6 +274,80 @@ class ParseAsyncJobTests(unittest.TestCase):
         progress = self.client.get(f"/api/technical/projects/{project_id}/parse-results/progress").json()
         self.assertEqual(progress["status"], "cancelled")
 
+    def test_execute_s1_parse_job_skips_parse_when_cancelled_while_queued(self) -> None:
+        project_id = self.create_project()
+        service = bid_parse_service.technical_parse_service
+        service._mark_parse_queued(project_id, "解析任务已提交，排队等待中。", file_names=["招标文件.docx"])
+        service.cancel_parse(project_id)
+        with patch(
+            "app.services.bid_parse_service.parse_tender_documents",
+            return_value=fake_parse_payload(),
+        ) as parse_mock:
+            bid_parse_service._run_s1_parse_job(
+                project_id,
+                {
+                    "__bidType": "技术标",
+                    "origin": "upload",
+                    "tenderFiles": [fake_tender_record()],
+                    "templateFiles": [],
+                },
+            )
+        # 排队期间已取消：worker 消费时不得执行解析，进度保持 cancelled。
+        parse_mock.assert_not_called()
+        progress = self.client.get(f"/api/technical/projects/{project_id}/parse-results/progress").json()
+        self.assertEqual(progress["status"], "cancelled")
+        self.assertTrue(progress["cancelRequested"])
+
+    def test_execute_s1_parse_job_marks_failed_when_post_processing_fails(self) -> None:
+        project_id = self.create_project()
+        summary, storage = fake_parse_payload()
+        settings.s1_parse_job_max_attempts = 3
+        with patch(
+            "app.services.bid_parse_service.parse_tender_documents",
+            return_value=(summary, storage),
+        ) as parse_mock, patch(
+            "app.services.bid_parse_service.materialize_parse_appendix_docx_assets",
+            side_effect=RuntimeError("appendix docx 502 unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                bid_parse_service._run_s1_parse_job(
+                    project_id,
+                    {
+                        "__bidType": "技术标",
+                        "origin": "upload",
+                        "tenderFiles": [fake_tender_record()],
+                        "templateFiles": [],
+                    },
+                )
+        # 后处理失败不做整链重试：解析只跑一次，进度落为 failed 并带真实异常信息。
+        self.assertEqual(parse_mock.call_count, 1)
+        progress = self.client.get(f"/api/technical/projects/{project_id}/parse-results/progress").json()
+        self.assertEqual(progress["status"], "failed")
+        self.assertIn("appendix docx 502 unavailable", progress["summary"])
+
+    def test_execute_s1_parse_job_post_processing_cancel_stays_cancelled(self) -> None:
+        project_id = self.create_project()
+        summary, storage = fake_parse_payload()
+        with patch(
+            "app.services.bid_parse_service.parse_tender_documents",
+            return_value=(summary, storage),
+        ), patch(
+            "app.services.bid_parse_service.materialize_parse_appendix_docx_assets",
+            side_effect=ParseCancelledError("解析已取消。"),
+        ):
+            bid_parse_service._run_s1_parse_job(
+                project_id,
+                {
+                    "__bidType": "技术标",
+                    "origin": "upload",
+                    "tenderFiles": [fake_tender_record()],
+                    "templateFiles": [],
+                },
+            )
+        # 后处理阶段的取消语义不得被兜底改成 failed。
+        progress = self.client.get(f"/api/technical/projects/{project_id}/parse-results/progress").json()
+        self.assertEqual(progress["status"], "cancelled")
+
     def test_execute_s1_parse_job_requires_bid_type(self) -> None:
         project_id = self.create_project()
         with self.assertRaises(ValueError):

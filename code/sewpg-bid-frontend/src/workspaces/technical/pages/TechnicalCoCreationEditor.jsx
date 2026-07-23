@@ -7,6 +7,11 @@ import TechnicalProjectStageProgress from '../components/TechnicalProjectStagePr
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
+import {
+  technicalFormatDocumentAfterApply,
+  technicalFormatRequest,
+  technicalFormatStateFromDocument,
+} from './technicalGapRecognitionHelpers'
 
 const FONT_OPTIONS = {
   zh: ['等线', '宋体', '仿宋', '黑体', '楷体', '微软雅黑', '方正仿宋_GBK', '方正小标宋_GBK'],
@@ -28,6 +33,27 @@ const technicalFormatPresets = [
 
 const TECHNICAL_BID_LABEL = '技术标'
 const TECHNICAL_DOCUMENT_PART_LABEL = '技术部分'
+
+const DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES = {
+  bodyZhFont: '等线',
+  bodyEnFont: 'Times New Roman',
+  bodySizePt: 12,
+  bodyLineSpacing: 1.5,
+  bodyFirstLineIndentChars: 2,
+  heading1SizePt: 15,
+  heading2SizePt: 14,
+  heading3SizePt: 12,
+  pageTopCm: 2.54,
+  pageBottomCm: 2.54,
+  pageLeftCm: 3.18,
+  pageRightCm: 3.18,
+  tableZhFont: '宋体',
+  tableSizePt: 10.5,
+  tableLineSpacing: 1,
+  insertToc: true,
+  tocPageBreakAfter: true,
+  headerTextTemplate: `{projectName}投标文件-${TECHNICAL_DOCUMENT_PART_LABEL}`,
+}
 
 const triggerDownload = (url, fileName) => {
   if (!url) return false
@@ -56,26 +82,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
   const [formatPreset, setFormatPreset] = useState('standard')
   const [formatApplying, setFormatApplying] = useState('')
-  const [customFormat, setCustomFormat] = useState({
-    bodyZhFont: '等线',
-    bodyEnFont: 'Times New Roman',
-    bodySizePt: 12,
-    bodyLineSpacing: 1.5,
-    bodyFirstLineIndentChars: 2,
-    heading1SizePt: 15,
-    heading2SizePt: 14,
-    heading3SizePt: 12,
-    pageTopCm: 2.54,
-    pageBottomCm: 2.54,
-    pageLeftCm: 3.18,
-    pageRightCm: 3.18,
-    tableZhFont: '宋体',
-    tableSizePt: 10.5,
-    tableLineSpacing: 1,
-    insertToc: true,
-    tocPageBreakAfter: true,
-    headerTextTemplate: `{projectName}投标文件-${TECHNICAL_DOCUMENT_PART_LABEL}`,
-  })
+  const [customFormat, setCustomFormat] = useState(DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES)
 
   const loadDocument = useCallback(async () => {
     setLoading(true)
@@ -88,6 +95,9 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       setData(payload)
       setFinalData(finalPayload)
       setFallbackContent(payload?.fallback?.content || '')
+      const restoredFormat = technicalFormatStateFromDocument(payload, DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES)
+      setFormatPreset(restoredFormat.preset)
+      setCustomFormat(restoredFormat.styleOverrides)
       setOnlyofficeError('')
     } catch (e) {
       setError(e?.message || '技术标共创文档加载失败')
@@ -163,9 +173,18 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     if (formatApplying) return
     setFormatApplying(preset)
     try {
-      const payload = preset === 'custom' ? { preset, styleOverrides: customFormat } : { preset }
+      const payload = technicalFormatRequest(preset, customFormat)
       const response = await technicalDocumentAPI.technicalFormat(id, payload)
-      setData(response?.payload?.document || response?.document || data)
+      const nextDocument = technicalFormatDocumentAfterApply(
+        data,
+        preset,
+        customFormat,
+        response?.payload?.document || response?.document,
+      )
+      setData(nextDocument)
+      const restoredFormat = technicalFormatStateFromDocument(nextDocument, customFormat)
+      setFormatPreset(restoredFormat.preset)
+      setCustomFormat(restoredFormat.styleOverrides)
       setFinalData(await technicalDocumentAPI.final(id).catch(() => finalData))
       setOnlyofficeError('')
       showToast?.(response?.message || '技术标格式已切换')

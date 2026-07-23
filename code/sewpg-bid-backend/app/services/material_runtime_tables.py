@@ -239,6 +239,7 @@ class MaterialRuntimeTables:
                     row_index INT NOT NULL,
                     project_name TEXT,
                     customer_name VARCHAR(300),
+                    partner_name VARCHAR(300),
                     turbine_model VARCHAR(120),
                     turbine_models JSONB DEFAULT '[]'::jsonb,
                     contract_quantity VARCHAR(80),
@@ -258,6 +259,7 @@ class MaterialRuntimeTables:
             )
         )
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS turbine_models JSONB DEFAULT '[]'::jsonb"))
+        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS partner_name VARCHAR(300)"))
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS contract_year INT"))
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS delivery_year INT"))
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS operation_year INT"))

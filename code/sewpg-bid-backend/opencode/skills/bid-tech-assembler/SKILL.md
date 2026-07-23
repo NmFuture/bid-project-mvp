@@ -1,6 +1,6 @@
 ---
 name: bid-tech-assembler
-description: 当需要在 S4 生成标书阶段组装技术标正文 docx 时使用。输入已确认目录 JSON + Wiki + 素材库导出 Word + 项目参数，输出正文 docx 与对账报告。只管正文，不管附表 A–I。
+description: 当需要在 S4 生成标书阶段组装技术标正文 docx 时使用。输入已确认目录 JSON + Wiki + 素材库导出 Word + 项目参数，输出正文 docx 与结构化检查结果。只管正文，不管附表 A–I。
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
 
@@ -8,7 +8,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 你是投标文件正文组装专家，服务于**上海电气风电集团**（投标方固定）。
 
-**一把出策略**：不中途询问用户；所有缺失项写占位符 `[待填写：xx]`，需人工确认的全部汇总到 `needs_review.md`。阶段命名与历史别名（`s7_assembly_workdir` 等）见 `../STAGES.md`。
+**一把出策略**：不中途询问用户；所有缺失项写占位符 `[待填写：xx]`，需人工确认项进入结构化 `warnings`。阶段命名与历史别名（`s7_assembly_workdir` 等）见 `../STAGES.md`。
 
 ## 方案 B 核心原则
 
@@ -40,20 +40,21 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 | 技术标母版 | `templates/技术投标母版模板.docx` | 否（首次自动生成） |
 | 项目参数 | `<工作目录>/project_params.json` | 否（首次由 init_params 生成） |
 
-**非交互策略**：多份匹配自动选 mtime 最新那份，其它候选记入 `needs_review.md`；缺失 wiki 等必需项才中止（占位符无法兜底结构性缺失）。
+**非交互策略**：多份匹配自动选 mtime 最新那份，其它候选记入 warning；缺失 wiki 等必需输入才中止。单份素材不存在、损坏或合并失败时记录 warning 并继续，目录节点没有任何可用素材时保留 Heading 并插入简短占位提示。
 
 ## 输出约定
 
 - **位置**：工作目录下
 - **文件名**：`投标文件-正文_<项目简称>_<YYYYMMDDHHMM>.docx`
-- **附带**：`assembly_report.md`（对账报告）+ `needs_review.md`（人工补齐清单）
+- **附带**：`assembly_plan.json`（章节级装配结果）以及内部 `assembly_merge_result.json`、`assembly_verify_result.json`
+- **返回契约**：始终包含 `outputFile`、`planFile`、`summary`、`warnings`；`summary.warningCount` 为各 warning 的 `count` 总和，`warnings[]` 每项只含 `code`、`message`、`count`
 
 ## 执行流程
 
 ### 第 0 步：环境与文件校验（无交互）
 
 1. `python3 -c "import docx, lxml, docxcompose"` 失败 → 提示 `pip install python-docx lxml docxcompose`，中止
-2. 后端 manifest 优先传入 S2 的目录 JSON；无 manifest 时 Glob 工作目录定位目录 JSON/docx，多份 → **自动选 mtime 最新**，其它候选写入 `needs_review.md` 的"候选冲突"段
+2. 后端 manifest 优先传入 S2 的目录 JSON；无 manifest 时 Glob 工作目录定位目录 JSON/docx，多份 → **自动选 mtime 最新**，其它候选进入结构化 warning
 3. 沿目录链向上找 wiki 三件套；找不到 → **中止**（wiki 是结构性必需，不可占位）
 4. 定位素材库根（`素材库/投标资料库-通用/` + `/投标资料库-定制/`）；找不到中止
 5. 搜 `投标文件格式要求.md`；无则用 `references/style_spec.md`
@@ -78,7 +79,7 @@ python3 scripts/init_params.py \
 
 从目录首行抽业主/项目名/招标编号；其余字段（机型 / 额定功率 / 风轮直径 / 轮毂高度 / 交货期 / 质保等）**不询问用户**，直接以 `[待填写：<字段说明>]` 字符串填入 `project_params.json`。已存在的 `project_params.json` 会保留已填值，只对仍为 `null/""` 的字段补占位符。
 
-字段替换阶段（`preprocess.py`）把占位符字符串直接注入 docx；`verify.py` 扫描残留占位符并写入 `needs_review.md`。
+字段替换阶段（`preprocess.py`）把占位符字符串直接注入 docx；`verify.py` 扫描残留占位符并把统计写入验证 JSON，由 runner 汇总为 warning。
 
 ### 第 3 步：构建装配计划
 
@@ -109,7 +110,7 @@ python3 scripts/cleaner.py <素材> <输出1>                                  #
 python3 scripts/preprocess.py <输出1> <输出2> --params <project_params>    # 样式归一 + 剥 numPr + 剥章节号前缀 + 标签清理 + [FIELD] 替换
 ```
 
-`preprocess.py` 合并了早期的 `table_normalizer / shift_headings / field_replace`，并依赖 `numbering_fixer.py`、`fix_invalid_headings.py` 作为内部工具。项目参数里凡是 `[待填写：xx]` 占位符，会原样替换进 docx，交由 `verify.py` 在终检阶段记入 `needs_review.md`。
+`preprocess.py` 合并了早期的 `table_normalizer / shift_headings / field_replace`，并依赖 `numbering_fixer.py`、`fix_invalid_headings.py` 作为内部工具。项目参数里凡是 `[待填写：xx]` 占位符，会原样替换进 docx，交由 `verify.py` 在终检阶段扫描并汇总。
 
 ### 第 5 步：合并
 
@@ -122,7 +123,7 @@ python3 scripts/merger.py \
     --out /tmp/bid_merged.docx
 ```
 
-XML 级合并：relationship ID 去重、image 媒体合并、numbering.xml 兼容；[新增] 条目插占位；前言段作无编号 Heading 1；素材内部 Heading 只在匹配 S2 子目录时保留为导航 Heading，否则作为正文小标题保留，不进入 Word/OnlyOffice 导航。
+XML 级合并：relationship ID 去重、image 媒体合并、numbering.xml 兼容；[新增] 条目插占位；前言段作无编号 Heading 1；素材内部 Heading 只在匹配 S2 子目录时保留为导航 Heading，否则作为正文小标题保留，不进入 Word/OnlyOffice 导航。单份素材失败不阻断后续素材；一个目录节点的所有素材均失败时，保留该节点 Heading 并插入 `[缺失：...——没有可用素材，请补充后重试]`。
 
 ### 第 6 步：终检打磨
 
@@ -147,19 +148,10 @@ python3 scripts/verify.py \
     --docx <输出> \
     --plan /tmp/assembly_plan.json \
     --params <工作目录>/project_params.json \
-    --report <工作目录>/assembly_report.md \
-    --review <工作目录>/needs_review.md
+    --result <工作目录>/assembly_verify_result.json
 ```
 
-`needs_review.md` 汇总一切需人工确认项（**这是一把出后用户唯一要看的文件**）：
-- project_params 未填字段（占位符 `[待填写：xx]` 清单）
-- 残留占位符的章节定位
-- [新增] 章节 — 素材缺失，用占位符段落顶上
-- [未匹配] 章节 — wiki skeleton_section 未命中
-- [适配] 章节 — 字段替换已做，需核对结果
-- 第 0 步遗留的多候选冲突（如目录 docx 多份）
-
-`assembly_report.md` 只做装配审计（Heading 统计 / 幽灵章节 / 非法 H1 / 相邻重复），不含待办。
+`verify.py` 保留 Heading 统计、幽灵章节、非法 H1、相邻重复、空章节和残留占位符扫描，只返回紧凑 JSON。runner 将素材失败、未匹配目录和验证风险统一汇总到 `summary.verification` 与 `warnings`，每条 warning 只含 `code`、`message`、`count`。
 
 ## Backend Manifest 模式
 
@@ -179,7 +171,7 @@ manifest 会指定：
 - `projectParams` / `projectParamsPath`：项目参数预填与占位符写入
 - `outputFile`：最终正文 docx 目标路径
 
-`run_from_manifest.py` 只向 stdout 打印小型 JSON 摘要，完整报告留在 `assembly_report.md` 和 `needs_review.md`。
+`run_from_manifest.py` 只向 stdout 打印小型 JSON 摘要。摘要中的 `warnings` 至少覆盖素材缺失、素材合并失败、目录未匹配、残留占位符和格式风险；`assembly_plan.json` 继续保留已组装、未匹配、需复核和结构节点状态。兼容字段 `assemblyReport`、`needsReview` 保留但固定为空字符串。
 
 ## 关键约束（策略级）
 
@@ -198,8 +190,8 @@ manifest 会指定：
 ## 失败恢复
 
 - `parse_toc` 抽不到章节号 → 检查目录 docx Heading 样式是否正确
-- `init_params` 项目名抽偏 → 不中断，记入 `needs_review.md` 的"自动抽取结果可疑"段，由用户事后改 `project_params.json`
-- `build_assembly` UNMATCHED 多 → 不中断，记入 `needs_review.md`，用户事后补 wiki 卡片再重跑
+- `init_params` 项目名抽偏 → 不中断，记入结构化 warning，由用户事后改 `project_params.json`
+- `build_assembly` UNMATCHED 多 → 不中断，记入结构化 warning，用户事后补 wiki 卡片再重跑
 - `merger` 编号冲突 → numbering_fixer 兜底（旧 skill 的 SmartNumberingFixer）
 - `finalize` TOC 域首次打开不展开 → 确认 `updateFields=true` 已注入
 

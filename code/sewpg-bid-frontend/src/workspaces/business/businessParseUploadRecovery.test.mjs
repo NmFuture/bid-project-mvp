@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   isUploadAndRunTimeout,
+  isParseProgressCompleted,
   pollParseProgressOnce,
   shouldPollParseProgress,
   recoverUploadAndRunTimeout,
@@ -145,4 +146,67 @@ test('上传请求结束后只要后端仍 running 就继续轮询进度', () =>
   }), false)
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'idle' } }), false)
   assert.equal(shouldPollParseProgress({ uploading: true, progress: null }), true)
+})
+
+test('失败/停止态进度即使 percentage=100 也不算完成', () => {
+  assert.equal(isParseProgressCompleted({ status: 'failed', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'error', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'stale', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'cancelled', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'completed', percentage: 100 }), true)
+  assert.equal(isParseProgressCompleted({ status: 'running', percentage: 100 }), true)
+})
+
+test('进度失败时不拉取旧结果，直接按失败处理', async () => {
+  let resultsCalled = 0
+  const parseClient = {
+    progress: async () => ({ status: 'failed', percentage: 100, summary: '解析失败：磁盘已满。' }),
+    results: async () => {
+      resultsCalled += 1
+      return { status: 'completed', itemCount: 1070 }
+    },
+  }
+
+  const snapshot = await pollParseProgressOnce({ projectId: 'PRJ-0021', parseClient })
+
+  assert.equal(snapshot.completed, false)
+  assert.equal(snapshot.failed, true)
+  assert.equal(snapshot.result, null)
+  assert.equal(resultsCalled, 0)
+})
+
+test('已停止进度同样不拉取旧结果，按失败处理', async () => {
+  let resultsCalled = 0
+  const parseClient = {
+    progress: async () => ({ status: 'cancelled', percentage: 100, summary: '已请求停止解析任务。' }),
+    results: async () => {
+      resultsCalled += 1
+      return { status: 'completed', itemCount: 1070 }
+    },
+  }
+
+  const snapshot = await pollParseProgressOnce({ projectId: 'PRJ-0021', parseClient })
+
+  assert.equal(snapshot.completed, false)
+  assert.equal(snapshot.failed, true)
+  assert.equal(snapshot.result, null)
+  assert.equal(resultsCalled, 0)
+})
+
+test('重解析失败且残留旧成功结果时恢复流程返回失败而不是旧结果', async () => {
+  const parseClient = {
+    progress: async () => ({ status: 'failed', percentage: 100, summary: '解析失败：后处理异常。' }),
+    results: async () => ({ status: 'completed', itemCount: 1070 }),
+  }
+
+  const recovered = await recoverUploadAndRunTimeout({
+    projectId: 'PRJ-0021',
+    parseClient,
+    pollIntervalMs: 0,
+    maxPollMs: 1000,
+  })
+
+  assert.equal(recovered.completed, false)
+  assert.equal(recovered.failed, true)
+  assert.equal(recovered.result, null)
 })

@@ -22,6 +22,7 @@ from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
     TECHNICAL_WORD_FILL_SKILL_NAME,
     build_technical_gap_plan_for_project,
+    cleanup_prepared_technical_gap_material_files,
     prepare_technical_existing_gap_material_files,
     register_technical_existing_gap_material,
     register_technical_manual_gap_upload,
@@ -55,11 +56,17 @@ PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
 
 
 def _raise_gap_error(exc: Exception, not_found_detail: str) -> None:
-    if isinstance(exc, PeripheralError):
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    if isinstance(exc, (RuntimeError, ValueError)):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if isinstance(exc, KeyError):
+    contract_error = exc
+    while isinstance(contract_error, ExceptionGroup) and contract_error.exceptions:
+        first_error = contract_error.exceptions[0]
+        if not isinstance(first_error, Exception):
+            break
+        contract_error = first_error
+    if isinstance(contract_error, PeripheralError):
+        raise HTTPException(status_code=contract_error.status_code, detail=contract_error.detail) from exc
+    if isinstance(contract_error, (RuntimeError, ValueError)):
+        raise HTTPException(status_code=400, detail=str(contract_error)) from exc
+    if isinstance(contract_error, KeyError):
         raise HTTPException(status_code=404, detail=not_found_detail) from exc
     raise exc
 
@@ -366,11 +373,15 @@ class TechnicalGapService:
         request: Request,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        prepared_files: list[dict[str, Any]] = []
+        project: dict[str, Any] | None = None
+        project_snapshot: dict[str, Any] | None = None
         try:
             project = require_technical_gap_project_for_update(project_id)
             gap_state = ensure_technical_gap_state(project)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别。")
+            project_snapshot = copy.deepcopy(project)
             prepared_files = await prepare_technical_existing_gap_material_files(project, gap_id, data or {})
             result = register_technical_existing_gap_material(
                 project,
@@ -384,6 +395,20 @@ class TechnicalGapService:
             persist_technical_gap_project(project)
             return copy.deepcopy(result)
         except Exception as exc:
+            recovery_errors: list[Exception] = []
+            if project is not None and project_snapshot is not None:
+                try:
+                    project.clear()
+                    project.update(project_snapshot)
+                except Exception as rollback_error:
+                    recovery_errors.append(rollback_error)
+            if prepared_files:
+                try:
+                    cleanup_prepared_technical_gap_material_files(prepared_files)
+                except Exception as cleanup_error:
+                    recovery_errors.append(cleanup_error)
+            if recovery_errors:
+                exc = ExceptionGroup("选择素材失败，且事务回滚未能完整完成。", [exc, *recovery_errors])
             _raise_gap_error(exc, "Gap not found")
 
     async def submit_review(self, project_id: str) -> dict[str, Any]:

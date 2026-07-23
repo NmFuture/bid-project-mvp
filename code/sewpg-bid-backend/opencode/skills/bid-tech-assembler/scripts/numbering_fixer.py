@@ -108,22 +108,31 @@ def _direct_outline_level(para) -> Optional[int]:
     return None
 
 
-def _style_chain_heading_level(style) -> Optional[int]:
-    """沿 basedOn 样式链识别自定义 Heading（如"标题6-标书" basedOn Heading 6）。
-
-    只认样式链上真实存在的 Heading/标题 N，不按样式名模糊猜测。
-    """
-    seen: set[int] = set()
-    current = getattr(style, "base_style", None) if style is not None else None
-    while current is not None:
-        element = getattr(current, "element", None)
-        if element is None or id(element) in seen:
+def _style_heading_level(style) -> Optional[int]:
+    visited: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", "") or "")
+        if style_id in visited:
             break
-        seen.add(id(element))
-        level = _heading_level(getattr(current, "name", "") or "")
-        if level is not None:
-            return level
-        current = getattr(current, "base_style", None)
+        visited.add(style_id)
+
+        named_level = _heading_level(str(getattr(style, "name", "") or ""))
+        if named_level is not None:
+            return named_level
+
+        p_pr = style.element.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr")
+        if p_pr is not None:
+            outline = p_pr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}outlineLvl")
+            if outline is not None:
+                from docx.oxml.ns import qn
+
+                try:
+                    value = int(outline.get(qn("w:val")))
+                except (TypeError, ValueError):
+                    value = -1
+                if 0 <= value <= 8:
+                    return value + 1
+        style = getattr(style, "base_style", None)
     return None
 
 
@@ -131,27 +140,11 @@ def _paragraph_heading_level(para) -> Optional[int]:
     direct = _direct_outline_level(para)
     if direct is not None:
         return direct
-    style = para.style
-    style_name = (style.name or "") if style else ""
-    level = _heading_level(style_name)
-    if level is not None:
-        return level
-    return _style_chain_heading_level(style)
-
-
-def _replace_paragraph_text_preserve_format(para, new_text: str) -> None:
-    """替换段落文本，尽量保留第一个 run 的格式（粗体/字体/字号）。"""
-    if not para.runs:
-        para.text = new_text
-        return
-    first_run = para.runs[0]
-    first_run.text = new_text
-    for extra_run in para.runs[1:]:
-        extra_run.text = ""
+    return _style_heading_level(para.style)
 
 
 def _numpr_num_id(num_pr) -> Optional[int]:
-    """读取 w:numPr 的 w:numId；numId=0 表示"显式关闭自动编号"。"""
+    """读取 w:numPr 的 w:numId；numId=0 表示显式关闭自动编号。"""
     from docx.oxml.ns import qn
 
     if num_pr is None:
@@ -165,6 +158,71 @@ def _numpr_num_id(num_pr) -> Optional[int]:
         return None
 
 
+def _num_pr_suppresses_numbering(num_pr) -> bool:
+    """Word uses direct numId=0 to suppress numbering inherited from a style."""
+    return _numpr_num_id(num_pr) == 0
+
+
+def _replace_paragraph_text_preserve_format(para, new_text: str) -> None:
+    """替换段落文本，尽量保留第一个 run 的格式（粗体/字体/字号）。"""
+    if not para.runs:
+        para.text = new_text
+        return
+    first_run = para.runs[0]
+    first_run.text = new_text
+    for extra_run in para.runs[1:]:
+        extra_run.text = ""
+
+
+def _replace_heading_number_preserve_format(para, pure_text: str, chapter_no: str) -> None:
+    """只替换标题编号，保留标题正文所在 Run 及其格式。"""
+    prefix = f"{chapter_no}  " if chapter_no else ""
+    old_text = para.text or ""
+    start = old_text.find(pure_text)
+    if start < 0 or not para.runs:
+        _replace_paragraph_text_preserve_format(para, prefix + pure_text)
+        return
+
+    end = start + len(pure_text)
+    cursor = 0
+    first_content_run = None
+    for run in para.runs:
+        run_text = run.text or ""
+        run_start = cursor
+        run_end = cursor + len(run_text)
+        keep_start = max(start, run_start)
+        keep_end = min(end, run_end)
+        if keep_start < keep_end:
+            run.text = run_text[keep_start - run_start : keep_end - run_start]
+            if first_content_run is None:
+                first_content_run = run
+        else:
+            run.text = ""
+        cursor = run_end
+
+    if first_content_run is None:
+        _replace_paragraph_text_preserve_format(para, prefix + pure_text)
+        return
+    first_content_run.text = prefix + first_content_run.text
+
+
+def _set_direct_heading_level(para, level: int) -> None:
+    """写入导航层级但不替换素材段落样式。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    p_pr = para._p.get_or_add_pPr()
+    outline = p_pr.find(qn("w:outlineLvl"))
+    if outline is not None:
+        p_pr.remove(outline)
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is not None and not _num_pr_suppresses_numbering(num_pr):
+        p_pr.remove(num_pr)
+    outline = OxmlElement("w:outlineLvl")
+    outline.set(qn("w:val"), str(max(1, min(int(level), 9)) - 1))
+    p_pr.append(outline)
+
+
 def _clear_direct_outline_and_numbering(para) -> None:
     """Remove paragraph-level outline/numbering overrides.
 
@@ -173,9 +231,8 @@ def _clear_direct_outline_and_numbering(para) -> None:
     keeps ``outlineLvl=0``, it still appears as a top-level item in the left
     outline pane.
 
-    ``w:numPr`` 只移除真正生效的自动编号（numId>0）。numId=0 是源文档用来
-    抑制样式隐藏自动编号的开关（如自定义"标题6-标书"里的 chineseCounting），
-    必须保留——删掉它会把隐藏的"一、二、三"重新激活。
+    ``w:numPr`` 只保留精确 numId=0 的抑制开关；缺失、非法或其它 numId
+    都按可能生效的自动编号移除，避免把隐藏的"一、二、三"重新激活。
     """
     from docx.oxml.ns import qn
 
@@ -186,7 +243,7 @@ def _clear_direct_outline_and_numbering(para) -> None:
     if outline is not None:
         p_pr.remove(outline)
     num_pr = p_pr.find(qn("w:numPr"))
-    if num_pr is not None and (_numpr_num_id(num_pr) or 0) > 0:
+    if num_pr is not None and not _num_pr_suppresses_numbering(num_pr):
         p_pr.remove(num_pr)
 
 
@@ -242,8 +299,7 @@ def inject_prefix_to_headings(
     skip_idx: Optional[int] = None
 
     for para in doc.paragraphs:
-        style_name = (para.style.name or "") if para.style else ""
-        lvl = _heading_level(style_name)
+        lvl = _paragraph_heading_level(para)
         if lvl is None or lvl > max_level:
             continue
         pure = strip_prefix(para.text)
@@ -299,13 +355,12 @@ def inject_prefix_to_headings(
         for d in range(rel + 1, len(counters)):
             counters[d] = 0
 
-        # 更新 level（同 shift 到 target_first_level + rel-1）
+        # 只更新导航层级，不替换素材自己的段落样式。
         new_level = max(1, min(6, target_first_level + rel - 1))
-        _set_heading_style(para, new_level, doc)
+        _set_direct_heading_level(para, new_level)
 
         my_parts = parent_parts + [str(counters[k]) for k in range(1, rel + 1)]
-        new_text = ".".join(my_parts) + "  " + pure
-        _replace_paragraph_text_preserve_format(para, new_text)
+        _replace_heading_number_preserve_format(para, pure, ".".join(my_parts))
         stats["injected"] += 1
 
     for p in paras_to_remove:
@@ -434,30 +489,15 @@ def remap_material_headings_to_navigation(
     toc_title: Optional[str] = None,
     remove_first_if_match: bool = True,
     keep_heading_map: Optional[dict] = None,
+    parent_chapter_no: str = "",
     parent_level: int = 2,
-    max_target_level: int = 4,
-    promote_bold_subheadings: bool = True,
+    max_target_level: int = 6,
+    l1_offset: int = 0,
 ) -> dict:
-    """Preserve source-material structure as final Heading 3/4 navigation.
-
-    S7 inserts the official S2 TOC heading before each material. The source
-    material may also contain a real Word heading tree. Instead of flattening
-    that tree and trying to guess it later in the format cleaner, remap it
-    relative to the inserted parent heading:
-
-    - material root heading matching ``toc_title`` is removed as a duplicate
-    - headings matching official S2 children keep their official level/number
-    - remaining material headings become children under ``parent_level``
-    - short bold body subheadings become one level deeper, capped at H4
-    - captions/table titles stay as body text
-    """
-    normalized_keep: dict[str, dict] = {}
-    for key, value in (keep_heading_map or {}).items():
-        if not isinstance(value, dict):
-            continue
-        normalized_keep[_normalize_title_key(str(key))] = value
-
-    max_target_level = max(1, min(int(max_target_level or 4), 9))
+    """按素材真实大纲树连续编号，并保留素材原段落样式。"""
+    # 参数保留用于兼容现有调用；素材标题编号不再依赖 S2 文本匹配。
+    _ = keep_heading_map
+    max_target_level = max(1, min(int(max_target_level or 6), 9))
     parent_level = max(1, min(int(parent_level or 1), max_target_level))
     base_child_level = min(parent_level + 1, max_target_level)
 
@@ -475,86 +515,61 @@ def remap_material_headings_to_navigation(
         lvl = _paragraph_heading_level(para)
         if lvl is None:
             continue
-        raw = _clean_text_for_heading_shape(para.text)
-        pure = strip_prefix(raw)
+        pure = strip_prefix(para.text)
         if not pure:
             continue
-        heading_entries.append((para, lvl, raw, pure))
+        heading_entries.append((para, lvl, pure))
 
     first_to_remove = None
     first_to_remove_key = None
     if heading_entries and remove_first_if_match and toc_title:
-        first_para, _first_level, _first_raw, first_pure = heading_entries[0]
+        first_para, _first_level, first_pure = heading_entries[0]
         if _normalize_for_match(first_pure) == _normalize_for_match(toc_title):
             first_to_remove = first_para
             first_to_remove_key = id(first_para._p)
             stats["skipped_first"] = True
 
     heading_stack: list[tuple[int, int]] = []
-    current_target_level = parent_level
-    heading_by_para = {id(para._p): (lvl, raw, pure) for para, lvl, raw, pure in heading_entries}
+    counters = [0] * 10
+    counters[1] = max(0, int(l1_offset or 0))
+    parent_parts = [part for part in parent_chapter_no.split(".") if part]
 
-    for para in list(doc.paragraphs):
-        entry = heading_by_para.get(id(para._p))
-        if entry is not None:
-            source_level, raw, pure = entry
-            if id(para._p) == first_to_remove_key:
-                continue
-
-            if _looks_like_caption_or_table_title(raw) or _looks_like_caption_or_table_title(pure):
-                if para.text != pure:
-                    _replace_paragraph_text_preserve_format(para, pure)
-                _set_body_style_or_clear(para, doc)
-                _clear_direct_outline_and_numbering(para)
-                stats["demoted"] += 1
-                continue
-
-            keep = normalized_keep.get(_normalize_title_key(pure))
-            while heading_stack and heading_stack[-1][0] >= source_level:
-                heading_stack.pop()
-
-            if keep:
-                title = str(keep.get("title") or pure).strip()
-                chapter_no = str(keep.get("chapter_no") or "").strip()
-                try:
-                    target_level = int(keep.get("level") or parent_level)
-                except (TypeError, ValueError):
-                    target_level = parent_level
-                target_level = max(1, min(target_level, max_target_level))
-                new_text = f"{chapter_no}  {title}" if chapter_no else title
-                _replace_paragraph_text_preserve_format(para, new_text)
-                _set_heading_style(para, target_level, doc)
-                stats["kept"] += 1
-            else:
-                target_level = min(
-                    heading_stack[-1][1] + 1 if heading_stack else base_child_level,
-                    max_target_level,
-                )
-                if para.text != pure:
-                    _replace_paragraph_text_preserve_format(para, pure)
-                _set_heading_style(para, target_level, doc)
-                stats["remapped"] += 1
-
-            heading_stack.append((source_level, target_level))
-            current_target_level = target_level
+    for para, source_level, pure in heading_entries:
+        if id(para._p) == first_to_remove_key:
             continue
 
-        text = _clean_text_for_heading_shape(para.text)
-        if not (
-            promote_bold_subheadings
-            and current_target_level < max_target_level
-            and _looks_like_bold_body_subheading(para, text)
-        ):
+        if _looks_like_caption_or_table_title(para.text) or _looks_like_caption_or_table_title(pure):
+            if para.text != pure:
+                _replace_paragraph_text_preserve_format(para, pure)
+            _set_body_style_or_clear(para, doc)
+            _clear_direct_outline_and_numbering(para)
+            stats["demoted"] += 1
             continue
-        target_level = min(max_target_level, max(3, current_target_level + 1))
-        _set_heading_style(para, target_level, doc)
-        stats["bold_subheadings"] += 1
-        current_target_level = target_level
+
+        while heading_stack and heading_stack[-1][0] >= source_level:
+            heading_stack.pop()
+        relative_level = heading_stack[-1][1] + 1 if heading_stack else 1
+        relative_level = max(1, min(relative_level, 9))
+        heading_stack.append((source_level, relative_level))
+
+        counters[relative_level] += 1
+        for index in range(relative_level + 1, len(counters)):
+            counters[index] = 0
+
+        target_level = min(base_child_level + relative_level - 1, max_target_level)
+        number_parts = parent_parts + [
+            str(counters[index]) for index in range(1, relative_level + 1)
+        ]
+        _replace_heading_number_preserve_format(para, pure, ".".join(number_parts))
+        _set_direct_heading_level(para, target_level)
+        stats["remapped"] += 1
 
     if first_to_remove is not None:
         first_to_remove._p.getparent().remove(first_to_remove._p)
         stats["removed"] = 1
 
+    stats["top_count"] = counters[1] - max(0, int(l1_offset or 0))
+    stats["final_l1"] = counters[1]
     return stats
 
 
@@ -664,9 +679,8 @@ def strip_handwritten_numbering_in_body(doc, *, only_normal_style: bool = True) 
     """
     count = 0
     for para in doc.paragraphs:
-        style_name = (para.style.name or "") if para.style else ""
         if only_normal_style:
-            if _is_heading_style(style_name):
+            if _paragraph_heading_level(para) is not None:
                 continue
         old = para.text
         if not old:
@@ -716,16 +730,14 @@ def strip_numPr_from_body(doc, *, only_heading_styles: bool = True) -> int:
     def _should_strip(para) -> bool:
         if not only_heading_styles:
             return True
-        style = para.style
-        st = style.name if style else ""
-        return _is_heading_style(st) or _style_chain_heading_level(style) is not None
+        return _paragraph_heading_level(para) is not None
 
     def _strip_active_numpr(para) -> bool:
         pPr = para._p.find(qn("w:pPr"))
         if pPr is None:
             return False
         numPr = pPr.find(qn("w:numPr"))
-        if numPr is None or (_numpr_num_id(numPr) or 0) <= 0:
+        if numPr is None or _num_pr_suppresses_numbering(numPr):
             return False
         pPr.remove(numPr)
         return True
@@ -763,25 +775,13 @@ def strip_numPr_from_heading_styles(doc) -> int:
     for style in doc.styles:
         if style.type != WD_STYLE_TYPE.PARAGRAPH:
             continue
-        style_name = style.name or ""
         pPr = style.element.find(qn("w:pPr"))
         if pPr is None:
             continue
-        outline = pPr.find(qn("w:outlineLvl"))
-        is_outline_heading = False
-        if outline is not None:
-            try:
-                is_outline_heading = 0 <= int(outline.get(qn("w:val"))) <= 8
-            except (TypeError, ValueError):
-                is_outline_heading = False
-        if not (
-            _is_heading_style(style_name)
-            or is_outline_heading
-            or _style_chain_heading_level(style) is not None
-        ):
+        if _style_heading_level(style) is None:
             continue
         numPr = pPr.find(qn("w:numPr"))
-        if numPr is not None and (_numpr_num_id(numPr) or 0) > 0:
+        if numPr is not None and not _num_pr_suppresses_numbering(numPr):
             pPr.remove(numPr)
             count += 1
     return count
@@ -793,11 +793,10 @@ def strip_numPr_from_heading_styles(doc) -> int:
 _NUMBERED_HEADING_TEXT_RE = re.compile(r"^\s*\d+(?:\.\d+){0,6}\s+\S")
 
 
-def _strip_style_chain_numbering(style) -> int:
-    """清除样式及其 basedOn 链上有效的自动编号定义（numId>0）。返回清除数量。"""
+def _style_chain_has_effective_numbering(style) -> bool:
+    """判断样式链是否会提供自动编号；最近的 numId=0 会抑制祖先编号。"""
     from docx.oxml.ns import qn
 
-    fixed = 0
     seen: set[int] = set()
     current = style
     while current is not None:
@@ -807,11 +806,29 @@ def _strip_style_chain_numbering(style) -> int:
         seen.add(id(element))
         p_pr = element.find(qn("w:pPr"))
         num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
-        if num_pr is not None and (_numpr_num_id(num_pr) or 0) > 0:
-            p_pr.remove(num_pr)
-            fixed += 1
+        if num_pr is not None:
+            return not _num_pr_suppresses_numbering(num_pr)
         current = getattr(current, "base_style", None)
-    return fixed
+    return False
+
+
+def _ensure_direct_numbering_suppression(para) -> bool:
+    """在单个段落写入 numId=0，避免修改可能被正文列表共享的样式。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    p_pr = para._p.get_or_add_pPr()
+    num_pr = p_pr.find(qn("w:numPr"))
+    if _num_pr_suppresses_numbering(num_pr):
+        return False
+    if num_pr is None:
+        num_pr = p_pr.get_or_add_numPr()
+    num_id = num_pr.find(qn("w:numId"))
+    if num_id is None:
+        num_id = OxmlElement("w:numId")
+        num_pr.append(num_id)
+    num_id.set(qn("w:val"), "0")
+    return True
 
 
 def enforce_no_auto_numbering_on_numbered_headings(doc) -> int:
@@ -820,7 +837,8 @@ def enforce_no_auto_numbering_on_numbered_headings(doc) -> int:
     S7 采用"文本编号 + Heading 样式"方案。若 Heading 段落仍挂有效自动编号
     （段落 numPr numId>0，或样式/basedOn 链 numPr numId>0 且段落没有 numId=0
     抑制），Word/OnlyOffice 会叠加第二套编号（如"一、二、三"）。
-    发现即清除，返回修复数量；正文项目符号与真实有序列表不受影响。
+    发现即在该标题段落写入 numId=0，返回修复数量；不修改可能被正文列表共享
+    的样式链，因此正文项目符号与真实有序列表不受影响。
     """
     from docx.oxml.ns import qn
 
@@ -832,13 +850,12 @@ def enforce_no_auto_numbering_on_numbered_headings(doc) -> int:
             continue
         p_pr = para._p.find(qn("w:pPr"))
         num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
-        if num_pr is not None and (_numpr_num_id(num_pr) or 0) > 0:
-            p_pr.remove(num_pr)
-            num_pr = None
+        if _num_pr_suppresses_numbering(num_pr):
+            continue
+        if num_pr is None and not _style_chain_has_effective_numbering(para.style):
+            continue
+        if _ensure_direct_numbering_suppression(para):
             fixed += 1
-        if num_pr is not None:
-            continue  # numId=0 抑制仍在，样式链编号不会生效
-        fixed += _strip_style_chain_numbering(para.style)
     return fixed
 
 

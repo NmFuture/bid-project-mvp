@@ -4,19 +4,16 @@
 
 1. plan.json 中 in-scope 条目数 vs 输出 docx 中 Heading 数对账
 2. 残留占位符扫描（[待填写：xxx] / [缺失：xxx] / [FIELD] / [PROJECT_NAME]...）
-3. 可疑情况报告：相邻重复 Heading（合并时 toc title + 素材首标题 撞车）
+3. 可疑情况扫描：相邻重复 Heading（合并时 toc title + 素材首标题 撞车）
 
-输出：
-  <output_dir>/assembly_report.md
-  <output_dir>/needs_review.md
+输出：stdout 紧凑 JSON；可选写入 --result 指定的 JSON 文件
 
 用法：
     python3 verify.py \\
         --docx 输出.docx \\
         --plan /tmp/assembly_plan.json \\
         --params project_params.json \\
-        --report 工作目录/assembly_report.md \\
-        --review 工作目录/needs_review.md
+        --result 工作目录/assembly_verify_result.json
 """
 
 from __future__ import annotations
@@ -221,212 +218,22 @@ def scan_docx(docx_path: Path) -> dict:
     }
 
 
-def build_report(
-    docx_path: Path,
-    plan: list[dict],
-    scan: dict,
-    params: dict,
-) -> str:
-    lines = []
-    lines.append(f"# 投标文件生成审计报告")
-    lines.append("")
-    lines.append(f"- **文件**：{docx_path}")
-    lines.append(f"- **大小**：{docx_path.stat().st_size / 1024 / 1024:.1f} MB")
-    lines.append(f"- **项目**：{params.get('project_name', '(未填)')}")
-    lines.append(f"- **业主**：{params.get('client_name', '(未填)')}")
-    lines.append(f"- **招标编号**：{params.get('tender_no', '(未填)')}")
-    lines.append("")
-
-    lines.append("## 结构统计")
-    lines.append(f"- sections: {scan['sections']}")
-    lines.append(f"- paragraphs: {scan['paragraphs']}")
-    lines.append(f"- tables: {scan['tables']}")
-    lines.append(f"- headings: {json.dumps(scan['heading_counts'], ensure_ascii=False)}")
-    lines.append("")
-
-    # plan status 分布
-    st_counts = Counter(p["status"] for p in plan)
-    lines.append("## 装配计划对账")
-    lines.append(f"- plan 总条目：{len(plan)}")
-    lines.append(f"- 状态分布：{json.dumps(dict(st_counts), ensure_ascii=False)}")
-    in_scope = [p for p in plan if p["status"] != "OUT_OF_SCOPE"]
-    lines.append(f"- 应生成 Heading 数（in-scope）：{len(in_scope)}")
-    lines.append(f"- 实际 Heading 数：{sum(scan['heading_counts'].values())}")
-    lines.append("")
-
-    # 方案 B 硬性检查
-    lines.append("## 硬性检查（方案 B）")
-    lines.append(f"- 幽灵章节（第 7+ 章）：{len(scan['ghost_chapters'])}")
-    lines.append(f"- 非法 H1（非封面/前言/第X章/附表）：{len(scan['invalid_h1'])}")
-    lines.append(f"- 非法 Heading 前缀：{len(scan['invalid_prefix'])}")
-    lines.append(f"- 相邻重复 Heading：{len(scan['dup_alerts'])}")
-    lines.append("")
-
-    if scan["ghost_chapters"]:
-        lines.append(f"### ⚠ 幽灵章节编号（应为 0）")
-        for g in scan["ghost_chapters"][:20]:
-            lines.append(f"- {g}")
-        lines.append("")
-
-    if scan["invalid_h1"]:
-        lines.append(f"### ⚠ 非法 H1（应为 0）")
-        for t in scan["invalid_h1"][:20]:
-            lines.append(f"- {t!r}")
-        lines.append("")
-
-    if scan["invalid_prefix"]:
-        lines.append(f"### 非法 Heading 前缀（前 20）")
-        for t in scan["invalid_prefix"][:20]:
-            lines.append(f"- {t}")
-        if len(scan["invalid_prefix"]) > 20:
-            lines.append(f"- ... 还有 {len(scan['invalid_prefix']) - 20} 条")
-        lines.append("")
-
-    if scan["dup_alerts"]:
-        lines.append(f"### 相邻重复 Heading (前 20)")
-        for a in scan["dup_alerts"][:20]:
-            lines.append(f"- {a}")
-        if len(scan["dup_alerts"]) > 20:
-            lines.append(f"- ... 还有 {len(scan['dup_alerts']) - 20} 条")
-        lines.append("")
-
-    if scan["placeholders"]:
-        ph_counter = Counter(scan["placeholders"])
-        lines.append(f"## 残留占位符 ({len(scan['placeholders'])})")
-        for ph, cnt in ph_counter.most_common(30):
-            lines.append(f"- `{ph}` × {cnt}")
-        lines.append("")
-
-    # 字段未填
-    unfilled = [k for k, v in params.items() if v is None or v == ""]
-    if unfilled:
-        lines.append("## project_params 未填字段")
-        for k in unfilled:
-            lines.append(f"- `{k}`")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def build_needs_review(plan: list[dict], params: dict, scan: dict) -> str:
-    lines = ["# 人工补齐清单", "", "> 一把出后需要你确认的全部项目集中在这里。", ""]
-
-    # 1. project_params 未填字段（占位符 / null）
-    def _is_placeholder(v) -> bool:
-        return isinstance(v, str) and v.startswith("[待填写")
-
-    ph_fields = [(k, v) for k, v in params.items() if _is_placeholder(v)]
-    null_fields = [k for k, v in params.items() if v is None or v == ""]
-    if ph_fields or null_fields:
-        lines.append(f"## project_params 待补字段 ({len(ph_fields) + len(null_fields)})")
-        lines.append("")
-        lines.append("编辑 `project_params.json` 把占位符换成真值后重跑 assembler 即可。")
-        lines.append("")
-        for k, v in ph_fields:
-            lines.append(f"- `{k}` = `{v}`")
-        for k in null_fields:
-            lines.append(f"- `{k}` = null（未抽到）")
-        lines.append("")
-
-    # 2. 残留占位符（从 docx 扫到的 [待填写：xx] / [FIELD] / [缺失：xx]）
-    if scan.get("placeholders"):
-        ph_counter = Counter(scan["placeholders"])
-        lines.append(f"## 正文残留占位符 ({len(scan['placeholders'])})")
-        lines.append("")
-        for ph, cnt in ph_counter.most_common():
-            lines.append(f"- `{ph}` × {cnt}")
-        lines.append("")
-
-    # 3. [新增] 条目
-    needs = [p for p in plan if p["status"] == "NEEDS_REVIEW"]
-    if needs:
-        lines.append(f"## [新增] 条目 ({len(needs)}) — 需补素材")
-        lines.append("")
-        for p in needs:
-            lines.append(f"- {p['chapter_no']} {p['title']}")
-        lines.append("")
-
-    # 4. [未匹配] 条目
-    unmatched = [p for p in plan if p["status"] == "UNMATCHED"]
-    if unmatched:
-        lines.append(f"## [未匹配] 条目 ({len(unmatched)}) — wiki 未命中")
-        lines.append("")
-        for p in unmatched:
-            lines.append(f"- {p['chapter_no']} {p['title']}  ← {p.get('note', '')}")
-        lines.append("")
-
-    # 5. [适配] 条目（字段替换已做，需核对）
-    adapted = [p for p in plan if p["status"] == "ADAPTED"]
-    if adapted:
-        lines.append(f"## [适配] 条目 ({len(adapted)}) — 需核对占位符替换")
-        lines.append("")
-        for p in adapted:
-            lines.append(f"- {p['chapter_no']} {p['title']}")
-        lines.append("")
-
-    # 6. 空章节（heading 后无正文 — 常暴露素材归位错误）
-    empty = scan.get("empty_leaf_headings", [])
-    if empty:
-        lines.append(f"## 空章节告警 ({len(empty)}) — Heading 后无正文")
-        lines.append("")
-        lines.append("> 多为 wiki 卡片 `skeleton_section` 归位错或素材本身是空框架。")
-        lines.append("")
-        for h in empty[:50]:
-            lines.append(f"- {h}")
-        if len(empty) > 50:
-            lines.append(f"- ... 还有 {len(empty) - 50} 条")
-        lines.append("")
-
-    # 7. 结构告警（幽灵章节 / 非法 H1 / 相邻重复）
-    warn_parts = []
-    if scan.get("ghost_chapters"):
-        warn_parts.append(f"幽灵章节 {len(scan['ghost_chapters'])}")
-    if scan.get("invalid_h1"):
-        warn_parts.append(f"非法 H1 {len(scan['invalid_h1'])}")
-    if scan.get("dup_alerts"):
-        warn_parts.append(f"相邻重复 {len(scan['dup_alerts'])}")
-    if warn_parts:
-        lines.append(f"## 结构告警 — 详见 `assembly_report.md`")
-        lines.append("")
-        lines.append(f"- {' / '.join(warn_parts)}")
-        lines.append("")
-
-    if len(lines) <= 4:
-        lines.append("_无待补项，可直接交付。_")
-
-    return "\n".join(lines)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--docx", type=Path, required=True)
     ap.add_argument("--plan", type=Path, required=True)
     ap.add_argument("--params", type=Path, required=True)
-    ap.add_argument("--report", type=Path, required=True)
-    ap.add_argument("--review", type=Path, required=True)
+    ap.add_argument("--result", type=Path, default=None)
     args = ap.parse_args()
 
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
     params = json.loads(args.params.read_text(encoding="utf-8"))
     scan = scan_docx(args.docx)
 
-    report = build_report(args.docx, plan, scan, params)
-    review = build_needs_review(plan, params, scan)
-
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(report, encoding="utf-8")
-    args.review.write_text(review, encoding="utf-8")
-
-    print(f"[OK] report → {args.report}")
-    print(f"[OK] review → {args.review}")
-    print()
-    # stdout 摘要
-    print("=== 摘要 ===")
-    st_counts = Counter(p["status"] for p in plan)
-    print(f"plan: {dict(st_counts)}")
-    print(f"heading: {scan['heading_counts']}")
-    print(f"placeholders: {len(scan['placeholders'])}")
-    print(f"dup_alerts: {len(scan['dup_alerts'])}")
+    if args.result:
+        args.result.parent.mkdir(parents=True, exist_ok=True)
+        args.result.write_text(json.dumps(scan, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(scan, ensure_ascii=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":

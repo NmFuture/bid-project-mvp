@@ -177,6 +177,19 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         )
         self.assertEqual(response.content[:2], b"PK")
 
+    def test_technical_final_pdf_file_is_downloadable(self) -> None:
+        project_id = self.create_project()
+        pdf_path = document_path(project_id).with_suffix(".pdf")
+        pdf_bytes = b"%PDF-1.4\n% project-specific sentinel\n%%EOF\n"
+        pdf_path.write_bytes(pdf_bytes)
+
+        response = self.client.get(f"/api/technical/projects/{project_id}/final-document/pdf/file")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("application/pdf"))
+        self.assertIn(".pdf", response.headers["content-disposition"].lower())
+        self.assertEqual(response.content, pdf_bytes)
+
     def test_technical_document_format_endpoint_uses_technical_service(self) -> None:
         project_id = self.create_project()
 

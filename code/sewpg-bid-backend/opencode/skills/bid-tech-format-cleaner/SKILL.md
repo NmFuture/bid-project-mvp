@@ -16,7 +16,7 @@ manifest 必须包含：
 - `outlineFile`：技术标目录 JSON，支持 `sections/children` 或后端转换后的技术标 outline。
 - `outputFile`：清洗后 `.docx` 输出路径，不能与 `inputFile` 相同。
 - `projectName`：项目名称，用于页眉。
-- `styleSpecPath`：可选。后端默认传入 `bid-tech-assembler/references/heading_style.json`——该文件是技术标标题样式的共享契约（本 skill 脚本无此参数时也回退到同一路径，并 import assembler 的 `numbering_fixer` 模块）；assembler 重构目录时必须同步本 skill，消费方清单见 `bid-tech-assembler/references/constraints.md`。
+- `styleSpecPath`：可选。默认配置和自定义配置都以 `bid-tech-assembler/references/heading_style.json` 为基线；自定义模式只覆盖后端校验通过的 `styleOverrides`。本 skill 无此参数时回退到同一路径，并复用 assembler 的编号修复模块。
 
 ## 执行命令
 
@@ -24,22 +24,22 @@ manifest 必须包含：
 python scripts/run_from_manifest.py <manifest> --response summary
 ```
 
-`--response summary` 输出 JSON，schema 固定为 `bid-tech-format-clean-v1`，包含 `inputFile`、`outlineFile`、`outputFile`、`reportFile` 和 `summary`。
+`--response summary` 输出 JSON，schema 固定为 `bid-tech-format-clean-v1`，包含 `inputFile`、`outlineFile`、`outputFile`、`reportFile`、`summary` 和 `warnings`。兼容字段 `reportFile` 固定为空字符串；`summary` 包含匹配/未匹配标题数、占位符数、TOC 状态、横竖版统计和 `warnings`，顶层 `warnings` 与其一致；每条 warning 只有 `code`、`message`、`count`。
 
 ## 行为规则
 
 - 先复制 `inputFile` 到 `outputFile`，只改输出文件。
 - 读取目录中的章节标题，按目录顺序匹配 Word 段落。
-- 匹配成功后设置 `Heading 1-4`，并清除标题段落残留编号属性。
+- 匹配成功后设置 `Heading 1-6`，并清除标题段落残留编号属性。
 - 对正文内部疑似三级/四级小标题做保守提升。
-- 插入自动目录域；Word/WPS 打开后需要刷新域才能显示最终页码。
-- 统一技术标页眉文本、标题字体、正文基础格式和页面方向。
-- 保留正文内容、图片、表格和已有横版 section，不重排章节。
-- 对未匹配标题、占位符、目录和格式风险生成报告。
+- 按配置决定是否插入自动目录域及目录后的分页；Word/WPS 打开后需要刷新域才能显示最终页码。
+- 实际应用标题、正文、表格、题注、页边距和页眉配置；重复切换默认/自定义时直接重刷格式，不重新组装正文。
+- 保留正文内容、图片、表格、图表题注和已有横版 section，不重排章节、不强制改横竖版。
+- 对未匹配标题、占位符、目录和格式风险生成结构化摘要与 warnings。
 
-## 输出报告
+## 输出检查结果
 
-脚本会在 `outputFile` 同目录生成 `tech_format_clean_report.md`，记录：
+脚本不会生成额外 Markdown 报告；`summary` 与 `warnings` 返回：
 
 - outline 总数。
 - 成功匹配标题数。
@@ -53,5 +53,5 @@ python scripts/run_from_manifest.py <manifest> --response summary
 ## 常见风险
 
 - 目录页码需要在 Word/WPS 中刷新域。
-- outline 中有标题但正文中没有对应段落时，脚本不会补章，只在报告列出未匹配标题。
+- outline 中有标题但正文中没有对应段落时，脚本不会补章，只在结构化 warning 中列出未匹配标题数。
 - 正文中如果有大量与标题相似的短句，内部小标题提升需要人工抽检。

@@ -47,10 +47,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
 from numbering_fixer import (
     enforce_no_auto_numbering_on_numbered_headings,
+    _paragraph_heading_level,
+    inject_prefix_to_headings,
     remap_material_headings_to_navigation,
     strip_numPr_from_body,
     strip_numPr_from_heading_styles,
 )
+from docx_style_pruner import prune_unused_styles
 
 
 def _path_exists(path: Path) -> bool:
@@ -91,6 +94,48 @@ def _isolate_section(doc) -> bool:
 
 logging.basicConfig(level=logging.INFO, format="[merger] %(message)s")
 log = logging.getLogger("merger")
+
+
+class BatchComposer(Composer):
+    """将全量 ID 扫描延迟到所有素材追加完成之后。"""
+
+    def __init__(self, doc):
+        self._defer_global_ids = True
+        super().__init__(doc, preserve_styles=True)
+
+    def _create_style_id_mapping(self, doc):
+        super()._create_style_id_mapping(doc)
+        for style in doc.styles:
+            for tag in ("w:basedOn", "w:next", "w:link"):
+                reference = style.element.find(qn(tag))
+                if reference is None:
+                    continue
+                source_id = reference.get(qn("w:val"))
+                if not source_id:
+                    continue
+                target_id = self.mapped_style_id(source_id)
+                if target_id:
+                    reference.set(qn("w:val"), target_id)
+
+    def renumber_bookmarks(self):
+        if not self._defer_global_ids:
+            super().renumber_bookmarks()
+
+    def renumber_docpr_ids(self):
+        if not self._defer_global_ids:
+            super().renumber_docpr_ids()
+
+    def renumber_nvpicpr_ids(self):
+        if not self._defer_global_ids:
+            super().renumber_nvpicpr_ids()
+
+    def finalize_global_ids(self):
+        if not self._defer_global_ids:
+            return
+        self._defer_global_ids = False
+        super().renumber_bookmarks()
+        super().renumber_docpr_ids()
+        super().renumber_nvpicpr_ids()
 
 
 # ---------- 工具 ----------
@@ -173,8 +218,7 @@ def _collect_heading_titles(doc, target_set: set) -> None:
     # inject 后 text 形如 "5.8.7.1  xxx" 或 "4.1  xxx"；也可能是未被 inject 的原文
     prefix_strip = _re.compile(r"^\s*\d+(?:\.\d+){0,6}[\.\s　]+")
     for para in doc.paragraphs:
-        st = para.style.name if para.style else ""
-        if not (st.startswith("Heading") or st.startswith("标题")):
+        if _paragraph_heading_level(para) is None:
             continue
         t = (para.text or "").strip()
         if not t:
@@ -210,7 +254,8 @@ def merge(
     # 打开母版并清空 body（只保留 sectPr）
     master_doc = Document(str(template_path))
     _master_doc_clear_body(master_doc)
-    composer = Composer(master_doc)
+    prune_unused_styles(master_doc)
+    composer = BatchComposer(master_doc)
 
     stats = {
         "cover_merged": 0,
@@ -220,6 +265,11 @@ def merge(
         "skipped_oos": 0,
         "inject_skipped_first": 0,
         "errors": 0,
+    }
+    warning_counts = {
+        "MATERIAL_MISSING": 0,
+        "MATERIAL_MERGE_FAILED": 0,
+        "DIRECTORY_WITHOUT_MATERIAL": 0,
     }
 
     # Step 0: 如果 plan 首条是 COVER，先处理它
@@ -232,6 +282,7 @@ def merge(
             if not _path_exists(src):
                 log.warning(f"封面素材不存在: {src}")
                 stats["errors"] += 1
+                warning_counts["MATERIAL_MISSING"] += 1
                 continue
             prep = prep_dir / f"cover_{_hash_path(src)}_{src.name}"
             try:
@@ -243,9 +294,19 @@ def merge(
             except Exception as e:
                 log.exception(f"封面合并失败 {src.name}: {e}")
                 stats["errors"] += 1
+                warning_counts["MATERIAL_MERGE_FAILED"] += 1
 
     in_scope = [e for e in non_cover if e.get("status") != "OUT_OF_SCOPE"]
     log.info(f"in-scope entries: {len(in_scope)}/{len(non_cover)}")
+
+    chapter_master_prefixes = {
+        str(entry.get("chapter_no_flat") or "").strip()
+        for entry in non_cover
+        if str(entry.get("coverage_role") or entry.get("coverageRole") or "").strip() == "chapter_master"
+        and entry.get("status") in ("MATCHED", "ADAPTED")
+        and entry.get("paths")
+        and str(entry.get("chapter_no_flat") or "").strip()
+    }
 
     # 状态：记录"当前父章节号"。appendix (附 xxx) 素材用这个作 parent
     current_parent_chapter = ""
@@ -279,6 +340,12 @@ def merge(
         level = entry["level"]
         title = entry["title"]
         chapter_no = entry.get("chapter_no") or ""
+        chapter_no_flat = str(entry.get("chapter_no_flat") or "").strip()
+
+        if any(chapter_no_flat.startswith(f"{prefix}.") for prefix in chapter_master_prefixes):
+            stats.setdefault("superseded", 0)
+            stats["superseded"] += 1
+            continue
 
         if status == "OUT_OF_SCOPE":
             stats["skipped_oos"] += 1
@@ -354,11 +421,14 @@ def merge(
                 if parent_chapter:
                     current_parent_chapter = parent_chapter
 
+            merged_for_entry = 0
+            material_heading_l1_offset = 0
             for path_idx, path_rel in enumerate(entry.get("paths", [])):
                 src = lib_root / path_rel
                 if not _path_exists(src):
                     log.warning(f"  [{i}] 素材不存在: {src}")
                     stats["errors"] += 1
+                    warning_counts["MATERIAL_MISSING"] += 1
                     continue
 
                 size_mb = os.path.getsize(os.fspath(src)) / 1024 / 1024
@@ -371,37 +441,59 @@ def merge(
                 except Exception as e:
                     log.exception(f"  [{i}] preprocess 失败 {src.name}: {e}")
                     stats["errors"] += 1
+                    warning_counts["MATERIAL_MERGE_FAILED"] += 1
                     continue
 
                 # 关键：S2 TOC 条目由 merger 手插为真正的导航 Heading。
                 # 素材内部 Heading 不能再整体降级；这里按当前 TOC 父级
-                # 相对映射到最终 3/4 级，避免最后 cleaner 从正文里猜层级。
-                # remove_first_if_match 只对本条 entry 的第一份素材启用（避免叠加场景下
-                # 两份素材首 heading 都被删）。
+                # 相对映射到最终 3-6 级，避免最后 cleaner 从正文里猜层级。
+                # remove_first_if_match 只对本条 entry 首份成功素材启用（避免前序失败
+                # 漏去重，也避免叠加场景下多份素材首 heading 都被删）。
                 try:
                     sub_doc = Document(str(prep))
-                    _collect_heading_titles(
-                        sub_doc,
-                        seen_titles_by_parent.setdefault(parent_chapter, set()),
-                    )
-                    remap_stats = remap_material_headings_to_navigation(
-                        sub_doc,
-                        toc_title=title,
-                        remove_first_if_match=(path_idx == 0),
-                        keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
-                        parent_level=heading_level,
-                        max_target_level=4,
-                    )
-                    if remap_stats["skipped_first"]:
-                        stats["inject_skipped_first"] += 1
-                    stats.setdefault("material_headings_remapped", 0)
-                    stats["material_headings_remapped"] += remap_stats["remapped"]
-                    stats.setdefault("material_bold_subheadings_promoted", 0)
-                    stats["material_bold_subheadings_promoted"] += remap_stats["bold_subheadings"]
-                    stats.setdefault("material_headings_kept", 0)
-                    stats["material_headings_kept"] += remap_stats.get("kept", 0)
-                    stats.setdefault("material_headings_demoted", 0)
-                    stats["material_headings_demoted"] += remap_stats.get("demoted", 0)
+                    material_heading_titles: set[str] = set()
+                    _collect_heading_titles(sub_doc, material_heading_titles)
+                    is_chapter_master = str(
+                        entry.get("coverage_role") or entry.get("coverageRole") or ""
+                    ).strip() == "chapter_master"
+                    next_material_heading_l1_offset = material_heading_l1_offset
+                    if is_chapter_master:
+                        inject_stats = inject_prefix_to_headings(
+                            sub_doc,
+                            parent_chapter,
+                            toc_title=title,
+                            skip_first_if_match=(merged_for_entry == 0),
+                            l1_offset=material_heading_l1_offset,
+                        )
+                        next_material_heading_l1_offset = inject_stats.get(
+                            "final_l1", material_heading_l1_offset
+                        )
+                        if inject_stats["skipped_first"]:
+                            stats["inject_skipped_first"] += 1
+                        stats.setdefault("material_headings_injected", 0)
+                        stats["material_headings_injected"] += inject_stats["injected"]
+                    else:
+                        remap_stats = remap_material_headings_to_navigation(
+                            sub_doc,
+                            toc_title=title,
+                            remove_first_if_match=(merged_for_entry == 0),
+                            keep_heading_map=toc_children_by_parent.get(parent_chapter, {}),
+                            parent_chapter_no=parent_chapter,
+                            parent_level=heading_level,
+                            max_target_level=6,
+                            l1_offset=material_heading_l1_offset,
+                        )
+                        next_material_heading_l1_offset = remap_stats.get(
+                            "final_l1", material_heading_l1_offset
+                        )
+                        if remap_stats["skipped_first"]:
+                            stats["inject_skipped_first"] += 1
+                        stats.setdefault("material_headings_remapped", 0)
+                        stats["material_headings_remapped"] += remap_stats["remapped"]
+                        stats.setdefault("material_headings_kept", 0)
+                        stats["material_headings_kept"] += remap_stats.get("kept", 0)
+                        stats.setdefault("material_headings_demoted", 0)
+                        stats["material_headings_demoted"] += remap_stats.get("demoted", 0)
 
                     # 保存处理后的副本
                     inj_path = prep_dir / f"inj_{_hash_path(src)}_{src.name}"
@@ -410,10 +502,21 @@ def merge(
                     sub_doc2 = Document(str(inj_path))
                     _isolate_section(sub_doc2)
                     composer.append(sub_doc2)
+                    material_heading_l1_offset = next_material_heading_l1_offset
+                    seen_titles_by_parent.setdefault(parent_chapter, set()).update(
+                        material_heading_titles
+                    )
                     stats["merged_materials"] += 1
+                    merged_for_entry += 1
                 except Exception as e:
                     log.exception(f"  [{i}] compose 失败 {src.name}: {e}")
                     stats["errors"] += 1
+                    warning_counts["MATERIAL_MERGE_FAILED"] += 1
+
+            if merged_for_entry == 0:
+                _add_body_paragraph(master_doc, f"[缺失：{title}——没有可用素材，请补充后重试]")
+                stats["inserted_placeholders"] += 1
+                warning_counts["DIRECTORY_WITHOUT_MATERIAL"] += 1
 
     # Save
     strip_numPr_from_heading_styles(master_doc)
@@ -421,7 +524,23 @@ def merge(
     # 不变量：已写入文本编号的 Heading 不得再有有效 Word 自动编号
     stats["auto_numbering_fixed"] = enforce_no_auto_numbering_on_numbered_headings(master_doc)
     os.makedirs(os.fspath(out_path.parent), exist_ok=True)
+    composer.finalize_global_ids()
     composer.save(str(out_path))
+
+    warning_messages = {
+        "MATERIAL_MISSING": "{count} 份素材不存在，已跳过",
+        "MATERIAL_MERGE_FAILED": "{count} 份素材处理或合并失败，已跳过",
+        "DIRECTORY_WITHOUT_MATERIAL": "{count} 个目录节点没有可用素材，已保留标题并插入占位提示",
+    }
+    stats["warnings"] = [
+        {
+            "code": code,
+            "message": warning_messages[code].format(count=count),
+            "count": count,
+        }
+        for code, count in warning_counts.items()
+        if count
+    ]
 
     log.info(f"merged → {out_path} ({os.path.getsize(os.fspath(out_path)) / 1024 / 1024:.1f} MB)")
     log.info(f"stats: {stats}")
@@ -436,6 +555,7 @@ def main():
     ap.add_argument("--params", type=Path, default=None)
     ap.add_argument("--prep-dir", type=Path, default=Path("/tmp/bid_prep"))
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--result", type=Path, default=None)
     args = ap.parse_args()
 
     plan = json.loads(args.plan.read_text(encoding="utf-8"))
@@ -443,7 +563,10 @@ def main():
     if args.params and args.params.exists():
         params = json.loads(args.params.read_text(encoding="utf-8"))
 
-    merge(args.template, plan, args.lib, params, args.prep_dir, args.out)
+    result = merge(args.template, plan, args.lib, params, args.prep_dir, args.out)
+    if args.result:
+        args.result.parent.mkdir(parents=True, exist_ok=True)
+        args.result.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
