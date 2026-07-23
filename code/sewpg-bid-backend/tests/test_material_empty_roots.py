@@ -5,9 +5,13 @@ from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
+from app.services.material_folder_maintenance import (
+    bootstrap_project_material_folder,
+    ensure_material_target_folder,
+)
 from app.services.material_raw_folder_operations import RawFolderOperations
 from app.services.material_raw_lifecycle_operations import create_raw_folder, delete_raw_folder
-from app.services.material_folder_maintenance import bootstrap_project_material_folder
+from app.services.material_taxonomy import canonical_technical_material_path
 from app.services.peripheral import PeripheralError
 
 
@@ -54,6 +58,13 @@ class _CreateFolderSession:
 
     async def commit(self):
         return None
+
+
+TECHNICAL_TIER_SPECS = (
+    {"name": "标准文件", "tier": "standard", "sort_order": 1, "customer_name": "平台标准"},
+    {"name": "客户定制", "tier": "customer", "sort_order": 2},
+    {"name": "项目定制", "tier": "project", "sort_order": 3},
+)
 
 
 class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
@@ -190,11 +201,15 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         self.assertEqual(result["payload"]["path"], "技术标/项目定制/PRJ-TECH-001")
         self.assertEqual(ensure_folder_path.await_args_list[1].args[1], "项目定制")
 
-    async def test_technical_root_does_not_precreate_tier_folders(self) -> None:
-        ensure_runtime_tables = AsyncMock()
-        operations = RawFolderOperations(ensure_runtime_tables=ensure_runtime_tables)
+    async def test_technical_root_precreates_tier_folders(self) -> None:
+        operations = RawFolderOperations(ensure_runtime_tables=AsyncMock())
         root = SimpleNamespace(id=1, path="技术标")
-        operations.ensure_folder_path = AsyncMock(return_value=root)
+        tier_folders = (
+            SimpleNamespace(id=2, path="技术标/标准文件"),
+            SimpleNamespace(id=3, path="技术标/客户定制"),
+            SimpleNamespace(id=4, path="技术标/项目定制"),
+        )
+        operations.ensure_folder_path = AsyncMock(side_effect=(root, *tier_folders))
         operations.deleted_default_folder_paths = AsyncMock(return_value=set())
 
         with (
@@ -202,7 +217,10 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
                 "app.services.material_raw_folder_operations.raw_material_root_specs",
                 return_value=({"name": "技术标", "tier": "standard", "bid_type": "技术标", "sort_order": 1},),
             ),
-            patch("app.services.material_raw_folder_operations.raw_material_tier_folder_specs") as tier_specs,
+            patch(
+                "app.services.material_raw_folder_operations.raw_material_tier_folder_specs",
+                return_value=TECHNICAL_TIER_SPECS,
+            ) as tier_specs,
             patch(
                 "app.services.material_raw_folder_operations.migrate_legacy_technical_folders",
                 new=AsyncMock(),
@@ -211,8 +229,44 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
             roots = await operations.ensure_raw_material_roots(object())
 
         self.assertEqual(roots, [root])
-        tier_specs.assert_not_called()
-        operations.ensure_folder_path.assert_awaited_once()
+        tier_specs.assert_called_once_with("技术标")
+        self.assertEqual(operations.ensure_folder_path.await_count, 4)
+        tier_calls = operations.ensure_folder_path.await_args_list[1:]
+        self.assertEqual([call.args[1] for call in tier_calls], ["标准文件", "客户定制", "项目定制"])
+        self.assertTrue(all(call.args[2] == root.id for call in tier_calls))
+
+    async def test_technical_root_skips_deleted_default_tier_folders(self) -> None:
+        operations = RawFolderOperations(ensure_runtime_tables=AsyncMock())
+        root = SimpleNamespace(id=1, path="技术标")
+        tier_folders = (
+            SimpleNamespace(id=2, path="技术标/标准文件"),
+            SimpleNamespace(id=4, path="技术标/项目定制"),
+        )
+        operations.ensure_folder_path = AsyncMock(side_effect=(root, *tier_folders))
+        operations.deleted_default_folder_paths = AsyncMock(return_value={"技术标/客户定制"})
+
+        with (
+            patch(
+                "app.services.material_raw_folder_operations.raw_material_root_specs",
+                return_value=({"name": "技术标", "tier": "standard", "bid_type": "技术标", "sort_order": 1},),
+            ),
+            patch(
+                "app.services.material_raw_folder_operations.raw_material_tier_folder_specs",
+                return_value=TECHNICAL_TIER_SPECS,
+            ),
+            patch(
+                "app.services.material_raw_folder_operations.migrate_legacy_technical_folders",
+                new=AsyncMock(),
+            ),
+        ):
+            roots = await operations.ensure_raw_material_roots(object())
+
+        self.assertEqual(roots, [root])
+        self.assertEqual(operations.ensure_folder_path.await_count, 3)
+        self.assertEqual(
+            [call.args[1] for call in operations.ensure_folder_path.await_args_list[1:]],
+            ["标准文件", "项目定制"],
+        )
 
     async def test_business_root_keeps_existing_tier_bootstrap(self) -> None:
         operations = RawFolderOperations(ensure_runtime_tables=AsyncMock())
@@ -266,7 +320,7 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         backfill_customized_subfolders.assert_awaited_once()
         prune_legacy_folders.assert_awaited_once()
 
-    async def test_creating_folder_from_technical_root_lazily_creates_standard_tier(self) -> None:
+    async def test_creating_folder_from_technical_root_creates_tier_folder_directly(self) -> None:
         technical_root = SimpleNamespace(
             id=1,
             path="技术标",
@@ -275,16 +329,8 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
             customer_name=None,
             project_id=None,
         )
-        standard_root = SimpleNamespace(
-            id=2,
-            path="技术标/标准文件",
-            tier="standard",
-            bid_type="技术标",
-            customer_name="平台标准",
-            project_id=None,
-        )
         session = _CreateFolderSession(technical_root)
-        ensure_folder_path = AsyncMock(return_value=standard_root)
+        ensure_folder_path = AsyncMock()
 
         with patch(
             "app.services.material_raw_lifecycle_operations.async_session",
@@ -292,23 +338,85 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         ):
             result = await create_raw_folder(
                 parent_path="技术标",
-                folder_name="自建目录",
+                folder_name="标准文件",
                 bid_type="技术标",
                 ensure_runtime_tables=AsyncMock(),
                 ensure_folder_path=ensure_folder_path,
                 raw_tree=AsyncMock(return_value={"tree": []}),
             )
 
-        self.assertEqual(result["folderPath"], "技术标/标准文件/自建目录")
+        self.assertEqual(result["folderPath"], "技术标/标准文件")
         self.assertEqual(len(session.added), 1)
-        self.assertEqual(session.added[0].parent_id, standard_root.id)
-        self.assertEqual(session.added[0].path, "技术标/标准文件/自建目录")
-        ensure_folder_path.assert_awaited_once()
-        self.assertIn("pg_advisory_xact_lock", session.executed_statements[2])
-        self.assertEqual(
-            session.executed_parameters[2],
-            {"lock_key": "raw-folder-path:技术标/标准文件/自建目录"},
+        self.assertEqual(session.added[0].parent_id, technical_root.id)
+        self.assertEqual(session.added[0].path, "技术标/标准文件")
+        self.assertEqual(session.added[0].tier, "standard")
+        ensure_folder_path.assert_not_awaited()
+
+    async def test_creating_customer_tier_from_technical_root_uses_customer_tier(self) -> None:
+        technical_root = SimpleNamespace(
+            id=1,
+            path="技术标",
+            tier="standard",
+            bid_type="技术标",
+            customer_name=None,
+            project_id=None,
         )
+        session = _CreateFolderSession(technical_root)
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            result = await create_raw_folder(
+                parent_path="技术标",
+                folder_name="客户定制",
+                bid_type="技术标",
+                ensure_runtime_tables=AsyncMock(),
+                ensure_folder_path=AsyncMock(),
+                raw_tree=AsyncMock(return_value={"tree": []}),
+            )
+
+        self.assertEqual(result["folderPath"], "技术标/客户定制")
+        self.assertEqual(len(session.added), 1)
+        self.assertEqual(session.added[0].tier, "customer")
+
+    async def test_creating_existing_tier_folder_from_technical_root_is_idempotent(self) -> None:
+        technical_root = SimpleNamespace(
+            id=1,
+            path="技术标",
+            tier="standard",
+            bid_type="技术标",
+            customer_name=None,
+            project_id=None,
+        )
+        existing_tier = SimpleNamespace(
+            id=2,
+            path="技术标/标准文件",
+            tier="standard",
+            bid_type="技术标",
+            customer_name="平台标准",
+            project_id=None,
+        )
+        session = _CreateFolderSession(technical_root, existing_tier)
+        ensure_folder_path = AsyncMock()
+
+        with patch(
+            "app.services.material_raw_lifecycle_operations.async_session",
+            return_value=session,
+        ):
+            result = await create_raw_folder(
+                parent_path="技术标",
+                folder_name="标准文件",
+                bid_type="技术标",
+                ensure_runtime_tables=AsyncMock(),
+                ensure_folder_path=ensure_folder_path,
+                raw_tree=AsyncMock(return_value={"tree": []}),
+            )
+
+        self.assertEqual(result["folderPath"], "技术标/标准文件")
+        self.assertEqual(session.added, [])
+        ensure_folder_path.assert_not_awaited()
+
 
     async def test_creating_folder_under_missing_technical_standard_tier_creates_parent_path(self) -> None:
         technical_root = SimpleNamespace(id=1, path="技术标")
@@ -435,6 +543,119 @@ class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
         )
 
 
+class MaterialTargetFolderNamingTests(IsolatedAsyncioTestCase):
+    async def test_technical_customer_tier_uses_customized_root_name(self) -> None:
+        root_folder = SimpleNamespace(id=1, path="技术标")
+        tier_folder = SimpleNamespace(id=2, path="技术标/客户定制")
+        customer_folder = SimpleNamespace(id=3, path="技术标/客户定制/华能集团")
+        ensure_folder_path = AsyncMock(side_effect=(root_folder, tier_folder, customer_folder))
+
+        result = await ensure_material_target_folder(
+            object(),
+            material_tier="customer",
+            bid_type="技术标",
+            customer_name="华能集团",
+            ensure_folder_path=ensure_folder_path,
+            clear_default_folder_deletion=AsyncMock(),
+        )
+
+        self.assertIs(result, customer_folder)
+        self.assertEqual(
+            [call.args[1] for call in ensure_folder_path.await_args_list],
+            ["技术标", "客户定制", "华能集团"],
+        )
+
+    async def test_business_customer_tier_keeps_material_root_name(self) -> None:
+        root_folder = SimpleNamespace(id=1, path="商务标")
+        tier_folder = SimpleNamespace(id=2, path="商务标/客户素材")
+        customer_folder = SimpleNamespace(
+            id=3,
+            path="商务标/客户素材/华能集团",
+            project_id=None,
+            customer_name="华能集团",
+        )
+        subfolders = tuple(
+            SimpleNamespace(id=10 + index, path=f"商务标/客户素材/华能集团/子目录{index}")
+            for index in range(3)
+        )
+        ensure_folder_path = AsyncMock(side_effect=(root_folder, tier_folder, customer_folder, *subfolders))
+
+        result = await ensure_material_target_folder(
+            object(),
+            material_tier="customer",
+            bid_type="商务标",
+            customer_name="华能集团",
+            ensure_folder_path=ensure_folder_path,
+            clear_default_folder_deletion=AsyncMock(),
+        )
+
+        self.assertIs(result, customer_folder)
+        self.assertEqual(
+            [call.args[1] for call in ensure_folder_path.await_args_list[:3]],
+            ["商务标", "客户素材", "华能集团"],
+        )
+
+    async def test_bootstrap_technical_project_uses_customized_root_name(self) -> None:
+        root_folder = SimpleNamespace(id=1, path="技术标")
+        tier_folder = SimpleNamespace(id=2, path="技术标/项目定制")
+        project_folder = SimpleNamespace(id=3, path="技术标/项目定制/MAT-001")
+        ensure_folder_path = AsyncMock(side_effect=(root_folder, tier_folder, project_folder))
+        find_folder = AsyncMock(return_value=None)
+
+        result = await bootstrap_project_material_folder(
+            object(),
+            project_id="MAT-001",
+            bid_type="技术标",
+            find_folder=find_folder,
+            ensure_folder_path=ensure_folder_path,
+        )
+
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/MAT-001")
+        self.assertEqual(
+            [call.args[1] for call in ensure_folder_path.await_args_list],
+            ["技术标", "项目定制", "MAT-001"],
+        )
+
+
+class CanonicalTechnicalMaterialPathTests(TestCase):
+    def test_legacy_tier_root_names_under_technical_root_are_canonicalized(self) -> None:
+        self.assertEqual(canonical_technical_material_path("技术标/客户素材"), "技术标/客户定制")
+        self.assertEqual(
+            canonical_technical_material_path("技术标/客户素材/华能集团"),
+            "技术标/客户定制/华能集团",
+        )
+        self.assertEqual(
+            canonical_technical_material_path("技术标/项目素材/MAT-001/子目录"),
+            "技术标/项目定制/MAT-001/子目录",
+        )
+
+    def test_canonical_paths_stay_unchanged(self) -> None:
+        self.assertEqual(
+            canonical_technical_material_path("技术标/标准文件/EW6.25"),
+            "技术标/标准文件/EW6.25",
+        )
+        self.assertEqual(
+            canonical_technical_material_path("技术标/客户定制/华能集团"),
+            "技术标/客户定制/华能集团",
+        )
+        self.assertEqual(
+            canonical_technical_material_path("商务标/客户素材/华能集团"),
+            "商务标/客户素材/华能集团",
+        )
+
+    def test_legacy_pre_root_format_uses_new_tier_names(self) -> None:
+        self.assertEqual(
+            canonical_technical_material_path("通用素材/技术标/EW6.25"),
+            "技术标/标准文件/EW6.25",
+        )
+        self.assertEqual(
+            canonical_technical_material_path("客户素材/华能集团/技术标"),
+            "技术标/客户定制/华能集团",
+        )
+        self.assertEqual(
+            canonical_technical_material_path("项目素材/MAT-001/技术标/子目录"),
+            "技术标/项目定制/MAT-001/子目录",
+        )
 class MaterialInitSqlTests(TestCase):
     def test_initdb_does_not_seed_legacy_technical_raw_folders(self) -> None:
         sql_path = Path(__file__).resolve().parents[2] / "initdb" / "01-init.sql"

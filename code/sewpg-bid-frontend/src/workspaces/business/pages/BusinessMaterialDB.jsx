@@ -685,6 +685,7 @@ function TreeNode({
   onEditTags,
   onSplitFile,
   onDeleteFolder,
+  onRenameFolder,
   onMoveDrop,
   dragTargetPath,
   setDragTargetPath,
@@ -707,6 +708,8 @@ function TreeNode({
   const normalizedNodePath = normalizePath(node.path)
   const canDragFolder = !isProtectedDeleteFolderPath(normalizedNodePath)
   const canDeleteThisFolder = Boolean(normalizedNodePath) && !isProtectedDeleteFolderPath(normalizedNodePath)
+  // 商务标后端对删除保护目录同样禁止重命名（根目录、默认档位与自动预置目录）
+  const canRenameThisFolder = canDeleteThisFolder
   const isDropTarget = dragTargetPath === normalizedNodePath
   const hasBranchContent = directFiles.length > 0 || hasChildren
   const dragExpandTimerRef = useRef(null)
@@ -856,11 +859,25 @@ function TreeNode({
         </span>
         <span className="relative flex w-[4.25rem] shrink-0 items-center justify-end">
           <span
-            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
+            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder || canRenameThisFolder ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
             title={displayFileCount ? `当前显示 ${displayFileCount} 个，目录总计 ${node.fileCount || 0} 个` : '空目录'}
           >
             {displayFileCount ? `${displayFileCount}/${node.fileCount || displayFileCount}` : '-'}
           </span>
+          {canRenameThisFolder && (
+            <button
+              type="button"
+              title="重命名文件夹"
+              aria-label={`重命名文件夹 ${node.name}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRenameFolder?.(normalizedNodePath)
+              }}
+              className={`absolute ${canDeleteThisFolder ? 'right-6' : 'right-0'} top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-surface-container-high hover:text-primary group-hover:opacity-100 focus:opacity-100`}
+            >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">drive_file_rename_outline</span>
+            </button>
+          )}
           {canDeleteThisFolder && (
             <button
               type="button"
@@ -1048,6 +1065,7 @@ function TreeNode({
                     onEditTags={onEditTags}
                     onSplitFile={onSplitFile}
                     onDeleteFolder={onDeleteFolder}
+                    onRenameFolder={onRenameFolder}
                     onMoveDrop={onMoveDrop}
                     dragTargetPath={dragTargetPath}
                     setDragTargetPath={setDragTargetPath}
@@ -1509,6 +1527,28 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       await loadLibrary({ silent: true })
     } catch (e) {
       showToast(safeMessage(e, '删除文件夹失败'), 'error')
+    }
+  }
+
+  const handleRenameFolder = async (path = selectedFolderPath) => {
+    const targetPath = normalizePath(path)
+    if (!targetPath || isProtectedDeleteFolderPath(targetPath)) {
+      showToast('基础素材目录不允许重命名。', 'error')
+      return
+    }
+    const currentName = targetPath.split('/').pop()
+    const nextName = window.prompt('请输入新的文件夹名称', currentName)
+    if (!nextName || !nextName.trim() || nextName.trim() === currentName) return
+    try {
+      const result = await businessMaterialsAPI.raw.renameFolder({ path: targetPath, newName: nextName.trim() })
+      showToast(result?.message || '文件夹重命名成功')
+      const renamedPath = normalizePath(result?.folderPath || '')
+      if (renamedPath && (selectedFolderPath === targetPath || selectedFolderPath.startsWith(`${targetPath}/`))) {
+        setSelectedFolderPath(`${renamedPath}${selectedFolderPath.slice(targetPath.length)}`)
+      }
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '文件夹重命名失败'), 'error')
     }
   }
 
@@ -2026,6 +2066,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
                     onEditTags={openTagEditor}
                     onSplitFile={openBusinessSplitModal}
                     onDeleteFolder={handleDeleteFolder}
+                    onRenameFolder={handleRenameFolder}
                     onMoveDrop={handleMoveDrop}
                     dragTargetPath={dragTargetPath}
                     setDragTargetPath={setDragTargetPath}

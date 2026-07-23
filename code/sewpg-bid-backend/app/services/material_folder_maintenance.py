@@ -14,7 +14,6 @@ from app.services.material_folder_scope import (
     business_standard_subfolder_specs,
     canonical_raw_folder_metadata,
     material_bid_type_sort_order,
-    material_tier_folder_name,
     material_tier_folder_name_for_bid_type,
     material_tier_folder_sort_order,
     material_tier_root_path,
@@ -109,7 +108,7 @@ async def ensure_material_target_folder(
         await clear_default_folder_deletion(session, material_tier_root_path(normalized_bid_type, "customer"))
         root = await ensure_folder_path(
             session,
-            material_tier_folder_name("customer"),
+            material_tier_folder_name_for_bid_type(normalized_bid_type, "customer"),
             root_folder.id,
             "customer",
             normalized_bid_type,
@@ -141,7 +140,7 @@ async def ensure_material_target_folder(
     await clear_default_folder_deletion(session, material_tier_root_path(normalized_bid_type, "project"))
     root = await ensure_folder_path(
         session,
-        material_tier_folder_name("project"),
+        material_tier_folder_name_for_bid_type(normalized_bid_type, "project"),
         root_folder.id,
         "project",
         normalized_bid_type,
@@ -384,5 +383,8 @@ async def migrate_legacy_technical_folders(
             continue
         has_files = bool((await session.execute(select(RawFile.id).where(RawFile.folder_id == fresh.id))).first())
         has_children = bool((await session.execute(select(RawFolder.id).where(RawFolder.parent_id == fresh.id))).first())
-        if not has_files and not has_children and not str(fresh.path or "").startswith(("技术标", "商务标")):
+        # 已归一到新名的目录保留；仍停留在旧名的空壳（如合并后的 技术标/客户素材）一并删除
+        fresh_path = str(fresh.path or "").strip("/")
+        is_legacy_path = canonical_technical_material_path(fresh_path) != fresh_path
+        if not has_files and not has_children and (is_legacy_path or not fresh_path.startswith(("技术标", "商务标"))):
             await session.delete(fresh)

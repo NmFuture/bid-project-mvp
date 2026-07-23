@@ -8,6 +8,9 @@
 - 文件名匹配忽略扩展名（用 ``PurePosixPath.stem``）。
 - 同名多个文件时，用 Excel 的目录层级列（A-E）末级与候选 ``folderPath``
   末级比对消歧；仍无法唯一定位则归为 ``ambiguous`` 交前端人工选。
+- 多处同名匹配的行在预览中带 ``matches`` 计数；commit 支持
+  ``applyToAllMatches`` 把该行标签批量应用到目标子树内所有同名文件
+  （跨机型复用），逐文件指定 ``fileId`` 的精确行为不变。
 - tag 合并复用现有 ``normalize_material_tags``，与前端 ``normalizeTagList``
   语义一致（按中英文逗号/分号/换行拆分、去空白、去重、上限 20 个）。
 """
@@ -296,15 +299,37 @@ def _merge_preview(existing: Any, incoming: list[str], *, mode: str = "merge") -
     }
 
 
-def _matched_entry(row: TagImportRow, item: dict[str, Any], *, mode: str = "merge") -> dict[str, Any]:
+def _matched_entry(
+    row: TagImportRow,
+    item: dict[str, Any],
+    *,
+    mode: str = "merge",
+    matches: int = 1,
+) -> dict[str, Any]:
     merge = _merge_preview(item.get("tags"), row.tags, mode=mode)
     return {
         **row.to_dict(),
         "fileId": str(item.get("id") or ""),
         "matchedName": str(item.get("name") or ""),
         "folderPath": str(item.get("folderPath") or ""),
+        "matches": matches,  # 目标子树内同名文件总数，>1 时前端可提供「应用到全部同名文件」
         **merge,
     }
+
+
+def same_name_file_ids(files: list[dict[str, Any]], file_name: str) -> list[str]:
+    """返回目标子树内与 ``file_name`` 同名的全部文件 id（跨机型批量应用用）。"""
+
+    key = _match_key(file_name)
+    if not key:
+        return []
+    return [
+        file_id
+        for item in files
+        if _match_key(str(item.get("name") or "")) == key
+        for file_id in [str(item.get("id") or "")]
+        if file_id
+    ]
 
 
 def _candidate_brief(item: dict[str, Any]) -> dict[str, Any]:
@@ -327,15 +352,16 @@ def build_preview(rows: list[TagImportRow], files: list[dict[str, Any]], *, mode
     for row in rows:
         candidates = index.get(_match_key(row.file_name), [])
         if len(candidates) == 1:
-            matched.append(_matched_entry(row, candidates[0], mode=mode))
+            matched.append(_matched_entry(row, candidates[0], mode=mode, matches=1))
         elif len(candidates) > 1:
             picked = _disambiguate(candidates, row.level_path)
             if picked is not None:
-                matched.append(_matched_entry(row, picked, mode=mode))
+                matched.append(_matched_entry(row, picked, mode=mode, matches=len(candidates)))
             else:
                 ambiguous.append(
                     {
                         **row.to_dict(),
+                        "matches": len(candidates),
                         "candidates": [_candidate_brief(item) for item in candidates],
                     }
                 )
