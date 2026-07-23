@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { businessParseAPI, technicalParseAPI } from '../../api'
 import { clearParseRunning, readRunningParses } from '../../workspaces/shared/parseRunningMarker'
@@ -6,7 +6,6 @@ import { clearParseRunning, readRunningParses } from '../../workspaces/shared/pa
 // 全局解析提示条：解析任务转入后台后，离开审核页也能看到进度；
 // 任务结束时原地变成结果通知（完成/失败），用户点击跳回或手动关闭后才消失。
 const BANNER_POLL_INTERVAL_MS = 5000
-const RESULT_AUTO_DISMISS_MS = 30 * 1000
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'stale'])
 
 const parseClientFor = (bidType) => (bidType === 'business' ? businessParseAPI : technicalParseAPI)
@@ -23,23 +22,13 @@ export default function ParseRunningBanner() {
   const [fileLabel, setFileLabel] = useState('')
   // result: { projectId, bidType, status: 'completed' | 'failed' | 'stale' }
   const [result, setResult] = useState(null)
-  const dismissTimerRef = useRef(null)
 
   // 审核页自己有完整进度面板，/parse/ 路由下不重复提示
   const onParseRoute = location.pathname.startsWith('/parse/')
 
-  useEffect(() => () => {
-    if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
-  }, [])
-
   useEffect(() => {
     if (onParseRoute) return undefined
     let stopped = false
-
-    const armAutoDismiss = () => {
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
-      dismissTimerRef.current = setTimeout(() => setResult(null), RESULT_AUTO_DISMISS_MS)
-    }
 
     const refresh = async () => {
       const current = readRunningParses()[0] || null
@@ -64,7 +53,6 @@ export default function ParseRunningBanner() {
           setFileLabel('')
           if (status !== 'cancelled') {
             setResult({ projectId: current.projectId, bidType: current.bidType, status })
-            armAutoDismiss()
           }
           return
         }
@@ -102,7 +90,6 @@ export default function ParseRunningBanner() {
         ? `${bidTypeLabel(result.bidType)}解析可能中断 · 点击查看`
         : `${bidTypeLabel(result.bidType)}解析失败 · 点击查看`
     const dismiss = () => {
-      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
       setResult(null)
     }
     return (

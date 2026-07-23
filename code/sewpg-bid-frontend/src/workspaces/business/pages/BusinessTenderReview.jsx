@@ -876,7 +876,8 @@ export default function BusinessTenderReview({ showToast }) {
         const progress = snapshot.progress
         setParseProgress(progress)
         if (snapshot.completed) {
-          clearParseRunning(selectedProjectId, 'business')
+          // 完成标记保留给全局提示条消费：跳离 /parse/ 路由后由它轮询到终态、
+          // 展示"解析完成"通知并清除标记，避免完成状态在这里被提前吞掉。
           setParseData(snapshot.result)
           navigateToParseResult(selectedProjectId)
           return
