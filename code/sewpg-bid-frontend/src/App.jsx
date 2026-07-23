@@ -157,7 +157,7 @@ export default function App() {
           {renderBusinessRoutes({ user: session?.user, showToast })}
           {renderSharedRoutes({ user: session?.user, showToast })}
           <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
-          <Route path="/settings" element={<Settings showToast={showToast} />} />
+          <Route path="/settings" element={<Settings showToast={showToast} currentUser={session?.user} />} />
         </Routes>
       </AppShell>
     </>
