@@ -30,6 +30,22 @@ from app.services.peripheral import PeripheralError
 PERFORMANCE_CATEGORY_SCOPES = {"standard", "customer", "project"}
 PERFORMANCE_CATEGORY_REVIEW_STATUSES = {"draft", "reviewed", "disabled"}
 PERFORMANCE_CATEGORY_STATUSES = {"enabled", "disabled"}
+PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS = {
+    "projectName": "project_name",
+    "customerName": "customer_name",
+    "partnerName": "partner_name",
+    "turbineModel": "turbine_model",
+    "contractQuantity": "contract_quantity",
+    "trialOperationQuantity": "trial_operation_quantity",
+    "commissionedCapacityMw": "commissioned_capacity_mw",
+    "deliveryOrOperationTime": "delivery_or_operation_time",
+    "contactInfo": "contact_info",
+}
+PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS = {
+    "contractYear": ("contract_year", "合同年"),
+    "deliveryYear": ("delivery_year", "交货年"),
+    "operationYear": ("operation_year", "投运年"),
+}
 SUMMARY_ATTACHMENT_TYPE = "summary_table"
 CONTRACT_ATTACHMENT_TYPE = "contract_bundle"
 ITEM_CONTRACT_ATTACHMENT_TYPE = "contract_item"
@@ -300,6 +316,7 @@ class PerformancePackageService:
             filters.append(
                 "("
                 "i.project_name ILIKE :keyword OR i.customer_name ILIKE :keyword OR "
+                "i.partner_name ILIKE :keyword OR "
                 "i.turbine_model ILIKE :keyword OR i.row_values::text ILIKE :keyword OR "
                 "c.name ILIKE :keyword"
                 ")"
@@ -481,6 +498,8 @@ class PerformancePackageService:
                 "请同时上传合同附件：汇总表与合同需一次导入，不能拆开提交。",
                 "PERFORMANCE_CONTRACT_FILES_REQUIRED",
             )
+        for _contract_content, contract_file_name, _contract_mime_type in contract_files:
+            ensure_contract_docx_file_name(contract_file_name)
         parsed = parse_performance_summary_docx(content, file_name=file_name)
         category_name = str(category_name or parsed.get("categoryName") or Path(file_name).stem).strip()
         if not category_name:
@@ -526,14 +545,14 @@ class PerformancePackageService:
                     text(
                         """
                         INSERT INTO performance_items (
-                            category_id, row_index, project_name, customer_name, turbine_model,
+                            category_id, row_index, project_name, customer_name, partner_name, turbine_model,
                             turbine_models,
                             contract_quantity, trial_operation_quantity, commissioned_capacity_mw,
                             delivery_or_operation_time, contract_year, delivery_year, operation_year,
                             time_facts, contact_info, row_values
                         )
                         VALUES (
-                            :category_id, :row_index, :project_name, :customer_name, :turbine_model,
+                            :category_id, :row_index, :project_name, :customer_name, :partner_name, :turbine_model,
                             CAST(:turbine_models AS JSONB),
                             :contract_quantity, :trial_operation_quantity, :commissioned_capacity_mw,
                             :delivery_or_operation_time, :contract_year, :delivery_year, :operation_year,
@@ -547,6 +566,7 @@ class PerformancePackageService:
                             "row_index": int(row.get("rowIndex") or index + 1),
                             "project_name": row.get("projectName") or "",
                             "customer_name": row.get("customerName") or "",
+                            "partner_name": row.get("partnerName") or "",
                             "turbine_model": row.get("turbineModel") or "",
                             "turbine_models": _json(row.get("turbineModels") or []),
                             "contract_quantity": row.get("contractQuantity") or "",
@@ -627,16 +647,15 @@ class PerformancePackageService:
                     contract_attachment_row = contract_attachment_result.first()
                     if contract_attachment_row is None:
                         raise PeripheralError(500, "业绩合同附件保存失败。", "PERFORMANCE_ATTACHMENT_CREATE_FAILED")
-                    if contract_file_name.lower().endswith(".docx"):
-                        uploaded_objects.extend(
-                            await self._replace_contract_item_attachments_for_source(
-                                session,
-                                category_id=numeric_id,
-                                source_attachment_id=int(contract_attachment_row._mapping["id"]),
-                                content=contract_content,
-                                source_file_name=contract_file_name,
-                            )
+                    uploaded_objects.extend(
+                        await self._replace_contract_item_attachments_for_source(
+                            session,
+                            category_id=numeric_id,
+                            source_attachment_id=int(contract_attachment_row._mapping["id"]),
+                            content=contract_content,
+                            source_file_name=contract_file_name,
                         )
+                    )
                 await session.commit()
             except Exception:
                 for uploaded_bucket, uploaded_key in uploaded_objects:
@@ -662,6 +681,8 @@ class PerformancePackageService:
         normalized_type = str(attachment_type or CONTRACT_ATTACHMENT_TYPE).strip() or CONTRACT_ATTACHMENT_TYPE
         if normalized_type not in {SUMMARY_ATTACHMENT_TYPE, CONTRACT_ATTACHMENT_TYPE, "other"}:
             normalized_type = "other"
+        if normalized_type == CONTRACT_ATTACHMENT_TYPE:
+            ensure_contract_docx_file_name(file_name)
         object_key = f"performance-categories/PERCAT-{numeric_id:04d}/{normalized_type}/{_safe_file_name(file_name)}"
         async with async_session() as session:
             await ensure_material_runtime_tables(session)
@@ -706,7 +727,7 @@ class PerformancePackageService:
                 attachment_row = attachment_result.first()
                 if attachment_row is None:
                     raise PeripheralError(500, "业绩附件保存失败。", "PERFORMANCE_ATTACHMENT_CREATE_FAILED")
-                if normalized_type == CONTRACT_ATTACHMENT_TYPE and file_name.lower().endswith(".docx"):
+                if normalized_type == CONTRACT_ATTACHMENT_TYPE:
                     uploaded_child_objects = await self._replace_contract_item_attachments_for_source(
                         session,
                         category_id=numeric_id,
@@ -980,6 +1001,93 @@ class PerformancePackageService:
             except Exception as exc:  # pragma: no cover - object cleanup should not roll back DB delete
                 logger.warning("Failed to remove performance attachment object %s/%s: %s", bucket, key, exc)
         return {"message": "业绩类别已删除", "id": f"PERCAT-{numeric_id:04d}"}
+
+    async def update_item(self, category_id: str, item_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        numeric_category_id = self._numeric_category_id(category_id)
+        numeric_item_id = self._numeric_item_id(item_id)
+        payload = data if isinstance(data, dict) else {}
+        editable_fields = set(PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS) | set(PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS)
+        unknown_fields = sorted(str(key) for key in payload if key not in editable_fields)
+        if unknown_fields:
+            raise PeripheralError(400, f"业绩明细不支持编辑字段：{'、'.join(unknown_fields)}。", "PERFORMANCE_ITEM_FIELDS_INVALID")
+        if not any(key in editable_fields for key in payload):
+            raise PeripheralError(400, "没有需要更新的业绩明细字段。", "PERFORMANCE_ITEM_UPDATE_EMPTY")
+        assignments: list[str] = []
+        params: dict[str, Any] = {"category_id": numeric_category_id, "item_id": numeric_item_id}
+        for field, column in PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS.items():
+            if field not in payload:
+                continue
+            assignments.append(f"{column} = :{column}")
+            params[column] = str(payload.get(field) or "").strip()
+        year_updates: dict[str, int | None] = {}
+        for field, (column, label) in PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS.items():
+            if field not in payload:
+                continue
+            year = _parse_item_year(payload.get(field), field_label=label)
+            year_updates[field] = year
+            assignments.append(f"{column} = :{column}")
+            params[column] = year
+        async with async_session() as session:
+            await ensure_material_runtime_tables(session)
+            existing_result = await session.execute(
+                text(
+                    """
+                    SELECT turbine_model, time_facts
+                    FROM performance_items
+                    WHERE id = :item_id AND category_id = :category_id
+                    """
+                ),
+                {"item_id": numeric_item_id, "category_id": numeric_category_id},
+            )
+            existing_row = existing_result.first()
+            if existing_row is None:
+                raise PeripheralError(404, "业绩明细不存在。", "PERFORMANCE_ITEM_NOT_FOUND")
+            existing = dict(existing_row._mapping)
+            if "turbine_model" in params:
+                assignments.append("turbine_models = CAST(:turbine_models AS JSONB)")
+                params["turbine_models"] = _json(_split_turbine_models(params["turbine_model"]))
+            time_facts_changed = False
+            time_facts = dict(existing.get("time_facts") or {})
+            if "delivery_or_operation_time" in params:
+                time_facts["deliveryOrOperationTimeRaw"] = params["delivery_or_operation_time"]
+                time_facts_changed = True
+            for field, year in year_updates.items():
+                time_facts[field] = year
+                time_facts_changed = True
+            if time_facts_changed:
+                time_facts["years"] = _unique_ints(
+                    [
+                        time_facts.get("contractYear"),
+                        time_facts.get("deliveryYear"),
+                        time_facts.get("operationYear"),
+                        _extract_year(str(time_facts.get("contractTimeRaw") or "")),
+                        _extract_year(str(time_facts.get("deliveryTimeRaw") or "")),
+                        _extract_year(str(time_facts.get("operationTimeRaw") or "")),
+                        _extract_year(str(time_facts.get("deliveryOrOperationTimeRaw") or "")),
+                    ]
+                )
+                assignments.append("time_facts = CAST(:time_facts AS JSONB)")
+                params["time_facts"] = _json(time_facts)
+            result = await session.execute(
+                text(
+                    f"""
+                    UPDATE performance_items
+                    SET {", ".join(assignments)}, updated_at = NOW()
+                    WHERE id = :item_id AND category_id = :category_id
+                    RETURNING *
+                    """
+                ),
+                params,
+            )
+            row = result.first()
+            if row is None:
+                raise PeripheralError(404, "业绩明细不存在。", "PERFORMANCE_ITEM_NOT_FOUND")
+            await session.execute(
+                text("UPDATE performance_categories SET updated_at = NOW() WHERE id = :category_id"),
+                {"category_id": numeric_category_id},
+            )
+            await session.commit()
+        return {"message": "业绩明细已更新", "item": self._item_row_to_dict(row._mapping)}
 
     def _category_filters(
         self,
@@ -1360,6 +1468,7 @@ class PerformancePackageService:
             "rowIndex": int(row_dict.get("row_index") or 0),
             "projectName": row_dict.get("project_name") or "",
             "customerName": row_dict.get("customer_name") or "",
+            "partnerName": row_dict.get("partner_name") or "",
             "turbineModel": row_dict.get("turbine_model") or "",
             "turbineModels": list(row_dict.get("turbine_models") or []),
             "contractQuantity": row_dict.get("contract_quantity") or "",
@@ -1539,6 +1648,16 @@ def split_performance_contract_docx(content: bytes, *, file_name: str = "contrac
         chunk["content"] = content_bytes
         chunk["sizeBytes"] = len(content_bytes)
     return chunks
+
+
+def ensure_contract_docx_file_name(file_name: str) -> None:
+    """Reject legacy .doc contracts: only .docx files can flow through the split pipeline."""
+    if not str(file_name or "").lower().endswith(".docx"):
+        raise PeripheralError(
+            400,
+            f"合同附件 {file_name} 仅支持 .docx 格式，请先转换为 .docx 后再上传。",
+            "PERFORMANCE_CONTRACT_DOC_NOT_SUPPORTED",
+        )
 
 
 def match_contract_chunks_to_items(chunks: list[dict[str, Any]], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2264,6 +2383,7 @@ def _core_values(row_values: dict[str, str]) -> dict[str, str]:
     return {
         "projectName": _first_value(row_values, ("项目名称", "合同名称", "工程名称")),
         "customerName": _first_value(row_values, ("买方名称", "业主", "客户", "采购方")),
+        "partnerName": _first_value(row_values, ("项目合作方单位", "合作方单位", "合作方")),
         "turbineModel": turbine_model,
         "turbineModels": _split_turbine_models(turbine_model),
         "contractQuantity": _first_value(row_values, ("合同台数", "台数", "数量")),
@@ -2372,6 +2492,23 @@ def _unique_ints(values: list[int | None]) -> list[int]:
 
 def _parse_year_filter(value: Any) -> int | None:
     year = _extract_year(str(value or ""))
+    return year
+
+
+def _parse_item_year(value: Any, *, field_label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise PeripheralError(400, f"{field_label}无效，请输入 1990-2100 之间的年份。", "PERFORMANCE_ITEM_YEAR_INVALID")
+    if isinstance(value, float) and value.is_integer():
+        text_value = str(int(value))
+    else:
+        text_value = str(value).strip()
+    if not text_value:
+        return None
+    year = _extract_year(text_value)
+    if year is None:
+        raise PeripheralError(400, f"{field_label}无效，请输入 1990-2100 之间的年份。", "PERFORMANCE_ITEM_YEAR_INVALID")
     return year
 
 

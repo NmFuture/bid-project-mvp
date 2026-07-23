@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import unittest
 from io import BytesIO
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from zipfile import ZipFile
 from xml.etree import ElementTree as ET
 
@@ -13,11 +16,14 @@ from docx.shared import Inches
 
 from app.services.performance_package_service import (
     ITEM_CONTRACT_FORMAT_VERSION,
+    PerformancePackageService,
+    ensure_contract_docx_file_name,
     match_contract_chunks_to_items,
     parse_performance_summary_docx,
     render_contract_item_docx,
     split_performance_contract_docx,
 )
+from app.services.peripheral import PeripheralError
 
 
 def _summary_docx_bytes() -> bytes:
@@ -474,6 +480,20 @@ def test_render_contract_item_docx_keeps_original_when_soffice_fails() -> None:
     assert _docx_settings_count(content, "compat") == 0
 
 
+def test_ensure_contract_docx_file_name_accepts_docx() -> None:
+    ensure_contract_docx_file_name("陆上11MW业绩_合同.docx")
+    ensure_contract_docx_file_name("A/B 合同.DOCX")
+
+
+def test_ensure_contract_docx_file_name_rejects_legacy_doc() -> None:
+    with unittest.TestCase().assertRaises(PeripheralError) as ctx:
+        ensure_contract_docx_file_name("陆上11MW业绩_合同.doc")
+
+    assert ctx.exception.status_code == 400
+    assert ctx.exception.code == "PERFORMANCE_CONTRACT_DOC_NOT_SUPPORTED"
+    assert ".docx" in ctx.exception.detail
+
+
 def test_match_contract_chunks_to_items_prefers_project_name_then_row_order() -> None:
     parsed = parse_performance_summary_docx(_summary_docx_bytes(), file_name="陆上11MW业绩_汇总表.docx")
     chunks = split_performance_contract_docx(_contract_bundle_docx_bytes(), file_name="陆上11MW业绩_合同.docx")
@@ -498,3 +518,222 @@ def test_match_contract_chunks_to_items_prefers_project_name_then_row_order() ->
         "内蒙古能源察右前旗50万千瓦风光实验实证项目风力发电机组合同",
     ]
     assert all(match["method"] == "project_name" for match in matches)
+
+
+def _partner_summary_docx_bytes() -> bytes:
+    doc = Document()
+    doc.add_paragraph("陆上5MW业绩")
+    doc.add_paragraph("合同业绩台数共计2台，已通过240小时试运行台数共计2台，投运容量共计10MW。")
+    table = doc.add_table(rows=2, cols=6)
+    headers = [
+        "序号",
+        "型号",
+        "项目名称",
+        "买方名称",
+        "项目合作方单位",
+        "合同台数",
+    ]
+    rows = [
+        ["1", "5-200", "张北某风电项目", "某能源集团有限公司", "某勘测设计院有限公司", "2"],
+    ]
+    for index, header in enumerate(headers):
+        table.cell(0, index).text = header
+    for row_index, row in enumerate(rows, start=1):
+        for column_index, value in enumerate(row):
+            table.cell(row_index, column_index).text = value
+    output = BytesIO()
+    doc.save(output)
+    return output.getvalue()
+
+
+def test_parse_performance_summary_docx_maps_partner_name() -> None:
+    parsed = parse_performance_summary_docx(_partner_summary_docx_bytes(), file_name="陆上5MW业绩_汇总表.docx")
+
+    assert parsed["rowCount"] == 1
+    assert parsed["rows"][0]["projectName"] == "张北某风电项目"
+    assert parsed["rows"][0]["customerName"] == "某能源集团有限公司"
+    assert parsed["rows"][0]["partnerName"] == "某勘测设计院有限公司"
+
+
+def test_core_values_partner_name_aliases() -> None:
+    from app.services.performance_package_service import _core_values
+
+    assert _core_values({"项目合作方单位": "甲公司"})["partnerName"] == "甲公司"
+    assert _core_values({"合作方单位": "乙公司"})["partnerName"] == "乙公司"
+    assert _core_values({"合作方": "丙公司"})["partnerName"] == "丙公司"
+    assert _core_values({"买方名称": "丁公司"})["partnerName"] == ""
+
+
+class _FakePerformanceResult:
+    def __init__(self, row: dict | None = None, *, rows: list[dict] | None = None, scalar: int | None = None) -> None:
+        self.row = row
+        self.rows = rows
+        self.scalar = scalar
+
+    def first(self):
+        if self.row is None:
+            return None
+        return SimpleNamespace(_mapping=self.row)
+
+    def scalar_one(self):
+        return self.scalar if self.scalar is not None else 0
+
+    def __iter__(self):
+        return iter([SimpleNamespace(_mapping=row) for row in (self.rows if self.rows is not None else [])])
+
+
+class _FakePerformanceSession:
+    def __init__(
+        self,
+        row: dict | None = None,
+        *,
+        rows: list[dict] | None = None,
+        scalar: int | None = None,
+        results: list[_FakePerformanceResult] | None = None,
+    ) -> None:
+        self.row = row
+        self.rows = rows
+        self.scalar = scalar
+        self.results = list(results or [])
+        self.statements: list[str] = []
+        self.params: list[dict] = []
+        self.committed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, statement, params=None):
+        self.statements.append(str(statement))
+        self.params.append(dict(params or {}))
+        if self.results:
+            return self.results.pop(0)
+        return _FakePerformanceResult(self.row, rows=self.rows, scalar=self.scalar)
+
+    async def commit(self):
+        self.committed = True
+
+
+class PerformanceItemUpdateTests(unittest.IsolatedAsyncioTestCase):
+    def _item_row(self, **overrides) -> dict:
+        row = {
+            "id": 2,
+            "category_id": 1,
+            "row_index": 1,
+            "project_name": "原项目",
+            "customer_name": "原买方",
+            "partner_name": "原合作方",
+            "turbine_model": "EW5.0-200",
+            "turbine_models": ["EW5.0-200"],
+            "contract_quantity": "10",
+            "trial_operation_quantity": "8",
+            "commissioned_capacity_mw": "50",
+            "delivery_or_operation_time": "2021年",
+            "contract_year": 2020,
+            "delivery_year": 2021,
+            "operation_year": 2021,
+            "time_facts": {
+                "contractTimeRaw": "2020年",
+                "deliveryOrOperationTimeRaw": "2021年",
+                "contractYear": 2020,
+                "deliveryYear": 2021,
+                "operationYear": 2021,
+                "years": [2020, 2021],
+            },
+            "contact_info": "张三13800000000",
+            "row_values": {"项目名称": "原项目"},
+            "created_at": None,
+            "updated_at": None,
+        }
+        row.update(overrides)
+        return row
+
+    async def test_update_item_updates_fields_and_derived_payloads(self) -> None:
+        service = PerformancePackageService()
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(
+                    row={
+                        "turbine_model": "EW5.0-200",
+                        "time_facts": self._item_row()["time_facts"],
+                    }
+                ),
+                _FakePerformanceResult(
+                    row=self._item_row(
+                        project_name="新项目",
+                        partner_name="新合作方",
+                        turbine_model="EW6.25-202",
+                        turbine_models=["EW6.25-202"],
+                        contract_year=2022,
+                        delivery_year=None,
+                    )
+                ),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            result = await service.update_item(
+                "PERCAT-0001",
+                "PERITEM-0002",
+                {
+                    "projectName": " 新项目 ",
+                    "partnerName": " 新合作方 ",
+                    "turbineModel": "EW6.25-202",
+                    "contractYear": "2022年",
+                    "deliveryYear": "",
+                },
+            )
+
+        self.assertIn("SELECT turbine_model, time_facts", session.statements[0])
+        self.assertIn("UPDATE performance_items", session.statements[1])
+        self.assertIn("RETURNING *", session.statements[1])
+        self.assertIn("UPDATE performance_categories SET updated_at = NOW()", session.statements[2])
+        update_params = session.params[1]
+        self.assertEqual(update_params["project_name"], "新项目")
+        self.assertEqual(update_params["partner_name"], "新合作方")
+        self.assertEqual(update_params["turbine_model"], "EW6.25-202")
+        self.assertEqual(update_params["contract_year"], 2022)
+        self.assertIsNone(update_params["delivery_year"])
+        self.assertEqual(json.loads(update_params["turbine_models"]), ["EW6.25-202"])
+        time_facts = json.loads(update_params["time_facts"])
+        self.assertEqual(time_facts["contractYear"], 2022)
+        self.assertIsNone(time_facts["deliveryYear"])
+        self.assertEqual(time_facts["operationYear"], 2021)
+        self.assertEqual(time_facts["years"], [2022, 2021, 2020])
+        self.assertTrue(session.committed)
+        self.assertEqual(result["message"], "业绩明细已更新")
+        self.assertEqual(result["item"]["id"], "PERITEM-0002")
+        self.assertEqual(result["item"]["partnerName"], "新合作方")
+        self.assertEqual(result["item"]["contractYear"], 2022)
+
+    async def test_update_item_rejects_invalid_year(self) -> None:
+        service = PerformancePackageService()
+        with self.assertRaises(PeripheralError) as context:
+            await service.update_item("PERCAT-0001", "PERITEM-0002", {"contractYear": "abc"})
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_YEAR_INVALID")
+
+    async def test_update_item_rejects_unknown_or_empty_fields(self) -> None:
+        service = PerformancePackageService()
+        with self.assertRaises(PeripheralError) as unknown_context:
+            await service.update_item("PERCAT-0001", "PERITEM-0002", {"status": "enabled"})
+        self.assertEqual(unknown_context.exception.status_code, 400)
+        self.assertEqual(unknown_context.exception.code, "PERFORMANCE_ITEM_FIELDS_INVALID")
+        with self.assertRaises(PeripheralError) as empty_context:
+            await service.update_item("PERCAT-0001", "PERITEM-0002", {})
+        self.assertEqual(empty_context.exception.status_code, 400)
+        self.assertEqual(empty_context.exception.code, "PERFORMANCE_ITEM_UPDATE_EMPTY")
+
+    async def test_update_item_raises_not_found_for_missing_row(self) -> None:
+        service = PerformancePackageService()
+        session = _FakePerformanceSession(results=[_FakePerformanceResult(row=None)])
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            with self.assertRaises(PeripheralError) as context:
+                await service.update_item("PERCAT-0001", "PERITEM-9999", {"partnerName": "新合作方"})
+        self.assertEqual(context.exception.status_code, 404)
+        self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_NOT_FOUND")
