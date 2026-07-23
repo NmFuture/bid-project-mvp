@@ -120,6 +120,10 @@
     "align": "center",
     "line_spacing": 1.5
   },
+  "toc": {
+    "insert_when_missing": true,
+    "page_break_after": true
+  },
   "header": {
     "zh_font": "宋体",
     "en_font": "宋体",

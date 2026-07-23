@@ -2177,10 +2177,10 @@ class OpencodeClient:
             schema_hint = (
                 '{"schema_version":"bid-tech-assembly-v1","outputFile":'
                 '"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/投标文件-正文.docx",'
-                '"assemblyReport":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_report.md",'
-                '"needsReview":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/needs_review.md",'
+                '"assemblyReport":"","needsReview":"",'
                 '"planFile":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_plan.json",'
-                '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1}}'
+                '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1,"warningCount":0},'
+                '"warnings":[]}'
             )
         elif repair_kind == "gap_plan":
             schema_hint = (

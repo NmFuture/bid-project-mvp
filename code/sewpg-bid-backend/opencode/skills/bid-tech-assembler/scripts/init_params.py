@@ -9,10 +9,12 @@
     project_short       项目简称（用户填或从名字推）
     client_name         业主（正则"XX公司"）
     tender_no           招标编号（正则）
-    model_no            风机机型号
-    rated_power         额定功率（MW）
+    turbine_model       风机机型号
+    turbine_platform    风机平台
+    rated_power_kw      额定功率（kW）
     rated_speed         额定转速（rpm）
-    rotor_diameter      风轮直径（m）
+    rotor_diameter_m    风轮直径（m）
+    turbine_layout      风机布局
     hub_height          轮毂高度（m）
     wind_class          风区等级（IEC IIA 等）
     site_location       场址位置
@@ -46,10 +48,12 @@ SCHEMA = {
     "project_short": {"desc": "项目简称（用于文件名后缀，如 华能蒙东）", "auto": False},
     "client_name": {"desc": "业主单位（如 华能蒙东新能源公司）", "auto": True},
     "tender_no": {"desc": "招标编号（如 HNZB2025-12-1-382-01）", "auto": True},
-    "model_no": {"desc": "风机机型号（如 EW8.5-220）", "auto": False},
-    "rated_power": {"desc": "额定功率（单位 MW，如 8.5）", "auto": False},
+    "turbine_model": {"desc": "风机机型号（如 EW8.5-220）", "auto": False},
+    "turbine_platform": {"desc": "风机平台", "auto": False},
+    "rated_power_kw": {"desc": "额定功率（单位 kW，如 8500）", "auto": False},
     "rated_speed": {"desc": "额定转速（单位 rpm，如 9.8）", "auto": False},
-    "rotor_diameter": {"desc": "风轮直径（单位 m，如 220）", "auto": False},
+    "rotor_diameter_m": {"desc": "风轮直径（单位 m，如 220）", "auto": False},
+    "turbine_layout": {"desc": "风机布局", "auto": False},
     "hub_height": {"desc": "轮毂高度（单位 m，如 145）", "auto": False},
     "wind_class": {"desc": "IEC 风区等级（如 IEC IIIA）", "auto": False},
     "site_location": {"desc": "场址位置（如 内蒙古赤峰市翁牛特旗）", "auto": False},
@@ -222,7 +226,7 @@ def cmd_init(args):
             out["bid_date_cn"] = cn
 
     # 缺失字段处理：默认填占位符 [待填写：<desc>]；--keep-null 保留 null
-    missing_before = [k for k, v in out.items() if v is None or v == ""]
+    missing_before = [k for k in SCHEMA if out.get(k) is None or out.get(k) == ""]
     if not args.keep_null:
         for k in missing_before:
             out[k] = f"[待填写：{SCHEMA[k]['desc']}]"

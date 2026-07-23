@@ -4913,7 +4913,7 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertFalse(any(".0." in item or item.endswith(".0") for item in headings))
 
-    def test_bid_assembler_inject_prefix_clears_stale_direct_outline(self) -> None:
+    def test_bid_assembler_inject_prefix_preserves_style_and_updates_navigation(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
 
         doc = Document()
@@ -4932,10 +4932,10 @@ class TocSkillScriptTests(unittest.TestCase):
         )
 
         remaining = [para for para in doc.paragraphs if "载荷仿真分析能力" in para.text][0]
-        self.assertEqual(remaining.style.name, "Heading 3")
+        self.assertEqual(remaining.style.name, "Heading 1")
         p_pr = remaining._p.find(qn("w:pPr"))
         self.assertIsNotNone(p_pr)
-        self.assertIsNone(p_pr.find(qn("w:outlineLvl")))
+        self.assertEqual(p_pr.find(qn("w:outlineLvl")).get(qn("w:val")), "2")
 
     def test_bid_assembler_demotes_material_headings_to_body(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
@@ -5040,11 +5040,15 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(stats["removed"], 1)
         self.assertEqual(stats["remapped"], 1)
-        self.assertEqual(stats["bold_subheadings"], 1)
+        self.assertEqual(stats["bold_subheadings"], 0)
         self.assertEqual(stats["demoted"], 1)
-        self.assertEqual(project_flow.style.name, "Heading 3")
+        self.assertEqual(project_flow.style.name, "Heading 1")
+        self.assertEqual(
+            project_flow._p.find(qn("w:pPr")).find(qn("w:outlineLvl")).get(qn("w:val")),
+            "2",
+        )
         self.assertFalse((list_item.style.name or "").startswith("Heading"))
-        self.assertEqual(static.style.name, "Heading 4")
+        self.assertFalse((static.style.name or "").startswith("Heading"))
         self.assertFalse((table_heading.style.name or "").startswith("Heading"))
 
     def test_bid_assembler_strips_heading_style_numbering(self) -> None:
@@ -5328,7 +5332,7 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(
             headings,
-            ["1.9 上海电气优势简介", "基本情况", "载荷仿真分析能力"],
+            ["1.9 上海电气优势简介", "1.9.1 基本情况", "1.9.2 载荷仿真分析能力"],
         )
         self.assertIn("基本情况", text)
         self.assertIn("载荷仿真分析能力", text)

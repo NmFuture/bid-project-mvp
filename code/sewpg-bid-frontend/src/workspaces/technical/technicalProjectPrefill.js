@@ -7,6 +7,20 @@ export const technicalProjectToday = (now = new Date()) => {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
+const PARSE_PREFILL_FORM_FIELDS = ['name', 'projectCode', 'endDate']
+
+export const mergeTechnicalProjectDraftForm = ({ initialForm, draftForm } = {}) => {
+  const initial = initialForm && typeof initialForm === 'object' ? initialForm : {}
+  const draft = draftForm && typeof draftForm === 'object' ? draftForm : null
+  if (!draft) return initial
+
+  const merged = { ...initial, ...draft }
+  for (const field of PARSE_PREFILL_FORM_FIELDS) {
+    if (!String(draft[field] || '').trim()) merged[field] = initial[field]
+  }
+  return merged
+}
+
 export const buildTechnicalProjectInitialForm = ({
   project = null,
   prefill = null,

@@ -31,12 +31,11 @@ from docx import Document
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from numbering_fixer import (
-    strip_heading_prefixes_in_doc,
     strip_handwritten_numbering_in_body,
     strip_numPr_from_body,
-    normalize_heading_style_names,
     _replace_paragraph_text_preserve_format,
 )
+from docx_style_pruner import prune_unused_styles
 
 
 def _normalize_headings_by_outline_level(doc) -> int:
@@ -103,10 +102,12 @@ _PLACEHOLDER_KEY_MAP = {
     "project_short": ["[PROJECT_SHORT]", "[项目简称]"],
     "client_name": ["[CLIENT_NAME]", "[业主]", "[业主名称]"],
     "tender_no": ["[TENDER_NO]", "[招标编号]"],
-    "model_no": ["[MODEL_NO]", "[机型号]"],
-    "rated_power": ["[RATED_POWER]", "[额定功率]"],
+    "turbine_model": ["[MODEL_NO]", "[机型号]"],
+    "turbine_platform": ["[TURBINE_PLATFORM]", "[机型平台]"],
+    "rated_power_kw": ["[RATED_POWER]", "[额定功率]"],
     "rated_speed": ["[RATED_SPEED]", "[额定转速]"],
-    "rotor_diameter": ["[ROTOR_DIAMETER]", "[风轮直径]"],
+    "rotor_diameter_m": ["[ROTOR_DIAMETER]", "[风轮直径]"],
+    "turbine_layout": ["[TURBINE_LAYOUT]", "[风机布局]"],
     "hub_height": ["[HUB_HEIGHT]", "[轮毂高度]"],
     "wind_class": ["[WIND_CLASS]", "[风区等级]"],
     "site_location": ["[SITE_LOCATION]", "[场址位置]"],
@@ -193,12 +194,15 @@ def preprocess(
     verbose: bool = False,
 ) -> dict:
     doc = Document(str(in_path))
+    style_prune = prune_unused_styles(doc)
 
     stats = {
-        "heading_by_outline": _normalize_headings_by_outline_level(doc),
-        "heading_normalize": normalize_heading_style_names(doc),
+        "styles_pruned": style_prune["removed"],
+        # 素材标题样式在编号阶段按有效 outline/basedOn 识别，这里不再改写样式。
+        "heading_by_outline": 0,
+        "heading_normalize": 0,
         "numPr_stripped": strip_numPr_from_body(doc),
-        "heading_prefix_strip": strip_heading_prefixes_in_doc(doc, only_heading_styles=True),
+        "heading_prefix_strip": 0,
         "body_handwritten_strip": strip_handwritten_numbering_in_body(doc, only_normal_style=True),
         "tag_strip": strip_tag_marks(doc),
         "placeholder_replace": replace_placeholders(doc, params or {}),

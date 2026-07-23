@@ -266,7 +266,8 @@ def test_technical_gap_review_helpers_are_removed_from_store() -> None:
     assert "def force_save_technical_review_document" in review_source
     assert "def confirm_technical_review" in review_source
     assert "def ensure_technical_review_document_state" in state_source
-    assert "build_technical_review_payload" in assembly_source
+    assert "build_technical_review_payload" not in assembly_source
+    assert "ensure_technical_gap_state" in assembly_source
     assert "store.get_review_items" not in assembly_source
     assert "store._require(project_id).get(\"gap_state\")" not in assembly_source
 

@@ -335,7 +335,12 @@ export const technicalProjectsAPI = {
   },
   get: (id) => request(`/technical/projects/${id}`),
   create: (data) => request('/technical/projects', { method: 'POST', body: data }),
-  update: (id, data) => request(`/technical/projects/${id}`, { method: 'PUT', body: data }),
+  update: (id, data) => request(`/technical/projects/${id}`, {
+    method: 'PUT',
+    body: data,
+    timeoutMs: 5 * 60 * 1000,
+    retryCount: 0,
+  }),
   delete: (id) => request(`/technical/projects/${id}`, { method: 'DELETE' }),
   materialsPath: (id) => request(`/technical/projects/${id}/materials-path`),
   templateFallback: (id) => request(`/technical/projects/${id}/template-fallback`),
