@@ -177,7 +177,6 @@ NUMBERED_HEADING_RE = re.compile(
 CHINESE_NUMBERED_HEADING_RE = re.compile(
     rf"^\s*(?P<prefix>(?:（\s*)?[{CHINESE_NUMERAL_CHARS}]+\s*(?:[、.．)）]))\s*(?P<title>\S.*)$"
 )
-HEADING_SENTENCE_END_RE = re.compile(r"[。！？!?；;：:]$")
 
 
 def _extract_heading_level_from_style(style_name: str | None) -> int | None:
@@ -186,6 +185,45 @@ def _extract_heading_level_from_style(style_name: str | None) -> int | None:
     if not match:
         return None
     return max(1, min(int(match.group(1)), 9))
+
+
+def _style_outline_level(style) -> int | None:
+    """读取单个样式直接声明的 outlineLvl。"""
+    from docx.oxml.ns import qn
+
+    style_element = getattr(style, "element", None)
+    if style_element is None:
+        return None
+    p_pr = style_element.find(qn("w:pPr"))
+    outline = p_pr.find(qn("w:outlineLvl")) if p_pr is not None else None
+    if outline is None:
+        return None
+    try:
+        value = int(outline.get(qn("w:val")))
+    except (ValueError, TypeError):
+        return None
+    return value if 0 <= value <= 8 else None
+
+
+def _style_chain_heading_level(para) -> int | None:
+    """沿 basedOn 链读取真实 Heading 名称或祖先 outlineLvl。"""
+    style = getattr(para, "style", None)
+    seen: set[int] = set()
+    while style is not None:
+        element = getattr(style, "element", None)
+        marker = id(element) if element is not None else id(style)
+        if marker in seen:
+            break
+        seen.add(marker)
+
+        level = _extract_heading_level_from_style(getattr(style, "name", "") or "")
+        if level is not None:
+            return level
+        outline_level = _style_outline_level(style)
+        if outline_level is not None:
+            return outline_level + 1
+        style = getattr(style, "base_style", None)
+    return None
 
 
 def _parse_numbered_heading_prefix(text: str) -> tuple[str, str, int] | None:
@@ -269,25 +307,8 @@ def _paragraph_has_numpr(para) -> bool:
     return pPr is not None and pPr.find(qn("w:numPr")) is not None
 
 
-
-def _looks_like_numbered_heading_text(text: str) -> bool:
-    """粗略判断去编号后的文本更像标题而不是正文句子。"""
-    compact = re.sub(r"\s+", "", text or "")
-    if not compact:
-        return False
-    if len(compact) > 40:
-        return False
-    if HEADING_SENTENCE_END_RE.search(compact):
-        return False
-    if sum(compact.count(mark) for mark in "，,、") > 1:
-        return False
-    if len(compact) > 12 and re.search(r"(?:为|是|将|应|需|进行|采用|包括|包含|达到|完成)", compact):
-        return False
-    return True
-
-
 def _resolve_heading_level(para, inferred_depth: int) -> int:
-    """优先保留原有 Heading/outline 层级，否则回退到编号深度。"""
+    """优先保留段落及 basedOn 样式链的 Heading/outline 层级。"""
     style_level = _extract_heading_level_from_style(_get_para_style(para))
     if style_level is not None:
         return style_level
@@ -296,9 +317,9 @@ def _resolve_heading_level(para, inferred_depth: int) -> int:
     if outline_level is not None:
         return max(1, min(outline_level + 1, 9))
 
-    style_outline_level = _get_style_outline_level(para)
-    if style_outline_level is not None:
-        return max(1, min(style_outline_level + 1, 9))
+    style_chain_level = _style_chain_heading_level(para)
+    if style_chain_level is not None:
+        return style_chain_level
 
     numpr_level = _get_numpr_level(para)
     if numpr_level is not None:
@@ -337,16 +358,21 @@ def _apply_heading_level(para, level: int) -> None:
     _set_outline_level(para._element, level)
 
 
-def _looks_like_heading_para(para, cleaned_text: str, has_number_prefix: bool) -> bool:
-    """段落是否应按标题处理。"""
+def _looks_like_heading_para(para) -> bool:
+    """段落是否应按标题处理。
+
+    只认 docx 里真实存在的标题证据（Heading 样式名、段落 outlineLvl、
+    basedOn 样式链上的 Heading/outlineLvl），不按"带编号、文字较短"猜标题——
+    猜测会把"1、载荷仿真分析能力"这类正文误升为 Heading，凭空造出原文档
+    没有的层级。
+    """
     style_level = _extract_heading_level_from_style(_get_para_style(para))
     outline_level = _get_outline_level(para._element)
-    style_outline_level = _get_style_outline_level(para)
+    style_chain_level = _style_chain_heading_level(para)
     return (
         style_level is not None
         or outline_level is not None
-        or style_outline_level is not None
-        or (has_number_prefix and _looks_like_numbered_heading_text(cleaned_text))
+        or style_chain_level is not None
     )
 
 
@@ -382,7 +408,7 @@ def _strip_numbered_heading_prefixes(doc) -> int:
             had_visible_prefix = cleaned_text != stripped_text
 
         had_numpr = _paragraph_has_numpr(para)
-        if not _looks_like_heading_para(para, cleaned_text, parsed is not None):
+        if not _looks_like_heading_para(para):
             continue
 
         changed = False
@@ -395,8 +421,14 @@ def _strip_numbered_heading_prefixes(doc) -> int:
 
         style_level = _extract_heading_level_from_style(_get_para_style(para))
         outline_level = _get_outline_level(para._element)
-        style_outline_level = _get_style_outline_level(para)
-        if had_visible_prefix or had_numpr or style_level is not None or outline_level is not None or style_outline_level is not None:
+        style_chain_level = _style_chain_heading_level(para)
+        if (
+            had_visible_prefix
+            or had_numpr
+            or style_level is not None
+            or outline_level is not None
+            or style_chain_level is not None
+        ):
             _apply_heading_level(para, _resolve_heading_level(para, inferred_depth))
 
         if changed:
@@ -715,29 +747,6 @@ def _get_outline_level(para_element) -> int | None:
             except (ValueError, TypeError):
                 pass
     return None
-
-
-def _get_style_outline_level(para) -> int | None:
-    """获取样式上的 outlineLvl 值。"""
-    from docx.oxml.ns import qn
-
-    style = getattr(para, "style", None)
-    style_element = getattr(style, "element", None)
-    if style_element is None:
-        return None
-
-    pPr = style_element.find(qn("w:pPr"))
-    if pPr is None:
-        return None
-
-    outline = pPr.find(qn("w:outlineLvl"))
-    if outline is None:
-        return None
-
-    try:
-        return int(outline.get(qn("w:val")))
-    except (ValueError, TypeError):
-        return None
 
 
 def _get_numpr_level(para) -> int | None:

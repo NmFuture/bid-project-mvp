@@ -27,6 +27,20 @@ const SORTABLE_COLUMNS = [
   { key: 'contractYear', label: '合同年' },
   { key: 'deliveryYear', label: '交货/投运' },
 ]
+const ITEM_EDIT_FIELDS = [
+  { key: 'projectName', label: '项目名称', span: 2 },
+  { key: 'customerName', label: '买方' },
+  { key: 'partnerName', label: '项目合作方单位' },
+  { key: 'turbineModel', label: '型号' },
+  { key: 'contractQuantity', label: '合同台数' },
+  { key: 'trialOperationQuantity', label: '试运行台数' },
+  { key: 'commissionedCapacityMw', label: '投运容量(MW)' },
+  { key: 'deliveryOrOperationTime', label: '交货期/投运时间' },
+  { key: 'contractYear', label: '合同年' },
+  { key: 'deliveryYear', label: '交货年' },
+  { key: 'operationYear', label: '投运年' },
+  { key: 'contactInfo', label: '联系人及电话' },
+]
 
 const normalizeTags = (value) => {
   const source = Array.isArray(value) ? value : String(value || '').split(/[,，;；\n\r\t]+/)
@@ -170,6 +184,9 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [editTarget, setEditTarget] = useState(null)
+  const [editForm, setEditForm] = useState({})
+  const [savingEdit, setSavingEdit] = useState(false)
   const [attachmentPreview, setAttachmentPreview] = useState(null)
   const [attachmentPreviewLoading, setAttachmentPreviewLoading] = useState(false)
   const [attachmentPreviewError, setAttachmentPreviewError] = useState('')
@@ -436,6 +453,51 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
     }
   }
 
+  const openEditDialog = (row) => {
+    if (!row?.id) return
+    setEditTarget(row)
+    setEditForm({
+      projectName: row.projectName || '',
+      customerName: row.customerName || '',
+      partnerName: row.partnerName || '',
+      turbineModel: row.turbineModel || '',
+      contractQuantity: row.contractQuantity || '',
+      trialOperationQuantity: row.trialOperationQuantity || '',
+      commissionedCapacityMw: row.commissionedCapacityMw || '',
+      deliveryOrOperationTime: row.deliveryOrOperationTime || '',
+      contractYear: row.contractYear ?? '',
+      deliveryYear: row.deliveryYear ?? '',
+      operationYear: row.operationYear ?? '',
+      contactInfo: row.contactInfo || '',
+    })
+  }
+
+  const closeEditDialog = () => {
+    if (savingEdit) return
+    setEditTarget(null)
+    setEditForm({})
+  }
+
+  const updateEditForm = (key, value) => {
+    setEditForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const saveItemEdit = async () => {
+    if (!editTarget?.id || !editTarget?.categoryId) return
+    setSavingEdit(true)
+    try {
+      const result = await performanceAPI.updateItem(editTarget.categoryId, editTarget.id, editForm)
+      showToast(result?.message || '业绩明细已更新')
+      setEditTarget(null)
+      setEditForm({})
+      await loadItems()
+    } catch (error) {
+      showToast(error?.message || '业绩明细更新失败', 'error')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   const closeAttachmentPreview = () => {
     setAttachmentPreview(null)
     setAttachmentPreviewLoading(false)
@@ -490,8 +552,8 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   return (
     <main className="h-full min-h-0 overflow-hidden bg-surface text-on-surface">
       <input ref={summaryInputRef} type="file" accept=".docx" onChange={previewSummary} className="hidden" />
-      <input ref={contractInputRef} type="file" accept=".doc,.docx" multiple onChange={addContractFiles} className="hidden" />
-      <input ref={attachmentInputRef} type="file" accept=".doc,.docx" onChange={uploadAttachment} className="hidden" />
+      <input ref={contractInputRef} type="file" accept=".docx" multiple onChange={addContractFiles} className="hidden" />
+      <input ref={attachmentInputRef} type="file" accept=".docx" onChange={uploadAttachment} className="hidden" />
       <div className="flex h-full min-h-0 flex-col gap-3">
         <MaterialsViewSwitch
           active="performance"
@@ -531,20 +593,28 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           ) : !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">暂无业绩明细，点击「导入」上传汇总表与合同</div>
           ) : (
-            <table className={`w-full min-w-[1240px] table-fixed text-left text-[13px] leading-5 transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
+            <table className={`w-full min-w-[1320px] table-fixed text-left text-[13px] leading-5 transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
               <colgroup>
-                <col className="w-[22%]" />
-                <col className="w-[17%]" />
-                <col className="w-[9%]" />
-                <col className="w-[6%]" />
-                <col className="w-[8%]" />
-                <col className="w-[8%]" />
                 <col className="w-[20%]" />
-                <col className="w-[10%]" />
+                <col className="w-[13%]" />
+                <col className="w-[11%]" />
+                <col className="w-[9%]" />
+                <col className="w-[5%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
+                <col className="w-[15%]" />
+                <col className="w-[8%]" />
+                <col className="w-[3%]" />
               </colgroup>
               <thead className="sticky top-0 z-10 bg-surface-container-low text-xs text-on-surface-variant">
                 <tr>
-                  {SORTABLE_COLUMNS.map((column) => (
+                  {SORTABLE_COLUMNS.slice(0, 2).map((column) => (
+                    <th key={column.key} className="px-3 py-2.5">
+                      <SortHeader columnKey={column.key} label={column.label} sortBy={sort.sortBy} sortOrder={sort.sortOrder} onSort={updateSort} />
+                    </th>
+                  ))}
+                  <th className="px-3 py-2.5 text-xs font-semibold">合作方</th>
+                  {SORTABLE_COLUMNS.slice(2).map((column) => (
                     <th key={column.key} className="px-3 py-2.5">
                       <SortHeader columnKey={column.key} label={column.label} sortBy={sort.sortBy} sortOrder={sort.sortOrder} onSort={updateSort} />
                     </th>
@@ -554,6 +624,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                   <th className="px-3 py-2.5">
                     <SortHeader columnKey="categoryName" label="所属类别" sortBy={sort.sortBy} sortOrder={sort.sortOrder} onSort={updateSort} />
                   </th>
+                  <th className="px-3 py-2.5 text-xs font-semibold">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -570,6 +641,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                         ) : null}
                       </td>
                       <td className="truncate px-3 py-2.5" title={row.customerName || '-'}>{row.customerName || '-'}</td>
+                      <td className="truncate px-3 py-2.5 text-on-surface-variant" title={row.partnerName || '-'}>{row.partnerName || '-'}</td>
                       <td className="truncate px-3 py-2.5 text-on-surface-variant" title={modelLabel}>{modelLabel}</td>
                       <td className="px-3 py-2.5">{row.contractYear || '-'}</td>
                       <td className="px-3 py-2.5">
@@ -625,6 +697,17 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                         {row.categoryStatus === 'disabled' ? (
                           <span className="mt-1 inline-flex rounded-full bg-error-container/70 px-1.5 py-0.5 text-[11px] leading-4 text-error ring-1 ring-error/25">已停用</span>
                         ) : null}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => openEditDialog(row)}
+                          title="编辑业绩明细"
+                          aria-label={`编辑 ${row.projectName || row.id}`}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-outline hover:bg-primary/10 hover:text-primary"
+                        >
+                          <span aria-hidden="true" className="material-symbols-outlined text-[16px]">edit</span>
+                        </button>
                       </td>
                     </tr>
                   )
@@ -774,6 +857,47 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                 className="rounded-lg bg-error px-4 py-2 text-sm text-on-error disabled:opacity-50"
               >
                 {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editTarget && (
+        <div className="dialog-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 transition-opacity">
+          <div className="wizard-modal-surface flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+            <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-semibold">编辑业绩明细</h2>
+                <p className="mt-1 text-xs text-on-surface-variant">{editTarget.projectName || editTarget.id} · {editTarget.categoryName || editTarget.categoryId}</p>
+              </div>
+              <button onClick={closeEditDialog} disabled={savingEdit} className="close-plain flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-on-surface-variant hover:text-primary disabled:opacity-50" aria-label="关闭">
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+            <div className="min-h-0 overflow-auto p-5">
+              <div className="grid gap-3 md:grid-cols-2">
+                {ITEM_EDIT_FIELDS.map((field) => (
+                  <label key={field.key} className={`text-sm text-on-surface-variant ${field.span === 2 ? 'md:col-span-2' : ''}`}>
+                    {field.label}
+                    <input
+                      value={editForm[field.key] ?? ''}
+                      onChange={(event) => updateEditForm(field.key, event.target.value)}
+                      className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface"
+                    />
+                  </label>
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-on-surface-variant">年份需为 1990-2100 之间的年份，留空表示清空该字段。</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+              <button onClick={closeEditDialog} disabled={savingEdit} className="rounded-lg px-4 py-2 text-sm text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50">取消</button>
+              <button
+                onClick={saveItemEdit}
+                disabled={savingEdit}
+                className="rounded-lg bg-primary px-4 py-2 text-sm text-on-primary disabled:opacity-50"
+              >
+                {savingEdit ? '保存中...' : '保存'}
               </button>
             </div>
           </div>

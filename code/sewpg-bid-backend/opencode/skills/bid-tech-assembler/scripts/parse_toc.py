@@ -224,6 +224,26 @@ def _json_heading_text(item: dict) -> str:
 def _entry_from_json_item(item: dict, idx: int) -> dict:
     text = _json_heading_text(item)
     parsed = parse_heading_text(text)
+    explicit_number = str(
+        item.get("number")
+        or item.get("chapter_no")
+        or item.get("chapterNo")
+        or item.get("section")
+        or ""
+    ).strip()
+    if explicit_number and not parsed["chapter_no"]:
+        # JSON 已将编号与标题结构化，文本解析器不认识的中文样式也不能丢失。
+        parsed["chapter_no"] = explicit_number
+        parsed["chapter_no_flat"] = ""
+        parsed["title"] = str(item.get("title") or item.get("name") or "").strip()
+    explicit_flat_number = str(
+        item.get("chapter_no_flat")
+        or item.get("chapterNoFlat")
+        or item.get("number_flat")
+        or ""
+    ).strip()
+    if explicit_flat_number and not parsed["is_preface"] and not parsed["is_appendix"]:
+        parsed["chapter_no_flat"] = explicit_flat_number
     annotation = str(item.get("annotation") or item.get("tag") or "")
     parsed["tag"] = _annotation_to_tag(annotation) if annotation else parsed["tag"]
     level = item.get("level")

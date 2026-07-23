@@ -266,7 +266,8 @@ def test_technical_gap_review_helpers_are_removed_from_store() -> None:
     assert "def force_save_technical_review_document" in review_source
     assert "def confirm_technical_review" in review_source
     assert "def ensure_technical_review_document_state" in state_source
-    assert "build_technical_review_payload" in assembly_source
+    assert "build_technical_review_payload" not in assembly_source
+    assert "ensure_technical_gap_state" in assembly_source
     assert "store.get_review_items" not in assembly_source
     assert "store._require(project_id).get(\"gap_state\")" not in assembly_source
 
@@ -3373,6 +3374,15 @@ def test_technical_existing_material_action_uses_technical_material_store(tmp_pa
     )
     project = store._require(project_id)
 
+    async def fake_raw_download(material_id: str) -> dict[str, str]:
+        assert material_id == "RAW-TECH-001"
+        return {
+            "bucket": "mock-bucket",
+            "key": "technical/RAW-TECH-001-original.docx",
+            "fileName": "技术素材原件.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+
     async def fake_cleaned_download(material_id: str) -> dict[str, str]:
         assert material_id == "RAW-TECH-001"
         return {
@@ -3384,6 +3394,9 @@ def test_technical_existing_material_action_uses_technical_material_store(tmp_pa
 
     def fake_download_file(bucket: str, key: str, target_path: Path) -> None:
         assert bucket == "mock-bucket"
+        if key == "technical/RAW-TECH-001-original.docx":
+            target_path.with_suffix(f"{target_path.suffix}.download").write_bytes(b"partial")
+            raise RuntimeError("raw object missing")
         assert key == "technical/RAW-TECH-001.docx"
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(b"technical-material-docx")
@@ -3399,7 +3412,7 @@ def test_technical_existing_material_action_uses_technical_material_store(tmp_pa
     ), patch.object(
         technical_gap_actions_module.technical_material_store,
         "raw_download_content",
-        side_effect=AssertionError("cleaned technical material should be preferred"),
+        side_effect=fake_raw_download,
     ), patch.object(
         technical_gap_actions_module.minio_client,
         "download_file",

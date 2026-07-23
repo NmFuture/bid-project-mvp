@@ -41,8 +41,6 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 
 # ---------- 卡片加载 ----------
 
@@ -65,37 +63,6 @@ class Card:
     def scope_rank(self) -> int:
         # 通用在前=0, 定制在后=1
         return 0 if self.scope == "通用" else 1
-
-
-def load_cards(wiki_root: Path) -> list[Card]:
-    cards: list[Card] = []
-    for md in wiki_root.glob("卡片/**/*.md"):
-        text = md.read_text(encoding="utf-8")
-        m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
-        if not m:
-            continue
-        try:
-            fm = yaml.safe_load(m.group(1)) or {}
-        except yaml.YAMLError:
-            continue
-        if fm.get("deprecated"):
-            continue
-        c = Card(
-            name=str(fm.get("name", md.stem)),
-            path=str(fm.get("path", "")),
-            scope=str(fm.get("scope", "通用")),
-            category=str(fm.get("category", "")),
-            skeleton_section=str(fm.get("skeleton_section", "")),
-            skeleton_level=str(fm.get("skeleton_level", "")),
-            material_level_range=str(fm.get("material_level_range", "")),
-            heading_count=int(fm.get("heading_count", 0) or 0),
-            shift=int(fm.get("shift", 0) or 0),
-            attach_mode=str(fm.get("attach_mode", "normal") or "normal"),
-            deprecated=bool(fm.get("deprecated", False)),
-            card_file=str(md),
-        )
-        cards.append(c)
-    return cards
 
 
 def index_cards(cards: list[Card]) -> dict[str, list[Card]]:
@@ -671,25 +638,39 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         return plan
 
     by_number: dict[str, dict] = {}
-    by_title: dict[str, dict] = {}
+    by_numbered_title: dict[str, dict] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         number = str(item.get("number") or "").strip()
-        title = _normalize_title(str(item.get("title") or ""))
+        title = str(item.get("title") or "").strip()
         if number:
             by_number[number] = item
-        if title:
-            by_title[title] = item
         if number and title:
-            by_title[_normalize_title(f"{number} {item.get('title') or ''}")] = item
+            by_numbered_title[_normalize_title(f"{number} {title}")] = item
 
     for entry in plan:
-        number = str(entry.get("chapter_no_flat") or entry.get("chapter_no") or "").strip()
-        title = _normalize_title(str(entry.get("title") or ""))
-        gap_item = by_number.get(number) or by_title.get(title)
+        entry["paths"] = []
+        entry["shifts"] = []
+        entry["attach_modes"] = []
+        number_candidates = (
+            str(entry.get("chapter_no") or "").strip(),
+            str(entry.get("chapter_no_flat") or "").strip(),
+        )
+        gap_item = next((by_number[number] for number in number_candidates if number in by_number), None)
+        if gap_item is None:
+            gap_item = by_numbered_title.get(_normalize_title(str(entry.get("title") or "")))
         if not gap_item:
+            if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
+                entry["status"] = STATUS_UNMATCHED
+                entry["note"] = "gap plan 未选择素材"
             continue
+        entry["coverage_role"] = str(
+            gap_item.get("coverageRole") or gap_item.get("coverage_role") or ""
+        ).strip()
+        entry["covered_by_parent"] = str(
+            gap_item.get("coveredByParent") or gap_item.get("covered_by_parent") or ""
+        ).strip()
         paths = _gap_plan_paths(gap_item)
         if not paths and _gap_plan_item_is_structural(gap_item):
             entry["paths"] = []
@@ -700,6 +681,16 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
             entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
             continue
         if not paths:
+            # 生成前校验：候选未确认 / AI 填写未完成时给出显式提示，
+            # S7 不擅自使用 candidateMaterials 冒充已确认素材。
+            pending_note = _gap_plan_pending_note(gap_item)
+            if pending_note:
+                entry["paths"] = []
+                entry["shifts"] = []
+                entry["attach_modes"] = []
+                entry["status"] = STATUS_UNMATCHED
+                entry["note"] = pending_note
+                entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
             continue
         entry["paths"] = paths
         entry["shifts"] = [0 for _ in paths]
@@ -707,16 +698,33 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         entry["status"] = STATUS_ADAPTED if entry.get("field_replace") else STATUS_MATCHED
         entry["note"] = "来自缺口识别与处理计划"
         entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
-    return plan
+    return _drop_chapter_master_descendants(plan)
+
+
+def _drop_chapter_master_descendants(plan: list[dict]) -> list[dict]:
+    prefixes = {
+        str(item.get("chapter_no_flat") or "").strip()
+        for item in plan
+        if str(item.get("coverage_role") or "").strip() == "chapter_master"
+        and item.get("paths")
+        and str(item.get("chapter_no_flat") or "").strip()
+    }
+    if not prefixes:
+        return plan
+    return [
+        item
+        for item in plan
+        if not any(
+            str(item.get("chapter_no_flat") or "").strip().startswith(f"{prefix}.")
+            for prefix in prefixes
+        )
+    ]
 
 
 def _gap_plan_paths(item: dict) -> list[str]:
     paths: list[str] = []
-    has_ai_fill_flow = bool(item.get("fillTasks")) or any(
-        isinstance(artifact, dict) and str(artifact.get("source") or "") == "ai_fill"
-        for artifact in (item.get("resolvedArtifacts") or [])
-    )
-    keys = ("resolvedArtifacts",) if has_ai_fill_flow else ("matchedMaterials", "resolvedArtifacts")
+    resolved_artifacts = item.get("resolvedArtifacts") or []
+    keys = ("resolvedArtifacts",) if resolved_artifacts else ("matchedMaterials",)
     for key in keys:
         values = item.get(key) or []
         if not isinstance(values, list):
@@ -746,6 +754,27 @@ def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
     return str(quality_report.get("status") or "") == "passed"
 
 
+def _gap_plan_pending_note(item: dict) -> str:
+    """候选未确认 / AI 填写未完成的显式提示（生成前校验）。
+
+    S7 只消费 matchedMaterials 与 S7-ready resolvedArtifacts。当缺口项只有
+    candidateMaterials（页面"已匹配"其实只是候选/待填写来源）或填写流程未
+    走完时，不能用候选冒充已确认素材，必须给出可操作提示。
+    """
+    artifacts = [a for a in (item.get("resolvedArtifacts") or []) if isinstance(a, dict)]
+    if any(_resolved_artifact_is_s7_ready(a) for a in artifacts):
+        return ""
+    fill_tasks = [t for t in (item.get("fillTasks") or []) if isinstance(t, dict)]
+    has_ai_fill_artifact = any(str(a.get("source") or "") == "ai_fill" for a in artifacts)
+    if fill_tasks or has_ai_fill_artifact:
+        return "AI 填写未完成：请先完成待填写模板并通过质检/人工确认"
+    matched = [m for m in (item.get("matchedMaterials") or []) if isinstance(m, dict)]
+    candidates = [c for c in (item.get("candidateMaterials") or []) if isinstance(c, dict)]
+    if not matched and candidates:
+        return "候选素材未确认：请先在缺口处理页面确认选用素材"
+    return ""
+
+
 def _gap_plan_item_is_structural(item: dict) -> bool:
     status = str(item.get("status") or "").strip().lower()
     if status == "structural":
@@ -766,18 +795,17 @@ def main():
     ap.add_argument("--toc", type=Path, required=True)
     ap.add_argument("--wiki", type=Path, required=True, help="wiki 根目录（含 卡片/ index.md）")
     ap.add_argument("--params", type=Path, default=None, help="project_params.json（目前未用；占位）")
-    ap.add_argument("--gap-plan", type=Path, default=None, help="S4 缺口识别与处理计划 JSON")
+    ap.add_argument("--gap-plan", type=Path, required=True, help="S4 缺口识别与处理计划 JSON")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--summary", action="store_true", help="同时打印摘要到 stderr")
     args = ap.parse_args()
 
     toc = json.loads(args.toc.read_text(encoding="utf-8"))
-    cards = load_cards(args.wiki)
     params = {}
     if args.params and args.params.exists():
         params = json.loads(args.params.read_text(encoding="utf-8"))
 
-    plan = build_plan(toc, cards, params)
+    plan = build_plan(toc, [], params)
     plan = apply_gap_plan(plan, args.gap_plan)
     plan = rearrange_appendices(plan)
 

@@ -64,6 +64,12 @@ LONG_TERM_RE = re.compile(r"长期有效|永久有效|有效期\s*[为:：]?\s*(
 DATE_ORDER_WARNING = "发证日期晚于有效期至，请人工复核"
 CERTIFICATE_AI_TEXT_LIMIT = 6000
 
+
+def _is_equipment_validity_context(line: str, start: int) -> bool:
+    """“校准/计量有效期”是测试设备的标定日期，不属于证书本身的有效期。"""
+    prefix = line[max(0, start - 8):start]
+    return "校准" in prefix or "计量" in prefix
+
 logger = logging.getLogger(__name__)
 
 
@@ -308,6 +314,8 @@ def extract_certificate_time_fields(text: str) -> dict[str, Any]:
             all_dates.append(CertificateDateCandidate(normalized, window, 20))
 
         for match in FIELD_DATE_RE.finditer(line):
+            if _is_equipment_validity_context(line, match.start()):
+                continue
             label = match.group("label")
             date_matches = list(DATE_TOKEN_RE.finditer(line[match.start():]))
             picked_date = date_matches[-1].group(0) if ("有效" in label or "截止" in label) and date_matches else match.group("date")
@@ -323,6 +331,8 @@ def extract_certificate_time_fields(text: str) -> dict[str, Any]:
         # 掩掉完整日期后再找“年月”模糊日期，避免把完整日期的前半截当成年月
         masked = DATE_TOKEN_RE.sub(" ", line)
         for match in FIELD_YEAR_MONTH_RE.finditer(masked):
+            if _is_equipment_validity_context(masked, match.start()):
+                continue
             label = match.group("label")
             year = int(match.group("year"))
             month = int(match.group("month"))
@@ -356,7 +366,10 @@ def extract_certificate_time_fields(text: str) -> dict[str, Any]:
                 if normalized and normalized not in labeled_expiry_values:
                     issue_candidates.append(CertificateDateCandidate(normalized, _line_window(lines, index), 78))
         if "有效" in line or "截止" in line:
-            for match in DATE_TOKEN_RE.finditer(_line_window(lines, index)):
+            window = _line_window(lines, index)
+            for match in DATE_TOKEN_RE.finditer(window):
+                if _is_equipment_validity_context(window, match.start()):
+                    continue
                 normalized = _normalize_date(match.group(0))
                 if normalized and normalized not in labeled_issue_values:
                     expiry_candidates.append(CertificateDateCandidate(normalized, _line_window(lines, index), 82))
@@ -415,6 +428,216 @@ def extract_certificate_time_fields(text: str) -> dict[str, Any]:
     }
 
 
+# ---------- 证书类别有效期规则 ----------
+
+# 规则来源：《证书报告有效期确认.xlsx》（Sheet2，业务确认版）。
+# 报告内明确写的有效期始终优先；只有文本未写明时才按规则推算/标注，不做猜测。
+CERT_VALIDITY_RULES: tuple[dict[str, Any], ...] = (
+    {"category": "整机设计认证", "authority": "CQC", "grade": "A", "mode": "long_term", "condition": "设计不变"},
+    {"category": "整机设计认证", "authority": "CQC", "grade": "B", "mode": "years", "years": 1},
+    {"category": "整机设计认证", "authority": "CQC", "grade": "D", "mode": "years", "years": 2},
+    {"category": "整机型式认证", "authority": "CQC", "grade": "A", "mode": "years", "years": 5},
+    {"category": "整机型式认证", "authority": "CQC", "grade": "B", "mode": "years", "years": 1},
+    {"category": "部件型式认证", "authority": "CQC", "grade": "A", "mode": "years", "years": 5},
+    {"category": "部件型式认证", "authority": "CQC", "grade": "B", "mode": "years", "years": 1},
+    {"category": "部件型式认证", "authority": "鉴衡CGC", "grade": "A", "mode": "years", "years": 4},
+    {"category": "部件型式认证", "authority": "鉴衡CGC", "grade": "B", "mode": "years", "years": 1},
+    {"category": "低压穿越LVRT报告", "authority": "电科院CEPRI", "grade": "", "mode": "follow_turbine"},
+    {"category": "高压穿越HVRT报告", "authority": "电科院CEPRI", "grade": "", "mode": "follow_turbine"},
+    {"category": "电能质量报告", "authority": "电科院CEPRI", "grade": "", "mode": "follow_turbine"},
+    {"category": "电网适应性报告", "authority": "电科院CEPRI", "grade": "", "mode": "follow_turbine"},
+    {"category": "故障电压连续穿越检测报告", "authority": "电科院CEPRI", "grade": "", "mode": "follow_turbine"},
+    {"category": "机电暂态模型验证报告", "authority": "电科院CEPRI", "grade": "", "mode": "long_term", "condition": "控制策略不变"},
+    {"category": "电磁暂态模型验证报告", "authority": "电科院CEPRI", "grade": "", "mode": "long_term", "condition": "控制策略不变"},
+)
+
+# 类别关键词（按特异性从高到低匹配，命中即止）
+CERT_CATEGORY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("机电暂态模型验证报告", ("机电暂态",)),
+    ("电磁暂态模型验证报告", ("电磁暂态",)),
+    ("故障电压连续穿越检测报告", ("故障电压连续穿越", "连续穿越检测", "连续穿越")),
+    ("低压穿越LVRT报告", ("低压穿越", "低电压穿越", "lvrt")),
+    ("高压穿越HVRT报告", ("高压穿越", "高电压穿越", "hvrt")),
+    ("电能质量报告", ("电能质量",)),
+    ("电网适应性报告", ("电网适应性",)),
+    ("整机设计认证", ("整机设计认证", "设计认证")),
+    ("整机型式认证", ("整机型式认证",)),
+    ("部件型式认证", ("部件型式认证", "大部件型式")),
+)
+CERT_AUTHORITY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("鉴衡CGC", ("鉴衡", "cgc")),
+    ("电科院CEPRI", ("电科院", "cepri", "中国电力科学研究院")),
+    ("CQC", ("cqc", "中国质量认证中心")),
+)
+
+# 等级写法："A级"/"等级：B"/"（D级）"/"型式认证A" 等；大小写敏感，避免命中型号里的字母
+CERT_GRADE_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"([ABD])\s*级"),
+    re.compile(r"等级\s*[:：]?\s*([ABD])(?![A-Za-z0-9])"),
+    re.compile(r"认证\s*([ABD])(?![A-Za-z0-9])"),
+)
+# 全角等级字母归一（如“设计认证Ａ”）
+_FULLWIDTH_GRADE_TRANS = str.maketrans("ＡＢＤ", "ABD")
+
+_CERT_GRADE_REQUIRED_CATEGORIES = {"整机设计认证", "整机型式认证", "部件型式认证"}
+
+
+def classify_certificate_validity_rule(text: str, file_name: str = "", folder_path: str = "") -> dict[str, Any]:
+    """按规则表识别证书类别/发证机构/等级，并查出对应有效期规则。
+
+    类别有多个发证机构（部件型式认证：CQC/鉴衡CGC）而机构未识别时不猜；
+    等级必填的类别（设计/型式认证）未识别到等级时同样不猜。
+    文件名/正文只写“型式认证”时，按目录兜底：目录在“部件”下归为部件型式认证，
+    否则归为整机型式认证。
+    """
+    haystack_raw = f"{file_name}\n{str(text or '')[:4000]}".translate(_FULLWIDTH_GRADE_TRANS)
+    haystack = haystack_raw.casefold()
+    folder_text = str(folder_path or "")
+
+    category = ""
+    for name, keywords in CERT_CATEGORY_PATTERNS:
+        if any(keyword.casefold() in haystack for keyword in keywords):
+            category = name
+            break
+    if not category and "型式认证" in haystack:
+        category = "部件型式认证" if "部件" in folder_text else "整机型式认证"
+
+    authority = ""
+    for name, keywords in CERT_AUTHORITY_PATTERNS:
+        if any(keyword.casefold() in haystack for keyword in keywords):
+            authority = name
+            break
+
+    grade = ""
+    if category in _CERT_GRADE_REQUIRED_CATEGORIES:
+        for pattern in CERT_GRADE_PATTERNS:
+            match = pattern.search(haystack_raw)
+            if match:
+                grade = match.group(1)
+                break
+
+    rule = None
+    if category:
+        candidates = [item for item in CERT_VALIDITY_RULES if item["category"] == category]
+        authorities = {item["authority"] for item in candidates}
+        effective_authority = authority or (next(iter(authorities)) if len(authorities) == 1 else "")
+        if effective_authority:
+            rule = next(
+                (
+                    item
+                    for item in candidates
+                    if item["authority"] == effective_authority
+                    and (not item["grade"] or item["grade"] == grade)
+                ),
+                None,
+            )
+        # 类别在规则表中只有单一机构时，OCR 噪声导致的机构误检不拦截规则
+        if rule is None and authority and len(authorities) == 1:
+            rule = next(
+                (item for item in candidates if not item["grade"] or item["grade"] == grade),
+                None,
+            )
+        if rule is not None and rule["grade"] and not grade:
+            rule = None
+
+    return {
+        "certCategory": category,
+        "certAuthority": authority,
+        "certGrade": grade,
+        "rule": rule,
+    }
+
+
+def apply_certificate_validity_rules(
+    extracted: dict[str, Any],
+    *,
+    text: str,
+    file_name: str = "",
+    folder_path: str = "",
+) -> dict[str, Any]:
+    """按《证书报告有效期确认》规则表完善有效期的识别与判断。
+
+    - 报告明确写了有效期至 → 以报告为准（explicit），规则不覆盖；
+    - 规则为固定年限且已识别发证日期 → 按 发证+N年-1天 推算（rule_derived）；
+    - 规则为长期有效 → 标注 longTerm 并给出条件（设计不变/控制策略不变）；
+    - 规则为跟随整机型式证 → 不推算日期，标注 follow_turbine；
+    - 报告标注与规则矛盾（如 B 级 1 年却写长期有效）→ 加人工复核 warning。
+    """
+    meta = dict(extracted)
+    info = classify_certificate_validity_rule(text, file_name, folder_path)
+    meta["certCategory"] = info["certCategory"]
+    meta["certAuthority"] = info["certAuthority"]
+    meta["certGrade"] = info["certGrade"]
+    meta["validityBasis"] = ""
+    meta["validityNote"] = ""
+    rule = info.get("rule")
+    if not rule:
+        return meta
+
+    issue = str(meta.get("issueDate") or "")
+    expiry = str(meta.get("expiryDate") or "")
+    long_term = bool(meta.get("longTerm"))
+    warnings = [str(item) for item in meta.get("warnings") or [] if item]
+    evidence = dict(meta.get("evidence") or {})
+    rule_label = f"{rule['category']} {rule['authority']}".strip()
+    if rule.get("grade"):
+        rule_label = f"{rule_label} {rule['grade']}级"
+
+    if rule["mode"] == "follow_turbine":
+        if not expiry and not long_term:
+            meta["validityBasis"] = "follow_turbine"
+            meta["validityNote"] = "跟随对应整机型式认证有效期"
+            if str(meta.get("status") or "") in {"", "not_found"}:
+                meta["status"] = "extracted"
+            meta["confidence"] = max(int(meta.get("confidence") or 0), 40)
+        else:
+            meta["validityBasis"] = "explicit"
+    elif rule["mode"] == "long_term":
+        if not expiry:
+            meta["longTerm"] = True
+            meta["validityBasis"] = "rule_long_term" if not long_term else "text_long_term"
+            meta["validityNote"] = f"长期有效（{rule['condition']}）"
+            if not long_term:
+                evidence["expiryDate"] = f"{rule_label}：长期有效（{rule['condition']}，按规则表标注）"
+            if str(meta.get("status") or "") in {"", "not_found"}:
+                meta["status"] = "extracted"
+            meta["confidence"] = max(int(meta.get("confidence") or 0), 50)
+        else:
+            meta["validityBasis"] = "explicit"
+            warning = f"报告标注了有效期至 {expiry}，规则表中{rule_label}为长期有效（{rule['condition']}），请人工复核"
+            if warning not in warnings:
+                warnings.append(warning)
+    else:  # mode == "years"
+        years = int(rule["years"])
+        if expiry:
+            meta["validityBasis"] = "explicit"
+        elif long_term:
+            meta["validityBasis"] = "text_long_term"
+            warning = f"报告标注长期有效，规则表中{rule_label}标准有效期为{years}年，请人工复核"
+            if warning not in warnings:
+                warnings.append(warning)
+        elif issue:
+            derived = _derive_expiry_from_duration(issue, years, "年")
+            if derived:
+                meta["expiryDate"] = derived
+                meta["validityBasis"] = "rule_derived"
+                meta["validityNote"] = f"按{rule_label}标准有效期{years}年，自发证日期推算"
+                evidence["expiryDate"] = f"{meta['validityNote']}（发证日期 {issue}）"
+                if str(meta.get("status") or "") in {"", "not_found"}:
+                    meta["status"] = "extracted"
+                meta["confidence"] = max(int(meta.get("confidence") or 0), 55)
+        else:
+            meta["validityBasis"] = "rule_underived"
+            meta["validityNote"] = f"识别为{rule_label}，但未识别到发证日期，无法按标准有效期{years}年推算"
+            warning = meta["validityNote"]
+            if warning not in warnings:
+                warnings.append(warning)
+
+    meta["warnings"] = warnings
+    meta["evidence"] = evidence
+    return meta
+
+
 async def _load_raw_files(*, bid_type: str, folder_path: str = "", file_ids: list[str] | None = None) -> list[RawFile]:
     async with async_session() as session:
         await ensure_material_runtime_tables(session)
@@ -448,6 +671,11 @@ def _certificate_payload_from_item(item: RawFile) -> dict[str, Any]:
         "evidence": meta.get("evidence") if isinstance(meta.get("evidence"), dict) else {},
         "dates": meta.get("dates") if isinstance(meta.get("dates"), list) else [],
         "longTerm": bool(meta.get("longTerm")),
+        "certCategory": str(meta.get("certCategory") or ""),
+        "certAuthority": str(meta.get("certAuthority") or ""),
+        "certGrade": str(meta.get("certGrade") or ""),
+        "validityBasis": str(meta.get("validityBasis") or ""),
+        "validityNote": str(meta.get("validityNote") or ""),
         "warnings": [str(item) for item in meta.get("warnings") or [] if item] if isinstance(meta.get("warnings"), list) else [],
         "updatedAt": str(meta.get("updatedAt") or ""),
         "errorMessage": str(meta.get("errorMessage") or ""),
@@ -694,6 +922,8 @@ async def update_certificate_time_record(
             "status": "manual",
             "source": "manual",
             "confidence": 100,
+            "validityBasis": "manual",
+            "validityNote": "",
             "updatedAt": now_iso(),
             "errorMessage": "",
         }
@@ -868,8 +1098,20 @@ async def run_certificate_time_batch(
                 raise PeripheralError(400, "仅支持 PDF、DOCX 和图片证书。", "CERTIFICATE_FILE_TYPE_UNSUPPORTED")
             text, source_info = await _extract_source_text(item)
             extracted = extract_certificate_time_fields(text)
+            # 先按《证书报告有效期确认》规则表完善有效期识别与判断
+            extracted = apply_certificate_validity_rules(
+                extracted,
+                text=text,
+                file_name=item.name,
+                folder_path=item.folder.path if item.folder else "",
+            )
             source = str(source_info.get("source") or "")
-            if _needs_ai_assist(extracted) and text.strip():
+            # 跟随整机型式证的报告不单独识别有效期，跳过 AI 兜底以免猜出日期
+            if (
+                _needs_ai_assist(extracted)
+                and text.strip()
+                and str(extracted.get("validityBasis") or "") != "follow_turbine"
+            ):
                 try:
                     ai_result = await asyncio.to_thread(_ai_extract_certificate_time, text)
                 except Exception as ai_exc:  # noqa: BLE001 - AI 兜底失败时保留规则结果

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   isUploadAndRunTimeout,
+  isParseProgressCompleted,
   pollParseProgressOnce,
   shouldPollParseProgress,
   recoverUploadAndRunTimeout,
@@ -258,4 +259,67 @@ test('summarizes technical parse phase as two visible lines and stale status', (
 
   assert.equal(stale.statusText, '可能中断')
   assert.equal(stale.tone, 'warning')
+})
+
+test('failed or cancelled progress at 100 percent is not treated as completed', () => {
+  assert.equal(isParseProgressCompleted({ status: 'failed', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'error', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'stale', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'cancelled', percentage: 100 }), false)
+  assert.equal(isParseProgressCompleted({ status: 'completed', percentage: 100 }), true)
+  assert.equal(isParseProgressCompleted({ status: 'running', percentage: 100 }), true)
+})
+
+test('failed progress is handled as failure without reading stale results', async () => {
+  let resultsCalled = 0
+  const parseClient = {
+    progress: async () => ({ status: 'failed', percentage: 100, summary: 'parse failed: post-processing error' }),
+    results: async () => {
+      resultsCalled += 1
+      return { status: 'completed', itemCount: 453 }
+    },
+  }
+
+  const snapshot = await pollParseProgressOnce({ projectId: 'PRJ-0087', parseClient })
+
+  assert.equal(snapshot.completed, false)
+  assert.equal(snapshot.failed, true)
+  assert.equal(snapshot.result, null)
+  assert.equal(resultsCalled, 0)
+})
+
+test('cancelled progress is handled as failure without reading stale results', async () => {
+  let resultsCalled = 0
+  const parseClient = {
+    progress: async () => ({ status: 'cancelled', percentage: 100, summary: 'parse stop requested' }),
+    results: async () => {
+      resultsCalled += 1
+      return { status: 'completed', itemCount: 453 }
+    },
+  }
+
+  const snapshot = await pollParseProgressOnce({ projectId: 'PRJ-0087', parseClient })
+
+  assert.equal(snapshot.completed, false)
+  assert.equal(snapshot.failed, true)
+  assert.equal(snapshot.result, null)
+  assert.equal(resultsCalled, 0)
+})
+
+test('timeout recovery reports failure instead of stale result when re-parse fails', async () => {
+  const parseClient = {
+    progress: async () => ({ status: 'failed', percentage: 100, summary: 'parse failed: post-processing error' }),
+    results: async () => ({ status: 'completed', itemCount: 453 }),
+  }
+
+  const recovered = await recoverUploadAndRunTimeout({
+    projectId: 'PRJ-0087',
+    parseClient,
+    pollIntervalMs: 0,
+    maxPollMs: 1000,
+  })
+
+  assert.equal(recovered.completed, false)
+  assert.equal(recovered.failed, true)
+  assert.equal(recovered.result, null)
 })

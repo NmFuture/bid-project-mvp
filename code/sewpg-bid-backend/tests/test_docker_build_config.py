@@ -29,6 +29,22 @@ def test_docling_runtime_dependencies_are_locked() -> None:
     assert "nvidia-cublas==13.1.1.3" in docling_lock
 
 
+def test_docxcompose_floor_supports_preserve_styles() -> None:
+    expected = "docxcompose>=2.2.0"
+    requirements = _requirement_lines(BACKEND_ROOT / "requirements.txt")
+    opencode_dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")
+
+    requirement_specs = {line for line in requirements if line.startswith("docxcompose")}
+    dockerfile_specs = {
+        token.strip('"')
+        for token in opencode_dockerfile.split()
+        if token.strip('"').startswith("docxcompose")
+    }
+
+    assert requirement_specs == {expected}
+    assert dockerfile_specs == {expected}
+
+
 def test_backend_dockerfile_keeps_pip_download_cache() -> None:
     dockerfile = (BACKEND_ROOT / "Dockerfile").read_text(encoding="utf-8")
 

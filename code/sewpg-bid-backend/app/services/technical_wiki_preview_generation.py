@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.material_cleaning import is_deep_convertible_material
+from app.services.material_deep_parse import (
+    DEEP_PARSE_STATUS_FIELD,
+    deep_parse_profile_for,
+    deep_parse_status_allows_enqueue,
+    enqueue_deep_parse_job,
+)
 from app.services.technical_wiki_preview_prompt import (
     PREVIEW_BATCH_SIZE,
     PREVIEW_SCHEMA_VERSION,
@@ -23,6 +30,9 @@ logger = logging.getLogger(__name__)
 PREVIEW_EXT_FIELD = "techWikiPreview"
 PREVIEW_CONCURRENCY = 4
 LOCAL_FALLBACK_POINT_LIMIT = 5
+# 同一文件 LLM 预览连续失败达到上限后，fallback 置为终态（retryable=False），
+# 避免 LLM 持续不可用时每次刷新都对同一批节点重打 LLM、标签永远卡在「待重试」。
+PREVIEW_LLM_MAX_FAILURES = 3
 TIER_LABELS = {
     "standard": "标准文件",
     "customer": "客户定制",
@@ -105,7 +115,16 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         "tableCount": 0,
         "parseError": "",
     }
+
+    # 后台深度解析产物优先：sourceKey 与当前 cleaned/原始对象一致时直接采用
+    deep_profile = deep_parse_profile_for(ext_fields, cleaned_key or str(item.minio_key or ""))
+    if deep_profile is not None:
+        return ext, {**empty, **deep_profile, "parseError": ""}
+
     if ext != "docx":
+        # PDF/XLSX 无清洗稿：交给后台深度解析转换，不再终态跳过
+        if is_deep_convertible_material(name):
+            return ext, {**empty, "deepParsePending": True}
         return ext, empty
 
     if has_cleaned:
@@ -118,7 +137,12 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         parse_size = int(item.size_bytes or 0)
 
     if parse_size > MAX_SYNC_DOCX_BYTES:
-        return ext, {**empty, "parseError": f"文件超过同步解析上限 {MAX_SYNC_DOCX_BYTES // 1024 // 1024}MB"}
+        # 超同步上限：交给后台深度解析，不再终态跳过
+        return ext, {
+            **empty,
+            "parseError": f"文件超过同步解析上限 {MAX_SYNC_DOCX_BYTES // 1024 // 1024}MB",
+            "deepParsePending": True,
+        }
     try:
         data = minio_client.get_object(bucket, key)
     except Exception as exc:  # noqa: BLE001
@@ -228,12 +252,20 @@ def _local_preview_from_profile(
     }
 
 
-def _fallback_payload(plan: dict[str, Any], reason: str, *, retryable: bool = True) -> dict[str, Any]:
+def _fallback_payload(
+    plan: dict[str, Any],
+    reason: str,
+    *,
+    retryable: bool = True,
+    llm_failures: int = 0,
+) -> dict[str, Any]:
     return {
         **plan["base"],
         "status": "fallback",
         "skipReason": reason,
         "retryable": retryable,
+        # 随缓存持久化的 LLM 连续失败计数，供下次刷新决定是否继续重试。
+        "llmFailures": int(llm_failures),
         "metadata": {"cleanStatus": str(plan.get("clean_status") or "")},
         "preview": _local_preview_from_profile(
             name=str(plan.get("name") or plan.get("fileId") or ""),
@@ -245,6 +277,17 @@ def _fallback_payload(plan: dict[str, Any], reason: str, *, retryable: bool = Tr
             reason=reason,
         ),
     }
+
+
+def _llm_failure_fallback_payload(plan: dict[str, Any], reason: str) -> dict[str, Any]:
+    """LLM 失败后的本地 TLDR：累加失败计数，达上限后置为终态不再自动重试。"""
+    failures = int(plan.get("llm_failures") or 0) + 1
+    return _fallback_payload(
+        plan,
+        reason,
+        retryable=failures < PREVIEW_LLM_MAX_FAILURES,
+        llm_failures=failures,
+    )
 
 
 def _failed_payload(reason: str, *, retryable: bool) -> dict[str, Any]:
@@ -305,12 +348,17 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
             document_outline = document_outline_from_profile(profile, source_ext=source_ext)
             ext_fields = dict(raw.ext_fields or {})
             cached = ext_fields.get(PREVIEW_EXT_FIELD) if isinstance(ext_fields.get(PREVIEW_EXT_FIELD), dict) else {}
-            if (
+            cache_matches = bool(
                 cached.get("schemaVersion") == PREVIEW_SCHEMA_VERSION
                 and cached.get("signature") == signature
-                and cached.get("status") == "completed"
                 and isinstance(cached.get("preview"), dict)
                 and cached.get("preview")
+            )
+            cached_status = str(cached.get("status") or "")
+            # 除 completed 外，终态 fallback（retryable=False）也接受缓存命中，不再每次刷新重算。
+            if cache_matches and (
+                cached_status == "completed"
+                or (cached_status == "fallback" and not cached.get("retryable", True))
             ):
                 plans.append(
                     {
@@ -332,6 +380,16 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
             should, skip_reason = _should_generate_preview(ext, profile)
             clean_status = str(ext_fields.get("cleanStatus") or "")
             if not should:
+                retryable = False
+                deep_status = str(ext_fields.get(DEEP_PARSE_STATUS_FIELD) or "")
+                if profile.get("deepParsePending"):
+                    # PDF/XLSX 待转换、超大 docx 待后台解析：排队深度解析，
+                    # 保持 retryable，产物就绪后下次刷新自动升级为正式预览。
+                    if deep_parse_status_allows_enqueue(ext_fields):
+                        enqueue_deep_parse_job(file_id)
+                        deep_status = deep_status or "queued"
+                    skip_reason = "已排队后台深度解析，完成后自动补全预览"
+                    retryable = True
                 preview = _local_preview_from_profile(
                     name=str(raw.name or ""),
                     path=file_path,
@@ -349,8 +407,8 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                             **base,
                             "status": "fallback",
                             "skipReason": skip_reason,
-                            "retryable": False,
-                            "metadata": {"cleanStatus": clean_status},
+                            "retryable": retryable,
+                            "metadata": {"cleanStatus": clean_status, "deepParseStatus": deep_status},
                             "preview": preview,
                         },
                     }
@@ -358,6 +416,12 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 stats["skipped"] += 1
                 continue
 
+            # 继承同签名缓存里的 LLM 连续失败计数（旧缓存无该字段按 0 处理）；
+            # 文件内容变化导致签名变化时重新计数。
+            try:
+                llm_failures = int(cached.get("llmFailures") or 0) if cache_matches else 0
+            except (TypeError, ValueError):
+                llm_failures = 0
             plans.append(
                 {
                     "fileId": file_id,
@@ -369,6 +433,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                     "clean_status": clean_status,
                     "profile": profile,
                     "base": base,
+                    "llm_failures": llm_failures,
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -429,7 +494,7 @@ def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, di
         model = str(result.get("modelId") or "")
     except Exception as exc:  # noqa: BLE001
         for plan in plans:
-            out[plan["fileId"]] = _fallback_payload(plan, str(exc)[:200])
+            out[plan["fileId"]] = _llm_failure_fallback_payload(plan, str(exc)[:200])
         return out
 
     for plan in plans:
@@ -445,7 +510,7 @@ def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, di
                 "preview": preview,
             }
         else:
-            out[plan["fileId"]] = _fallback_payload(plan, "LLM 批量回复缺该文件或无效")
+            out[plan["fileId"]] = _llm_failure_fallback_payload(plan, "LLM 批量回复缺该文件或无效")
     return out
 
 

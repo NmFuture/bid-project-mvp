@@ -24,6 +24,7 @@ import {
   primaryBlankSource,
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
+  technicalGenerationPresentation,
   technicalGapTagOf,
   technicalMatchScore,
   uniqueStrings,
@@ -541,6 +542,7 @@ function TechnicalGenerationProgressModal({
   const failed = status?.status === 'failed'
   const title = running ? '正在生成技术标正文' : completed ? '技术标正文已生成' : failed ? '技术标正文生成失败' : '技术标正文生成'
   const summary = status?.summary || (running ? '系统正在根据当前素材匹配结果生成正文。' : completed ? '可继续进入共创导出。' : failed ? '请检查任务状态后重新生成。' : '准备生成技术标正文。')
+  const { warningCount, formatCleanFailed, formatCleanMessage } = technicalGenerationPresentation(status)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
@@ -565,6 +567,16 @@ function TechnicalGenerationProgressModal({
           {completed ? (
             <div className="rounded-md border border-secondary/20 bg-secondary-container/40 px-3 py-2 text-sm text-on-secondary-container">
               技术标正文已生成。可返回本页继续调整素材匹配并重新生成，或进入共创导出。
+            </div>
+          ) : null}
+          {completed && warningCount > 0 ? (
+            <div className="rounded-md border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm text-on-tertiary-fixed-variant">
+              生成结果包含 {warningCount} 项提示，可继续进入共创处理。
+            </div>
+          ) : null}
+          {completed && formatCleanFailed ? (
+            <div className="rounded-md border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm font-semibold text-on-tertiary-fixed-variant">
+              {formatCleanMessage}
             </div>
           ) : null}
           {failed ? (

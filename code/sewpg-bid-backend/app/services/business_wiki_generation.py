@@ -33,6 +33,12 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.identity import canonical_customer, classify_material_path, material_identity
+from app.services.material_cleaning import is_deep_convertible_material
+from app.services.material_deep_parse import (
+    deep_parse_profile_for,
+    deep_parse_status_allows_enqueue,
+    enqueue_deep_parse_job,
+)
 from app.services.material_tags import normalize_material_tags
 from app.services.material_taxonomy import infer_business_material_category, infer_business_material_subcategory
 from app.services.minio_client import minio_client
@@ -633,12 +639,22 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     }
     parse_size = int(ext_fields.get("cleanedSize") or item.size_bytes or 0) if has_cleaned_word else int(item.size_bytes or 0)
     if ext == "docx":
-        if parse_size > MAX_SYNC_DOCX_BYTES:
+        # 后台深度解析产物优先：sourceKey 与当前 cleaned/原始对象一致时直接采用
+        deep_profile = deep_parse_profile_for(
+            ext_fields,
+            cleaned_minio_key or str(item.minio_key or ""),
+        )
+        if deep_profile is not None:
+            profile.update({**deep_profile, "parseError": ""})
+        elif parse_size > MAX_SYNC_DOCX_BYTES:
             size_mb = parse_size / 1024 / 1024
+            if deep_parse_status_allows_enqueue(ext_fields):
+                enqueue_deep_parse_job(str(profile["id"]))
             profile["parseError"] = (
                 f"文件 {size_mb:.1f}MB，超过同步解析上限 30MB；"
-                "已生成索引卡片，需由后台深度解析任务补充 Heading 和正文摘录。"
+                "已排队后台深度解析，完成后自动补充 Heading 和正文摘录。"
             )
+            profile["deepParsePending"] = True
         else:
             try:
                 data = minio_client.get_object(str(profile["bucket"]), str(profile["minioKey"]))
@@ -646,7 +662,14 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
             except Exception as exc:  # pragma: no cover - depends on object store state
                 profile["parseError"] = f"MinIO 读取失败：{exc}"
     else:
-        profile["parseError"] = "非 docx 文件，未进入 Wiki 卡片正文解析"
+        if is_deep_convertible_material(file_name):
+            # PDF/XLSX：排队后台转换为 Word 后解析，不再直接终态跳过
+            if deep_parse_status_allows_enqueue(ext_fields):
+                enqueue_deep_parse_job(str(profile["id"]))
+            profile["parseError"] = "PDF/XLSX 素材已排队后台转换为 Word，完成后自动补充 Wiki 卡片正文"
+            profile["deepParsePending"] = True
+        else:
+            profile["parseError"] = "非 docx 文件，未进入 Wiki 卡片正文解析"
 
     profile["headingCount"] = len(profile["headings"])
     profile["materialLevelRange"] = _material_level_range(profile["headings"])

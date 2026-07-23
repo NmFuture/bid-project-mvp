@@ -13,6 +13,70 @@ export const uniqueStrings = (items) => {
     })
 }
 
+export const technicalGenerationPresentation = (status) => {
+  const assembly = status?.assembly && typeof status.assembly === 'object' ? status.assembly : {}
+  const warnings = asObjectArray(assembly.warnings)
+  const rawWarningCount = assembly.summary?.warningCount
+  const summaryWarningCount = Number(rawWarningCount)
+  const hasSummaryWarningCount = rawWarningCount !== null
+    && rawWarningCount !== undefined
+    && rawWarningCount !== ''
+    && Number.isFinite(summaryWarningCount)
+    && summaryWarningCount >= 0
+  const warningCounts = warnings
+    .map((warning) => Number(warning.count))
+    .filter((count) => Number.isInteger(count) && count > 0)
+  const derivedWarningCount = warningCounts.length
+    ? warningCounts.reduce((total, count) => total + count, 0)
+    : warnings.length
+  const warningCount = hasSummaryWarningCount
+    ? Math.max(summaryWarningCount, derivedWarningCount)
+    : derivedWarningCount
+  const formatClean = assembly.formatClean && typeof assembly.formatClean === 'object'
+    ? assembly.formatClean
+    : (status?.formatClean && typeof status.formatClean === 'object' ? status.formatClean : {})
+  const formatCleanFailed = formatClean.status === 'failed'
+
+  return {
+    warningCount,
+    formatCleanFailed,
+    formatCleanMessage: formatCleanFailed ? '格式清洗失败，当前使用组装稿' : '',
+  }
+}
+
+export const technicalFormatStateFromDocument = (documentPayload, defaultStyleOverrides) => {
+  const storedOverrides = documentPayload?.technicalFormatStyleOverrides
+  const styleOverrides = storedOverrides && typeof storedOverrides === 'object' && !Array.isArray(storedOverrides)
+    ? storedOverrides
+    : {}
+  return {
+    preset: documentPayload?.technicalFormatPreset === 'custom' ? 'custom' : 'standard',
+    styleOverrides: { ...defaultStyleOverrides, ...styleOverrides },
+  }
+}
+
+export const technicalFormatRequest = (preset, styleOverrides) => (
+  preset === 'custom'
+    ? { preset: 'custom', styleOverrides: { ...styleOverrides } }
+    : { preset: 'standard' }
+)
+
+export const technicalFormatDocumentAfterApply = (
+  currentDocument,
+  preset,
+  styleOverrides,
+  responseDocument,
+) => {
+  if (responseDocument && typeof responseDocument === 'object' && !Array.isArray(responseDocument)) {
+    return responseDocument
+  }
+  return {
+    ...(currentDocument && typeof currentDocument === 'object' ? currentDocument : {}),
+    technicalFormatPreset: preset === 'custom' ? 'custom' : 'standard',
+    technicalFormatStyleOverrides: preset === 'custom' ? { ...styleOverrides } : {},
+  }
+}
+
 // 候选素材匹配度（0~1），口径与商务标 numericMatchScore 一致：
 // 优先 score/matchScore/similarity/confidence，兜底 topicRelevance。
 // 后端输出 0~1 归一化分；99 分（0.99）专用于「文件名精确命中」，启发式分永远落在 98 及以下。

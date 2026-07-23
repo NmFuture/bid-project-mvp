@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import shutil
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,7 @@ def apply_technical_document_format_preset(
         "preset": preset_key,
         "label": preset_info["label"],
         "description": preset_info["description"],
-        "styleOverrides": copy.deepcopy(style_overrides or {}),
+        "styleOverrides": copy.deepcopy(style_overrides or {}) if preset_key == "custom" else {},
         "manifestPath": str(manifest_path),
         "outputFile": str(formatted_path),
         "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},
@@ -96,7 +97,7 @@ def _prepare_technical_format_style_spec(
     if not isinstance(spec, dict):
         raise ValueError("技术标格式规范配置不是 JSON object。")
     spec = copy.deepcopy(spec)
-    if preset_key == "custom" or style_overrides:
+    if preset_key == "custom":
         _apply_technical_style_overrides(spec, style_overrides)
     style_path = work_dir / f"tech_format_{preset_key}_style.json"
     style_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -105,22 +106,27 @@ def _prepare_technical_format_style_spec(
 
 def _apply_technical_style_overrides(spec: dict[str, Any], overrides: dict[str, Any]) -> None:
     def text_value(key: str, default: str = "") -> str:
-        value = str(overrides.get(key) or "").strip()
+        raw_value = overrides.get(key)
+        if not isinstance(raw_value, str):
+            return default
+        value = raw_value.strip()
         return value or default
 
     def number_value(key: str, min_value: float, max_value: float) -> float | None:
         if key not in overrides or overrides.get(key) in (None, ""):
             return None
-        try:
-            value = float(overrides.get(key))
-        except (TypeError, ValueError):
+        raw_value = overrides.get(key)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
             return None
-        return max(min_value, min(max_value, value))
+        value = float(raw_value)
+        if not math.isfinite(value) or not min_value <= value <= max_value:
+            return None
+        return value
 
     def bool_value(key: str) -> bool | None:
-        if key not in overrides:
+        if key not in overrides or not isinstance(overrides.get(key), bool):
             return None
-        return bool(overrides.get(key))
+        return overrides[key]
 
     body = spec.setdefault("body", {})
     if text_value("bodyZhFont"):
@@ -166,8 +172,8 @@ def _apply_technical_style_overrides(spec: dict[str, Any], overrides: dict[str, 
             level_cfg["size_pt"] = value
         if (value := number_value(f"{prefix}LineSpacing", 1, 3)) is not None:
             level_cfg["line_spacing"] = value
-        if f"{prefix}Bold" in overrides:
-            level_cfg["bold"] = bool(overrides.get(f"{prefix}Bold"))
+        if (value := bool_value(f"{prefix}Bold")) is not None:
+            level_cfg["bold"] = value
         align = text_value(f"{prefix}Align")
         if align in {"left", "center", "right", "both"}:
             level_cfg["align"] = align

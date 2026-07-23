@@ -22,7 +22,7 @@ RUN npm install -g "opencode-ai@${OPENCODE_NPM_VERSION}" \
 
 RUN python3 -m pip install --no-cache-dir --break-system-packages "python-docx==1.1.2" "pymupdf>=1.24.0"
 RUN python3 -m pip install --no-cache-dir --break-system-packages "pandas>=2.2.0" "openpyxl>=3.1.0"
-RUN python3 -m pip install --no-cache-dir --break-system-packages "lxml>=5.2.0" "docxcompose>=1.4.0" "PyYAML>=6.0.0"
+RUN python3 -m pip install --no-cache-dir --break-system-packages "lxml>=5.2.0" "docxcompose>=2.2.0" "PyYAML>=6.0.0"
 
 COPY opencode.json /workspace/opencode.json
 COPY .opencode /workspace/.opencode

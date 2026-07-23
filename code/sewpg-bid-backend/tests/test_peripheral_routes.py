@@ -1,21 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+import itertools
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
-import os
 import pytest
-from uuid import uuid4
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from app.core.config import settings
 from app.main import app
 from app.models import async_session
-from app.models.materials import RawFile, RawFolder, WikiNode
+from app.models.materials import AuditLog, AuthSession, RawFile, RawFolder, WikiNode
 from app.services.minio_client import minio_client
-from app.services.peripheral import peripheral_store
 from app.services.store import store
 
 
@@ -24,61 +25,148 @@ from app.services.store import store
 @pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires PostgreSQL, MinIO, and Redis")
 class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        self.run_id = uuid4().hex
+        self.test_user_agent = f"peripheral-routes-test/{self.run_id}"
+        self.auth_token = ""
+        self.login_attempted = False
+        self.project_ids: set[str] = set()
+        self.raw_folder_roots: set[str] = set()
+        self.wiki_node_ids: set[int] = set()
+        self.wiki_paths: set[str] = set()
+        self.client: httpx.AsyncClient | None = None
+        self.store_loaded = False
+
         self.temp_dir = tempfile.TemporaryDirectory()
         base = Path(self.temp_dir.name)
+        self.original_data_dirs = (settings.uploads_dir, settings.documents_dir, settings.parsed_dir)
+        self.addAsyncCleanup(self._cleanup_test_state)
         settings.uploads_dir = base / "uploads"
         settings.documents_dir = base / "documents"
         settings.parsed_dir = base / "parsed"
         settings.ensure_dirs()
-        self.run_id = uuid4().hex[:8]
 
-        store.reset_for_tests(clear_persistent=True)
-        peripheral_store.reset()
+        store.reset_for_tests()
+        store._load_projects()
+        store._counter = itertools.count(store._next_project_number())
+        self.store_loaded = True
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://127.0.0.1:8000",
+            headers={"user-agent": self.test_user_agent},
         )
+        self.login_attempted = True
         login = await self.client.post("/api/auth/login", json={"email": "admin@sewpg.com", "password": "123456"})
         login.raise_for_status()
-        self.headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        self.auth_token = str(login.json()["token"])
+        self.headers = {"Authorization": f"Bearer {self.auth_token}"}
 
-    async def asyncTearDown(self) -> None:
-        await self.client.aclose()
-        await self._cleanup_material_test_data()
-        self.temp_dir.cleanup()
+    async def _cleanup_test_state(self) -> None:
+        errors: list[Exception] = []
+        if self.client is not None:
+            try:
+                await self.client.aclose()
+            except Exception as exc:  # cleanup 必须继续恢复其余共享状态
+                errors.append(exc)
+
+        for cleanup in (
+            self._cleanup_projects,
+            self._cleanup_material_test_data,
+            self._cleanup_auth_and_audit_test_data,
+        ):
+            try:
+                await cleanup()
+            except Exception as exc:  # cleanup 必须全部尝试，最后显式暴露首个失败
+                errors.append(exc)
+
+        try:
+            self._restore_data_dirs()
+        except Exception as exc:
+            errors.append(exc)
+        try:
+            self.temp_dir.cleanup()
+        except Exception as exc:
+            errors.append(exc)
+
+        if self.store_loaded:
+            try:
+                store._load_projects()
+                store._counter = itertools.count(store._next_project_number())
+            except Exception as exc:
+                errors.append(exc)
+
+        if errors:
+            raise errors[0]
+
+    def _restore_data_dirs(self) -> None:
+        settings.uploads_dir, settings.documents_dir, settings.parsed_dir = self.original_data_dirs
+
+    async def _cleanup_projects(self) -> None:
+        for project_id in sorted(self.project_ids):
+            try:
+                await asyncio.to_thread(store.delete_project, project_id)
+            except KeyError:
+                pass
 
     async def _cleanup_material_test_data(self) -> None:
-        async with async_session() as session:
-            result = await session.execute(
-                select(RawFile)
-                .join(RawFolder)
-                .where(RawFolder.path.like(f"%{self.run_id}%"))
-            )
-            for item in result.scalars().all():
-                if item.minio_key:
-                    minio_client.remove_object(item.minio_bucket or settings.minio_buckets["materials"], item.minio_key)
-                ext = item.ext_fields or {}
-                cleaned_key = str(ext.get("cleanedMinioKey") or "")
-                if cleaned_key:
-                    minio_client.remove_object(
-                        str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"]),
-                        cleaned_key,
-                    )
+        if not self.raw_folder_roots and not self.wiki_node_ids and not self.wiki_paths:
+            return
 
-            await session.execute(delete(WikiNode).where(WikiNode.path.like(f"%{self.run_id}%")))
-            await session.execute(delete(RawFolder).where(RawFolder.path.like(f"%{self.run_id}%")))
+        async with async_session() as session:
+            if self.raw_folder_roots:
+                folder_scope = or_(
+                    *(
+                        (RawFolder.path == root_path) | RawFolder.path.startswith(f"{root_path}/")
+                        for root_path in sorted(self.raw_folder_roots)
+                    )
+                )
+                result = await session.execute(select(RawFile).join(RawFolder).where(folder_scope))
+                for item in result.scalars().all():
+                    if item.minio_key:
+                        minio_client.remove_object(
+                            item.minio_bucket or settings.minio_buckets["materials"],
+                            item.minio_key,
+                        )
+                    ext = item.ext_fields or {}
+                    cleaned_key = str(ext.get("cleanedMinioKey") or "")
+                    if cleaned_key:
+                        minio_client.remove_object(
+                            str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"]),
+                            cleaned_key,
+                        )
+                await session.execute(delete(RawFolder).where(folder_scope))
+
+            wiki_filters = []
+            if self.wiki_node_ids:
+                wiki_filters.append(WikiNode.id.in_(self.wiki_node_ids))
+            if self.wiki_paths:
+                wiki_filters.append(WikiNode.path.in_(self.wiki_paths))
+            if wiki_filters:
+                await session.execute(delete(WikiNode).where(or_(*wiki_filters)))
+            await session.commit()
+
+    async def _cleanup_auth_and_audit_test_data(self) -> None:
+        if not self.login_attempted:
+            return
+        session_filter = AuthSession.user_agent == self.test_user_agent
+        if self.auth_token:
+            session_filter = or_(session_filter, AuthSession.token == self.auth_token)
+        async with async_session() as session:
+            await session.execute(delete(AuthSession).where(session_filter))
+            await session.execute(delete(AuditLog).where(AuditLog.user_agent == self.test_user_agent))
             await session.commit()
 
     async def create_project(self) -> str:
         response = await self.client.post(
             "/api/technical/projects",
             json={
-                "name": "外围模块联调项目",
+                "name": f"外围模块联调项目-{self.run_id}",
                 "customerName": "测试业主",
             },
         )
         response.raise_for_status()
-        return response.json()["id"]
+        project_id = str(response.json()["id"])
+        self.project_ids.add(project_id)
+        return project_id
 
     async def test_raw_material_library_supports_list_and_mutation(self) -> None:
         tree_response = await self.client.get("/api/technical/materials/raw/tree")
@@ -86,6 +174,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(tree_response.json()["tree"]), 0)
 
         project_id = f"PRJ-TEST-{self.run_id}"
+        self.raw_folder_roots.add(f"技术标/项目定制/{project_id}")
         bootstrap = await self.client.post(
             "/api/technical/materials/raw/folders/bootstrap",
             json={"projectId": project_id},
@@ -134,12 +223,15 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(download.json()["downloadUrl"].startswith("/api/technical/materials/raw/"))
 
     async def test_raw_material_library_supports_folder_upload(self) -> None:
+        folder_name = f"目录上传测试-{self.run_id}"
+        folder_path = f"技术标/标准文件/{folder_name}"
+        self.raw_folder_roots.add(folder_path)
         create_folder = await self.client.post(
             "/api/technical/materials/raw/folders",
-            json={"parentPath": "技术标/通用素材", "folderName": f"目录上传测试-{self.run_id}"},
+            json={"parentPath": "技术标/标准文件", "folderName": folder_name},
         )
         self.assertEqual(create_folder.status_code, 200)
-        folder_path = create_folder.json()["folderPath"]
+        self.assertEqual(create_folder.json()["folderPath"], folder_path)
 
         upload = await self.client.post(
             "/api/technical/materials/raw/upload",
@@ -163,6 +255,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_business_raw_material_library_supports_upload_and_query(self) -> None:
         customer_name = f"华能集团-{self.run_id}"
+        self.raw_folder_roots.add(f"商务标/客户素材/{customer_name}")
         target_path = f"商务标/客户素材/{customer_name}/01-客户关系与专项证明"
         upload = await self.client.post(
             "/api/business/materials/raw/upload",
@@ -206,30 +299,34 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         wiki = await self.client.get("/api/technical/materials/wiki")
         self.assertEqual(wiki.status_code, 200)
         wiki_payload = wiki.json()
-        self.assertIn("tree", wiki_payload)
+        self.assertEqual(wiki_payload["tree"], [])
         self.assertIn("tagOptions", wiki_payload)
-        self.assertIsNotNone(wiki_payload["selectedNode"])
+        self.assertIsNone(wiki_payload["selectedNode"])
 
+        title = f"风资源说明-{self.run_id}"
+        updated_title = f"风资源说明-更新-{self.run_id}"
+        self.wiki_paths.update({title, updated_title})
         created = await self.client.post(
             "/api/technical/materials/wiki",
-            json={"title": f"风资源说明-{self.run_id}", "isFolder": False},
+            json={"title": title, "isFolder": False},
         )
         self.assertEqual(created.status_code, 200)
         selected_node = created.json()["selectedNode"]
-        self.assertEqual(selected_node["title"], f"风资源说明-{self.run_id}")
+        self.assertEqual(selected_node["title"], title)
 
         node_id = selected_node["id"]
+        self.wiki_node_ids.add(int(node_id.replace("WIKI-", "")))
         updated = await self.client.put(
             f"/api/technical/materials/wiki/{node_id}",
             json={
-                "title": f"风资源说明-更新-{self.run_id}",
+                "title": updated_title,
                 "markdownContent": "# 风资源说明\n\n需要补充测风塔数据。",
                 "tags": ["风资源", "技术标"],
                 "applicableTypes": ["技术标"],
             },
         )
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.json()["selectedNode"]["title"], f"风资源说明-更新-{self.run_id}")
+        self.assertEqual(updated.json()["selectedNode"]["title"], updated_title)
 
         refreshed = await self.client.post(f"/api/technical/materials/wiki/{node_id}/refresh-summary")
         self.assertEqual(refreshed.status_code, 200)
@@ -256,7 +353,11 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         health = await self.client.get("/api/settings/health", headers=self.headers)
         self.assertEqual(health.status_code, 200)
-        self.assertIsInstance(health.json(), list)
+        health_payload = health.json()
+        self.assertIsInstance(health_payload, list)
+        redis_health = next((item for item in health_payload if item.get("id") == "svc-redis"), None)
+        self.assertIsNotNone(redis_health)
+        self.assertEqual(redis_health["status"], "online", redis_health.get("detail"))
 
         audit_list = await self.client.get("/api/technical/audit", headers=self.headers)
         self.assertEqual(audit_list.status_code, 200)

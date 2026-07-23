@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 
 import {
   appendixTaskForFillTask,
@@ -7,6 +8,135 @@ import {
   isFillTemplateMaterial,
   technicalGapTagOf,
 } from './technicalGapRecognitionHelpers.js'
+
+import * as technicalHelpers from './technicalGapRecognitionHelpers.js'
+
+test('生成完成提示展示 warning 数量且格式清洗失败时明确回退', () => {
+  const presentation = technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: {
+      summary: { warningCount: 2 },
+      warnings: [
+        { code: 'MISSING_SECTION', message: '缺少章节' },
+        { code: 'FORMAT_RISK', message: '存在格式风险' },
+      ],
+      formatClean: { status: 'failed', error: 'cleaner exited 1' },
+    },
+  })
+
+  assert.equal(presentation.warningCount, 2)
+  assert.equal(presentation.formatCleanFailed, true)
+  assert.equal(presentation.formatCleanMessage, '格式清洗失败，当前使用组装稿')
+})
+
+test('生成提示在 summary 未给数量时累计 warning count', () => {
+  const presentation = technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: {
+      summary: {},
+      warnings: [{ code: 'A', count: 3 }, { code: 'B', count: 2 }],
+    },
+  })
+
+  assert.equal(presentation.warningCount, 5)
+})
+
+test('生成提示不把 null warningCount 当作零', () => {
+  const presentation = technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: {
+      summary: { warningCount: null },
+      warnings: [{ code: 'A', count: 3 }, { code: 'B', count: 2 }],
+    },
+  })
+
+  assert.equal(presentation.warningCount, 5)
+})
+
+test('生成提示不让 summary 零值隐藏 warning 派生数量', () => {
+  const presentation = technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: {
+      summary: { warningCount: 0 },
+      warnings: [{ code: 'A', count: 3 }, { code: 'B', count: 2 }],
+    },
+  })
+
+  assert.equal(presentation.warningCount, 5)
+})
+
+test('生成提示采用 summary 与 warning 派生数量的较大值', () => {
+  const presentation = technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: {
+      summary: { warningCount: 2 },
+      warnings: [{ code: 'A', count: 3 }, { code: 'B', count: 2 }],
+    },
+  })
+
+  assert.equal(presentation.warningCount, 5)
+})
+
+test('共创格式状态从 document payload 恢复，标准版不携带历史自定义值', () => {
+  const restored = technicalHelpers.technicalFormatStateFromDocument({
+    technicalFormatPreset: 'custom',
+    technicalFormatStyleOverrides: { bodyZhFont: '宋体', bodySizePt: 14 },
+  }, {
+    bodyZhFont: '等线',
+    bodySizePt: 12,
+    insertToc: true,
+  })
+
+  assert.equal(restored.preset, 'custom')
+  assert.deepEqual(restored.styleOverrides, {
+    bodyZhFont: '宋体',
+    bodySizePt: 14,
+    insertToc: true,
+  })
+  assert.deepEqual(technicalHelpers.technicalFormatRequest('standard', restored.styleOverrides), { preset: 'standard' })
+  assert.deepEqual(technicalHelpers.technicalFormatRequest('custom', restored.styleOverrides), {
+    preset: 'custom',
+    styleOverrides: restored.styleOverrides,
+  })
+})
+
+test('格式应用响应缺 document 时按本次请求推进本地格式状态', () => {
+  const currentDocument = {
+    fileName: '技术标.docx',
+    technicalFormatPreset: 'standard',
+    technicalFormatStyleOverrides: { bodyZhFont: '等线' },
+  }
+  const styleOverrides = { bodyZhFont: '宋体', bodySizePt: 14 }
+
+  const customDocument = technicalHelpers.technicalFormatDocumentAfterApply(
+    currentDocument,
+    'custom',
+    styleOverrides,
+    null,
+  )
+  assert.equal(customDocument.technicalFormatPreset, 'custom')
+  assert.deepEqual(customDocument.technicalFormatStyleOverrides, styleOverrides)
+
+  const standardDocument = technicalHelpers.technicalFormatDocumentAfterApply(
+    customDocument,
+    'standard',
+    styleOverrides,
+    undefined,
+  )
+  assert.equal(standardDocument.technicalFormatPreset, 'standard')
+  assert.deepEqual(standardDocument.technicalFormatStyleOverrides, {})
+})
+
+test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持不变', async () => {
+  const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(gapSource, /warningCount/)
+  assert.match(gapSource, /disabled=\{Boolean\(busyAction\) \|\| !generationCompleted\}/)
+  assert.match(editorSource, /technicalDocumentAPI\.technicalFormat\(id, payload\)/)
+  assert.match(editorSource, /download=\{finalData\?\.fileName \|\| data\?\.fileName \|\| defaultWordFileName\}/)
+  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
+})
 
 test('技术标 AI 填表默认选中来源矩阵推荐素材', () => {
   const selected = {

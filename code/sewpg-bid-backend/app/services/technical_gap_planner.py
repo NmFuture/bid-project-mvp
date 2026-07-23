@@ -17,7 +17,11 @@ from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.identity import build_project_material_scope
 from app.services.opencode_client import OpencodeClient
 from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
-from app.services.technical_gap_domain import recompute_technical_gap_decisions, summarize_technical_gap_plan
+from app.services.technical_gap_domain import (
+    recompute_technical_gap_decisions,
+    summarize_technical_gap_plan,
+    technical_outline_number_and_title,
+)
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
@@ -672,17 +676,7 @@ def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", l
         if not isinstance(node, dict):
             continue
         fallback_number = f"{prefix}.{index}" if prefix else str(index)
-        number = str(
-            node.get("tocNumber")
-            or node.get("toc_number")
-            or node.get("number")
-            or fallback_number
-        ).strip()
-        title = str(node.get("title") or "").strip()
-        if number and title.startswith(number):
-            suffix = title[len(number) :]
-            if not suffix or suffix[:1].isspace() or suffix[:1] in "：:、.-":
-                title = suffix.strip(" ：:、.-") or title
+        number, title = technical_outline_number_and_title(node, fallback_number)
         items.append(
             {
                 "order": len(items) + 1,
@@ -700,7 +694,7 @@ def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", l
         )
         children = node.get("children") or []
         if isinstance(children, list):
-            child_items = _outline_nodes_to_toc_items(children, number, level + 1)
+            child_items = _outline_nodes_to_toc_items(children, fallback_number, level + 1)
             for child in child_items:
                 child["order"] = len(items) + 1
                 items.append(child)

@@ -35,6 +35,7 @@ WIKI_SCRIPT_DIR = skill_script_dir("bid-tech-wiki-material-builder")
 GAP_PLANNER_SCRIPT_DIR = skill_script_dir("bid-tech-gap-planner")
 TABLE_FILLER_SCRIPT_DIR = skill_script_dir("bid-tech-table-filler")
 WORD_FILLER_SCRIPT_DIR = skill_script_dir("bid-tech-word-placeholder-filler")
+MATERIAL_CLEANER_SCRIPT_DIR = skill_script_dir("bid-material-format-cleaner")
 
 
 def load_assembler_script(name: str):
@@ -89,6 +90,16 @@ def load_table_filler_script(name: str):
 def load_word_filler_script(name: str):
     module_name = f"word_filler_{name}"
     spec = importlib.util.spec_from_file_location(module_name, WORD_FILLER_SCRIPT_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_material_cleaner_script(name: str):
+    module_name = f"material_cleaner_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, MATERIAL_CLEANER_SCRIPT_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     sys.modules[module_name] = module
@@ -4920,7 +4931,7 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertFalse(any(".0." in item or item.endswith(".0") for item in headings))
 
-    def test_bid_assembler_inject_prefix_clears_stale_direct_outline(self) -> None:
+    def test_bid_assembler_inject_prefix_preserves_style_and_updates_navigation(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
 
         doc = Document()
@@ -4939,10 +4950,10 @@ class TocSkillScriptTests(unittest.TestCase):
         )
 
         remaining = [para for para in doc.paragraphs if "载荷仿真分析能力" in para.text][0]
-        self.assertEqual(remaining.style.name, "Heading 3")
+        self.assertEqual(remaining.style.name, "Heading 1")
         p_pr = remaining._p.find(qn("w:pPr"))
         self.assertIsNotNone(p_pr)
-        self.assertIsNone(p_pr.find(qn("w:outlineLvl")))
+        self.assertEqual(p_pr.find(qn("w:outlineLvl")).get(qn("w:val")), "2")
 
     def test_bid_assembler_demotes_material_headings_to_body(self) -> None:
         numbering_fixer = load_assembler_script("numbering_fixer")
@@ -5047,11 +5058,15 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(stats["removed"], 1)
         self.assertEqual(stats["remapped"], 1)
-        self.assertEqual(stats["bold_subheadings"], 1)
+        self.assertEqual(stats["bold_subheadings"], 0)
         self.assertEqual(stats["demoted"], 1)
-        self.assertEqual(project_flow.style.name, "Heading 3")
+        self.assertEqual(project_flow.style.name, "Heading 1")
+        self.assertEqual(
+            project_flow._p.find(qn("w:pPr")).find(qn("w:outlineLvl")).get(qn("w:val")),
+            "2",
+        )
         self.assertFalse((list_item.style.name or "").startswith("Heading"))
-        self.assertEqual(static.style.name, "Heading 4")
+        self.assertFalse((static.style.name or "").startswith("Heading"))
         self.assertFalse((table_heading.style.name or "").startswith("Heading"))
 
     def test_bid_assembler_strips_heading_style_numbering(self) -> None:
@@ -5081,6 +5096,258 @@ class TocSkillScriptTests(unittest.TestCase):
         match = re.search(r'(<w:style[^>]+w:styleId="Heading2"[^>]*>.*?</w:style>)', styles_xml)
         self.assertIsNotNone(match)
         self.assertNotIn("<w:numPr>", match.group(1))
+
+    def _make_hidden_numbered_custom_style(self, doc, style_name: str, base_name: str, num_id: str):
+        """构造带隐藏自动编号的自定义标题样式（如"标题6-标书" basedOn Heading 6）。"""
+        custom = doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+        custom.base_style = doc.styles[base_name]
+        p_pr = custom.element.get_or_add_pPr()
+        num_pr = OxmlElement("w:numPr")
+        ilvl = OxmlElement("w:ilvl")
+        ilvl.set(qn("w:val"), "0")
+        nid = OxmlElement("w:numId")
+        nid.set(qn("w:val"), num_id)
+        num_pr.append(ilvl)
+        num_pr.append(nid)
+        p_pr.append(num_pr)
+        return custom
+
+    def _add_paragraph_numpr(self, para, num_id: str) -> None:
+        p_pr = para._p.get_or_add_pPr()
+        num_pr = OxmlElement("w:numPr")
+        ilvl = OxmlElement("w:ilvl")
+        ilvl.set(qn("w:val"), "0")
+        nid = OxmlElement("w:numId")
+        nid.set(qn("w:val"), num_id)
+        num_pr.append(ilvl)
+        num_pr.append(nid)
+        p_pr.append(num_pr)
+
+    def test_bid_assembler_remap_preserves_numid_zero_suppression(self) -> None:
+        """1.7 回归：注入层级时不得删除抑制隐藏自动编号的 numId=0。"""
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        self._make_hidden_numbered_custom_style(doc, "标题6-标书", "Heading 6", "7")
+        para = doc.add_paragraph("总体技术路线", style="标题6-标书")
+        self._add_paragraph_numpr(para, "0")  # 源文档用 numId=0 抑制样式隐藏编号
+
+        stats = numbering_fixer.remap_material_headings_to_navigation(doc, parent_level=2)
+
+        self.assertEqual(stats["remapped"], 1)
+        num_pr = para._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertIsNotNone(num_pr)
+        self.assertEqual(num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+
+    def test_bid_assembler_remap_strips_active_paragraph_numbering(self) -> None:
+        """注入层级时真正生效的段落自动编号（numId>0）仍要剥掉，避免双编号。"""
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        para = doc.add_paragraph("总体技术路线", style="Heading 6")
+        self._add_paragraph_numpr(para, "7")
+
+        stats = numbering_fixer.remap_material_headings_to_navigation(doc, parent_level=2)
+
+        self.assertEqual(stats["remapped"], 1)
+        num_pr = para._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertIsNone(num_pr)
+
+    def test_bid_assembler_strips_basedon_chain_heading_style_numbering(self) -> None:
+        """1.7 回归：basedOn 链指向 Heading 的自定义样式也要剥样式级自动编号。"""
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        custom = self._make_hidden_numbered_custom_style(doc, "标题6-标书", "Heading 6", "7")
+
+        self.assertEqual(numbering_fixer.strip_numPr_from_heading_styles(doc), 1)
+        self.assertIsNone(custom.element.find(qn("w:pPr")).find(qn("w:numPr")))
+
+    def test_bid_assembler_enforce_invariant_clears_residual_numbering(self) -> None:
+        """不变量：已写入文本编号的 Heading 不得再有有效 Word 自动编号。"""
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        custom = self._make_hidden_numbered_custom_style(doc, "标题6-标书", "Heading 6", "7")
+        # 场景1：段落 numId>0 → 改为段落级 numId=0
+        active = doc.add_paragraph("1.7.3.1 总体技术路线", style="Heading 3")
+        self._add_paragraph_numpr(active, "5")
+        # 场景2：段落 numId=0 抑制仍在 → 不动
+        suppressed = doc.add_paragraph("1.7.3.2 关键技术路线", style="标题6-标书")
+        self._add_paragraph_numpr(suppressed, "0")
+        # 场景3：样式链编号且无段落抑制 → 只给当前段落加 numId=0
+        inherited = doc.add_paragraph("1.7.3.3 其他技术路线", style="标题6-标书")
+
+        fixed = numbering_fixer.enforce_no_auto_numbering_on_numbered_headings(doc)
+
+        self.assertEqual(fixed, 2)
+        active_num_pr = active._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(active_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        suppressed_num_pr = suppressed._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertIsNotNone(suppressed_num_pr)
+        self.assertEqual(suppressed_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        inherited_num_pr = inherited._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(inherited_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        style_num_pr = custom.element.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(style_num_pr.find(qn("w:numId")).get(qn("w:val")), "7")
+
+    def test_bid_assembler_invariant_keeps_shared_body_list_style_numbering(self) -> None:
+        """标题局部抑制自动编号时，不得破坏同样式的正文列表。"""
+        numbering_fixer = load_assembler_script("numbering_fixer")
+
+        doc = Document()
+        shared = self._make_hidden_numbered_custom_style(
+            doc,
+            "共享正文列表",
+            "Normal",
+            "7",
+        )
+        heading = doc.add_paragraph("1.7.4 列表样式标题", style=shared)
+        heading_p_pr = heading._p.get_or_add_pPr()
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), "2")
+        heading_p_pr.append(outline)
+        body_item = doc.add_paragraph("正文列表项", style=shared)
+
+        fixed = numbering_fixer.enforce_no_auto_numbering_on_numbered_headings(doc)
+
+        self.assertEqual(fixed, 1)
+        heading_num_pr = heading._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(heading_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        style_num_pr = shared.element.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(style_num_pr.find(qn("w:numId")).get(qn("w:val")), "7")
+        body_p_pr = body_item._p.find(qn("w:pPr"))
+        self.assertIsNotNone(body_p_pr)
+        self.assertIsNone(body_p_pr.find(qn("w:numPr")))
+
+    def test_material_cleaner_does_not_fabricate_heading_levels(self) -> None:
+        """1.9 回归：清洗不按"带编号、文字较短"把正文猜成标题。"""
+        word_cleaner = load_material_cleaner_script("word_cleaner")
+
+        doc = Document()
+        body = doc.add_paragraph("1、载荷仿真分析能力")  # Normal 样式 + 手写编号
+        heading = doc.add_paragraph("2、自主研发控制算法", style="Heading 1")
+
+        word_cleaner._strip_numbered_heading_prefixes(doc)
+
+        # 正文不升格、文本保持原样
+        self.assertEqual(body.style.name, "Normal")
+        self.assertEqual(body.text, "1、载荷仿真分析能力")
+        self.assertIsNone(body._p.find(qn("w:pPr")))
+        # 真 Heading 仍剥手写前缀
+        self.assertEqual(heading.text, "自主研发控制算法")
+
+    def test_material_cleaner_preserves_basedon_heading_level(self) -> None:
+        """自定义样式 basedOn Heading 6 时按真实层级清理，不按文本编号推断。"""
+        word_cleaner = load_material_cleaner_script("word_cleaner")
+
+        doc = Document()
+        custom = doc.styles.add_style("标题6-标书", WD_STYLE_TYPE.PARAGRAPH)
+        custom.base_style = doc.styles["Heading 6"]
+        heading = doc.add_paragraph("1.7 自定义技术路线", style=custom)
+
+        normalized = word_cleaner._strip_numbered_heading_prefixes(doc)
+
+        self.assertEqual(normalized, 1)
+        self.assertEqual(heading.text, "自定义技术路线")
+        self.assertEqual(heading.style.name, "Heading 6")
+        outline = heading._p.find(qn("w:pPr")).find(qn("w:outlineLvl"))
+        self.assertEqual(outline.get(qn("w:val")), "5")
+
+    def test_bid_assembler_gap_plan_flags_unconfirmed_candidates(self) -> None:
+        """1.1/4.7 回归：只有候选素材、未确认 matchedMaterials 时给出显式提示。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0001",
+                                "number": "1.1",
+                                "title": "上海电气优势简介",
+                                "matchedMaterials": [],
+                                "candidateMaterials": [
+                                    {"id": "RAW-0087", "matchScore": 0.87}
+                                ],
+                                "resolvedArtifacts": [],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "1.1",
+                    "chapter_no": "1.1",
+                    "title": "上海电气优势简介",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "UNMATCHED",
+                    "note": "",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "UNMATCHED")
+        self.assertEqual(updated[0]["paths"], [])
+        self.assertIn("候选素材未确认", updated[0]["note"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0001")
+
+    def test_bid_assembler_gap_plan_flags_unfinished_ai_fill(self) -> None:
+        """1.1/4.7 回归：AI 填写流程未产出 S7-ready 产物时给出显式提示。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0002",
+                                "number": "4.7",
+                                "title": "项目技术承诺函",
+                                "fillTasks": [{"id": "FILL-0002", "status": "pending"}],
+                                "matchedMaterials": [],
+                                "candidateMaterials": [
+                                    {"id": "RAW-0149", "matchScore": 0.87},
+                                    {"id": "RAW-0151", "matchScore": 0.85},
+                                ],
+                                "resolvedArtifacts": [],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "4.7",
+                    "chapter_no": "4.7",
+                    "title": "项目技术承诺函",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "UNMATCHED",
+                    "note": "",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "UNMATCHED")
+        self.assertIn("AI 填写未完成", updated[0]["note"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0002")
 
     def test_bid_assembler_gap_plan_matches_appendix_number_plus_title(self) -> None:
         build_assembly = load_assembler_script("build_assembly")
@@ -5184,8 +5451,11 @@ class TocSkillScriptTests(unittest.TestCase):
 
             updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
 
-        self.assertEqual(updated[0]["status"], "NEEDS_REVIEW")
+        # 未通过质检的 AI 填写产物不得进入组装，且必须显式提示"AI 填写未完成"
+        self.assertEqual(updated[0]["status"], "UNMATCHED")
         self.assertEqual(updated[0]["paths"], [])
+        self.assertIn("AI 填写未完成", updated[0]["note"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
 
     def test_bid_assembler_gap_plan_preserves_structural_items(self) -> None:
         build_assembly = load_assembler_script("build_assembly")
@@ -5335,7 +5605,7 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(
             headings,
-            ["1.9 上海电气优势简介", "基本情况", "载荷仿真分析能力"],
+            ["1.9 上海电气优势简介", "1.9.1 基本情况", "1.9.2 载荷仿真分析能力"],
         )
         self.assertIn("基本情况", text)
         self.assertIn("载荷仿真分析能力", text)
