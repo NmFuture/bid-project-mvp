@@ -6,6 +6,28 @@ from typing import Any
 from urllib.parse import quote
 
 
+def technical_outline_number_and_title(
+    node: dict[str, Any],
+    fallback_number: str,
+) -> tuple[str, str]:
+    """统一 S4/S7 的确认目录编号与纯标题，避免素材关联键在阶段间漂移。"""
+    number = ""
+    for key in ("tocNumber", "toc_number", "number"):
+        candidate = str(node.get(key) or "").strip()
+        if candidate:
+            number = candidate
+            break
+    number = number or fallback_number
+
+    title = str(node.get("title") or node.get("name") or "").strip()
+    if number and title.startswith(number):
+        suffix = title[len(number) :]
+        compact_number_prefix = number.endswith(("章", "节", "、", "）", ")"))
+        if not suffix or suffix[:1].isspace() or suffix[:1] in "：:、.-" or compact_number_prefix:
+            title = suffix.strip(" ：:、.-") or title
+    return number, title
+
+
 def technical_gap_artifact_is_s7_ready(artifact: dict[str, Any]) -> bool:
     if artifact.get("s7Ready", True) is False:
         return False

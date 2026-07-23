@@ -2996,7 +2996,15 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
 
         def fake_parse_with_appendix(title: str):
-            def fake_parse(project_id_arg, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+            def fake_parse(
+                project_id_arg,
+                tender_files,
+                *,
+                bid_type,
+                progress_callback=None,
+                cancel_check=None,
+                require_preparsed_pdf=False,
+            ):
                 parse_dir = settings.parsed_dir / project_id_arg
                 parse_dir.mkdir(parents=True, exist_ok=True)
                 combined_path = parse_dir / "combined.txt"
@@ -4694,7 +4702,15 @@ class ParsePipelineTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+        def fake_parse(
+            project_id,
+            tender_files,
+            *,
+            bid_type,
+            progress_callback=None,
+            cancel_check=None,
+            require_preparsed_pdf=False,
+        ):
             return (
                 {"fileCount": 1, "extractedCount": 0, "textLength": 10, "textPreview": "", "warnings": []},
                 {
@@ -4798,7 +4814,15 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
         tender = "progress stale streaming closeout test\n".encode("utf-8")
 
-        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+        def fake_parse(
+            project_id,
+            tender_files,
+            *,
+            bid_type,
+            progress_callback=None,
+            cancel_check=None,
+            require_preparsed_pdf=False,
+        ):
             if progress_callback:
                 progress_callback(
                     "opencode_delta",
@@ -4876,7 +4900,15 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_project()
         tender = "cancel before complete\n".encode("utf-8")
 
-        def fake_parse(project_id_arg, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+        def fake_parse(
+            project_id_arg,
+            tender_files,
+            *,
+            bid_type,
+            progress_callback=None,
+            cancel_check=None,
+            require_preparsed_pdf=False,
+        ):
             project = store.require_project_for_update(project_id_arg)
             progress = project.get("parse_progress")
             self.assertIsInstance(progress, dict)
@@ -4916,7 +4948,15 @@ class ParsePipelineTests(unittest.TestCase):
         project_id = self.create_business_project()
         tender = "business template progress test\n".encode("utf-8")
 
-        def fake_parse(project_id, tender_files, *, bid_type, progress_callback=None, cancel_check=None):
+        def fake_parse(
+            project_id,
+            tender_files,
+            *,
+            bid_type,
+            progress_callback=None,
+            cancel_check=None,
+            require_preparsed_pdf=False,
+        ):
             if progress_callback:
                 progress_callback(
                     "business_template_extraction_started",

@@ -40,6 +40,22 @@ def test_docling_worker_dependencies_are_cpu_only_and_locked() -> None:
     assert not any(line.startswith(("cuda-", "nvidia-", "triton==")) for line in docling_lock)
 
 
+def test_docxcompose_floor_supports_preserve_styles() -> None:
+    expected = "docxcompose>=2.2.0"
+    requirements = _requirement_lines(BACKEND_ROOT / "requirements.txt")
+    opencode_dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")
+
+    requirement_specs = {line for line in requirements if line.startswith("docxcompose")}
+    dockerfile_specs = {
+        token.strip('"')
+        for token in opencode_dockerfile.split()
+        if token.strip('"').startswith("docxcompose")
+    }
+
+    assert requirement_specs == {expected}
+    assert dockerfile_specs == {expected}
+
+
 def test_fastapi_dockerfile_is_lightweight_and_keeps_pip_cache() -> None:
     dockerfile = (BACKEND_ROOT / "Dockerfile").read_text(encoding="utf-8")
 

@@ -5,9 +5,12 @@ from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import AsyncMock, patch
 
+from app.services.material_folder_maintenance import (
+    bootstrap_project_material_folder,
+    ensure_material_target_folder,
+)
 from app.services.material_raw_folder_operations import RawFolderOperations
 from app.services.material_raw_lifecycle_operations import create_raw_folder, delete_raw_folder
-from app.services.material_folder_maintenance import bootstrap_project_material_folder
 from app.services.peripheral import PeripheralError
 
 
@@ -20,6 +23,9 @@ class _ScalarResult:
 
     def scalars(self):
         return self
+
+    def first(self):
+        return self._value
 
     def all(self):
         return list(self._value)
@@ -56,7 +62,93 @@ class _CreateFolderSession:
         return None
 
 
+class _DuplicateFolderResult:
+    def __init__(self, *values):
+        self._values = values
+
+    def scalar_one_or_none(self):
+        raise AssertionError("历史重复目录不应导致查询要求唯一结果")
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self._values[0] if self._values else None
+
+
+class _DuplicateFolderSession:
+    def __init__(self, *folders):
+        self.result = _DuplicateFolderResult(*folders)
+        self.added = []
+
+    async def execute(self, _statement):
+        return self.result
+
+    async def get(self, _model, _identity):
+        return None
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        return None
+
+
 class MaterialEmptyRootTests(IsolatedAsyncioTestCase):
+    async def test_technical_project_target_uses_project_customization_folder(self) -> None:
+        technical_root = SimpleNamespace(id=1, path="技术标")
+        project_root = SimpleNamespace(id=2, path="技术标/项目定制")
+        project_folder = SimpleNamespace(id=3, path="技术标/项目定制/MATPRJ-001")
+        ensure_folder_path = AsyncMock(side_effect=(technical_root, project_root, project_folder))
+
+        result = await ensure_material_target_folder(
+            object(),
+            material_tier="project",
+            bid_type="技术标",
+            project_id="MATPRJ-001",
+            ensure_folder_path=ensure_folder_path,
+            clear_default_folder_deletion=AsyncMock(),
+        )
+
+        self.assertIs(result, project_folder)
+        self.assertEqual(ensure_folder_path.await_args_list[1].args[1], "项目定制")
+
+    async def test_technical_project_bootstrap_uses_project_customization_folder(self) -> None:
+        technical_root = SimpleNamespace(id=1, path="技术标")
+        project_root = SimpleNamespace(id=2, path="技术标/项目定制")
+        project_folder = SimpleNamespace(id=3, path="技术标/项目定制/MATPRJ-001")
+        ensure_folder_path = AsyncMock(side_effect=(technical_root, project_root, project_folder))
+
+        result = await bootstrap_project_material_folder(
+            object(),
+            project_id="MATPRJ-001",
+            bid_type="技术标",
+            find_folder=AsyncMock(return_value=None),
+            ensure_folder_path=ensure_folder_path,
+        )
+
+        self.assertEqual(result["payload"]["path"], "技术标/项目定制/MATPRJ-001")
+        self.assertEqual(ensure_folder_path.await_args_list[1].args[1], "项目定制")
+
+    async def test_ensure_folder_path_reuses_first_legacy_duplicate(self) -> None:
+        operations = RawFolderOperations(ensure_runtime_tables=AsyncMock())
+        first = SimpleNamespace(id=1, path="技术标")
+        duplicate = SimpleNamespace(id=2, path="技术标")
+        session = _DuplicateFolderSession(first, duplicate)
+
+        folder = await operations.ensure_folder_path(
+            session,
+            "技术标",
+            None,
+            "standard",
+            "技术标",
+            None,
+            1,
+        )
+
+        self.assertIs(folder, first)
+        self.assertEqual(session.added, [])
+
     async def test_technical_project_folder_uses_stable_project_id(self) -> None:
         parent = SimpleNamespace(id=20, path="技术标/项目定制")
         project_folder = SimpleNamespace(

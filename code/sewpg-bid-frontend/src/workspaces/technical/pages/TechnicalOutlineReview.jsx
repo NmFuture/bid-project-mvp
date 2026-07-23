@@ -501,6 +501,8 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     ))
   }
 
+  const displayNumberStyles = collectNumberStyles(nodes)
+
   const renderRows = (items, depth = 0, prefix = '') => (
     <div>
       {(items || []).map((node, index) => {
@@ -513,7 +515,12 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         const action = suggestionActionLabel(node)
         const tenderBasis = pickTenderBasis(node)
         const canFocusBasis = Boolean(tenderBasis)
-        const displayNumber = getOutlineDisplayNumber(node)
+        const displayNumber = shouldPreserveOutlineNumber(node)
+          ? getOutlineDisplayNumber(node)
+          : getOutlineDisplayNumber(
+              node,
+              formatOutlineNumber(index + 1, depth, prefix, displayNumberStyles[depth]),
+            )
 
         return (
           <div key={node.id}>

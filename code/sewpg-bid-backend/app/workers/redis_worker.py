@@ -197,6 +197,14 @@ def _run_job(job: dict[str, Any]) -> bool:
                 "status": "failed" if result.get("cleanStatus") == "failed" else "success",
                 "summary": result.get("cleanMessage") or "",
             }
+        elif job_type == "material_deep_parse":
+            from app.services.material_deep_parse import deep_parse_material_file_sync
+
+            result = deep_parse_material_file_sync(project_id, data)
+            final_state = {
+                "status": "failed" if result.get("deepParseStatus") == "failed" else "success",
+                "summary": result.get("deepParseMessage") or "",
+            }
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type

@@ -16,3 +16,12 @@ test('parse API exposes backend cancel endpoints', async () => {
     /cancel:\s*\(projectId\)\s*=>\s*request\(`\/business\/projects\/\$\{projectId\}\/parse-results\/cancel`,\s*\{\s*method:\s*'POST'/s,
   )
 })
+
+test('技术标项目更新为附件同步预留足够等待时间', async () => {
+  const source = await readFile(apiSourceUrl, 'utf-8')
+
+  assert.match(
+    source,
+    /technicalProjectsAPI\s*=\s*\{[\s\S]*?update:\s*\(id, data\)\s*=>\s*request\(`\/technical\/projects\/\$\{id\}`,\s*\{\s*method:\s*'PUT',\s*body:\s*data,\s*timeoutMs:\s*5\s*\*\s*60\s*\*\s*1000,\s*retryCount:\s*0,?\s*\}\)/,
+  )
+})

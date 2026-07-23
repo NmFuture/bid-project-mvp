@@ -14,6 +14,7 @@ const CERTIFICATE_VALIDITY_FILTERS = [
   { value: 'all', label: '全部记录' },
   { value: 'valid', label: '有效期内' },
   { value: 'expired', label: '已过期' },
+  { value: 'follow', label: '跟随整机证' },
   { value: 'missing-expiry', label: '未识别到' },
   { value: 'same-name', label: '同名重复' },
   { value: 'merged-duplicate', label: '合并重复' },
@@ -21,11 +22,13 @@ const CERTIFICATE_VALIDITY_FILTERS = [
 const CERTIFICATE_VALIDITY_LABELS = {
   valid: '有效期内',
   expired: '已过期',
+  follow: '跟随整机证',
   missing: '未识别到',
 }
 const certificateValidityOf = (item, today) => {
   if (item?.expiryDate && item.expiryDate < today) return 'expired'
   if ((item?.expiryDate && item.expiryDate >= today) || item?.longTerm) return 'valid'
+  if (item?.validityBasis === 'follow_turbine') return 'follow'
   return 'missing'
 }
 const CERTIFICATE_STATUS_LABELS = {
@@ -118,7 +121,6 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   const [scopeSaving, setScopeSaving] = useState(false)
   const [incrementalRunning, setIncrementalRunning] = useState(false)
   const [recognizingIds, setRecognizingIds] = useState(new Set())
-  const [manualScopePath, setManualScopePath] = useState('')
   const [runResult, setRunResult] = useState(null)
   const [previewItem, setPreviewItem] = useState(null)
   const [previewSession, setPreviewSession] = useState(null)
@@ -197,6 +199,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
       const validity = certificateValidityOf(item, today)
       if (filters.validity === 'expired' && validity !== 'expired') return false
       if (filters.validity === 'valid' && validity !== 'valid') return false
+      if (filters.validity === 'follow' && validity !== 'follow') return false
       if (filters.validity === 'missing-expiry' && validity !== 'missing') return false
       if (filters.validity === 'same-name' && (nameCounts.get(certificateNameKey(item)) || 0) <= 1) return false
       if (filters.validity === 'merged-duplicate' && Number(item.duplicateCount || 0) <= 1) return false
@@ -518,11 +521,6 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
     if (!selectedConfirmedScopeCount) return
     setScopes((prev) => prev.filter((scope) => !selectedConfirmedScopePaths.has(normalizeScopePath(scope.path))))
     setSelectedConfirmedScopePaths(new Set())
-  }
-
-  const addManualScope = () => {
-    addScope({ path: manualScopePath, source: 'manual' })
-    setManualScopePath('')
   }
 
   const removeScope = (path) => {
@@ -913,10 +911,19 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                       </span>
                       <span className="truncate tabular-nums">{item.issueDate || '-'}</span>
                       <span className="flex min-w-0 items-center gap-1">
-                        <span className={`truncate font-semibold tabular-nums ${
-                          item.expiryDate && item.expiryDate < today ? 'text-error' : 'text-on-surface'
-                        }`}>
-                          {item.expiryDate || (item.longTerm ? '长期有效' : '-')}
+                        <span
+                          className={`truncate font-semibold tabular-nums ${
+                            item.expiryDate && item.expiryDate < today ? 'text-error' : 'text-on-surface'
+                          }`}
+                          title={item.validityNote || ''}
+                        >
+                          {item.expiryDate
+                            ? `${item.expiryDate}${item.validityBasis === 'rule_derived' ? '（推算）' : ''}`
+                            : item.longTerm
+                              ? item.validityNote || '长期有效'
+                              : item.validityBasis === 'follow_turbine'
+                                ? '跟随整机证'
+                                : '-'}
                         </span>
                         {(item.warnings || []).length > 0 && (
                           <span
@@ -1035,6 +1042,99 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
             <div className="min-h-0 flex-1 overflow-auto p-5">
               <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <section
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'copy'
+                    setScopeDropActive(true)
+                  }}
+                  onDragLeave={() => setScopeDropActive(false)}
+                  onDrop={handleScopeDrop}
+                  className={`flex h-[60vh] flex-col rounded-lg border p-4 transition-colors ${
+                    scopeDropActive
+                      ? 'border-primary/60 bg-primary/5'
+                      : 'border-outline-variant/45 bg-surface-container-low'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-semibold text-on-surface">已确认目录</h4>
+                      <p className="mt-0.5 text-xs text-outline">
+                        已选 {selectedConfirmedScopeCount} 项 / 共 {confirmedScopePaths.length} 项，可拖动右侧目录到本区域
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={saveScopes}
+                      disabled={scopeSaving}
+                      className="h-8 rounded-lg bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-45"
+                    >
+                      {scopeSaving ? '保存中...' : '保存范围'}
+                    </button>
+                  </div>
+                  {scopes.length ? (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high bg-surface-container-lowest px-2 py-2">
+                      <div className="flex items-center gap-2">
+                        <label className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant">
+                          <input
+                            type="checkbox"
+                            checked={allConfirmedScopesSelected}
+                            onChange={allConfirmedScopesSelected ? clearConfirmedScopeSelection : selectAllConfirmedScopes}
+                            className="h-4 w-4 accent-primary"
+                          />
+                          全选
+                        </label>
+                        <button
+                          type="button"
+                          onClick={clearConfirmedScopeSelection}
+                          disabled={!selectedConfirmedScopeCount}
+                          className="h-7 rounded px-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high disabled:opacity-45"
+                        >
+                          清空
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={removeSelectedScopes}
+                        disabled={!selectedConfirmedScopeCount}
+                        className="h-7 rounded bg-error-container px-2.5 text-xs font-semibold text-error hover:bg-error-container/80 disabled:opacity-45"
+                      >
+                        删除所选
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 min-h-0 flex-1 space-y-0.5 overflow-y-auto rounded-lg border border-surface-container-high bg-surface-container-lowest p-1.5">
+                    {scopes.length ? scopes.map((scope) => {
+                      const path = normalizeScopePath(scope.path)
+                      return (
+                        <div key={scope.path} className="flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs hover:bg-surface-container-high/60">
+                          <input
+                            type="checkbox"
+                            checked={selectedConfirmedScopePaths.has(path)}
+                            onChange={() => toggleConfirmedScopeSelection(path)}
+                            className="h-4 w-4 shrink-0 accent-primary"
+                            aria-label={`选择识别范围 ${scope.path}`}
+                          />
+                          <span className="min-w-0 flex-1 truncate text-on-surface" title={scope.path}>{scope.path}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeScope(scope.path)}
+                            className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/30 hover:text-error"
+                            aria-label={`移除识别范围 ${scope.path}`}
+                            title="移除范围"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">delete</span>
+                          </button>
+                        </div>
+                      )
+                    }) : (
+                      <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
+                        尚未确认识别目录，可从右侧勾选、点击加入或拖动目录到此处
+                      </div>
+                    )}
+                  </div>
+                </section>
+
                 <section className="flex h-[60vh] flex-col rounded-lg border border-outline-variant/45 bg-surface-container-low p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-0.5 rounded-lg bg-surface-container-high p-0.5">
@@ -1093,8 +1193,8 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                   </div>
                   <p className="mt-2 text-xs text-outline">
                     {scopeSourceTab === 'suggestions'
-                      ? `已选 ${selectedSuggestionCount} 项 / 可加入 ${selectableSuggestionPaths.length} 项，可勾选批量加入或拖动到右侧`
-                      : '勾选目录即加入右侧已确认列表，也可直接拖动目录到右侧'}
+                      ? `已选 ${selectedSuggestionCount} 项 / 可加入 ${selectableSuggestionPaths.length} 项，可勾选批量加入或拖动到左侧`
+                      : '勾选目录即加入左侧已确认列表，也可直接拖动目录到左侧'}
                   </p>
                   {scopeSourceTab === 'suggestions' ? (
                     <>
@@ -1195,115 +1295,6 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                       )}
                     </div>
                   )}
-                </section>
-
-                <section
-                  onDragOver={(event) => {
-                    event.preventDefault()
-                    event.dataTransfer.dropEffect = 'copy'
-                    setScopeDropActive(true)
-                  }}
-                  onDragLeave={() => setScopeDropActive(false)}
-                  onDrop={handleScopeDrop}
-                  className={`flex h-[60vh] flex-col rounded-lg border p-4 transition-colors ${
-                    scopeDropActive
-                      ? 'border-primary/60 bg-primary/5'
-                      : 'border-outline-variant/45 bg-surface-container-low'
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h4 className="text-sm font-semibold text-on-surface">已确认目录</h4>
-                      <p className="mt-0.5 text-xs text-outline">
-                        已选 {selectedConfirmedScopeCount} 项 / 共 {confirmedScopePaths.length} 项，可拖动左侧目录到本区域
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={saveScopes}
-                      disabled={scopeSaving}
-                      className="h-8 rounded-lg bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-45"
-                    >
-                      {scopeSaving ? '保存中...' : '保存范围'}
-                    </button>
-                  </div>
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      value={manualScopePath}
-                      onChange={(event) => setManualScopePath(event.target.value)}
-                      placeholder="手工添加目录路径，如 技术标/标准文件/EW5.0-220/认证证书"
-                      className="h-9 min-w-0 flex-1 rounded-lg border border-surface-container-high bg-white px-3 text-xs text-on-surface"
-                    />
-                    <button
-                      type="button"
-                      onClick={addManualScope}
-                      disabled={!manualScopePath.trim()}
-                      className="h-9 rounded-lg bg-surface-container-high px-3 text-xs font-semibold text-on-surface hover:bg-surface-dim disabled:opacity-45"
-                    >
-                      添加
-                    </button>
-                  </div>
-                  {scopes.length ? (
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high bg-surface-container-lowest px-2 py-2">
-                      <div className="flex items-center gap-2">
-                        <label className="inline-flex items-center gap-1.5 text-xs text-on-surface-variant">
-                          <input
-                            type="checkbox"
-                            checked={allConfirmedScopesSelected}
-                            onChange={allConfirmedScopesSelected ? clearConfirmedScopeSelection : selectAllConfirmedScopes}
-                            className="h-4 w-4 accent-primary"
-                          />
-                          全选
-                        </label>
-                        <button
-                          type="button"
-                          onClick={clearConfirmedScopeSelection}
-                          disabled={!selectedConfirmedScopeCount}
-                          className="h-7 rounded px-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high disabled:opacity-45"
-                        >
-                          清空
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={removeSelectedScopes}
-                        disabled={!selectedConfirmedScopeCount}
-                        className="h-7 rounded bg-error-container px-2.5 text-xs font-semibold text-error hover:bg-error-container/80 disabled:opacity-45"
-                      >
-                        删除所选
-                      </button>
-                    </div>
-                  ) : null}
-                  <div className="mt-3 min-h-0 flex-1 space-y-0.5 overflow-y-auto rounded-lg border border-surface-container-high bg-surface-container-lowest p-1.5">
-                    {scopes.length ? scopes.map((scope) => {
-                      const path = normalizeScopePath(scope.path)
-                      return (
-                        <div key={scope.path} className="flex items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs hover:bg-surface-container-high/60">
-                          <input
-                            type="checkbox"
-                            checked={selectedConfirmedScopePaths.has(path)}
-                            onChange={() => toggleConfirmedScopeSelection(path)}
-                            className="h-4 w-4 shrink-0 accent-primary"
-                            aria-label={`选择识别范围 ${scope.path}`}
-                          />
-                          <span className="min-w-0 flex-1 truncate text-on-surface" title={scope.path}>{scope.path}</span>
-                          <button
-                            type="button"
-                            onClick={() => removeScope(scope.path)}
-                            className="flex h-6 w-6 items-center justify-center rounded text-outline hover:bg-error-container/30 hover:text-error"
-                            aria-label={`移除识别范围 ${scope.path}`}
-                            title="移除范围"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">delete</span>
-                          </button>
-                        </div>
-                      )
-                    }) : (
-                      <div className="flex h-full items-center justify-center px-3 text-center text-xs text-outline">
-                        尚未确认识别目录，可从左侧勾选、点击加入或拖动目录到此处
-                      </div>
-                    )}
-                  </div>
                 </section>
               </div>
             </div>

@@ -29,6 +29,7 @@ KNOWN_JOB_TYPES = {
     "directory_generation",
     "fill_generation",
     "material_cleaning",
+    "material_deep_parse",
     "s1_parse",
     *INTERNAL_JOB_TYPES,
 }

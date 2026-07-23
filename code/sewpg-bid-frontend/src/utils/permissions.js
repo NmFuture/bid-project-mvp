@@ -44,8 +44,23 @@ export const canAccessWorkspace = (user, slug) => {
 // TB 视图独有：可以在 UI 中横向并列展示双工作区
 export const canViewBothWorkspaces = (user) => availableWorkspacesFor(user).length > 1
 
-// 设置/审计写权限：仅 TB
-export const canWriteSettings = (user) => user?.role === ROLE.TB
+// 系统默认模板按链路隔离：T 技术标 / B 商务标 / TB 两者；返回 null 表示无角色信息不过滤
+const TEMPLATE_TYPES_BY_ROLE = {
+  T: ['technical'],
+  B: ['business'],
+  TB: ['technical', 'business'],
+}
+
+export const allowedTemplateTypesFor = (user) => {
+  if (!user?.role) return null
+  return TEMPLATE_TYPES_BY_ROLE[user.role] || null
+}
+
+export const canUploadTemplateType = (user, templateType) => {
+  const allowed = allowedTemplateTypesFor(user)
+  return !allowed || allowed.includes(templateType)
+}
+
 export const canViewGlobalAudit = (user) => user?.role === ROLE.TB
 
 // 角色 → 工作台路由（保留参数位以备将来按角色定制）

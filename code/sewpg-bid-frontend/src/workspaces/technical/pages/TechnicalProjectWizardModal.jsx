@@ -19,6 +19,7 @@ import {
 } from '../../shared/projectInfoForm'
 import {
   buildTechnicalProjectInitialForm,
+  mergeTechnicalProjectDraftForm,
   TECHNICAL_BID_TYPE,
 } from '../technicalProjectPrefill'
 
@@ -122,10 +123,13 @@ export default function TechnicalProjectWizardModal({
   const draftKey = useMemo(() => buildDraftKey({ mode, project, defaultBidType }), [defaultBidType, mode, project])
   const draft = useMemo(() => readDraft(draftKey), [draftKey])
   const hasDraft = Boolean(draft)
-  const [form, setForm] = useState(() => draft?.form || buildTechnicalProjectInitialForm({
-    project,
-    prefill,
-    allowPrefill: allowParsePrefill || Boolean(project?.isParseDraft),
+  const [form, setForm] = useState(() => mergeTechnicalProjectDraftForm({
+    initialForm: buildTechnicalProjectInitialForm({
+      project,
+      prefill,
+      allowPrefill: allowParsePrefill || Boolean(project?.isParseDraft),
+    }),
+    draftForm: draft?.form,
   }))
   const [materialProjectMode, setMaterialProjectMode] = useState(
     draft?.materialProjectMode || project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),

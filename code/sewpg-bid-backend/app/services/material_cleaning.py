@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 # 线上清洗链路已收束到只处理 Word；其他格式一律保留原件（original_only）
 CLEANABLE_SUFFIXES = {".docx"}
+# 可由后台任务转换为 Word 的非 Word 素材（driver 的 pdf/excel 分支）
+DEEP_CONVERTIBLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm"}
 _sync_cleaning_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -55,6 +57,12 @@ def _short_file_name_for_path(name: str, fallback: str = "material.docx") -> str
 
 def is_cleanable_material(name: str) -> bool:
     return PurePosixPath(str(name or "")).suffix.lower() in CLEANABLE_SUFFIXES
+
+
+def is_deep_convertible_material(name: str) -> bool:
+    """是否可后台转换为 Word 的非 Word 素材（PDF/XLSX 走 driver 的转换分支）。"""
+
+    return PurePosixPath(str(name or "")).suffix.lower() in DEEP_CONVERTIBLE_SUFFIXES
 
 
 def cleaned_object_key(raw_file_id: int, file_name: str) -> str:
@@ -180,7 +188,12 @@ async def set_material_clean_status(
         return payload
 
 
-async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+async def clean_material_file(
+    file_id: str,
+    data: dict[str, Any] | None = None,
+    *,
+    allow_convert: bool = False,
+) -> dict[str, Any]:
     numeric_id = _numeric_raw_file_id(file_id)
 
     async with async_session() as session:
@@ -194,15 +207,22 @@ async def clean_material_file(file_id: str, data: dict[str, Any] | None = None) 
         source_bucket = str(item.minio_bucket or settings.minio_buckets["materials"])
         source_key = str(item.minio_key or "")
 
-    # 非 Word 素材不再清洗，直接标记保留原件（同时兜底修正历史 pending 任务）
+    # 非 Word 素材默认不清洗，直接标记保留原件（同时兜底修正历史 pending 任务）；
+    # allow_convert=True（后台深度解析任务）时，PDF/XLSX 走 driver 转换出 Word。
     if not is_cleanable_material(source_name):
-        return await set_material_clean_status(
-            file_id,
-            "original_only",
-            "非 Word 素材保留原件，不触发自动清洗。",
-        )
+        if not (allow_convert and is_deep_convertible_material(source_name)):
+            return await set_material_clean_status(
+                file_id,
+                "original_only",
+                "非 Word 素材保留原件，不触发自动清洗。",
+            )
 
-    await set_material_clean_status(file_id, "cleaning", "正在清洗 Word 素材。")
+    converting_non_word = not is_cleanable_material(source_name)
+    await set_material_clean_status(
+        file_id,
+        "cleaning",
+        "正在后台转换为 Word 素材。" if converting_non_word else "正在清洗 Word 素材。",
+    )
 
     driver_path = _skill_driver_path()
     if not driver_path.exists():
