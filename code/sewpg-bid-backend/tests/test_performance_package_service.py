@@ -652,14 +652,34 @@ class PerformanceItemUpdateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_update_item_updates_fields_and_derived_payloads(self) -> None:
         service = PerformancePackageService()
+        existing_values = {
+            "项目名称/合同名称": "原项目",
+            "型号和规格": "EW5.0-200",
+            "合同时间": "2020年",
+            "交货期/投运时间": "2021年",
+            "自定义备注": "保留",
+        }
+        updated_values = {
+            "项目名称/合同名称": "新项目",
+            "型号和规格": "EW6.25-202",
+            "合同时间": "2022年",
+            "交货期/投运时间": "2021年",
+            "自定义备注": "保留",
+            "项目合作方单位": "新合作方",
+        }
+        updated_time_facts = {
+            "contractTimeRaw": "2022年",
+            "deliveryTimeRaw": "2021年",
+            "operationTimeRaw": "2021年",
+            "deliveryOrOperationTimeRaw": "2021年",
+            "contractYear": 2022,
+            "deliveryYear": 2021,
+            "operationYear": 2021,
+            "years": [2022, 2021],
+        }
         session = _FakePerformanceSession(
             results=[
-                _FakePerformanceResult(
-                    row={
-                        "turbine_model": "EW5.0-200",
-                        "time_facts": self._item_row()["time_facts"],
-                    }
-                ),
+                _FakePerformanceResult(row=self._item_row(row_values=existing_values)),
                 _FakePerformanceResult(
                     row=self._item_row(
                         project_name="新项目",
@@ -667,7 +687,8 @@ class PerformanceItemUpdateTests(unittest.IsolatedAsyncioTestCase):
                         turbine_model="EW6.25-202",
                         turbine_models=["EW6.25-202"],
                         contract_year=2022,
-                        delivery_year=None,
+                        row_values=updated_values,
+                        time_facts=updated_time_facts,
                     )
                 ),
             ]
@@ -683,12 +704,12 @@ class PerformanceItemUpdateTests(unittest.IsolatedAsyncioTestCase):
                     "partnerName": " 新合作方 ",
                     "turbineModel": "EW6.25-202",
                     "contractYear": "2022年",
-                    "deliveryYear": "",
                 },
             )
 
-        self.assertIn("SELECT turbine_model, time_facts", session.statements[0])
+        self.assertIn("SELECT *", session.statements[0])
         self.assertIn("UPDATE performance_items", session.statements[1])
+        self.assertIn("row_values = CAST(:row_values AS JSONB)", session.statements[1])
         self.assertIn("RETURNING *", session.statements[1])
         self.assertIn("UPDATE performance_categories SET updated_at = NOW()", session.statements[2])
         update_params = session.params[1]
@@ -696,18 +717,205 @@ class PerformanceItemUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update_params["partner_name"], "新合作方")
         self.assertEqual(update_params["turbine_model"], "EW6.25-202")
         self.assertEqual(update_params["contract_year"], 2022)
-        self.assertIsNone(update_params["delivery_year"])
         self.assertEqual(json.loads(update_params["turbine_models"]), ["EW6.25-202"])
+        row_values = json.loads(update_params["row_values"])
+        self.assertEqual(row_values, updated_values)
+        self.assertNotIn("项目名称", row_values)
+        self.assertNotIn("型号", row_values)
+        self.assertNotIn("原项目", update_params["row_values"])
+        self.assertNotIn("EW5.0-200", update_params["row_values"])
+        self.assertNotIn("2020", update_params["row_values"])
         time_facts = json.loads(update_params["time_facts"])
-        self.assertEqual(time_facts["contractYear"], 2022)
-        self.assertIsNone(time_facts["deliveryYear"])
-        self.assertEqual(time_facts["operationYear"], 2021)
-        self.assertEqual(time_facts["years"], [2022, 2021, 2020])
+        self.assertEqual(time_facts, updated_time_facts)
         self.assertTrue(session.committed)
         self.assertEqual(result["message"], "业绩明细已更新")
         self.assertEqual(result["item"]["id"], "PERITEM-0002")
         self.assertEqual(result["item"]["partnerName"], "新合作方")
         self.assertEqual(result["item"]["contractYear"], 2022)
+        self.assertEqual(result["item"]["values"], updated_values)
+
+    async def test_update_item_repairs_existing_row_value_drift(self) -> None:
+        service = PerformancePackageService()
+        existing_values = {
+            "项目名称/合同名称": "旧项目",
+            "交货期/投运时间": "2021年",
+            "备注": "保留",
+        }
+        updated_values = {
+            "项目名称/合同名称": "新项目",
+            "交货期/投运时间": "2021年",
+            "备注": "保留",
+        }
+        existing = self._item_row(
+            project_name="新项目",
+            row_values=existing_values,
+        )
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(row=existing),
+                _FakePerformanceResult(
+                    row=self._item_row(
+                        project_name="新项目",
+                        row_values=updated_values,
+                    )
+                ),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            result = await service.update_item(
+                "PERCAT-0001",
+                "PERITEM-0002",
+                {"projectName": "新项目"},
+            )
+
+        self.assertIn("row_values = CAST(:row_values AS JSONB)", session.statements[1])
+        self.assertEqual(json.loads(session.params[1]["row_values"]), updated_values)
+        self.assertNotIn("旧项目", session.params[1]["row_values"])
+        self.assertNotIn("time_facts", session.params[1])
+        self.assertEqual(result["item"]["values"], updated_values)
+
+    async def test_update_item_full_payload_does_not_copy_total_capacity_into_commissioned_capacity(self) -> None:
+        service = PerformancePackageService()
+        existing_values = {
+            "型号和规格": "EW8.5-230",
+            "项目名称": "国华山东B2场址项目",
+            "总容量（MW)": "501.5",
+            "台数": "59",
+            "买方名称": "国家能源投资集团（济南）新能源有限责任公司",
+            "合同时间": "2022年",
+            "投运时间": "/",
+            "投运容量（MW)": "/",
+            "联系人及电话": "刘欢18615226720",
+        }
+        updated_values = {**existing_values, "项目名称": "更正后的国华山东B2场址项目"}
+        existing = self._item_row(
+            project_name="国华山东B2场址项目",
+            customer_name="国家能源投资集团（济南）新能源有限责任公司",
+            partner_name="",
+            turbine_model="EW8.5-230",
+            turbine_models=["EW8.5-230"],
+            contract_quantity="59",
+            trial_operation_quantity="",
+            commissioned_capacity_mw="501.5",
+            delivery_or_operation_time="/",
+            contract_year=2022,
+            delivery_year=None,
+            operation_year=None,
+            contact_info="刘欢18615226720",
+            row_values=existing_values,
+        )
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(row=existing),
+                _FakePerformanceResult(
+                    row={**existing, "project_name": "更正后的国华山东B2场址项目", "row_values": updated_values}
+                ),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            await service.update_item(
+                "PERCAT-0001",
+                "PERITEM-0002",
+                {
+                    "projectName": "更正后的国华山东B2场址项目",
+                    "customerName": existing["customer_name"],
+                    "partnerName": existing["partner_name"],
+                    "turbineModel": existing["turbine_model"],
+                    "contractQuantity": existing["contract_quantity"],
+                    "trialOperationQuantity": existing["trial_operation_quantity"],
+                    "commissionedCapacityMw": existing["commissioned_capacity_mw"],
+                    "deliveryOrOperationTime": existing["delivery_or_operation_time"],
+                    "contractYear": existing["contract_year"],
+                    "deliveryYear": existing["delivery_year"],
+                    "operationYear": existing["operation_year"],
+                    "contactInfo": existing["contact_info"],
+                },
+            )
+
+        row_values = json.loads(session.params[1]["row_values"])
+        self.assertEqual(row_values, updated_values)
+        self.assertEqual(row_values["总容量（MW)"], "501.5")
+        self.assertEqual(row_values["投运容量（MW)"], "/")
+
+    async def test_update_item_does_not_overwrite_total_capacity(self) -> None:
+        service = PerformancePackageService()
+        existing_values = {"总容量（MW)": "200", "投运容量（MW)": "200", "备注": "保留"}
+        updated_values = {"总容量（MW)": "200", "投运容量（MW)": "180", "备注": "保留"}
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(row=self._item_row(commissioned_capacity_mw="200", row_values=existing_values)),
+                _FakePerformanceResult(row=self._item_row(commissioned_capacity_mw="180", row_values=updated_values)),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            await service.update_item("PERCAT-0001", "PERITEM-0002", {"commissionedCapacityMw": "180"})
+
+        self.assertEqual(json.loads(session.params[1]["row_values"]), updated_values)
+
+    async def test_update_item_clears_time_row_value_and_stale_year(self) -> None:
+        service = PerformancePackageService()
+        existing_values = {"交货时间": "预计2021年", "备注": "保留"}
+        updated_values = {"交货时间": "", "备注": "保留"}
+        empty_time_facts = {
+            "contractTimeRaw": "",
+            "deliveryTimeRaw": "",
+            "operationTimeRaw": "",
+            "deliveryOrOperationTimeRaw": "",
+            "contractYear": None,
+            "deliveryYear": None,
+            "operationYear": None,
+            "years": [],
+        }
+        existing = self._item_row(
+            contract_year=None,
+            delivery_or_operation_time="预计2021年",
+            delivery_year=2021,
+            operation_year=None,
+            row_values=existing_values,
+            time_facts={
+                **empty_time_facts,
+                "deliveryTimeRaw": "预计2021年",
+                "deliveryOrOperationTimeRaw": "预计2021年",
+                "deliveryYear": 2021,
+                "years": [2021],
+            },
+        )
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(row=existing),
+                _FakePerformanceResult(
+                    row=self._item_row(
+                        contract_year=None,
+                        delivery_or_operation_time="",
+                        delivery_year=None,
+                        operation_year=None,
+                        row_values=updated_values,
+                        time_facts=empty_time_facts,
+                    )
+                ),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            await service.update_item(
+                "PERCAT-0001",
+                "PERITEM-0002",
+                {"deliveryOrOperationTime": "", "deliveryYear": ""},
+            )
+
+        update_params = session.params[1]
+        self.assertEqual(json.loads(update_params["row_values"]), updated_values)
+        self.assertEqual(json.loads(update_params["time_facts"]), empty_time_facts)
+        self.assertNotIn("2021", update_params["row_values"])
+        self.assertNotIn("2021", update_params["time_facts"])
+        self.assertNotIn("turbine_models", update_params)
 
     async def test_update_item_rejects_invalid_year(self) -> None:
         service = PerformancePackageService()
