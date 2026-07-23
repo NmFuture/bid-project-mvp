@@ -359,6 +359,10 @@ def material_index_from_manifest(manifest: dict[str, Any]) -> list[dict[str, Any
                 "placeholderSamples": list(raw.get("placeholderSamples") or []),
                 "fillProfile": raw.get("fillProfile") if isinstance(raw.get("fillProfile"), dict) else {},
                 "evidenceSegments": list(evidence_segments) if isinstance(evidence_segments, list) else [],
+                "documentOutline": list(raw.get("documentOutline") or []) if isinstance(raw.get("documentOutline"), list) else [],
+                "wikiSummary": str(raw.get("wikiSummary") or ""),
+                "wikiCardText": str(raw.get("wikiCardText") or ""),
+                "wikiTags": [str(tag) for tag in (raw.get("wikiTags") or []) if str(tag).strip()],
                 "usage": "section_merge",
                 "matchReason": "允许素材范围内的素材索引候选",
                 "confidence": 0.74,
@@ -850,6 +854,9 @@ def chapter_master_score(material: dict[str, Any], title: str, child_titles: lis
         if child_key and len(child_key) >= 3 and child_key in text:
             child_matches += 1
     score += child_matches * 0.35
+    # 金标反评 R2：素材内部标题树对子节的覆盖率是整章素材最硬的证据
+    # （文件名对不上的整册报告靠这个入围），权重压过文件名启发式。
+    score += outline_child_coverage(material, child_titles) * 3.0
     if str(material.get("materialTier") or "").lower() == "project":
         score += 0.15
     if str(material.get("materialTier") or "").lower() == "standard":
@@ -941,6 +948,293 @@ def title_matches_file_name(material: dict[str, Any], title: str) -> bool:
     return bool(title_key) and title_key in normalize_key(material_file_text(material))
 
 
+# ---------------------------------------------------------------------------
+# 标题级强匹配（金标反评 R1~R3）：剥修饰后的标题等价 + 素材内部标题树命中。
+#
+# 修饰词全部是招投标文体的通用词面（专题/待填写/待用印/括号内构型标注等），
+# 不含任何客户、项目、机型的特定值；标题树来自素材索引的 documentOutline /
+# evidenceSegments（A 层确定性提取），因此这里是纯结构算法，可跨客户泛化。
+# ---------------------------------------------------------------------------
+
+_TITLE_DECOR_RE = re.compile(r"(专题报告|专题|待填写、待用印|待填写|待用印|待补充)")
+_TITLE_PAREN_RE = re.compile(r"（[^）]{1,14}）|\([^)]{1,14}\)")
+_strip_title_cache: dict[str, str] = {}
+
+
+def strip_title_decorations(value: Any) -> str:
+    """剥去章节号、括号标注与通用修饰词后的归一化标题键。
+
+    例：'5.8.2 变桨系统专题' 与 '待填写-变桨系统专题.docx' 的名干、
+    '发电小时数承诺函（承诺保证值）' 与 '4.1 发电小时数承诺函' 剥后相等。
+    """
+    raw = str(value or "")
+    cached = _strip_title_cache.get(raw)
+    if cached is not None:
+        return cached
+    text = re.sub(r"^\s*第\s*[一二三四五六七八九十百千万0-9]+\s*章\s*", "", raw)
+    text = re.sub(r"^\s*[0-9]+(?:\.[0-9]+)*\s*", "", text)
+    text = _TITLE_PAREN_RE.sub("", text)
+    text = _TITLE_DECOR_RE.sub("", text)
+    key = normalize_key(text)
+    _strip_title_cache[raw] = key
+    return key
+
+
+def _keys_equal_or_contained(a: str, b: str) -> bool:
+    """剥修饰后键的等价/包含判定。
+
+    包含方向加长度比约束：长侧不得超过短侧的 2.5 倍（且下限 12 字符）——
+    否则 4 字短词落进长句式片段标题（如 '轮毂高度' ⊂ '上述承诺电量是基于测风塔
+    轮毂高度处代表年平均风速计算'）会造成假命中。
+    """
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < 4 or short not in long:
+        return False
+    return len(long) <= max(12, int(2.5 * len(short)))
+
+
+def _material_stem_keys(material: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for field in ("name", "cleanedFileName"):
+        stem = _material_name_stem(str(material.get(field) or ""))
+        key = strip_title_decorations(stem)
+        if len(key) >= 3 and key not in keys:
+            keys.append(key)
+    return keys
+
+
+# 素材 Wiki 卡片（AI 生成）常在正文末尾附「全文目录」小节，逐行列出该素材内部的
+# 章节标题树。解析阶段未落 documentOutline/evidenceSegments 字段时，它是唯一可用的
+# 内部标题树来源，用于整章/整节覆盖判定。纯结构解析，不绑定单一客户/项目值。
+_WIKI_OUTLINE_HEADER_RE = re.compile(r"全文目录")
+_WIKI_CARD_SECTION_RE = re.compile(r"^(全文目录|检索提示|文件定位|核心要点|TLDR|来源|卡片在)")
+_wiki_outline_cache: dict[str, list[str]] = {}
+
+
+def wiki_outline_titles(material: dict[str, Any]) -> list[str]:
+    """从 wikiCardText 的「全文目录」小节提取素材内部标题（剥 markdown 列表符/缩进/附表编号）。"""
+    card = str(material.get("wikiCardText") or "")
+    if not card:
+        return []
+    cached = _wiki_outline_cache.get(card)
+    if cached is not None:
+        return cached
+    header = _WIKI_OUTLINE_HEADER_RE.search(card)
+    titles: list[str] = []
+    if header:
+        for raw in card[header.end():].splitlines():
+            line = re.sub(r"^[\s#>*\-+•·•●▪]+", "", raw).strip()
+            if not line:
+                continue
+            if _WIKI_CARD_SECTION_RE.match(line):
+                break
+            line = re.sub(r"^附表\s*[A-Za-z]?\.?\d*\s*", "", line).strip()
+            if 2 <= len(line) <= 40:
+                titles.append(line)
+    _wiki_outline_cache[card] = titles
+    return titles
+
+
+def material_has_extracted_outline(material: dict[str, Any]) -> bool:
+    """素材是否带解析阶段抽取的内部标题树字段（区别于仅 AI wiki 全文目录）。"""
+    return bool(material.get("documentOutline")) or bool(material.get("evidenceSegments"))
+
+
+def material_outline_keys(material: dict[str, Any]) -> list[str]:
+    """素材内部标题键列表：documentOutline 优先，evidenceSegments 次之，wiki 全文目录兜底。"""
+    keys: list[str] = []
+    outline = material.get("documentOutline")
+    if isinstance(outline, list):
+        for entry in outline:
+            if isinstance(entry, dict):
+                key = strip_title_decorations(entry.get("title"))
+                if len(key) >= 3:
+                    keys.append(key)
+    for segment in material.get("evidenceSegments") or []:
+        if isinstance(segment, dict):
+            key = strip_title_decorations(segment.get("title"))
+            if len(key) >= 3:
+                keys.append(key)
+    for title in wiki_outline_titles(material):
+        key = strip_title_decorations(title)
+        if len(key) >= 3:
+            keys.append(key)
+    return keys
+
+
+def strong_title_material_match(material: dict[str, Any], title: str) -> str:
+    """章节标题与素材的强匹配级别：'' / 'name'（文件名干） / 'outline'（内部标题）。"""
+    title_key = strip_title_decorations(title)
+    if len(title_key) < 3:
+        return ""
+    for stem in _material_stem_keys(material):
+        if _keys_equal_or_contained(title_key, stem):
+            return "name"
+    for heading in material_outline_keys(material):
+        if _keys_equal_or_contained(title_key, heading):
+            return "outline"
+    return ""
+
+
+def outline_child_coverage(material: dict[str, Any], child_titles: list[str] | None) -> float:
+    """素材内部标题树对子节标题的覆盖率（0~1）——整章/整节素材判定的核心证据。
+
+    一份连续报告（如整册风资源评估报告）的内部标题会覆盖章下大部分子节；
+    「每个子节各有独立文档」的拼装章（部件族）没有任何单一素材能过半覆盖。
+    """
+    keys = [strip_title_decorations(t) for t in child_titles or []]
+    keys = [k for k in keys if len(k) >= 3]
+    if not keys:
+        return 0.0
+    headings = material_outline_keys(material)
+    if not headings:
+        return 0.0
+    hit = sum(1 for key in keys if any(_keys_equal_or_contained(key, heading) for heading in headings))
+    return hit / len(keys)
+
+
+def outline_anchor_for_title(material: dict[str, Any] | None, title: str) -> dict[str, Any]:
+    """被覆盖子节在整章素材内部的锚点（标题/片段 id），供 UI 定位与 S4 按节切分。"""
+    if not isinstance(material, dict):
+        return {}
+    title_key = strip_title_decorations(title)
+    if len(title_key) < 3:
+        return {}
+    outline = material.get("documentOutline")
+    if isinstance(outline, list):
+        for entry in outline:
+            if isinstance(entry, dict) and _keys_equal_or_contained(
+                title_key, strip_title_decorations(entry.get("title"))
+            ):
+                return {"heading": str(entry.get("title") or ""), "source": "documentOutline"}
+    for segment in material.get("evidenceSegments") or []:
+        if isinstance(segment, dict) and _keys_equal_or_contained(
+            title_key, strip_title_decorations(segment.get("title"))
+        ):
+            return {
+                "heading": str(segment.get("title") or ""),
+                "segmentId": str(segment.get("segmentId") or ""),
+                "source": "evidenceSegments",
+            }
+    for heading in wiki_outline_titles(material):
+        if _keys_equal_or_contained(title_key, strip_title_decorations(heading)):
+            return {"heading": heading, "source": "wikiOutline"}
+    return {}
+
+
+def folder_title_recall(materials: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+    """末级目录名剥修饰后命中章节标题的素材（数据类目录，如 功率曲线/、发电小时数承诺函/）。"""
+    title_key = strip_title_decorations(title)
+    if len(title_key) < 4:
+        return []
+    hits: list[dict[str, Any]] = []
+    for material in materials:
+        folder = str(material.get("folderPath") or "").rstrip("/").rsplit("/", 1)[-1]
+        folder_key = strip_title_decorations(folder)
+        if len(folder_key) >= 4 and (folder_key in title_key or title_key in folder_key):
+            hits.append(material)
+    return hits
+
+
+# 证据类文件的通用词面（风电投标领域词，非单一客户/项目值）：认证证书、评估/校核
+# 报告等。它们是章节的支撑附件，不能作为整章/整节正文素材自动定案。
+_EVIDENCE_FILE_RE = re.compile(
+    r"(型式认证|设计认证|评估证书|评估报告|校核报告|复核报告|核查报告|试验报告|检测报告|暂态模型|承诺书)"
+)
+
+
+def is_evidence_file(material: dict[str, Any]) -> bool:
+    return bool(_EVIDENCE_FILE_RE.search(str(material.get("name") or "")))
+
+
+def is_appendix_blank_for(material: dict[str, Any], title: str) -> bool:
+    """带附表编号的空白模板对「非该附表」目录项而言是填写源、不是正文素材。
+
+    如 '待填写-附表E.1 投标人风资源评估与机位排布方案.docx' 的文件名能全词
+    命中第3章标题，但它属于附表E.1 目录项的填写任务，不能给正文章节当
+    整章素材或自动定案；仅当目录项标题本身携带同一附表编号时才放行。
+    """
+    material_code = appendix_code(str(material.get("name") or ""))
+    if not material_code:
+        return False
+    return appendix_code(title) != material_code
+
+
+def ancestor_folder_members(
+    materials: list[dict[str, Any]],
+    ancestor_titles: list[str],
+) -> list[dict[str, Any]]:
+    """祖先小节标题与素材目录同名时，返回该目录（最深命中优先）的成员素材。
+
+    「目录名 = 小节名、目录下一文件一子节」是素材库的通用组织方式
+    （如 数字化智慧风场专题/、项目风机环境适应性专题/），成员是子节的天然候选池。
+    """
+    for ancestor_title in ancestor_titles:
+        ancestor_key = strip_title_decorations(ancestor_title)
+        if len(ancestor_key) < 4:
+            continue
+        members: list[dict[str, Any]] = []
+        for material in materials:
+            parts = [p for p in str(material.get("folderPath") or "").split("/") if p]
+            if any(_keys_equal_or_contained(strip_title_decorations(part), ancestor_key) for part in parts):
+                members.append(material)
+        if members:
+            return members
+    return []
+
+
+def _char_coverage(needle: str, hay: str) -> float:
+    if not needle or not hay:
+        return 0.0
+    hay_chars = set(hay)
+    return sum(1 for ch in needle if ch in hay_chars) / len(needle)
+
+
+def best_scoped_member(
+    members: list[dict[str, Any]],
+    title: str,
+) -> tuple[dict[str, Any] | None, float]:
+    """同名目录成员与子节标题的字符覆盖装配（短侧字符被长侧覆盖 ≥0.85 视为同一主题）。
+
+    例：'智能风机监控SCADA系统' ↔ 成员 '智能监控系统'（成员名字符全部落在子节标题里）。
+    小池内按覆盖率取最优，避免全库范围的相似度误配。
+    """
+    title_key = strip_title_decorations(title)
+    if len(title_key) < 4:
+        return None, 0.0
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for material in members:
+        if is_evidence_file(material):
+            continue
+        for stem in _material_stem_keys(material):
+            if min(len(stem), len(title_key)) < 4:
+                continue
+            score = max(_char_coverage(stem, title_key), _char_coverage(title_key, stem))
+            if score > best_score:
+                best, best_score = material, score
+    return best, best_score
+
+
+def evidence_recall(materials: list[dict[str, Any]], title: str) -> list[dict[str, Any]]:
+    """证据类文件按标题词召回（如 '主轴承专题' ↔ '…TRB主轴承型式认证A.pdf'），只进候选。"""
+    terms = [term for term in title_terms(title) if len(term) >= 2]
+    if not terms:
+        return []
+    hits: list[dict[str, Any]] = []
+    for material in materials:
+        if not is_evidence_file(material):
+            continue
+        name_key = normalize_key(str(material.get("name") or ""))
+        if any(term in name_key for term in terms):
+            hits.append(material)
+    return hits
+
+
 def folder_prefix_for_title(material: dict[str, Any], title: str) -> str:
     """素材路径中与章节标题同名的目录前缀（无则空串）。
 
@@ -1029,9 +1323,13 @@ def route_folder_literal(
 
 
 def _material_topic_text(material: dict[str, Any]) -> str:
-    """素材的主题文本池：文件名 + 路径 + 片段 topicKeywords/keywords/title/summary。
+    """素材的主题文本池：文件名 + 路径 + 片段 topicKeywords/keywords/title/summary
+    + 素材 wiki 卡片文本（AI 摘要 / TLDR 预览 / 标签）。
 
     用于主题级弱关联召回——把「主题相关但文件名对不上」的素材也纳入打分。
+    素材 wiki 卡片是人工/AI 维护的素材知识层，其摘要与 TLDR 常点出章节主题词
+    （如「制动及安全系统说明，含…制动」命中章节「制动系统专题」），是文件名与
+    内部标题都对不上时的补充信号；只进入弱召回（候选建议），不影响确定性定案。
     """
     parts = [material_text(material)]
     for segment in material.get("evidenceSegments") or []:
@@ -1043,6 +1341,11 @@ def _material_topic_text(material: dict[str, Any]) -> str:
             value = segment.get(key)
             if isinstance(value, list):
                 parts.append(" ".join(str(v) for v in value))
+    parts.append(str(material.get("wikiSummary") or ""))
+    parts.append(str(material.get("wikiCardText") or ""))
+    wiki_tags = material.get("wikiTags")
+    if isinstance(wiki_tags, list):
+        parts.append(" ".join(str(tag) for tag in wiki_tags))
     return " ".join(parts)
 
 
@@ -1207,13 +1510,68 @@ def _tier_recall_bonus(material: dict[str, Any]) -> float:
     return 0.0
 
 
+_ALNUM_RUN_RE = re.compile(r"[a-z0-9]{5,}")
+
+
+def _distinctive_tokens(text: str) -> set[str]:
+    """从文本抽「有指向性的 token」：长度≥5 的英数字连写 + 中文 4-gram。
+
+    用于 wiki 卡片关键词召回：这类 token（如 'prognosticagent'、'健康管理'、
+    '故障预测'）几乎不会在无关素材里偶然出现，用它做标题↔素材的交集，既能召回
+    「文件名与内部标题都对不上、但主题词一致」的素材，又不会像整段 Jaccard 那样
+    被大段文本稀释、也不会像 2 字泛词那样满库误命中。纯字面、跨客户通用。
+    """
+    normalized = _tech_normalize_text(text)
+    if not normalized:
+        return set()
+    tokens: set[str] = set(_ALNUM_RUN_RE.findall(normalized))
+    chinese_only = re.sub(r"[^一-鿿]", "", normalized)
+    for start in range(0, max(0, len(chinese_only) - 3)):
+        tokens.add(chinese_only[start : start + 4])
+    return tokens
+
+
+def wiki_hint_recall_materials(
+    materials: list[dict[str, Any]],
+    title: str,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """素材 wiki 卡片关键词召回：标题与素材 wiki 文本共享 ≥1 个指向性 token 即入候选。
+
+    素材 wiki 卡片的 TLDR/检索提示常直接点出章节主题词（'Prognostic-Agent'、
+    '故障预警'、'健康评估'），文件名与内部标题都对不上时靠这一路救回；只进候选、
+    不自动定案。命中越多排序越靠前。
+    """
+    title_tokens = _distinctive_tokens(title)
+    if not title_tokens:
+        return []
+    hits: list[dict[str, Any]] = []
+    for material in materials:
+        wiki_text = " ".join(
+            str(material.get(field) or "") for field in ("wikiSummary", "wikiCardText")
+        )
+        if not wiki_text.strip():
+            continue
+        shared = title_tokens & _distinctive_tokens(wiki_text)
+        if not shared:
+            continue
+        enriched = dict(material)
+        enriched["wikiHintScore"] = round(min(0.3 + 0.1 * (len(shared) - 1), 0.6), 3)
+        enriched["matchReason"] = "素材 wiki 卡片主题词命中章节标题（人工确认）"
+        hits.append(enriched)
+    hits.sort(key=lambda m: float(m.get("wikiHintScore") or 0), reverse=True)
+    return hits[:limit]
+
+
 def _weak_recall_rank(material: dict[str, Any]) -> float:
-    # 三路求和：多路同时命中（名称+片段+主题一致指向）的素材优先于单路命中的；
+    # 多路求和：多路同时命中（名称+片段+主题+wiki 主题词一致指向）的素材优先；
     # 项目/客户素材另有层级加成。
     return (
         float(material.get("topicRelevance") or 0)
         + float(material.get("nameSimilarity") or 0)
         + float(material.get("segmentRecallScore") or 0)
+        + float(material.get("wikiHintScore") or 0)
         + _tier_recall_bonus(material)
     )
 
@@ -1233,13 +1591,14 @@ def weak_recall_materials(
         topic_match_materials(materials, title),
         approx_name_match_materials(materials, title),
         segment_recall_materials(materials, title),
+        wiki_hint_recall_materials(materials, title),
     ):
         for material in pool:
             key = str(material.get("id") or material.get("path") or material.get("name") or "")
             if not key:
                 continue
             if key in merged:
-                for field in ("topicRelevance", "nameSimilarity", "segmentRecallScore"):
+                for field in ("topicRelevance", "nameSimilarity", "segmentRecallScore", "wikiHintScore"):
                     if material.get(field) is not None and merged[key].get(field) is None:
                         merged[key][field] = material[field]
             else:
@@ -1249,8 +1608,10 @@ def weak_recall_materials(
 
 
 def chapter_children(item: dict[str, Any], all_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """任意层级父目录的全部后代（金标反评 R4：节级父目录同样需要子节标题
+    做整节素材判定，旧版只支持章级、节级父目录恒为空列表）。"""
     number_key = toc_number_key(item.get("number"))
-    if not number_key or "." in number_key:
+    if not number_key:
         return []
     prefix = f"{number_key}."
     return [
@@ -1796,6 +2157,9 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     toc_materials_all: list[dict[str, Any]] = []
     for toc_item in items:
         toc_materials_all.extend(normalize_material_refs(toc_item))
+    title_by_number_key = {
+        toc_number_key(toc_item.get("number")): str(toc_item.get("title") or "") for toc_item in items
+    }
     parent_coverages: dict[str, dict[str, Any]] = {}
     plan_items: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
@@ -1806,7 +2170,37 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         toc_materials = resolve_material_hints(normalize_material_refs(item), indexed_materials, allowed_paths)
         wiki_materials = resolve_material_hints(list(wiki_index.get(number) or []), indexed_materials, allowed_paths)
         index_materials = matching_materials_for_title(indexed_materials, title)
-        candidate_materials = dedupe_materials(toc_materials + wiki_materials + index_materials)
+        # 金标反评 R1：文件名字面包含召不回「剥修饰后同名」（变桨系统.docx ↔ 变桨系统专题）、
+        # 「素材内部标题命中」（制动及安全系统.docx 内部标题=制动系统）与「数据目录同名」
+        # （功率曲线/ ↔ 功率曲线保证率承诺）三类真实来源，统一并入字面候选。
+        strong_index_hits = [m for m in indexed_materials if strong_title_material_match(m, title)]
+        folder_hits = folder_title_recall(indexed_materials, title)
+        evidence_hits = evidence_recall(indexed_materials, title)
+        # R5：祖先小节与素材目录同名（一目录=一小节、一文件=一子节的通用组织方式），
+        # 目录成员进候选池，子节按名称字符覆盖装配最相似成员。
+        ancestor_titles = []
+        if "." in number_key:
+            segments_for_ancestors = number_key.split(".")
+            for cut in range(len(segments_for_ancestors) - 1, 0, -1):
+                ancestor_title = title_by_number_key.get(".".join(segments_for_ancestors[:cut]))
+                if ancestor_title:
+                    ancestor_titles.append(ancestor_title)
+        scoped_members = ancestor_folder_members(indexed_materials, ancestor_titles)
+        scoped_best, scoped_score = (
+            best_scoped_member(scoped_members, title) if scoped_members else (None, 0.0)
+        )
+        # 只有通过字符覆盖装配（≥0.85）的那一份成员进候选——目录成员整体入池会把
+        # 「章名目录」下的兄弟文件错误暴露给无关子节，破坏 material_required 判定。
+        scoped_pick = [scoped_best] if scoped_best is not None and scoped_score >= 0.85 else []
+        candidate_materials = dedupe_materials(
+            toc_materials
+            + wiki_materials
+            + index_materials
+            + strong_index_hits
+            + folder_hits
+            + evidence_hits
+            + scoped_pick
+        )
         source_rule_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
         item_source_routing, item_source_materials = source_routing_for_item(
             manifest,
@@ -1827,8 +2221,27 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         covered_by_parent = ""
         usage = ""
 
-        parent_key = number_key.split(".")[0] if "." in number_key else ""
-        parent_coverage = parent_coverages.get(parent_key) if parent_key else None
+        # 金标反评 R3a：覆盖根可在任意深度（1.8/5.13 这类节级整节素材），向上逐级找
+        # 最近的覆盖祖先，而不是只看章号——旧逻辑 split(".")[0] 导致节级覆盖从不生效。
+        parent_coverage = None
+        if "." in number_key:
+            number_segments = number_key.split(".")
+            for cut in range(len(number_segments) - 1, 0, -1):
+                found_coverage = parent_coverages.get(".".join(number_segments[:cut]))
+                if found_coverage:
+                    parent_coverage = found_coverage
+                    break
+        # 金标反评 R3b：覆盖是默认值不是锁——子节自身有剥修饰同名素材（正文或模板）时
+        # 保留自主匹配（如整章模板覆盖第6章、但 6.3.3 单独用调试解决方案.docx）。
+        source_anchor: dict[str, Any] = {}
+        if parent_coverage:
+            self_strong_hits = [
+                m
+                for m in candidate_materials
+                if strong_title_material_match(m, title) == "name" and not is_evidence_file(m)
+            ]
+            if self_strong_hits:
+                parent_coverage = None
         if parent_coverage:
             parent_decision = str(parent_coverage.get("decision") or "ready")
             status = "needs_input" if parent_decision == "fill_required" else "matched"
@@ -1837,8 +2250,10 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             coverage_role = "covered_by_parent"
             covered_by_parent = str(parent_coverage.get("id") or "")
             matched_materials = []
-            gap_reason = f"已由父章节“{parent_coverage.get('title') or parent_key}”整章素材覆盖。"
+            gap_reason = f"已由父章节“{parent_coverage.get('title') or ''}”整章素材覆盖。"
             next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
+            # 覆盖锚点：本子节在整章素材内部对应的标题/片段，供 UI 预览与 S4 按节切分。
+            source_anchor = outline_anchor_for_title(parent_coverage.get("material"), title)
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             appendix_tasks = []
@@ -1879,16 +2294,72 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         elif structural:
             children = chapter_children(item, items)
             child_titles = [str(child.get("title") or "") for child in children]
+            master_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             chapter_candidates = strong_chapter_master_candidates(
-                dedupe_materials(candidate_materials + indexed_materials + toc_materials_all),
+                master_pool,
                 title,
                 child_titles,
             )
+            # 金标反评 R2：内部标题树覆盖子节 ≥50% 的素材直接入围整章候选
+            # （整册报告文件名常与章名对不上，如「风资源评估报告」 vs
+            # 「风资源评估与机位排布方案」，只有标题树能证明它是整章正文）；
+            # 剥修饰后与章名同名的素材（业绩情况.docx ↔ 投标机型业绩情况）同样入围。
+            outline_masters = [m for m in master_pool if outline_child_coverage(m, child_titles) >= 0.5]
+            name_masters = [
+                m
+                for m in master_pool
+                if strong_title_material_match(m, title) == "name" and not is_evidence_file(m)
+            ]
+            chapter_candidates = dedupe_materials(chapter_candidates + outline_masters + name_masters)
             matched_material, alternative_materials = pick_chapter_master_material(
                 chapter_candidates,
                 title,
                 child_titles,
             )
+            if matched_material:
+                # 反过度吞并（金标反评 R2'）：整章定案要么文件名过硬，要么标题树
+                # 能解释一半子节；且当多个子节各有剥修饰同名文档（部件族拼装章）
+                # 而本素材标题树覆盖不足 1/3 时，判为拼装章、不设整章覆盖。
+                # 排序首位不达标时继续检查后续候选（首位常被泛词噪声占据）。
+                children_with_own_doc = sum(
+                    1
+                    for child_title in child_titles
+                    if any(
+                        strong_title_material_match(m, child_title) == "name" and not is_evidence_file(m)
+                        for m in indexed_materials
+                    )
+                )
+
+                def _master_acceptable(candidate: dict[str, Any]) -> bool:
+                    if is_appendix_blank_for(candidate, title):
+                        return False
+                    coverage_ratio = outline_child_coverage(candidate, child_titles)
+                    # 证据类命名（评估/校核/试验报告等）默认是支撑附件、不作整章正文；
+                    # 但当其内部标题树（含 wiki 全文目录）覆盖过半子节时，它就是整册正文
+                    # 报告本体（如「风资源评估报告」覆盖整个风资源章），放行为整章素材。
+                    if is_evidence_file(candidate) and coverage_ratio < 0.5:
+                        return False
+                    name_evidence = chapter_title_matches_file(candidate, title) or (
+                        strong_title_material_match(candidate, title) == "name"
+                    )
+                    if not name_evidence and coverage_ratio < 0.5:
+                        return False
+                    if children_with_own_doc >= 2 and coverage_ratio < 0.34:
+                        return False
+                    return True
+
+                ranked_masters = [matched_material] + list(alternative_materials)
+                accepted = next((m for m in ranked_masters if _master_acceptable(m)), None)
+                if accepted is None:
+                    alternative_materials = dedupe_materials([matched_material] + alternative_materials)
+                    matched_material = None
+                elif accepted is not matched_material:
+                    alternative_materials = dedupe_materials(
+                        [matched_material] + [m for m in alternative_materials if m is not accepted]
+                    )
+                    matched_material = dict(accepted)
+                    matched_material["usage"] = "chapter_master"
+                    matched_material["matchReason"] = f"整章素材覆盖“{title}”及其子节。"
             if matched_material:
                 coverage_role = "chapter_master"
                 matched_materials = [matched_material]
@@ -1903,8 +2374,16 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     gap_reason = "已匹配到整章待填写 Word，可填写后覆盖本章及其子节。"
                     next_actions = ["ai_fill_word", "select_reference_material", "manual_upload"]
                 else:
+                    # 软章主：仅凭 wiki 全文目录（AI 生成）而非解析字段标题树或文件名硬命中
+                    # 入选的整章素材，只判「已匹配-待确认」交人工终审，不自动就绪；子节随父
+                    # 章继承同一决策。硬证据（文件名命中 / 解析字段标题树）仍自动就绪。
+                    master_soft = (
+                        not chapter_title_matches_file(matched_material, title)
+                        and strong_title_material_match(matched_material, title) != "name"
+                        and not material_has_extracted_outline(matched_material)
+                    )
                     status = "matched"
-                    decision = "ready"
+                    decision = "review_required" if master_soft else "ready"
                     usage = "chapter_master"
                     # 金标反评 D3：整章素材的备选并入同目录兄弟 + 弱召回现成素材
                     # （承诺函章的电量承诺书靠同义词组召回），人工可加选拼装；
@@ -1927,8 +2406,12 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                         if str(m.get("materialTier") or "").lower() == "project"
                     ][:4]
                     alternative_materials = alternative_materials[:4] + chapter_project_extras
-                    gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
-                    next_actions = ["s4_merge_material"]
+                    if master_soft:
+                        gap_reason = "wiki 全文目录显示本素材为整章正文，已匹配本章及子节，待人工确认。"
+                        next_actions = ["select_reference_material", "s4_merge_material", "manual_upload"]
+                    else:
+                        gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
+                        next_actions = ["s4_merge_material"]
                 parent_coverages[number_key] = {
                     "id": gap_id,
                     "title": title,
@@ -1970,9 +2453,24 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             gap_reason = folder_routed["gap_reason"]
             next_actions = folder_routed["next_actions"]
         elif candidate_materials:
-            # 固定素材自动定案只信文件名命中；有文件名命中时优先从中选主素材。
-            file_hits = [m for m in candidate_materials if title_matches_file_name(m, title)]
-            pick_pool = file_hits or candidate_materials
+            # 固定素材自动定案的证据顺位（金标反评 R1）：剥修饰同名文件 > 素材内部
+            # 标题命中 > 其余候选；证据类附件（认证/校核等）不参与自动定案。
+            content_pool = [
+                m
+                for m in candidate_materials
+                if not is_evidence_file(m) and not is_appendix_blank_for(m, title)
+            ]
+            file_hits = [
+                m
+                for m in content_pool
+                if title_matches_file_name(m, title) or strong_title_material_match(m, title) == "name"
+            ]
+            if not file_hits:
+                file_hits = [m for m in content_pool if strong_title_material_match(m, title) == "outline"]
+            if not file_hits and scoped_pick:
+                # R5：同名目录成员按字符覆盖装配（智能风机监控SCADA系统 ↔ 智能监控系统）。
+                file_hits = list(scoped_pick)
+            pick_pool = file_hits or content_pool or candidate_materials
             matched_material, alternative_materials = pick_material(pick_pool, title)
             if file_hits and len(file_hits) < len(candidate_materials):
                 others = [m for m in candidate_materials if m not in file_hits]
@@ -2061,6 +2559,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "usage": usage,
                 "coverageRole": coverage_role,
                 "coveredByParent": covered_by_parent,
+                "sourceAnchor": source_anchor,
                 "priority": "high" if status in {"needs_input", "missing"} else "medium",
                 "matchedMaterials": matched_materials,
                 "candidateMaterials": alternative_materials,
@@ -2083,6 +2582,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    aggregate_converged_containers(plan_items)
     collapse_empirically_converged_chapters(plan_items)
     extend_chapter_master_to_trailing_appendices(plan_items)
     summary = summarize(plan_items)
@@ -2131,6 +2631,92 @@ def _converged_primary_material(item: dict[str, Any]) -> dict[str, Any] | None:
                 if isinstance(material, dict) and str(material.get("id") or ""):
                     return material
     return None
+
+
+def _item_primary_material(item: dict[str, Any]) -> dict[str, Any] | None:
+    """目录项的主素材：matchedMaterials 首位，或填写任务的 blankSource。"""
+    matched = item.get("matchedMaterials") or []
+    if matched and isinstance(matched[0], dict):
+        return matched[0]
+    for task in item.get("fillTasks") or []:
+        blank = task.get("blankSource")
+        if isinstance(blank, dict) and (blank.get("materialId") or blank.get("name")):
+            return blank
+    return None
+
+
+def aggregate_converged_containers(plan_items: list[dict[str, Any]]) -> None:
+    """经验聚合（金标反评 R6）：无整章素材的结构父节点，若 ≥60% 的直接子节
+    主素材收敛到同一份素材，则父节点聚合标注该素材，未匹配的子节继承覆盖。
+
+    与 collapse_empirically_converged_chapters 的区别：那边要求全部子节收敛并
+    吸收任务（章级强收敛）；这里只做多数收敛的父级标注与空子节兜底，不动
+    已有自主匹配/填写任务的子节。自深向浅处理，节级父目录先于章级聚合。
+    """
+    by_key: dict[str, dict[str, Any]] = {}
+    for plan_item in plan_items:
+        key = toc_number_key(plan_item.get("number"))
+        if key:
+            by_key.setdefault(key, plan_item)
+
+    containers = [
+        (key, item)
+        for key, item in by_key.items()
+        if any(other.startswith(f"{key}.") for other in by_key)
+    ]
+    # 深层父目录优先聚合，浅层随后可基于深层结果继续聚合。
+    containers.sort(key=lambda pair: pair[0].count("."), reverse=True)
+    for key, container in containers:
+        if container.get("matchedMaterials") or container.get("fillTasks") or container.get("appendixTasks"):
+            continue
+        prefix = f"{key}."
+        direct_children = [
+            item
+            for child_key, item in by_key.items()
+            if child_key.startswith(prefix) and "." not in child_key[len(prefix):]
+        ]
+        if len(direct_children) < 2:
+            continue
+        votes: dict[str, tuple[int, dict[str, Any]]] = {}
+        for child in direct_children:
+            primary = _item_primary_material(child)
+            if not primary:
+                continue
+            vote_key = str(primary.get("materialId") or primary.get("id") or primary.get("name") or "")
+            if not vote_key:
+                continue
+            count, sample = votes.get(vote_key, (0, primary))
+            votes[vote_key] = (count + 1, sample)
+        if not votes:
+            continue
+        vote_key, (count, sample) = max(votes.items(), key=lambda pair: pair[1][0])
+        if count < max(2, 0.6 * len(direct_children)):
+            continue
+        aggregated = dict(sample)
+        aggregated["usage"] = "chapter_master"
+        aggregated["matchReason"] = "多数子节收敛到同一素材，父级经验聚合。"
+        container["matchedMaterials"] = [aggregated]
+        container["coverageRole"] = "chapter_master"
+        container["usage"] = "chapter_master"
+        container["status"] = "matched"
+        container["decision"] = container.get("decision") or "ready"
+        if str(container.get("decision")) in {"", "material_required"}:
+            container["decision"] = "ready"
+        container["gapReason"] = "子节多数收敛到同一素材，父级按经验聚合覆盖。"
+        # 空子节继承聚合素材（覆盖语义），带上锚点便于定位。
+        container_id = str(container.get("id") or "")
+        for child in direct_children:
+            if _item_primary_material(child) or child.get("appendixTasks"):
+                continue
+            if str(child.get("coveredByParent") or ""):
+                continue
+            child["coveredByParent"] = container_id
+            child["coverageRole"] = "covered_by_parent"
+            child["usage"] = "covered_by_parent"
+            child["status"] = "matched"
+            child["decision"] = "ready"
+            child["gapReason"] = f"由父级“{container.get('title') or ''}”聚合素材覆盖。"
+            child["sourceAnchor"] = outline_anchor_for_title(aggregated, str(child.get("title") or ""))
 
 
 def collapse_empirically_converged_chapters(plan_items: list[dict[str, Any]]) -> None:

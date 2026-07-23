@@ -444,17 +444,17 @@ def _run_async(awaitable: Any) -> Any:
     return result.get("value")
 
 
-def _evidence_segments_by_material_id() -> dict[str, list[dict[str, Any]]]:
-    """从已落盘的技术标索引 JSON 里收集 {material_id: evidenceSegments}。
+def _evidence_segments_by_material_id() -> dict[str, dict[str, Any]]:
+    """从已落盘的技术标索引 JSON 里收集 {material_id: {segments, outline}}。
 
-    片段由 A 层（technical_material_index 镜像/预览）确定性切分后挂在 file entry 上。
-    planner 走 raw_files 取素材（不读索引 JSON），故这里按 material_id 建映射，
-    供 _allowed_technical_material_index 回填。索引缺失/无片段时返回空映射，
-    planner 退化为原有的文件名/标题匹配，不报错。
+    片段与文档大纲由 A 层（technical_material_index 镜像/预览）确定性提取后挂在
+    file entry 上。planner 走 raw_files 取素材（不读索引 JSON），故这里按
+    material_id 建映射，供 _allowed_technical_material_index 回填。索引缺失时
+    返回空映射，planner 退化为原有的文件名/标题匹配，不报错。
     """
     from app.services.technical_material_index import load_technical_material_index
 
-    mapping: dict[str, list[dict[str, Any]]] = {}
+    mapping: dict[str, dict[str, Any]] = {}
     try:
         index = load_technical_material_index()
     except Exception:  # noqa: BLE001 - 索引读不到不应阻断缺口识别
@@ -469,16 +469,87 @@ def _evidence_segments_by_material_id() -> dict[str, list[dict[str, Any]]]:
                 if not isinstance(file_entry, dict):
                     continue
                 material_id = str(file_entry.get("id") or "").strip()
+                if not material_id:
+                    continue
                 segments = file_entry.get("evidenceSegments")
-                if material_id and isinstance(segments, list) and segments:
-                    mapping[material_id] = segments
+                outline = file_entry.get("documentOutline")
+                extras: dict[str, Any] = {}
+                if isinstance(segments, list) and segments:
+                    extras["segments"] = segments
+                if isinstance(outline, list) and outline:
+                    extras["outline"] = outline
+                if extras:
+                    mapping[material_id] = extras
     return mapping
+
+
+def _wiki_path_tail_key(path: str) -> str:
+    """去掉最外层根目录后的路径尾，作为素材 wiki 与素材索引的 join 键。
+
+    素材 wiki 路径形如 `技术标Wiki（自动生成）/标准文件/EW10.0-220上置/部件/轮毂.docx`，
+    素材索引 folderPath 形如 `技术标/标准文件/EW10.0-220上置/部件`——两侧各去掉首段
+    根目录后都归到 `标准文件/EW10.0-220上置/部件/轮毂.docx`，可区分跨档位重名文件。
+    """
+    parts = [segment for segment in str(path or "").split("/") if segment]
+    if len(parts) <= 1:
+        return re.sub(r"\s+", "", "/".join(parts)).lower()
+    return re.sub(r"\s+", "", "/".join(parts[1:])).lower()
+
+
+def _technical_wiki_cards_by_path_tail() -> dict[str, dict[str, Any]]:
+    """加载素材 wiki 文件卡片的可匹配文本，按路径尾 join 键归档。
+
+    素材 wiki（wiki_nodes + wiki_docs）是人工/AI 维护的素材知识层：每个文件卡片带
+    AI 摘要、TLDR 正文预览与标签。planner 作为纯消费方读取这些文本，作为「文件名/
+    内部标题对不上但主题相关」时的补充召回信号。DB 读不到时返回空映射，优雅降级。
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from app.models import async_session
+    from app.models.materials import WikiDoc
+
+    def _placeholder(summary: str) -> bool:
+        text = str(summary or "").strip()
+        return not text or "自动生成" in text or text.startswith("待")
+
+    async def _load() -> dict[str, dict[str, Any]]:
+        mapping: dict[str, dict[str, Any]] = {}
+        async with async_session() as session:
+            rows = (
+                await session.execute(select(WikiDoc).options(selectinload(WikiDoc.node)))
+            ).scalars().all()
+            for doc in rows:
+                node = doc.node
+                if node is None or not str(node.title or "").strip():
+                    continue
+                # 只消费文件卡片（标题带扩展名），跳过目录节点。
+                if "." not in str(node.title):
+                    continue
+                key = _wiki_path_tail_key(str(node.path or ""))
+                if not key:
+                    continue
+                summary = "" if _placeholder(doc.ai_summary) else str(doc.ai_summary or "")
+                mapping[key] = {
+                    "wikiSummary": summary,
+                    "wikiCardText": str(doc.markdown_content or ""),
+                    "wikiTags": [str(tag) for tag in (doc.tags or []) if str(tag).strip()],
+                    "wikiApplicableTypes": [str(bt) for bt in (node.bid_types or []) if str(bt).strip()],
+                }
+        return mapping
+
+    try:
+        return _run_async(_load())
+    except Exception:  # noqa: BLE001 - 素材 wiki 读不到不应阻断缺口识别
+        logger.warning("技术标缺口识别：素材 wiki 卡片加载失败，降级为无 wiki 文本匹配", exc_info=True)
+        return {}
 
 
 def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_model: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
     segments_by_id = _evidence_segments_by_material_id()
+    wiki_cards_by_tail = _technical_wiki_cards_by_path_tail()
     for scope in material_scope.get("readableScopes") or []:
         if not isinstance(scope, dict):
             continue
@@ -520,10 +591,26 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
                 "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
                 "updatedAt": str(raw.get("updatedAt") or ""),
             }
-            # 回填证据片段（A 层确定性切分），供 planner 非附表分支做段落级召回。
-            segments = segments_by_id.get(material_id)
-            if segments:
-                entry["evidenceSegments"] = segments
+            # 回填证据片段与文档大纲（A 层确定性提取），供 planner 做段落级召回
+            # 与整章素材的标题树覆盖判定。
+            extras = segments_by_id.get(material_id) or {}
+            if extras.get("segments"):
+                entry["evidenceSegments"] = extras["segments"]
+            if extras.get("outline"):
+                entry["documentOutline"] = extras["outline"]
+            # 回填素材 wiki 卡片文本（AI 摘要 / TLDR 预览 / 标签），供 planner 主题级
+            # 弱召回使用——文件名与内部标题都对不上、但主题相关的素材也能进候选。
+            entry_path = f"{entry['folderPath']}/{entry['name']}" if entry.get("folderPath") else entry["name"]
+            wiki_card = wiki_cards_by_tail.get(_wiki_path_tail_key(entry_path))
+            if wiki_card:
+                if wiki_card.get("wikiSummary"):
+                    entry["wikiSummary"] = wiki_card["wikiSummary"]
+                if wiki_card.get("wikiCardText"):
+                    entry["wikiCardText"] = wiki_card["wikiCardText"]
+                if wiki_card.get("wikiTags"):
+                    entry["wikiTags"] = wiki_card["wikiTags"]
+                if wiki_card.get("wikiApplicableTypes"):
+                    entry["wikiApplicableTypes"] = wiki_card["wikiApplicableTypes"]
             items.append(entry)
     return items
 

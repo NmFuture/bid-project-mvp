@@ -234,22 +234,35 @@ test('目录标签：同时命中99分素材与待填写素材时单独拉出为
   )
 })
 
-test('目录标签：99分（文件名精确命中）或人操作过判已就绪', () => {
+test('目录标签：99分（文件名精确命中）豁免确认自动就绪', () => {
   assert.equal(
     technicalGapTagOf({ id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }),
     'ready',
   )
-  // 人工选用素材后即已就绪（哪怕该项还挂着待填写模板候选）。
+})
+
+test('目录标签：自动就绪也可人工撤销（产品反馈 2026-07-21：撤销要真正生效，不是无操作）', () => {
+  // 未操作过：99 分自动就绪。
+  const autoReady = { id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  assert.equal(technicalGapTagOf(autoReady), 'ready')
+  // 人工撤销（humanConfirmed 显式为 false）：跳过自动就绪判定，按分数回落到「已匹配-待确认」。
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: false }), 'needs_refine')
+  // 撤销后再次人工确认：恢复已就绪。
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: true }), 'ready')
+})
+
+test('目录标签：除精确命中外，人工点「确认」是变已就绪的唯一途径（产品裁决 2026-07-21）', () => {
+  // 选用素材/上传产物本身不再翻绿：点确认之前标签不变。
   assert.equal(
     technicalGapTagOf({
       id: 'G2',
-      decision: 'fill_required',
+      decision: 'ready',
       candidateMaterials: [{ id: 'M1', name: '待填写-模板.docx', matchScore: 0.5 }],
       resolvedArtifacts: [{ id: 'ART-1', source: 'material_library' }],
     }),
-    'ready',
+    'needs_fill',
   )
-  // AI 填写产物经人工确认后就绪；未确认则仍待填写。
+  // AI 填写完成（含质检通过）也不翻绿。
   assert.equal(
     technicalGapTagOf({
       id: 'G3',
@@ -257,16 +270,35 @@ test('目录标签：99分（文件名精确命中）或人操作过判已就绪
       fillTasks: [{ id: 'T1', status: 'completed' }],
       resolvedArtifacts: [{ id: 'ART-2', source: 'ai_fill', qualityGate: 'human_confirmed' }],
     }),
+    'needs_fill',
+  )
+  // 后端 recompute 会把选材后的 decision 翻成 ready，不能据此判绿。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G4',
+      decision: 'ready',
+      candidateMaterials: [{ id: 'M1', matchScore: 0.6 }],
+      resolvedArtifacts: [{ id: 'ART-3', source: 'material_library' }],
+    }),
+    'needs_refine',
+  )
+  // 人工确认（humanConfirmed）无前置条件，确认即就绪；撤销后回到派生标签。
+  assert.equal(
+    technicalGapTagOf({ id: 'G5', decision: 'material_required', humanConfirmed: true }),
     'ready',
   )
   assert.equal(
     technicalGapTagOf({
-      id: 'G4',
+      id: 'G6',
       decision: 'fill_required',
-      fillTasks: [{ id: 'T1', status: 'completed' }],
-      resolvedArtifacts: [{ id: 'ART-3', source: 'ai_fill', qualityReport: { status: 'needs_review' } }],
+      fillTasks: [{ id: 'T1', status: 'pending' }],
+      humanConfirmed: true,
     }),
-    'needs_fill',
+    'ready',
+  )
+  assert.equal(
+    technicalGapTagOf({ id: 'G7', decision: 'material_required', humanConfirmed: false }),
+    'needs_material',
   )
 })
 
@@ -280,4 +312,7 @@ test('目录标签：结构项无标签，被父章覆盖的子节跟随父章',
   assert.equal(technicalGapTagOf({ id: 'S2', decision: 'ready' }), '')
   assert.equal(technicalGapTagOf(child, [parent, child]), 'ready')
   assert.equal(technicalGapTagOf(fillChild, [fillParent, fillChild]), 'needs_fill')
+  // 子节自身被人工确认后不再跟随父章标签。
+  const confirmedChild = { id: 'C3', decision: 'fill_required', coveredByParent: 'P2', humanConfirmed: true }
+  assert.equal(technicalGapTagOf(confirmedChild, [fillParent, confirmedChild]), 'ready')
 })
