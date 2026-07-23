@@ -10,11 +10,14 @@ from app.models import async_session
 from app.models.materials import RawFile, RawFolder
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_folder_scope import (
+    material_bid_type_sort_order,
     material_tier_folder_name_for_bid_type,
     material_tier_folder_sort_order,
+    material_tier_root_path,
 )
 from app.services.material_folder_maintenance import ensure_business_customized_children_for_created_folder
 from app.services.material_raw_file_filter import raw_file_matches_bid_type, raw_folder_matches_bid_type
+from app.services.material_raw_folder_lock import lock_raw_folder_path
 from app.services.material_taxonomy import is_raw_material_protected_folder_path
 from app.services.peripheral import PeripheralError
 
@@ -50,6 +53,30 @@ async def create_raw_folder(
         parent_path_text = str(parent_path or "")
         result = await session.execute(select(RawFolder).where(RawFolder.path == parent_path_text))
         parent = result.scalar_one_or_none()
+        if (
+            parent is None
+            and bid_type == TECHNICAL_BID_TYPE
+            and parent_path_text == material_tier_root_path(TECHNICAL_BID_TYPE, "standard")
+        ):
+            root = await ensure_folder_path(
+                session,
+                TECHNICAL_BID_TYPE,
+                None,
+                "standard",
+                TECHNICAL_BID_TYPE,
+                None,
+                material_bid_type_sort_order(TECHNICAL_BID_TYPE),
+            )
+            parent = await ensure_folder_path(
+                session,
+                material_tier_folder_name_for_bid_type(TECHNICAL_BID_TYPE, "standard"),
+                root.id,
+                "standard",
+                TECHNICAL_BID_TYPE,
+                None,
+                material_tier_folder_sort_order("standard"),
+                customer_name="平台标准",
+            )
         if parent is None or not raw_folder_matches_bid_type(parent, bid_type):
             raise PeripheralError(400, "父级目录不属于当前素材库。", "RAW_FOLDER_SCOPE")
         if parent_path_text == TECHNICAL_BID_TYPE:
@@ -67,6 +94,11 @@ async def create_raw_folder(
         parent_id = parent.id if parent else None
         full_path = "/".join([p for p in [parent_path_text.strip("/"), name] if p])
 
+        result2 = await session.execute(select(RawFolder).where(RawFolder.path == full_path))
+        if result2.scalar_one_or_none():
+            raise PeripheralError(409, "目录已存在。", "RAW_FOLDER_EXISTS")
+
+        await lock_raw_folder_path(session, full_path)
         result2 = await session.execute(select(RawFolder).where(RawFolder.path == full_path))
         if result2.scalar_one_or_none():
             raise PeripheralError(409, "目录已存在。", "RAW_FOLDER_EXISTS")
