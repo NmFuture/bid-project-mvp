@@ -908,6 +908,12 @@ def _export_material_library(wiki_dir: Path, library_dir: Path) -> tuple[Path, l
     return library_dir, cards
 
 
+def _payload_is_docx(payload: dict[str, Any]) -> bool:
+    mime_type = str(payload.get("mimeType") or "")
+    file_name = str(payload.get("fileName") or "")
+    return "wordprocessingml" in mime_type or file_name.lower().endswith(".docx")
+
+
 def _copy_material_to_library(material_id: str, original_path: str, target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     path = _runtime_path(original_path)
@@ -916,13 +922,19 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
         return
 
     if material_id:
+        # 优先使用原始 Word：素材清洗版可能误改标题层级（把正文短句升为
+        # Heading），S7 只认原始 docx 真实的 Heading/outlineLvl/TOC，不猜层级。
+        payload: dict[str, Any] | None = None
         try:
-            payload = _run_async(technical_material_store.raw_download_cleaned_content(material_id))
+            candidate = _run_async(technical_material_store.raw_download_content(material_id))
+            if _payload_is_docx(candidate):
+                payload = candidate
         except Exception:
-            payload = _run_async(technical_material_store.raw_download_content(material_id))
-        mime_type = str(payload.get("mimeType") or "")
-        file_name = str(payload.get("fileName") or "")
-        if "wordprocessingml" not in mime_type and not file_name.lower().endswith(".docx"):
+            payload = None
+        if payload is None:
+            # 原始文件缺失或不是 docx（如 .doc）时回退清洗稿
+            payload = _run_async(technical_material_store.raw_download_cleaned_content(material_id))
+        if not _payload_is_docx(payload):
             raise RuntimeError(f"素材 {material_id} 不是可拼装 docx。")
         minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
         return

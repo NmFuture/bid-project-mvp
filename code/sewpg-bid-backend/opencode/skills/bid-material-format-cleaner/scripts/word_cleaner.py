@@ -177,7 +177,6 @@ NUMBERED_HEADING_RE = re.compile(
 CHINESE_NUMBERED_HEADING_RE = re.compile(
     rf"^\s*(?P<prefix>(?:（\s*)?[{CHINESE_NUMERAL_CHARS}]+\s*(?:[、.．)）]))\s*(?P<title>\S.*)$"
 )
-HEADING_SENTENCE_END_RE = re.compile(r"[。！？!?；;：:]$")
 
 
 def _extract_heading_level_from_style(style_name: str | None) -> int | None:
@@ -269,23 +268,6 @@ def _paragraph_has_numpr(para) -> bool:
     return pPr is not None and pPr.find(qn("w:numPr")) is not None
 
 
-
-def _looks_like_numbered_heading_text(text: str) -> bool:
-    """粗略判断去编号后的文本更像标题而不是正文句子。"""
-    compact = re.sub(r"\s+", "", text or "")
-    if not compact:
-        return False
-    if len(compact) > 40:
-        return False
-    if HEADING_SENTENCE_END_RE.search(compact):
-        return False
-    if sum(compact.count(mark) for mark in "，,、") > 1:
-        return False
-    if len(compact) > 12 and re.search(r"(?:为|是|将|应|需|进行|采用|包括|包含|达到|完成)", compact):
-        return False
-    return True
-
-
 def _resolve_heading_level(para, inferred_depth: int) -> int:
     """优先保留原有 Heading/outline 层级，否则回退到编号深度。"""
     style_level = _extract_heading_level_from_style(_get_para_style(para))
@@ -337,8 +319,13 @@ def _apply_heading_level(para, level: int) -> None:
     _set_outline_level(para._element, level)
 
 
-def _looks_like_heading_para(para, cleaned_text: str, has_number_prefix: bool) -> bool:
-    """段落是否应按标题处理。"""
+def _looks_like_heading_para(para) -> bool:
+    """段落是否应按标题处理。
+
+    只认 docx 里真实存在的标题证据（Heading 样式名、段落 outlineLvl、样式
+    outlineLvl），不按"带编号、文字较短"猜标题——猜测会把"1、载荷仿真分析
+    能力"这类正文误升为 Heading，凭空造出原文档没有的层级。
+    """
     style_level = _extract_heading_level_from_style(_get_para_style(para))
     outline_level = _get_outline_level(para._element)
     style_outline_level = _get_style_outline_level(para)
@@ -346,7 +333,6 @@ def _looks_like_heading_para(para, cleaned_text: str, has_number_prefix: bool) -
         style_level is not None
         or outline_level is not None
         or style_outline_level is not None
-        or (has_number_prefix and _looks_like_numbered_heading_text(cleaned_text))
     )
 
 
@@ -382,7 +368,7 @@ def _strip_numbered_heading_prefixes(doc) -> int:
             had_visible_prefix = cleaned_text != stripped_text
 
         had_numpr = _paragraph_has_numpr(para)
-        if not _looks_like_heading_para(para, cleaned_text, parsed is not None):
+        if not _looks_like_heading_para(para):
             continue
 
         changed = False

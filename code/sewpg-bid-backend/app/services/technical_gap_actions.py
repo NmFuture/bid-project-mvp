@@ -81,16 +81,22 @@ def _selected_technical_material_entries(data: dict[str, Any]) -> list[dict[str,
 
 
 async def _downloadable_technical_material_payload(material_id: str) -> tuple[dict[str, Any], str]:
+    # 优先原始 Word：素材清洗版可能误改标题层级，组装只认原始 docx 的真实
+    # Heading/outlineLvl/TOC；原始文件缺失或不是 docx（如 .doc）时回退清洗稿。
     try:
-        payload = await technical_material_store.raw_download_cleaned_content(material_id)
-        return payload, "cleaned"
-    except Exception:
         payload = await technical_material_store.raw_download_content(material_id)
+        mime_type = str(payload.get("mimeType") or "")
+        file_name = str(payload.get("fileName") or "")
+        if "wordprocessingml" in mime_type or file_name.lower().endswith(".docx"):
+            return payload, "raw"
+    except Exception:
+        pass
+    payload = await technical_material_store.raw_download_cleaned_content(material_id)
     mime_type = str(payload.get("mimeType") or "")
     file_name = str(payload.get("fileName") or "")
     if "wordprocessingml" not in mime_type and not file_name.lower().endswith(".docx"):
         raise ValueError(f"素材 {material_id} 没有可用于拼接的 Word 文件或清洗稿。")
-    return payload, "raw"
+    return payload, "cleaned"
 
 
 def register_technical_manual_gap_upload(

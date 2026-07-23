@@ -45,7 +45,12 @@ from copy import deepcopy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import preprocess
-from numbering_fixer import remap_material_headings_to_navigation, strip_numPr_from_body, strip_numPr_from_heading_styles
+from numbering_fixer import (
+    enforce_no_auto_numbering_on_numbered_headings,
+    remap_material_headings_to_navigation,
+    strip_numPr_from_body,
+    strip_numPr_from_heading_styles,
+)
 
 
 def _path_exists(path: Path) -> bool:
@@ -324,7 +329,12 @@ def merge(
             if heading_text:
                 _add_heading(master_doc, heading_text, heading_level)
                 stats["inserted_headings"] += 1
-            _add_body_paragraph(master_doc, f"[缺失：{title}——wiki 无匹配卡片，请人工处理]")
+            note = str(entry.get("note") or "").strip()
+            if entry.get("gap_plan_item_id") and note:
+                detail = note
+            else:
+                detail = "未匹配到素材，请人工处理"
+            _add_body_paragraph(master_doc, f"[缺失：{title}——{detail}]")
             stats["inserted_placeholders"] += 1
             continue
 
@@ -408,6 +418,8 @@ def merge(
     # Save
     strip_numPr_from_heading_styles(master_doc)
     strip_numPr_from_body(master_doc)
+    # 不变量：已写入文本编号的 Heading 不得再有有效 Word 自动编号
+    stats["auto_numbering_fixed"] = enforce_no_auto_numbering_on_numbered_headings(master_doc)
     os.makedirs(os.fspath(out_path.parent), exist_ok=True)
     composer.save(str(out_path))
 

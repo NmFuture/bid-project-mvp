@@ -46,7 +46,11 @@ def _drop_foreign_module(module_name: str, expected_path: Path) -> None:
 _drop_foreign_module("verify", ASSEMBLER_SCRIPTS_DIR / "verify.py")
 
 from finalize import force_update_fields, insert_toc_field, reapply_heading_fonts, replace_header_text  # noqa: E402
-from numbering_fixer import strip_numPr_from_body, strip_numPr_from_heading_styles  # noqa: E402
+from numbering_fixer import (  # noqa: E402
+    enforce_no_auto_numbering_on_numbered_headings,
+    strip_numPr_from_body,
+    strip_numPr_from_heading_styles,
+)
 from verify import scan_docx  # noqa: E402
 
 
@@ -152,6 +156,8 @@ def clean_docx(
     reapply_heading_fonts(doc, style_spec)
     strip_numPr_from_heading_styles(doc)
     strip_numPr_from_body(doc)
+    # 不变量：已写入文本编号的 Heading 不得再有有效 Word 自动编号
+    auto_numbering_fixed = enforce_no_auto_numbering_on_numbered_headings(doc)
     orientation_result = _normalize_section_orientations(doc)
     doc.save(str(output_path))
 
@@ -173,6 +179,7 @@ def clean_docx(
         "internalHeadingCount": len(internal_heading_result["promoted_headings"]),
         "internalHeadings": internal_heading_result["promoted_headings"],
         "headingStylesConfigured": heading_style_result,
+        "autoNumberingFixed": auto_numbering_fixed,
         "orientation": orientation_result,
         "tocInserted": toc_inserted,
         "tocPresent": toc_present_before or toc_inserted,

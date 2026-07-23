@@ -700,6 +700,16 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
             entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
             continue
         if not paths:
+            # 生成前校验：候选未确认 / AI 填写未完成时给出显式提示，
+            # S7 不擅自使用 candidateMaterials 冒充已确认素材。
+            pending_note = _gap_plan_pending_note(gap_item)
+            if pending_note:
+                entry["paths"] = []
+                entry["shifts"] = []
+                entry["attach_modes"] = []
+                entry["status"] = STATUS_UNMATCHED
+                entry["note"] = pending_note
+                entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
             continue
         entry["paths"] = paths
         entry["shifts"] = [0 for _ in paths]
@@ -744,6 +754,27 @@ def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
         return True
     quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
     return str(quality_report.get("status") or "") == "passed"
+
+
+def _gap_plan_pending_note(item: dict) -> str:
+    """候选未确认 / AI 填写未完成的显式提示（生成前校验）。
+
+    S7 只消费 matchedMaterials 与 S7-ready resolvedArtifacts。当缺口项只有
+    candidateMaterials（页面"已匹配"其实只是候选/待填写来源）或填写流程未
+    走完时，不能用候选冒充已确认素材，必须给出可操作提示。
+    """
+    artifacts = [a for a in (item.get("resolvedArtifacts") or []) if isinstance(a, dict)]
+    if any(_resolved_artifact_is_s7_ready(a) for a in artifacts):
+        return ""
+    fill_tasks = [t for t in (item.get("fillTasks") or []) if isinstance(t, dict)]
+    has_ai_fill_artifact = any(str(a.get("source") or "") == "ai_fill" for a in artifacts)
+    if fill_tasks or has_ai_fill_artifact:
+        return "AI 填写未完成：请先完成待填写模板并通过质检/人工确认"
+    matched = [m for m in (item.get("matchedMaterials") or []) if isinstance(m, dict)]
+    candidates = [c for c in (item.get("candidateMaterials") or []) if isinstance(c, dict)]
+    if not matched and candidates:
+        return "候选素材未确认：请先在缺口处理页面确认选用素材"
+    return ""
 
 
 def _gap_plan_item_is_structural(item: dict) -> bool:
