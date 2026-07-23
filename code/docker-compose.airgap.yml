@@ -11,6 +11,10 @@ services:
     image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:offline-latest}
     pull_policy: never
 
+  docling-worker:
+    image: ${DOCLING_IMAGE:-sewpg-bid/docling-worker:offline-latest}
+    pull_policy: never
+
   opencode:
     image: ${OPENCODE_IMAGE:-sewpg-bid/opencode:offline-latest}
     pull_policy: never

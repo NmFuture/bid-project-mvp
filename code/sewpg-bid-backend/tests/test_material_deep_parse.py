@@ -341,7 +341,10 @@ class EnqueueAndWorkerTests(unittest.TestCase):
         with patch(
             "app.services.material_deep_parse.deep_parse_material_file_sync",
             return_value={"deepParseStatus": "parsed", "deepParseMessage": "ok"},
-        ) as runner_mock:
+        ) as runner_mock, patch(
+            "app.workers.redis_worker.renew_generation_lock",
+            return_value=True,
+        ):
             redis_worker._run_job(
                 {"id": "job-1", "type": "material_deep_parse", "projectId": "RAW-0001", "data": {"fileId": "RAW-0001"}}
             )

@@ -640,6 +640,61 @@ def _merge_document_nav_quality(
     return quality
 
 
+def _finalize_loaded_document_nav(
+    *,
+    project_id: str,
+    document: dict[str, Any],
+    file_path: Path,
+    document_nav: dict[str, Any],
+    document_nav_path: Path,
+    quality_path: Path,
+    source_quality: dict[str, Any],
+    metadata: dict[str, Any],
+    engine: str,
+    docling_mode: str,
+    apply_ocr_fallback: bool,
+) -> tuple[str, dict[str, Any], list[str]]:
+    """统一处理 Docling 现场结果和独立 Worker 的预解析结果。"""
+
+    warnings: list[str] = []
+    quality = _merge_document_nav_quality(
+        document_nav,
+        source_quality=source_quality,
+        evaluated_quality=evaluate_document_nav_quality(document_nav),
+        engine=engine,
+        docling_mode=docling_mode,
+    )
+    if apply_ocr_fallback and settings.business_pdf_ocr_fallback_enabled and quality.get("ocrPages"):
+        already_applied = {int(page) for page in quality.get("ocrAppliedPages") or []}
+        ocr_results = _ocr_business_pdf_pages(
+            project_id=project_id,
+            document=document,
+            file_path=file_path,
+            page_numbers=[int(page) for page in quality.get("ocrPages") or [] if int(page) not in already_applied],
+        )
+        applied_pages, ocr_warnings = _append_ocr_blocks_to_document_nav(
+            document_nav,
+            document_id=str(document.get("id") or "DOC-1"),
+            ocr_results=ocr_results,
+        )
+        if applied_pages:
+            metadata["pageOcr"] = {"appliedPages": applied_pages}
+            quality["ocrAppliedPages"] = sorted(already_applied | set(applied_pages))
+        warnings.extend(ocr_warnings)
+        quality.setdefault("warnings", [])
+        if isinstance(quality["warnings"], list):
+            quality["warnings"].extend(ocr_warnings)
+    quality["warnings"] = list(dict.fromkeys(str(item) for item in quality.get("warnings") or [] if str(item).strip()))
+    document_nav["quality"] = quality
+    document_nav_path.write_text(json.dumps(document_nav, ensure_ascii=False, indent=2), encoding="utf-8")
+    quality_path.parent.mkdir(parents=True, exist_ok=True)
+    quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
+    warnings.extend(quality.get("warnings") or [])
+    text = nav_to_text(document_nav)
+    metadata["pageCount"] = len(document_nav.get("pages") or []) or quality.get("sourcePageCount") or "-"
+    return text, metadata, list(dict.fromkeys(warnings))
+
+
 def _parse_pdf_with_document_engine(
     *,
     project_id: str,
@@ -647,6 +702,8 @@ def _parse_pdf_with_document_engine(
     file_path: Path,
     project_dir: Path,
     engine_fallback: str | None = None,
+    require_preparsed: bool = False,
+    technical_document_nav: bool = False,
 ) -> tuple[str, dict[str, Any], list[str]]:
     document_id = str(document.get("id") or "DOC-1")
     existing_document_nav_path = project_dir / f"{document_id}_document_nav.json"
@@ -657,10 +714,18 @@ def _parse_pdf_with_document_engine(
             existing_quality = json.loads(existing_quality_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             existing_quality = {}
+        if not isinstance(existing_quality, dict):
+            existing_quality = {}
+        expected_sha256 = str(document.get("sha256") or "")
+        expected_run_id = str(document.get("runId") or "")
+        source_matches = not expected_sha256 or str(existing_quality.get("sourceSha256") or "") == expected_sha256
+        run_matches = not expected_run_id or str(existing_quality.get("runId") or "") == expected_run_id
         if (
             isinstance(existing_quality, dict)
             and str(existing_quality.get("status") or "").lower() == "completed"
-            and not bool(existing_quality.get("fallbackUsed"))
+            and (require_preparsed or not bool(existing_quality.get("fallbackUsed")))
+            and source_matches
+            and run_matches
         ):
             document_nav = json.loads(existing_document_nav_path.read_text(encoding="utf-8"))
             metadata = {
@@ -668,27 +733,33 @@ def _parse_pdf_with_document_engine(
                 "documentNavPath": str(existing_document_nav_path),
                 "parseQualityPath": str(existing_quality_path),
             }
-            quality = _merge_document_nav_quality(
-                document_nav,
+            docling_mode = str(existing_quality.get("doclingMode") or "")
+            if docling_mode:
+                metadata["doclingMode"] = docling_mode
+            return _finalize_loaded_document_nav(
+                project_id=project_id,
+                document=document,
+                file_path=file_path,
+                document_nav=document_nav,
+                document_nav_path=existing_document_nav_path,
+                quality_path=existing_quality_path,
                 source_quality=existing_quality,
-                evaluated_quality=evaluate_document_nav_quality(document_nav),
+                metadata=metadata,
                 engine=str(existing_quality.get("engine") or engine_name),
-                docling_mode=str(existing_quality.get("doclingMode") or ""),
+                docling_mode=docling_mode,
+                apply_ocr_fallback=True,
             )
-            if quality.get("doclingMode"):
-                metadata["doclingMode"] = str(quality.get("doclingMode") or "")
-            existing_quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
-            text = nav_to_text(document_nav)
-            page_count = len(document_nav.get("pages") or []) or "-"
-            metadata["pageCount"] = page_count
-            return text, metadata, list(quality.get("warnings") or [])
+
+    if require_preparsed:
+        raise RuntimeError(f"Docling Worker 未生成文档 {document_id} 的有效解析结果。")
 
     effective_fallback = engine_fallback if engine_fallback is not None else settings.business_pdf_engine_fallback
     engine = create_document_parse_engine(
         parse_engine=settings.business_pdf_parse_engine,
         fallback=effective_fallback,
     )
-    result = engine.parse_pdf(project_id=project_id, document=document, output_dir=project_dir)
+    engine_document = {**document, "mergeTechnicalTextLayer": technical_document_nav}
+    result = engine.parse_pdf(project_id=project_id, document=engine_document, output_dir=project_dir)
     metadata = {
         "documentParseEngine": str(result.get("documentParseEngine") or settings.business_pdf_parse_engine),
         "parseQualityPath": str(result.get("parseQualityPath") or ""),
@@ -717,47 +788,25 @@ def _parse_pdf_with_document_engine(
                         source_quality = {**previous_quality, **source_quality}
                 except json.JSONDecodeError:
                     pass
-        quality = _merge_document_nav_quality(
-            document_nav,
+        quality_path = (
+            Path(raw_quality_path)
+            if raw_quality_path
+            else project_dir / f"{document['id']}_parse_quality.json"
+        )
+        metadata["parseQualityPath"] = str(quality_path)
+        return _finalize_loaded_document_nav(
+            project_id=project_id,
+            document=document,
+            file_path=file_path,
+            document_nav=document_nav,
+            document_nav_path=document_nav_path,
+            quality_path=quality_path,
             source_quality=source_quality,
-            evaluated_quality=evaluate_document_nav_quality(document_nav),
+            metadata=metadata,
             engine=str(metadata.get("documentParseEngine") or "docling"),
             docling_mode=str(result.get("doclingMode") or source_quality.get("doclingMode") or ""),
+            apply_ocr_fallback=True,
         )
-        if settings.business_pdf_ocr_fallback_enabled and quality.get("ocrPages"):
-            ocr_results = _ocr_business_pdf_pages(
-                project_id=project_id,
-                document=document,
-                file_path=file_path,
-                page_numbers=[int(page) for page in quality.get("ocrPages") or []],
-            )
-            applied_pages, ocr_warnings = _append_ocr_blocks_to_document_nav(
-                document_nav,
-                document_id=str(document.get("id") or "DOC-1"),
-                ocr_results=ocr_results,
-            )
-            if applied_pages:
-                metadata["pageOcr"] = {"appliedPages": applied_pages}
-                quality["ocrAppliedPages"] = applied_pages
-                document_nav_path.write_text(json.dumps(document_nav, ensure_ascii=False, indent=2), encoding="utf-8")
-            warnings.extend(ocr_warnings)
-            quality.setdefault("warnings", [])
-            if isinstance(quality["warnings"], list):
-                quality["warnings"].extend(ocr_warnings)
-        if raw_quality_path:
-            quality_path = Path(raw_quality_path)
-        else:
-            quality_path = project_dir / f"{document['id']}_parse_quality.json"
-            metadata["parseQualityPath"] = str(quality_path)
-        quality_path.parent.mkdir(parents=True, exist_ok=True)
-        quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
-        warnings.extend(quality.get("warnings") or [])
-        text = nav_to_text(document_nav)
-        if isinstance(result.get("text"), str) and str(result.get("text")).strip():
-            text = str(result.get("text") or "")
-        page_count = len(document_nav.get("pages") or []) or "-"
-        metadata["pageCount"] = page_count
-        return text, metadata, warnings
 
     fallback_reason = str(result.get("fallbackReason") or "Docling 解析未生成 DocumentNav")
     metadata["fallbackReason"] = fallback_reason
@@ -6498,6 +6547,7 @@ def parse_tender_documents(
     bid_type: str,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    require_preparsed_pdf: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _raise_if_parse_cancelled(cancel_check)
     profile = resolve_parse_profile(bid_type)
@@ -6582,10 +6632,14 @@ def parse_tender_documents(
                             "name": file_record.get("name") or file_path.name,
                             "path": str(file_path),
                             "sourcePath": str(file_path),
+                            "sha256": str(file_record.get("sha256") or ""),
+                            "runId": str(file_record.get("runId") or ""),
                         },
                         file_path=file_path,
                         project_dir=project_dir,
                         engine_fallback="none" if profile.key == "technical" else None,
+                        require_preparsed=require_preparsed_pdf,
+                        technical_document_nav=profile.key == "technical",
                     ),
                     heartbeat=report_pdf_extract_progress,
                     cancel_check=cancel_check,
@@ -6593,7 +6647,9 @@ def parse_tender_documents(
                 page_count = parse_metadata.get("pageCount") or page_count
                 file_warnings.extend(engine_warnings)
                 pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
-                pdf_text_fallback_enabled = profile.key == "business" and settings.business_pdf_engine_fallback == "lightweight"
+                pdf_text_fallback_enabled = (
+                    profile.key == "business" and settings.business_pdf_engine_fallback == "lightweight"
+                )
             else:
                 text = ""
                 pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}

@@ -35,6 +35,7 @@ $BundleDir = [System.IO.Path]::GetFullPath($BundleDir)
 $imagesDir = Join-Path $BundleDir "images"
 $webImage = "sewpg-bid/web:$Tag"
 $fastapiImage = "sewpg-bid/fastapi:$Tag"
+$doclingImage = "sewpg-bid/docling-worker:$Tag"
 $opencodeImage = "sewpg-bid/opencode:$Tag"
 $onlyofficeImage = "sewpg-bid/onlyoffice:9.3.1.2"
 $redisImage = $RedisSourceImage
@@ -48,13 +49,14 @@ New-Item -ItemType Directory -Force -Path $imagesDir | Out-Null
 $env:APP_IMAGE_TAG = $Tag
 $env:WEB_IMAGE = $webImage
 $env:FASTAPI_IMAGE = $fastapiImage
+$env:DOCLING_IMAGE = $doclingImage
 $env:OPENCODE_IMAGE = $opencodeImage
 $env:ONLYOFFICE_IMAGE = $onlyofficeImage
 $env:REDIS_IMAGE = $redisImage
 $env:OCR_IMAGE = $ocrImage
 
 Write-Host "==> Building application images..."
-Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "web", "fastapi", "opencode")
+Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "web", "fastapi", "docling-worker", "opencode")
 
 & docker image inspect $OnlyOfficeSourceImage *> $null
 if ($LASTEXITCODE -eq 0) {
@@ -97,6 +99,7 @@ $saveCommand = @(
     $imageTar,
     $webImage,
     $fastapiImage,
+    $doclingImage,
     $opencodeImage,
     $onlyofficeImage,
     $redisImage
@@ -118,7 +121,7 @@ Copy-Item (Join-Path $repoRoot "scripts\load-airgap-images.sh") $BundleDir -Forc
 Copy-Item (Join-Path $repoRoot "scripts\up-airgap.sh") $BundleDir -Force
 Copy-Item (Join-Path $repoRoot "scripts\up-ocr.sh") $BundleDir -Force
 
-$images = @($webImage, $fastapiImage, $opencodeImage, $onlyofficeImage, $redisImage)
+$images = @($webImage, $fastapiImage, $doclingImage, $opencodeImage, $onlyofficeImage, $redisImage)
 if ($IncludeOcr) {
     $images += $OcrSourceImage
 }

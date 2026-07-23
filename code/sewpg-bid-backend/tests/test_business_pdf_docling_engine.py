@@ -82,6 +82,30 @@ def test_configure_docling_auto_pipeline_prefers_rapidocr_onnxruntime_when_avail
     assert options.table_structure_options.mode == "accurate"
 
 
+def test_configure_docling_auto_pipeline_forces_cpu(monkeypatch) -> None:
+    from app.services.docling_engine import _configure_docling_auto_pipeline_options
+
+    class FakeAcceleratorDevice:
+        CPU = "cpu"
+
+    class FakeAcceleratorOptions:
+        def __init__(self, *, device: str = "cuda") -> None:
+            self.device = device
+
+    class FakePdfPipelineOptions:
+        def __init__(self) -> None:
+            self.accelerator_options = FakeAcceleratorOptions()
+
+    accelerator_options = types.ModuleType("docling.datamodel.accelerator_options")
+    accelerator_options.AcceleratorDevice = FakeAcceleratorDevice
+    accelerator_options.AcceleratorOptions = FakeAcceleratorOptions
+    monkeypatch.setitem(sys.modules, "docling.datamodel.accelerator_options", accelerator_options)
+
+    options = _configure_docling_auto_pipeline_options(FakePdfPipelineOptions())
+
+    assert options.accelerator_options.device == "cpu"
+
+
 def test_configure_docling_auto_pipeline_ignores_empty_artifacts_path(tmp_path, monkeypatch) -> None:
     from app.core.config import settings
     from app.services.docling_engine import _configure_docling_auto_pipeline_options
@@ -286,6 +310,7 @@ def test_run_docling_conversion_keeps_docling_auto_layout_table_and_ocr_options(
 
     class FakeDocumentConverter:
         def __init__(self, *, format_options: dict) -> None:
+            captured["converter_init_count"] = int(captured.get("converter_init_count") or 0) + 1
             captured["pipeline_options"] = next(iter(format_options.values())).pipeline_options
 
         def convert(self, source: str) -> object:
@@ -307,10 +332,15 @@ def test_run_docling_conversion_keeps_docling_auto_layout_table_and_ocr_options(
     monkeypatch.setattr(settings, "docling_artifacts_path", artifacts_path, raising=False)
 
     result = run_docling_conversion(pdf_path, tmp_path / "docling")
+    second_result = run_docling_conversion(pdf_path, tmp_path / "docling-second")
 
     options = captured["pipeline_options"]
     assert captured["source"] == str(pdf_path)
+    assert captured["converter_init_count"] == 1
     assert result["mode"] == "auto-layout-table-ocr"
+    assert second_result["pipelineFingerprint"] == result["pipelineFingerprint"]
+    assert result["pipelineOptionsVersion"] == "sewpg-docling-cpu-v1"
+    assert len(result["pipelineFingerprint"]) == 64
     assert options.do_ocr is True
     assert options.do_table_structure is True
     assert options.artifacts_path == artifacts_path
@@ -395,6 +425,80 @@ def test_run_docling_conversion_uses_detected_appendix_page_range(tmp_path, monk
     assert captured["pipeline_options"].do_ocr is False
 
 
+def test_prewarm_docling_converters_only_initializes_page_window_pipeline(monkeypatch) -> None:
+    from app.services import docling_engine
+
+    class FakeInputFormat:
+        PDF = "pdf"
+
+    initialized: list[str] = []
+    requested_modes: list[bool] = []
+
+    class FakeConverter:
+        def initialize_pipeline(self, input_format: str) -> None:
+            initialized.append(input_format)
+
+    base_models = types.ModuleType("docling.datamodel.base_models")
+    base_models.InputFormat = FakeInputFormat
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
+    monkeypatch.setattr(
+        docling_engine,
+        "_get_docling_converter",
+        lambda *, page_window_enabled: requested_modes.append(page_window_enabled) or FakeConverter(),
+    )
+
+    docling_engine.prewarm_docling_converters()
+
+    assert requested_modes == [True]
+    assert initialized == ["pdf"]
+
+
+def test_merge_technical_document_nav_keeps_full_pages_and_docling_table() -> None:
+    from app.services.docling_engine import merge_technical_document_nav
+    from app.services.document_nav import build_document_nav
+
+    text_nav = build_document_nav(
+        document_id="DOC-1",
+        source_path="technical.pdf",
+        source_engine="pymupdf-text-layer",
+        pages=[{"pageNo": page_no, "textDensity": 1} for page_no in range(1, 4)],
+        blocks=[
+            {"pageNo": 1, "text": "第一页正文", "evidenceId": "DOC-1:P0001:TXT0001"},
+            {"pageNo": 2, "text": "第二页旧文本", "evidenceId": "DOC-1:P0002:TXT0001"},
+            {"pageNo": 3, "text": "第三页正文", "evidenceId": "DOC-1:P0003:TXT0001"},
+        ],
+        tables=[],
+    )
+    docling_nav = build_document_nav(
+        document_id="DOC-1",
+        source_path="technical.pdf",
+        source_engine="docling",
+        pages=[{"pageNo": 2, "textDensity": 0}],
+        blocks=[
+            {"pageNo": 2, "text": "第二页 Docling 正文", "evidenceId": "DOC-1:P0002:B000001"},
+            {"pageNo": 2, "type": "table", "tableId": "T1", "text": "技术参数表"},
+        ],
+        tables=[{"id": "T1", "pageNo": 2, "title": "技术参数表", "rows": [["参数", "要求"]]}],
+    )
+
+    merged = merge_technical_document_nav(
+        text_layer_nav=text_nav,
+        docling_nav=docling_nav,
+        page_range=[2, 2],
+    )
+
+    merged_text = "\n".join(str(block.get("text") or "") for block in merged["blocks"])
+    assert [page["pageNo"] for page in merged["pages"]] == [1, 2, 3]
+    assert merged["pages"][1]["textDensity"] == 1
+    assert merged["quality"]["sourcePageCount"] == 3
+    assert merged["quality"]["convertedPageCount"] == 1
+    assert "第一页正文" in merged_text
+    assert "第二页 Docling 正文" in merged_text
+    assert "第二页旧文本" not in merged_text
+    assert "第三页正文" in merged_text
+    assert merged["tables"][0]["rows"] == [["参数", "要求"]]
+
+
 def test_run_docling_local_text_layer_conversion_keeps_pymupdf_table_structure(tmp_path) -> None:
     import fitz
 
@@ -461,7 +565,7 @@ def test_docling_parse_engine_writes_nav_and_quality_report(tmp_path, monkeypatc
 
     result = engine.parse_pdf(
         project_id="PRJ-1",
-        document={"id": "DOC-1", "path": str(pdf_path)},
+        document={"id": "DOC-1", "path": str(pdf_path), "sourceSha256": "ABC123", "runId": "run-1"},
         output_dir=tmp_path,
     )
 
@@ -475,6 +579,10 @@ def test_docling_parse_engine_writes_nav_and_quality_report(tmp_path, monkeypatc
     assert quality["status"] == "completed"
     assert quality["fallbackUsed"] is False
     assert quality["doclingMode"] == "auto-layout-table-ocr"
+    assert quality["sourceSha256"] == "abc123"
+    assert quality["runId"] == "run-1"
+    assert quality["pipelineOptionsVersion"] == "sewpg-docling-cpu-v1"
+    assert len(quality["pipelineFingerprint"]) == 64
     assert nav["sourceEngine"] == "docling"
     assert nav["blocks"][0]["text"] == "第六章 投标文件格式"
 

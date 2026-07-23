@@ -15,6 +15,7 @@ mkdir -p "${BUNDLE_DIR}/images"
 export APP_IMAGE_TAG="${TAG}"
 export WEB_IMAGE="sewpg-bid/web:${TAG}"
 export FASTAPI_IMAGE="sewpg-bid/fastapi:${TAG}"
+export DOCLING_IMAGE="sewpg-bid/docling-worker:${TAG}"
 export OPENCODE_IMAGE="sewpg-bid/opencode:${TAG}"
 export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:9.3.1.2"
 export REDIS_IMAGE="${REDIS_SOURCE_IMAGE}"
@@ -24,7 +25,7 @@ IMAGE_TAR="${BUNDLE_DIR}/images/sewpg-bid-images-${TAG}.tar"
 MANIFEST_PATH="${BUNDLE_DIR}/bundle-manifest.json"
 
 echo "==> Building application images..."
-docker compose -f "${REPO_ROOT}/docker-compose.yml" build web fastapi opencode
+docker compose -f "${REPO_ROOT}/docker-compose.yml" build web fastapi docling-worker opencode
 
 if docker image inspect "${ONLYOFFICE_SOURCE_IMAGE}" >/dev/null 2>&1; then
   echo "==> Reusing local OnlyOffice image..."
@@ -58,6 +59,7 @@ echo "==> Exporting image bundle..."
 save_images=(
   "${WEB_IMAGE}"
   "${FASTAPI_IMAGE}"
+  "${DOCLING_IMAGE}"
   "${OPENCODE_IMAGE}"
   "${ONLYOFFICE_IMAGE}"
   "${REDIS_IMAGE}"
@@ -87,6 +89,7 @@ cat > "${MANIFEST_PATH}" <<EOF
   "images": [
     "${WEB_IMAGE}",
     "${FASTAPI_IMAGE}",
+    "${DOCLING_IMAGE}",
     "${OPENCODE_IMAGE}",
     "${ONLYOFFICE_IMAGE}",
     "${REDIS_IMAGE}"$(if [[ "${INCLUDE_OCR}" == "1" || "${INCLUDE_OCR}" == "true" || "${INCLUDE_OCR}" == "yes" ]]; then printf ',\n    "%s"' "${OCR_SOURCE_IMAGE}"; fi)

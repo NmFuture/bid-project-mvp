@@ -6,6 +6,24 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 LOCAL_DATA_DIR = BASE_DIR / ".localdata"
+DEFAULT_OPENCODE_PROVIDER_ID = "deepseek"
+DEFAULT_OPENCODE_MODEL_ID = "deepseek-v4-flash"
+
+
+def normalize_opencode_model_selection(provider_value: object, model_value: object) -> tuple[str, str]:
+    provider_id = str(provider_value or DEFAULT_OPENCODE_PROVIDER_ID).strip() or DEFAULT_OPENCODE_PROVIDER_ID
+    model_id = str(model_value or DEFAULT_OPENCODE_MODEL_ID).strip() or DEFAULT_OPENCODE_MODEL_ID
+
+    if (provider_id, model_id) == ("opencode", "big-pickle") or model_id == "opencode/big-pickle":
+        return DEFAULT_OPENCODE_PROVIDER_ID, DEFAULT_OPENCODE_MODEL_ID
+
+    if model_id == f"{DEFAULT_OPENCODE_PROVIDER_ID}/{DEFAULT_OPENCODE_MODEL_ID}":
+        return DEFAULT_OPENCODE_PROVIDER_ID, DEFAULT_OPENCODE_MODEL_ID
+
+    qualified_prefix = f"{provider_id}/"
+    if model_id.startswith(qualified_prefix):
+        model_id = model_id[len(qualified_prefix):].strip()
+    return provider_id, model_id or DEFAULT_OPENCODE_MODEL_ID
 
 
 def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -175,6 +193,16 @@ class Settings:
         self.parsed_dir.mkdir(parents=True, exist_ok=True)
 
 
+_configured_opencode_provider_id, _configured_opencode_model_id = normalize_opencode_model_selection(
+    os.getenv("OPENCODE_PROVIDER_ID"),
+    os.getenv("OPENCODE_MODEL_ID"),
+)
+_configured_default_llm_provider_id, _configured_default_llm_model_id = normalize_opencode_model_selection(
+    _first_env("DEFAULT_LLM_PROVIDER_ID", default=_configured_opencode_provider_id),
+    _first_env("DEFAULT_LLM_MODEL", default=_configured_opencode_model_id),
+)
+
+
 settings = Settings(
     app_env=os.getenv("APP_ENV", "development"),
     uploads_dir=Path(os.getenv("UPLOADS_DIR", str(LOCAL_DATA_DIR / "uploads"))),
@@ -182,8 +210,8 @@ settings = Settings(
     parsed_dir=Path(os.getenv("PARSED_DIR", str(LOCAL_DATA_DIR / "parsed"))),
     project_store_backend=os.getenv("APP_STORE_BACKEND", "postgres").strip().lower() or "postgres",
     opencode_base_url=os.getenv("OPENCODE_BASE_URL", "http://127.0.0.1:4096"),
-    opencode_provider_id=os.getenv("OPENCODE_PROVIDER_ID", "opencode"),
-    opencode_model_id=os.getenv("OPENCODE_MODEL_ID", "big-pickle"),
+    opencode_provider_id=_configured_opencode_provider_id,
+    opencode_model_id=_configured_opencode_model_id,
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
     opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 1),
     s1_parse_opencode_enabled=_bool_env(
@@ -252,8 +280,8 @@ settings = Settings(
     auth_session_ttl_sec=_int_env("AUTH_SESSION_TTL_SEC", 24 * 60 * 60),
     default_llm_base_url=_first_env("DEFAULT_LLM_BASE_URL", "INTERNAL_LLM_BASE_URL"),
     default_llm_api_key=_first_env("DEFAULT_LLM_API_KEY", "INTERNAL_LLM_API_KEY"),
-    default_llm_model=_first_env("DEFAULT_LLM_MODEL", "OPENCODE_MODEL_ID", default="big-pickle"),
-    default_llm_provider_id=_first_env("DEFAULT_LLM_PROVIDER_ID", "OPENCODE_PROVIDER_ID", default="opencode"),
+    default_llm_model=_configured_default_llm_model_id,
+    default_llm_provider_id=_configured_default_llm_provider_id,
     default_ocr_base_url=_first_env("DEFAULT_OCR_BASE_URL"),
     default_ocr_api_key=_first_env("DEFAULT_OCR_API_KEY"),
     default_ocr_model=_first_env("DEFAULT_OCR_MODEL", default="deepseek-ai/DeepSeek-OCR"),

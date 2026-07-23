@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-import json
+import hashlib
+import importlib.metadata
 import importlib.util
+import json
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
 from app.services.docling_nav_adapter import convert_docling_output_to_document_nav
-from app.services.document_nav import nav_to_text
+from app.services.document_nav import build_document_nav, nav_to_text
 from app.services.document_parse_engine import DocumentParseEngine
 
 
 AUTO_DOCLING_MODE = "auto-layout-table-ocr"
 AUTO_DOCLING_PAGE_RANGE_MODE = "auto-layout-table-page-range"
 LOCAL_TEXT_LAYER_MODE = "local-text-layer"
+DOCLING_LOCKED_VERSION = "2.108.0"
+DOCLING_PIPELINE_OPTIONS_VERSION = "sewpg-docling-cpu-v1"
 _DOCLING_PAGE_WINDOW_MIN_SOURCE_PAGES = 120
 _DOCLING_PAGE_WINDOW_SKIP_FIRST_PAGES = 20
 _DOCLING_PAGE_WINDOW_MAX_PAGES = 120
@@ -48,6 +53,30 @@ _APPENDIX_START_MARKERS = (
     "投标机型总方案信息表",
 )
 _APPENDIX_HEADING_RE = re.compile(r"附表[A-I](?:[.．]\d+|[.．]|[0-9])")
+_DOCLING_CONVERTER_CACHE: dict[tuple[Any, ...], Any] = {}
+_DOCLING_CONVERTER_CACHE_LOCK = threading.Lock()
+_DOCLING_CONVERSION_LOCK = threading.Lock()
+
+
+def _docling_version() -> str:
+    try:
+        return importlib.metadata.version("docling")
+    except importlib.metadata.PackageNotFoundError:
+        return DOCLING_LOCKED_VERSION
+
+
+def docling_pipeline_fingerprint(mode: str) -> str:
+    payload = {
+        "doclingVersion": _docling_version(),
+        "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+        "mode": str(mode or AUTO_DOCLING_MODE),
+        "device": "cpu",
+        "ocrBackend": "rapidocr-onnxruntime",
+        "ocrLanguages": ["chinese", "english"],
+        "tableMode": "accurate",
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _docling_artifacts_path_is_usable(artifacts_path: Any) -> bool:
@@ -242,6 +271,19 @@ def _docling_document_to_markdown(document: Any) -> str:
 
 
 def _configure_docling_auto_pipeline_options(pipeline_options: Any) -> Any:
+    accelerator_options = getattr(pipeline_options, "accelerator_options", None)
+    try:
+        from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+
+        if accelerator_options is None and hasattr(pipeline_options, "accelerator_options"):
+            pipeline_options.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.CPU)
+        elif accelerator_options is not None and hasattr(accelerator_options, "device"):
+            accelerator_options.device = AcceleratorDevice.CPU
+    except (ImportError, AttributeError, TypeError):
+        # 测试替身或兼容版本没有 AcceleratorOptions 时，仍显式覆盖已有设备字段。
+        if accelerator_options is not None and hasattr(accelerator_options, "device"):
+            accelerator_options.device = "cpu"
+
     artifacts_path = getattr(settings, "docling_artifacts_path", None)
     artifacts_path_in_use = _docling_artifacts_path_is_usable(artifacts_path) and hasattr(pipeline_options, "artifacts_path")
     if artifacts_path_in_use:
@@ -295,26 +337,62 @@ def _configure_docling_auto_pipeline_options(pipeline_options: Any) -> Any:
     return pipeline_options
 
 
-def run_docling_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
+def _get_docling_converter(*, page_window_enabled: bool) -> Any:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
+    docling_mode = AUTO_DOCLING_PAGE_RANGE_MODE if page_window_enabled else AUTO_DOCLING_MODE
+    artifacts_path = str(getattr(settings, "docling_artifacts_path", "") or "")
+    cache_key = (
+        docling_mode,
+        docling_pipeline_fingerprint(docling_mode),
+        artifacts_path,
+        DocumentConverter,
+        PdfFormatOption,
+    )
+    with _DOCLING_CONVERTER_CACHE_LOCK:
+        converter = _DOCLING_CONVERTER_CACHE.get(cache_key)
+        if converter is not None:
+            return converter
+
+        pipeline_options = _configure_docling_auto_pipeline_options(PdfPipelineOptions())
+        if page_window_enabled:
+            if hasattr(pipeline_options, "do_ocr"):
+                pipeline_options.do_ocr = False
+            if hasattr(pipeline_options, "force_backend_text"):
+                pipeline_options.force_backend_text = True
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+        )
+        _DOCLING_CONVERTER_CACHE[cache_key] = converter
+        return converter
+
+
+def prewarm_docling_converters() -> None:
+    """在 worker 就绪前只初始化常用页窗 pipeline；全文 pipeline 按需加载。"""
+
+    from docling.datamodel.base_models import InputFormat
+
+    with _DOCLING_CONVERSION_LOCK:
+        converter = _get_docling_converter(page_window_enabled=True)
+        initialize_pipeline = getattr(converter, "initialize_pipeline", None)
+        if not callable(initialize_pipeline):
+            raise RuntimeError("当前 Docling 版本不支持 DocumentConverter.initialize_pipeline，无法完成预热")
+        initialize_pipeline(InputFormat.PDF)
+
+
+def run_docling_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    pipeline_options = _configure_docling_auto_pipeline_options(PdfPipelineOptions())
     page_window = _detect_pdf_appendix_page_range(pdf_path)
     convert_kwargs: dict[str, Any] = {}
     docling_mode = AUTO_DOCLING_MODE
     if page_window:
         convert_kwargs["page_range"] = tuple(page_window["pageRange"])
         docling_mode = AUTO_DOCLING_PAGE_RANGE_MODE
-        if hasattr(pipeline_options, "do_ocr"):
-            pipeline_options.do_ocr = False
-        if hasattr(pipeline_options, "force_backend_text"):
-            pipeline_options.force_backend_text = True
-    result = DocumentConverter(
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
-    ).convert(str(pdf_path), **convert_kwargs)
+    converter = _get_docling_converter(page_window_enabled=bool(page_window))
+    with _DOCLING_CONVERSION_LOCK:
+        result = converter.convert(str(pdf_path), **convert_kwargs)
     document = getattr(result, "document", None)
     if document is None:
         raise RuntimeError("Docling 未返回 document 结果")
@@ -335,6 +413,9 @@ def run_docling_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
         "convertedPageCount": converted_page_count,
         "tableCount": len(tables),
         "mode": docling_mode,
+        "doclingVersion": _docling_version(),
+        "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+        "pipelineFingerprint": docling_pipeline_fingerprint(docling_mode),
         "warnings": [],
     }
     if page_window:
@@ -356,6 +437,174 @@ def _is_heading_text(text: str) -> bool:
     if stripped.startswith(("第", "一、", "二、", "三、", "四、", "五、", "六、", "七、", "八、", "九、", "十、")):
         return len(stripped) <= 80
     return bool(stripped[:4].replace(".", "").isdigit() and len(stripped) <= 100)
+
+
+def build_pymupdf_text_layer_document_nav(
+    *,
+    document_id: str,
+    pdf_path: Path,
+) -> dict[str, Any]:
+    """为技术标建立覆盖整份 PDF 的轻量文本层导航。"""
+
+    import fitz
+
+    pages: list[dict[str, Any]] = []
+    blocks: list[dict[str, Any]] = []
+    with fitz.open(str(pdf_path)) as pdf:
+        for page_no, page in enumerate(pdf, start=1):
+            rect = page.rect
+            page_blocks: list[dict[str, Any]] = []
+            raw = page.get_text("dict", sort=True)
+            raw_blocks = raw.get("blocks") if isinstance(raw, dict) else []
+            line_no = 0
+            for raw_block in raw_blocks if isinstance(raw_blocks, list) else []:
+                if not isinstance(raw_block, dict) or raw_block.get("type") != 0:
+                    continue
+                lines = raw_block.get("lines") if isinstance(raw_block.get("lines"), list) else []
+                for line in lines:
+                    spans = line.get("spans") if isinstance(line, dict) and isinstance(line.get("spans"), list) else []
+                    text = "".join(str(span.get("text") or "") for span in spans if isinstance(span, dict)).strip()
+                    if not text:
+                        continue
+                    line_no += 1
+                    raw_bbox = line.get("bbox") if isinstance(line, dict) else None
+                    bbox = [float(value) for value in raw_bbox] if isinstance(raw_bbox, (list, tuple)) else []
+                    page_blocks.append(
+                        {
+                            "id": f"{document_id}:TXT:P{page_no:04d}:B{line_no:04d}",
+                            "evidenceId": f"{document_id}:P{page_no:04d}:TXT{line_no:04d}",
+                            "pageNo": page_no,
+                            "type": "heading" if _is_heading_text(text) else "paragraph",
+                            "text": text,
+                            "bbox": bbox,
+                            "sourceEngine": "pymupdf-text-layer",
+                        }
+                    )
+            blocks.extend(page_blocks)
+            pages.append(
+                {
+                    "pageNo": page_no,
+                    "width": float(rect.width),
+                    "height": float(rect.height),
+                    "textDensity": 1 if page_blocks else 0,
+                    "lowQuality": not bool(page_blocks),
+                    "sourceEngine": "pymupdf-text-layer",
+                }
+            )
+
+    if not pages:
+        raise RuntimeError("PyMuPDF 未读取到 PDF 页面")
+    return build_document_nav(
+        document_id=document_id,
+        source_path=str(pdf_path),
+        source_engine="pymupdf-text-layer",
+        pages=pages,
+        blocks=blocks,
+        tables=[],
+        quality={
+            "engine": "pymupdf-text-layer",
+            "status": "completed",
+            "pageCount": len(pages),
+            "lowQualityPages": [int(page["pageNo"]) for page in pages if page.get("lowQuality")],
+            "tableCount": 0,
+            "fallbackUsed": False,
+            "warnings": [],
+        },
+    )
+
+
+def merge_technical_document_nav(
+    *,
+    text_layer_nav: dict[str, Any],
+    docling_nav: dict[str, Any],
+    page_range: list[int] | tuple[int, int] | None,
+) -> dict[str, Any]:
+    """用 Docling 页窗替换全文文本层对应页面，同时保留整本页码空间。"""
+
+    documents = text_layer_nav.get("documents") if isinstance(text_layer_nav.get("documents"), list) else []
+    first_document = documents[0] if documents and isinstance(documents[0], dict) else {}
+    document_id = str(first_document.get("id") or "DOC-1")
+    source_path = str(first_document.get("sourcePath") or "")
+    text_pages = [page for page in text_layer_nav.get("pages") or [] if isinstance(page, dict)]
+    source_page_count = len(text_pages)
+
+    docling_pages = [page for page in docling_nav.get("pages") or [] if isinstance(page, dict)]
+    docling_page_numbers = [int(page.get("pageNo") or 0) for page in docling_pages if int(page.get("pageNo") or 0) > 0]
+    if page_range and len(page_range) >= 2:
+        window_start, window_end = int(page_range[0]), int(page_range[1])
+    elif docling_page_numbers:
+        window_start, window_end = min(docling_page_numbers), max(docling_page_numbers)
+    else:
+        window_start, window_end = 1, source_page_count
+
+    docling_pages_by_no = {int(page.get("pageNo") or 0): page for page in docling_pages}
+    merged_pages: list[dict[str, Any]] = []
+    for text_page in text_pages:
+        page_no = int(text_page.get("pageNo") or 0)
+        docling_page = docling_pages_by_no.get(page_no)
+        if window_start <= page_no <= window_end and docling_page is not None:
+            merged_pages.append({**text_page, **docling_page, "pageNo": page_no, "sourceEngine": "docling"})
+        else:
+            merged_pages.append(text_page)
+
+    def blocks_by_page(nav: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for block in nav.get("blocks") if isinstance(nav.get("blocks"), list) else []:
+            if not isinstance(block, dict):
+                continue
+            page_no = int(block.get("pageNo") or 0)
+            grouped.setdefault(page_no, []).append(block)
+        return grouped
+
+    text_blocks = blocks_by_page(text_layer_nav)
+    docling_blocks = blocks_by_page(docling_nav)
+    merged_blocks: list[dict[str, Any]] = []
+    for page_no in range(1, source_page_count + 1):
+        if window_start <= page_no <= window_end and docling_blocks.get(page_no):
+            merged_blocks.extend(docling_blocks[page_no])
+        else:
+            merged_blocks.extend(text_blocks.get(page_no, []))
+
+    content_pages = {
+        int(block.get("pageNo") or 0)
+        for block in merged_blocks
+        if str(block.get("text") or "").strip() or str(block.get("type") or "") == "table"
+    }
+    for page in merged_pages:
+        if int(page.get("pageNo") or 0) in content_pages:
+            page["textDensity"] = max(float(page.get("textDensity") or 0), 1)
+            page["lowQuality"] = False
+
+    tables = [table for table in docling_nav.get("tables") or [] if isinstance(table, dict)]
+    images = [image for image in docling_nav.get("images") or [] if isinstance(image, dict)]
+    docling_quality = docling_nav.get("quality") if isinstance(docling_nav.get("quality"), dict) else {}
+    low_quality_pages = [
+        int(page.get("pageNo") or 0)
+        for page in merged_pages
+        if int(page.get("pageNo") or 0) > 0 and not page.get("textDensity")
+    ]
+    quality = {
+        **docling_quality,
+        "engine": "docling+pymupdf-text-layer",
+        "status": "completed",
+        "pageCount": source_page_count,
+        "sourcePageCount": source_page_count,
+        "convertedPageCount": len(docling_pages),
+        "textLayerPageCount": source_page_count,
+        "lowQualityPages": low_quality_pages,
+        "tableCount": len(tables),
+        "fallbackUsed": False,
+    }
+    return build_document_nav(
+        document_id=document_id,
+        source_path=source_path,
+        source_engine="docling+pymupdf-text-layer",
+        pages=merged_pages,
+        blocks=merged_blocks,
+        tables=tables,
+        images=images,
+        quality=quality,
+    )
 
 
 def run_docling_local_text_layer_conversion(pdf_path: Path, output_dir: Path) -> dict[str, Any]:
@@ -454,6 +703,9 @@ class DoclingParseEngine(DocumentParseEngine):
         docling_output_dir.mkdir(parents=True, exist_ok=True)
         quality_path = docling_output_dir / "parse_quality.json"
         fallback_reason = ""
+        source_sha256 = str(document.get("sourceSha256") or document.get("sha256") or "").strip().lower()
+        run_id = str(document.get("runId") or "").strip()
+        merge_technical_text_layer = bool(document.get("mergeTechnicalTextLayer"))
 
         try:
             try:
@@ -470,6 +722,16 @@ class DoclingParseEngine(DocumentParseEngine):
                 source_path=pdf_path,
                 docling_output_dir=docling_output_dir,
             )
+            if merge_technical_text_layer:
+                text_layer_nav = build_pymupdf_text_layer_document_nav(
+                    document_id=document_id,
+                    pdf_path=pdf_path,
+                )
+                document_nav = merge_technical_document_nav(
+                    text_layer_nav=text_layer_nav,
+                    docling_nav=document_nav,
+                    page_range=conversion_result.get("pageRange"),
+                )
             document_nav_path = output_dir / f"{document_id}_document_nav.json"
             document_nav_path.write_text(json.dumps(document_nav, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as exc:
@@ -480,14 +742,24 @@ class DoclingParseEngine(DocumentParseEngine):
                 "lowQualityPages": [],
                 "tableCount": 0,
                 "fallbackUsed": False,
+                "doclingVersion": _docling_version(),
+                "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
+                "pipelineFingerprint": docling_pipeline_fingerprint(AUTO_DOCLING_MODE),
                 "warnings": [str(exc)],
             }
+            if source_sha256:
+                quality["sourceSha256"] = source_sha256
+            if run_id:
+                quality["runId"] = run_id
             quality_path.write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
             return {
                 "documentParseEngine": "docling",
                 "status": "failed",
                 "doclingOutputDir": str(docling_output_dir),
                 "parseQualityPath": str(quality_path),
+                "doclingVersion": str(quality.get("doclingVersion") or ""),
+                "pipelineOptionsVersion": str(quality.get("pipelineOptionsVersion") or ""),
+                "pipelineFingerprint": str(quality.get("pipelineFingerprint") or ""),
                 "fallbackReason": str(exc),
             }
 
@@ -503,8 +775,19 @@ class DoclingParseEngine(DocumentParseEngine):
                 "markdownPath": str(conversion_result.get("markdownPath") or ""),
                 "jsonPath": str(conversion_result.get("jsonPath") or ""),
                 "doclingMode": docling_mode,
+                "doclingVersion": str(conversion_result.get("doclingVersion") or _docling_version()),
+                "pipelineOptionsVersion": str(
+                    conversion_result.get("pipelineOptionsVersion") or DOCLING_PIPELINE_OPTIONS_VERSION
+                ),
+                "pipelineFingerprint": str(
+                    conversion_result.get("pipelineFingerprint") or docling_pipeline_fingerprint(docling_mode)
+                ),
             }
         )
+        if source_sha256:
+            quality["sourceSha256"] = source_sha256
+        if run_id:
+            quality["runId"] = run_id
         for key in ("pageRange", "pageRangeReason", "sourcePageCount"):
             if key in conversion_result:
                 quality[key] = conversion_result[key]
@@ -523,5 +806,8 @@ class DoclingParseEngine(DocumentParseEngine):
             "markdownPath": str(conversion_result.get("markdownPath") or ""),
             "jsonPath": str(conversion_result.get("jsonPath") or ""),
             "doclingMode": docling_mode,
+            "doclingVersion": str(quality.get("doclingVersion") or ""),
+            "pipelineOptionsVersion": str(quality.get("pipelineOptionsVersion") or ""),
+            "pipelineFingerprint": str(quality.get("pipelineFingerprint") or ""),
             "text": nav_to_text(document_nav),
         }
