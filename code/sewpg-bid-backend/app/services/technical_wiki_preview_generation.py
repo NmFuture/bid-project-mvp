@@ -120,7 +120,6 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     deep_profile = deep_parse_profile_for(ext_fields, cleaned_key or str(item.minio_key or ""))
     if deep_profile is not None:
         return ext, {**empty, **deep_profile, "parseError": ""}
-
     if ext != "docx":
         # PDF/XLSX 无清洗稿：交给后台深度解析转换，不再终态跳过
         if is_deep_convertible_material(name):

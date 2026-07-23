@@ -9,6 +9,7 @@ from app.services.material_taxonomy import (
     BUSINESS_PROJECT_SUBFOLDERS,
     BUSINESS_STANDARD_SUBFOLDERS,
     BUSINESS_TIER_FOLDERS,
+    RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS,
     RAW_MATERIAL_ROOTS,
     TECHNICAL_TIER_FOLDERS,
     business_customized_child_tier_for_parent_path as _business_customized_child_tier_for_parent_path,
@@ -80,6 +81,12 @@ def is_raw_folder_move_protected_path(folder_path: str) -> bool:
     return normalized in RAW_FOLDER_MOVE_PROTECTED_PATHS or is_raw_material_protected_folder_path(normalized)
 
 
+def is_raw_folder_rename_protected_path(folder_path: str) -> bool:
+    # 重命名保护口径 = 移动保护口径 + 技术标根级三个默认档位目录（固定口径，禁止改名）
+    normalized = str(folder_path or "").replace("\\", "/").strip("/")
+    return is_raw_folder_move_protected_path(normalized) or normalized in RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS
+
+
 def is_raw_folder_move_descendant_target(source_path: str, target_parent_path: str) -> bool:
     source = str(source_path or "").replace("\\", "/").strip("/")
     target = str(target_parent_path or "").replace("\\", "/").strip("/")
@@ -147,11 +154,6 @@ def business_customized_tier_from_folder_path(folder_path: str) -> str:
 
 def business_customized_child_tier_for_parent_folder_path(parent_path: str) -> str:
     return _business_customized_child_tier_for_parent_path(parent_path)
-
-
-def material_tier_folder_name(material_tier: str) -> str:
-    tier = normalize_material_tier(material_tier) or "project"
-    return TIER_FOLDER_NAMES[tier]
 
 
 def material_tier_folder_name_for_bid_type(bid_type: str, material_tier: str) -> str:

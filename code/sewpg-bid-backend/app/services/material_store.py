@@ -31,7 +31,7 @@ from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.material_raw_tree_operations import raw_tree_operation
 from app.services.material_upload_operations import upload_raw_files
 from app.services.material_folder_scope import infer_material_tier_from_raw_folder
-from app.services.material_move_operations import move_raw_file, move_raw_folder
+from app.services.material_move_operations import move_raw_file, move_raw_folder, rename_raw_folder
 from app.services.material_wiki_attachment_operations import (
     delete_wiki_attachment,
     download_wiki_attachment_content,
@@ -416,6 +416,17 @@ class MaterialStore:
         return await move_raw_folder(
             source_path=source_path,
             target_parent_path=target_parent_path,
+            bid_type=bid_type,
+            ensure_runtime_tables=ensure_material_runtime_tables,
+            raw_object_key=raw_object_key,
+            infer_material_tier_from_folder=infer_material_tier_from_raw_folder,
+            raw_tree=lambda: self.raw_tree(bid_type=bid_type),
+        )
+
+    async def raw_rename_folder(self, path: str, new_name: str, *, bid_type: str) -> dict[str, Any]:
+        return await rename_raw_folder(
+            path=path,
+            new_name=new_name,
             bid_type=bid_type,
             ensure_runtime_tables=ensure_material_runtime_tables,
             raw_object_key=raw_object_key,

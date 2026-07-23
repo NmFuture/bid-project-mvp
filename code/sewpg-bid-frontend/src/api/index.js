@@ -514,6 +514,8 @@ export const technicalMaterialsAPI = {
       request('/technical/materials/raw/folders/bootstrap', { method: 'POST', body: data }),
     createFolder: (data) =>
       request('/technical/materials/raw/folders', { method: 'POST', body: data }),
+    renameFolder: (data) =>
+      request('/technical/materials/raw/folders', { method: 'PATCH', body: data }),
     moveFolder: (data) =>
       request('/technical/materials/raw/folders/move', { method: 'POST', body: data }),
     deleteFolder: (params = {}) => {
@@ -776,6 +778,8 @@ export const businessMaterialsAPI = {
       request('/business/materials/raw/upload', { method: 'POST', body: data, timeoutMs: 30 * 60 * 1000 }),
     createFolder: (data) =>
       request('/business/materials/raw/folders', { method: 'POST', body: data }),
+    renameFolder: (data) =>
+      request('/business/materials/raw/folders', { method: 'PATCH', body: data }),
     moveFolder: (data) =>
       request('/business/materials/raw/folders/move', { method: 'POST', body: data }),
     deleteFolder: (params = {}) => {

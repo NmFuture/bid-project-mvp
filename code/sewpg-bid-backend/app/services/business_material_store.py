@@ -191,6 +191,14 @@ class BusinessMaterialStore:
         )
         return self._with_urls(_force_business_tree(payload))
 
+    async def raw_rename_folder(self, *, path: str, new_name: str) -> dict[str, Any]:
+        payload = await material_store.raw_rename_folder(
+            self.ensure_path(path, "目标目录"),
+            new_name,
+            bid_type=BUSINESS_BID_TYPE,
+        )
+        return self._with_urls(_force_business_tree(payload))
+
     async def raw_cleanup_project_folder(self, path: str, *, expected_project_id: str = "") -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
         parts = [part for part in normalized.split("/") if part]

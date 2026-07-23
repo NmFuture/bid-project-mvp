@@ -566,6 +566,14 @@ async def business_raw_delete_folder(path: str = Query(default="")) -> dict[str,
     return await business_material_store.raw_delete_folder(path)
 
 
+@router.patch("/api/business/materials/raw/folders")
+async def business_raw_rename_folder(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await business_material_store.raw_rename_folder(
+        path=str(data.get("path") or data.get("folderPath") or ""),
+        new_name=str(data.get("newName") or data.get("folderName") or data.get("name") or ""),
+    )
+
+
 @router.patch("/api/business/materials/raw/{file_id}")
 async def business_raw_update_file(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await business_material_store.raw_update_file(
