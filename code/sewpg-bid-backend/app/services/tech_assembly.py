@@ -20,7 +20,10 @@ from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
 from app.services.bid_runtime_state import now_iso
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
-from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
+from app.services.technical_gap_domain import (
+    technical_gap_artifact_is_s7_ready,
+    technical_outline_number_and_title,
+)
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -466,22 +469,20 @@ def _gap_plan_has_resolved_artifacts(plan: dict[str, Any]) -> bool:
 def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", level: int = 1) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for index, node in enumerate(nodes, start=1):
-        decimal_number = f"{prefix}.{index}" if prefix else str(index)
-        source_number = str(
-            node.get("tocNumber") or node.get("number") or node.get("toc_number") or ""
-        ).strip()
-        if re.fullmatch(r"第\s*[^\s]+\s*章", source_number):
-            number = f"第{index}章"
-        elif re.match(r"^(?:技术)?附表|^副表|^附件", source_number, flags=re.IGNORECASE):
-            number = source_number
-        else:
-            number = decimal_number
+        fallback_number = f"{prefix}.{index}" if prefix else str(index)
+        number, title = technical_outline_number_and_title(node, fallback_number)
+        flat_number = (
+            ""
+            if re.match(r"^(?:技术)?附表|^副表|^附件", number, flags=re.IGNORECASE)
+            else fallback_number
+        )
         items.append(
             {
                 "order": len(items),
                 "level": level,
                 "number": number,
-                "title": str(node.get("title") or "").strip(),
+                "chapter_no_flat": flat_number,
+                "title": title,
                 "annotation": str(node.get("annotation") or "保留"),
                 "source": "outline_state",
                 "reason": "",
@@ -489,7 +490,7 @@ def _outline_nodes_to_toc_items(nodes: list[dict[str, Any]], prefix: str = "", l
         )
         children = node.get("children") or []
         if isinstance(children, list):
-            items.extend(_outline_nodes_to_toc_items(children, decimal_number, level + 1))
+            items.extend(_outline_nodes_to_toc_items(children, fallback_number, level + 1))
     return items
 
 
