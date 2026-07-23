@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = "bid-tech-agentic-nav-v1"
+SCHEMA_VERSION = "bid-tech-agentic-nav-v2"
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -34,8 +34,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE TABLE IF NOT EXISTS blocks (
             id TEXT PRIMARY KEY,
+            evidence_id TEXT NOT NULL,
             document_id TEXT NOT NULL,
             body_index INTEGER NOT NULL,
+            page_no INTEGER NOT NULL DEFAULT 0,
             block_type TEXT NOT NULL,
             text TEXT NOT NULL,
             heading_level INTEGER NOT NULL DEFAULT 0,
@@ -46,8 +48,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         CREATE TABLE IF NOT EXISTS tables (
             id TEXT PRIMARY KEY,
+            evidence_id TEXT NOT NULL,
             document_id TEXT NOT NULL,
             body_index INTEGER NOT NULL,
+            page_no INTEGER NOT NULL DEFAULT 0,
             title TEXT NOT NULL DEFAULT '',
             heading_path TEXT NOT NULL DEFAULT '',
             row_count INTEGER NOT NULL,
@@ -77,6 +81,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             document_id TEXT NOT NULL,
             kind TEXT NOT NULL,
             body_index INTEGER NOT NULL,
+            page_no INTEGER NOT NULL DEFAULT 0,
             table_id TEXT NOT NULL DEFAULT '',
             row_index INTEGER,
             col_index INTEGER,
@@ -146,14 +151,16 @@ def insert_block(conn: sqlite3.Connection, block: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO blocks(
-            id, document_id, body_index, block_type, text, heading_level,
+            id, evidence_id, document_id, body_index, page_no, block_type, text, heading_level,
             heading_path, table_id, prev_text, next_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             block["id"],
+            block.get("evidenceId") or block["id"],
             block["documentId"],
             int(block["bodyIndex"]),
+            int(block.get("pageNo") or 0),
             block["type"],
             block.get("text") or "",
             int(block.get("headingLevel") or 0),
@@ -166,10 +173,11 @@ def insert_block(conn: sqlite3.Connection, block: dict[str, Any]) -> None:
     insert_evidence(
         conn,
         {
-            "id": block["tableId"] if block.get("type") == "table" and block.get("tableId") else block["id"],
+            "id": block.get("evidenceId") or block["id"],
             "documentId": block["documentId"],
             "kind": block["type"],
             "bodyIndex": block["bodyIndex"],
+            "pageNo": block.get("pageNo") or 0,
             "tableId": block.get("tableId") or "",
             "text": block.get("text") or "",
         },
@@ -180,14 +188,16 @@ def insert_table(conn: sqlite3.Connection, table: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO tables(
-            id, document_id, body_index, title, heading_path, row_count,
+            id, evidence_id, document_id, body_index, page_no, title, heading_path, row_count,
             col_count, header_text, preview_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             table["id"],
+            table.get("evidenceId") or table["id"],
             table["documentId"],
             int(table["bodyIndex"]),
+            int(table.get("pageNo") or 0),
             table.get("title") or "",
             table.get("headingPath") or "",
             int(table.get("rowCount") or 0),
@@ -199,10 +209,11 @@ def insert_table(conn: sqlite3.Connection, table: dict[str, Any]) -> None:
     insert_evidence(
         conn,
         {
-            "id": table["id"],
+            "id": table.get("evidenceId") or table["id"],
             "documentId": table["documentId"],
             "kind": "table",
             "bodyIndex": table["bodyIndex"],
+            "pageNo": table.get("pageNo") or 0,
             "tableId": table["id"],
             "text": " ".join(part for part in [table.get("title") or "", table.get("previewText") or ""] if part),
         },
@@ -231,6 +242,7 @@ def insert_table_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
             "documentId": row["documentId"],
             "kind": "table_row",
             "bodyIndex": row["bodyIndex"],
+            "pageNo": row.get("pageNo") or 0,
             "tableId": row["tableId"],
             "rowIndex": row["rowIndex"],
             "text": row.get("text") or "",
@@ -262,6 +274,7 @@ def insert_table_cell(conn: sqlite3.Connection, cell: dict[str, Any]) -> None:
             "documentId": cell["documentId"],
             "kind": "table_cell",
             "bodyIndex": cell["bodyIndex"],
+            "pageNo": cell.get("pageNo") or 0,
             "tableId": cell["tableId"],
             "rowIndex": cell["rowIndex"],
             "colIndex": cell["colIndex"],
@@ -274,14 +287,15 @@ def insert_evidence(conn: sqlite3.Connection, evidence: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO evidence(
-            id, document_id, kind, body_index, table_id, row_index, col_index, text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            id, document_id, kind, body_index, page_no, table_id, row_index, col_index, text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evidence["id"],
             evidence["documentId"],
             evidence["kind"],
             int(evidence["bodyIndex"]),
+            int(evidence.get("pageNo") or 0),
             evidence.get("tableId") or "",
             evidence.get("rowIndex"),
             evidence.get("colIndex"),

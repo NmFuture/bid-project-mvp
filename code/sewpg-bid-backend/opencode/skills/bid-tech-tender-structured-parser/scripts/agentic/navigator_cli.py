@@ -57,7 +57,8 @@ def _ranked_search(conn, query: str, limit: int) -> list[dict[str, Any]]:
     rows = nav_store.fetch_all(
         conn,
         """
-        SELECT id, document_id AS documentId, kind, body_index AS bodyIndex, table_id AS tableId,
+        SELECT id, document_id AS documentId, kind, body_index AS bodyIndex, page_no AS pageNo,
+               table_id AS tableId,
                row_index AS rowIndex, col_index AS colIndex, text
         FROM evidence
         ORDER BY document_id, body_index, COALESCE(row_index, 0), COALESCE(col_index, 0)
@@ -96,8 +97,9 @@ def overview(manifest_path: Path, manifest: dict[str, Any], *, page: int = 1, pa
     rows = nav_store.fetch_all(
         conn,
         """
-        SELECT id, document_id AS documentId, body_index AS bodyIndex, block_type AS type,
-               text, heading_level AS headingLevel, heading_path AS headingPath, table_id AS tableId
+        SELECT id, evidence_id AS evidenceId, document_id AS documentId, body_index AS bodyIndex,
+               page_no AS pageNo, block_type AS type, text, heading_level AS headingLevel,
+               heading_path AS headingPath, table_id AS tableId
         FROM blocks
         ORDER BY document_id, body_index
         LIMIT ? OFFSET ?
@@ -109,8 +111,9 @@ def overview(manifest_path: Path, manifest: dict[str, Any], *, page: int = 1, pa
     tables = nav_store.fetch_all(
         conn,
         """
-        SELECT id, document_id AS documentId, body_index AS bodyIndex, title, heading_path AS headingPath,
-               row_count AS rowCount, col_count AS colCount, header_text AS headerText, preview_text AS previewText
+        SELECT id, evidence_id AS evidenceId, document_id AS documentId, body_index AS bodyIndex,
+               page_no AS pageNo, title, heading_path AS headingPath, row_count AS rowCount,
+               col_count AS colCount, header_text AS headerText, preview_text AS previewText
         FROM tables ORDER BY document_id, body_index LIMIT 20
         """,
     )
@@ -134,7 +137,8 @@ def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: 
     conditions = " AND ".join(["text LIKE ?" for _ in tokens])
     params = [f"%{token}%" for token in tokens]
     sql = f"""
-        SELECT id, document_id AS documentId, kind, body_index AS bodyIndex, table_id AS tableId,
+        SELECT id, document_id AS documentId, kind, body_index AS bodyIndex, page_no AS pageNo,
+               table_id AS tableId,
                row_index AS rowIndex, col_index AS colIndex, text
         FROM evidence
         WHERE {conditions}
@@ -155,15 +159,18 @@ def read(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, mod
     if row is None:
         raise RuntimeError(f"evidence id not found: {evidence_id}")
     if row.get("kind") == "table":
-        table = nav_store.row_to_dict(conn.execute("SELECT * FROM tables WHERE id = ?", (evidence_id,)).fetchone()) or {}
+        table_id = str(row.get("table_id") or evidence_id)
+        table = nav_store.row_to_dict(conn.execute("SELECT * FROM tables WHERE id = ?", (table_id,)).fetchone()) or {}
         rows = nav_store.fetch_all(
             conn,
             "SELECT id, row_index AS rowIndex, text FROM table_rows WHERE table_id = ? ORDER BY row_index LIMIT ?",
-            (evidence_id, 8 if mode == "summary" else 200),
+            (table_id, 8 if mode == "summary" else 200),
         )
         payload = {**table, "rows": rows}
     else:
         payload = row
+    payload["pageNo"] = int(payload.get("page_no") or row.get("page_no") or 0)
+    payload["evidenceId"] = str(payload.get("evidence_id") or row.get("id") or evidence_id)
     text = payload.get("text") or payload.get("preview_text") or ""
     payload["text"] = _limit_text(text, max_chars)
     return {"schemaVersion": nav_store.SCHEMA_VERSION, "id": evidence_id, "mode": mode, "record": payload}
@@ -179,8 +186,8 @@ def window(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, b
     rows = nav_store.fetch_all(
         conn,
         """
-        SELECT id, document_id AS documentId, body_index AS bodyIndex, block_type AS type,
-               text, heading_path AS headingPath, table_id AS tableId
+        SELECT id, evidence_id AS evidenceId, document_id AS documentId, body_index AS bodyIndex,
+               page_no AS pageNo, block_type AS type, text, heading_path AS headingPath, table_id AS tableId
         FROM blocks
         WHERE document_id = ? AND body_index BETWEEN ? AND ?
         ORDER BY body_index
@@ -194,7 +201,9 @@ def window(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, b
 
 def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_range: str = "1-12", max_chars: int = 4000) -> dict[str, Any]:
     conn = _connect(manifest_path, manifest)
-    table_row = nav_store.row_to_dict(conn.execute("SELECT * FROM tables WHERE id = ?", (table_id,)).fetchone())
+    table_row = nav_store.row_to_dict(
+        conn.execute("SELECT * FROM tables WHERE id = ? OR evidence_id = ?", (table_id, table_id)).fetchone()
+    )
     if table_row is None:
         raise RuntimeError(f"table id not found: {table_id}")
     match = re.fullmatch(r"\s*(\d+)(?:-(\d+))?\s*", rows_range or "")
@@ -202,10 +211,11 @@ def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_
     end = int(match.group(2) or start) if match else min(int(table_row["row_count"]), 12)
     start = max(1, start)
     end = max(start, min(end, int(table_row["row_count"])))
+    resolved_table_id = str(table_row["id"])
     rows = nav_store.fetch_all(
         conn,
         "SELECT id, row_index AS rowIndex, text FROM table_rows WHERE table_id = ? AND row_index BETWEEN ? AND ? ORDER BY row_index",
-        (table_id, start, end),
+        (resolved_table_id, start, end),
     )
     text_budget = max_chars
     compact_rows = []
@@ -217,8 +227,10 @@ def table(manifest_path: Path, manifest: dict[str, Any], table_id: str, *, rows_
         "schemaVersion": nav_store.SCHEMA_VERSION,
         "table": {
             "id": table_row["id"],
+            "evidenceId": table_row["evidence_id"],
             "documentId": table_row["document_id"],
             "bodyIndex": table_row["body_index"],
+            "pageNo": table_row["page_no"],
             "title": table_row["title"],
             "headingPath": table_row["heading_path"],
             "rowCount": table_row["row_count"],

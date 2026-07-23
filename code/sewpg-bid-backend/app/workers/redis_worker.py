@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.redis import redis_is_available
 from app.services.job_queue import (
     QUEUE_KEY,
+    claim_s1_workflow_lock,
     clear_job_inflight,
     dequeue_generation_job,
     mark_job_inflight,
@@ -17,7 +18,9 @@ from app.services.job_queue import (
     reclaim_stale_inflight_jobs,
     recover_inflight_jobs,
     recover_processing_jobs,
+    release_s1_workflow_lock,
     release_generation_lock,
+    requeue_processing_job,
     renew_generation_lock,
 )
 from app.services.workspace_project_access import get_any_workspace_project_runtime_state
@@ -106,7 +109,7 @@ def _finish_expired_s1_job(
     return True
 
 
-def _run_job(job: dict[str, Any]) -> None:
+def _run_job(job: dict[str, Any]) -> bool:
     job_type = str(job.get("type") or "")
     project_id = str(job.get("projectId") or "")
     data = job.get("data") if isinstance(job.get("data"), dict) else {}
@@ -126,13 +129,40 @@ def _run_job(job: dict[str, Any]) -> None:
         if not _finish_expired_s1_job(job, data, workflow_parent):
             mark_job_status(job, "cancelled", "任务锁已失效或已被新任务替代。")
         clear_job_inflight(job)
-        return
+        release_s1_workflow_lock(lock_job)
+        return True
+
+    if job_type == "s1_parse":
+        workflow_lock = claim_s1_workflow_lock(lock_job)
+        if workflow_lock is None:
+            raise RuntimeError("Redis 暂不可用，无法确认 S1 全局工作流锁。")
+        if not workflow_lock:
+            renew_generation_lock(lock_job, settings.redis_job_queue_lock_ttl_sec)
+            requeued = requeue_processing_job(job, "等待当前 S1 解析工作流完成。")
+            if requeued is None:
+                raise RuntimeError("Redis 暂不可用，无法将等待中的 S1 任务放回队列。")
+            if not requeued:
+                raise RuntimeError("等待中的 S1 任务未能安全放回队列。")
+            return False
+    elif workflow_parent:
+        workflow_lock = claim_s1_workflow_lock(workflow_parent)
+        if workflow_lock is None:
+            raise RuntimeError("Redis 暂不可用，无法确认 S1 全局工作流锁。")
+        if not workflow_lock:
+            if not _finish_expired_s1_job(job, data, workflow_parent):
+                mark_job_status(job, "cancelled", "S1 全局工作流锁已失效。")
+            clear_job_inflight(job)
+            release_generation_lock(workflow_parent)
+            release_s1_workflow_lock(workflow_parent)
+            return True
     heartbeat_stop = threading.Event()
 
     def renew_lock_until_done() -> None:
         interval = max(1, settings.redis_job_lock_ttl_sec // 3)
         while not heartbeat_stop.wait(interval):
             renew_generation_lock(lock_job)
+            if str(lock_job.get("type") or "") == "s1_parse":
+                claim_s1_workflow_lock(lock_job)
 
     heartbeat = threading.Thread(
         target=renew_lock_until_done,
@@ -195,7 +225,7 @@ def _run_job(job: dict[str, Any]) -> None:
                 )
                 mark_job_status(job, "waiting_docling")
                 enqueue_result = enqueue_docling_batch(project_id, prepared_data, run_id)
-                if not enqueue_result.queued:
+                if not enqueue_result.accepted:
                     service.update_parse_progress(
                         project_id,
                         status="failed",
@@ -210,6 +240,7 @@ def _run_job(job: dict[str, Any]) -> None:
                     )
                     raise RuntimeError("Docling 专用队列暂不可用")
                 renew_generation_lock(lock_job, settings.redis_job_queue_lock_ttl_sec)
+                claim_s1_workflow_lock(lock_job, settings.redis_job_queue_lock_ttl_sec)
                 deferred = True
                 final_state = {"status": "waiting_docling", "summary": "等待 Docling Worker。"}
         elif job_type == "s1_parse_continue":
@@ -280,8 +311,12 @@ def _run_job(job: dict[str, Any]) -> None:
         if workflow_parent:
             if workflow_terminal:
                 release_generation_lock(workflow_parent)
+                release_s1_workflow_lock(workflow_parent)
         elif not deferred:
             release_generation_lock(job)
+            if job_type == "s1_parse":
+                release_s1_workflow_lock(job)
+    return True
 
 
 def main() -> None:
@@ -316,7 +351,9 @@ def main() -> None:
             continue
 
         try:
-            _run_job(job)
+            completed_or_deferred = _run_job(job)
+            if not completed_or_deferred:
+                time.sleep(1)
         except Exception:
             recovery_done = False
             continue

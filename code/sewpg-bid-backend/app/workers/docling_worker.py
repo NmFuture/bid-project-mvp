@@ -13,12 +13,14 @@ from app.services.docling_engine import prewarm_docling_converters
 from app.services.docling_jobs import DOCLING_BATCH_JOB_TYPE, enqueue_docling_failure, execute_docling_batch
 from app.services.job_queue import (
     DOCLING_QUEUE_KEY,
+    claim_s1_workflow_lock,
     clear_job_inflight,
     dequeue_generation_job,
     mark_job_inflight,
     mark_job_status,
     recover_inflight_jobs,
     recover_processing_jobs,
+    release_s1_workflow_lock,
     release_generation_lock,
     renew_generation_lock,
 )
@@ -58,7 +60,19 @@ def _run_job(job: dict[str, Any]) -> None:
     if not lock_renewed:
         message = "Docling 任务恢复时父任务锁已过期，请重新发起解析。"
         handoff = enqueue_docling_failure(job, message)
-        if not handoff.queued:
+        if not handoff.accepted:
+            raise RuntimeError(message)
+        mark_job_status(job, "failed", message)
+        clear_job_inflight(job)
+        release_s1_workflow_lock(parent)
+        return
+    workflow_lock = claim_s1_workflow_lock(parent)
+    if workflow_lock is None:
+        raise RuntimeError("Redis 暂不可用，无法确认 S1 全局工作流锁。")
+    if not workflow_lock:
+        message = "Docling 父任务已失去 S1 全局工作流锁。"
+        handoff = enqueue_docling_failure(job, message)
+        if not handoff.accepted:
             raise RuntimeError(message)
         mark_job_status(job, "failed", message)
         clear_job_inflight(job)
@@ -70,6 +84,7 @@ def _run_job(job: dict[str, Any]) -> None:
         interval = max(1, settings.redis_job_lock_ttl_sec // 3)
         while not heartbeat_stop.wait(interval):
             renew_generation_lock(parent)
+            claim_s1_workflow_lock(parent)
 
     heartbeat = threading.Thread(target=renew_parent_lock, daemon=True, name=f"docling-lock-{parent['id']}")
     heartbeat.start()
@@ -101,6 +116,7 @@ def _run_job(job: dict[str, Any]) -> None:
             clear_job_inflight(job)
             if release_parent:
                 release_generation_lock(parent)
+                release_s1_workflow_lock(parent)
 
 
 def _mark_ready() -> None:

@@ -18,6 +18,7 @@ DOCLING_QUEUE_KEY = os.getenv("REDIS_DOCLING_QUEUE_KEY", "bid:jobs:docling").str
 PROCESSING_QUEUE_SUFFIX = ":processing"
 JOB_KEY_PREFIX = "bid:job:"
 LOCK_KEY_PREFIX = "bid:lock:"
+S1_WORKFLOW_LOCK_KEY = f"{LOCK_KEY_PREFIX}s1_parse:workflow"
 INFLIGHT_KEY = "bid:jobs:inflight"
 CANCEL_KEY_PREFIX = "bid:job:cancel:"
 INTERNAL_JOB_TYPES = {
@@ -41,6 +42,12 @@ _RENEW_IF_OWNER_SCRIPT = (
 _DELETE_IF_OWNER_SCRIPT = (
     "if redis.call('get', KEYS[1]) == ARGV[1] then "
     "return redis.call('del', KEYS[1]) end return 0"
+)
+_ACQUIRE_OR_RENEW_IF_OWNER_SCRIPT = (
+    "local owner = redis.call('get', KEYS[1]) "
+    "if owner == ARGV[1] then redis.call('expire', KEYS[1], ARGV[2]); return 1 end "
+    "if not owner then redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2]); return 1 end "
+    "return 0"
 )
 _ENQUEUE_INTERNAL_JOB_SCRIPT = (
     "if redis.call('exists', KEYS[1]) == 1 then return 0 end "
@@ -67,6 +74,15 @@ _RECOVER_PROCESSING_JOB_SCRIPT = (
     "redis.call('expire', job_key, ARGV[3]) end "
     "return payload"
 )
+_REQUEUE_PROCESSING_JOB_SCRIPT = (
+    "local removed = redis.call('lrem', KEYS[2], 1, ARGV[1]) "
+    "if removed == 0 then return 0 end "
+    "redis.call('hdel', KEYS[3], ARGV[2]) "
+    "redis.call('hset', KEYS[4], 'status', 'queued', 'updatedAt', ARGV[4], 'message', ARGV[6]) "
+    "redis.call('expire', KEYS[4], ARGV[5]) "
+    "redis.call('rpush', KEYS[1], ARGV[3]) "
+    "return 1"
+)
 
 
 @dataclass(frozen=True)
@@ -75,6 +91,12 @@ class EnqueueResult:
     job_id: str = ""
     locked: bool = False
     unavailable: bool = False
+
+    @property
+    def accepted(self) -> bool:
+        """Whether the internal stage is queued now or already exists."""
+
+        return self.queued or (bool(self.job_id) and not self.locked and not self.unavailable)
 
 
 def _now_iso() -> str:
@@ -97,6 +119,48 @@ def generation_lock_key(job_type: str, project_id: str) -> str:
     if job_type not in KNOWN_JOB_TYPES:
         raise ValueError(f"Unknown job type: {job_type}")
     return f"{LOCK_KEY_PREFIX}{job_type}:{project_id}"
+
+
+def claim_s1_workflow_lock(parent_job: dict[str, Any], ttl_sec: int | None = None) -> bool | None:
+    """Acquire or renew the single-machine S1 workflow slot for its parent run."""
+
+    client = get_redis_client()
+    if client is None:
+        return None
+    job_id = str(parent_job.get("id") or "")
+    job_type = str(parent_job.get("type") or "")
+    project_id = str(parent_job.get("projectId") or "")
+    if job_type != "s1_parse" or not job_id or not project_id:
+        return False
+    resolved_ttl = max(1, int(ttl_sec if ttl_sec is not None else settings.redis_job_lock_ttl_sec))
+    try:
+        return bool(
+            client.eval(
+                _ACQUIRE_OR_RENEW_IF_OWNER_SCRIPT,
+                1,
+                S1_WORKFLOW_LOCK_KEY,
+                job_id,
+                resolved_ttl,
+            )
+        )
+    except RedisError as exc:
+        logger.warning("Failed to claim S1 workflow lock: %s", exc)
+        return None
+
+
+def release_s1_workflow_lock(parent_job: dict[str, Any]) -> None:
+    """Release the workflow slot only when the parent run still owns it."""
+
+    client = get_redis_client()
+    if client is None:
+        return
+    job_id = str(parent_job.get("id") or "")
+    if str(parent_job.get("type") or "") != "s1_parse" or not job_id:
+        return
+    try:
+        client.eval(_DELETE_IF_OWNER_SCRIPT, 1, S1_WORKFLOW_LOCK_KEY, job_id)
+    except RedisError as exc:
+        logger.warning("Failed to release S1 workflow lock: %s", exc)
 
 
 def is_generation_locked(job_type: str, project_id: str) -> bool:
@@ -218,7 +282,7 @@ def enqueue_internal_job(
     payload = json.dumps(job, ensure_ascii=False, separators=(",", ":"))
     try:
         # job hash 与队列写入在同一个 Lua 脚本内完成，重复 job_id 不会重复入队。
-        client.eval(
+        queued = bool(client.eval(
             _ENQUEUE_INTERNAL_JOB_SCRIPT,
             3,
             _job_key(resolved_job_id),
@@ -232,8 +296,8 @@ def enqueue_internal_job(
             settings.redis_job_result_ttl_sec,
             payload,
             str(parent_status or ""),
-        )
-        return EnqueueResult(queued=True, job_id=resolved_job_id)
+        ))
+        return EnqueueResult(queued=queued, job_id=resolved_job_id)
     except RedisError as exc:
         logger.warning("Failed to enqueue internal Redis job: %s", exc)
         return EnqueueResult(queued=False, unavailable=True)
@@ -276,6 +340,46 @@ def dequeue_generation_job(
     payload["__queueKey"] = queue_key
     payload["__processingPayload"] = str(raw_payload)
     return payload
+
+
+def requeue_processing_job(job: dict[str, Any], message: str = "") -> bool | None:
+    """Atomically move a claimed job to the queue tail without duplicating it."""
+
+    client = get_redis_client()
+    if client is None:
+        return None
+    job_id = str(job.get("id") or "")
+    queue_key = str(job.get("__queueKey") or "")
+    processing_payload = str(job.get("__processingPayload") or "")
+    if not job_id or not queue_key or not processing_payload:
+        return False
+
+    queued_job = {
+        key: value
+        for key, value in job.items()
+        if key not in {"__queueKey", "__processingPayload"}
+    }
+    payload = json.dumps(queued_job, ensure_ascii=False, separators=(",", ":"))
+    try:
+        return bool(
+            client.eval(
+                _REQUEUE_PROCESSING_JOB_SCRIPT,
+                4,
+                queue_key,
+                processing_queue_key(queue_key),
+                INFLIGHT_KEY,
+                _job_key(job_id),
+                processing_payload,
+                job_id,
+                payload,
+                _now_iso(),
+                settings.redis_job_result_ttl_sec,
+                str(message or ""),
+            )
+        )
+    except RedisError as exc:
+        logger.warning("Failed to requeue Redis job %s: %s", job_id, exc)
+        return None
 
 
 def mark_job_status(job: dict[str, Any], status: str, message: str = "") -> None:
@@ -641,8 +745,18 @@ def reclaim_stale_inflight_jobs(max_age_sec: int) -> int:
             "__processingPayload": str(entry.get("processingPayload") or ""),
         }
         mark_job_status(reclaim_job, "failed", "worker 执行中断，任务被判定为失败。")
-        if job_type in KNOWN_JOB_TYPES and project_id:
-            release_generation_lock(reclaim_job)
+        parent_job_id = str(entry.get("parentJobId") or "")
+        workflow_parent = (
+            {"id": parent_job_id, "type": "s1_parse", "projectId": project_id}
+            if job_type == "s1_parse_continue" and parent_job_id
+            else reclaim_job if job_type == "s1_parse" else None
+        )
+        lock_job = workflow_parent or reclaim_job
+        if str(lock_job.get("type") or "") in KNOWN_JOB_TYPES and project_id:
+            release_generation_lock(lock_job)
+        if workflow_parent:
+            mark_job_status(workflow_parent, "failed", "worker 执行中断，任务被判定为失败。")
+            release_s1_workflow_lock(workflow_parent)
         clear_job_inflight(reclaim_job)
         reclaimed += 1
     if reclaimed:

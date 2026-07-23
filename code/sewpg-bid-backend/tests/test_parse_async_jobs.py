@@ -4,7 +4,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -285,11 +285,77 @@ class ParseAsyncJobTests(unittest.TestCase):
         ) as enqueue_mock, patch(
             "app.workers.redis_worker.renew_generation_lock",
             return_value=True,
-        ):
+        ), patch(
+            "app.workers.redis_worker.claim_s1_workflow_lock",
+            return_value=True,
+        ), patch(
+            "app.workers.redis_worker.release_s1_workflow_lock",
+        ) as release_workflow_mock:
             redis_worker._run_job(
                 {"id": "job-dispatch-1", "type": "s1_parse", "projectId": project_id, "data": {"__bidType": "技术标"}}
             )
         enqueue_mock.assert_called_once()
+        release_workflow_mock.assert_not_called()
+
+    def test_worker_requeues_later_project_while_s1_workflow_is_busy(self) -> None:
+        job = {
+            "id": "job-waiting-2",
+            "type": "s1_parse",
+            "projectId": "project-2",
+            "data": {"__bidType": "技术标"},
+            "__queueKey": "bid:jobs",
+            "__processingPayload": "payload",
+        }
+        with patch(
+            "app.workers.redis_worker.renew_generation_lock",
+            return_value=True,
+        ), patch(
+            "app.workers.redis_worker.claim_s1_workflow_lock",
+            return_value=False,
+        ), patch(
+            "app.workers.redis_worker.requeue_processing_job",
+            return_value=True,
+        ) as requeue_mock, patch(
+            "app.services.docling_jobs.enqueue_docling_batch",
+        ) as enqueue_mock:
+            completed = redis_worker._run_job(job)
+
+        self.assertFalse(completed)
+        requeue_mock.assert_called_once_with(job, "等待当前 S1 解析工作流完成。")
+        enqueue_mock.assert_not_called()
+
+    def test_continuation_releases_parent_project_and_workflow_locks(self) -> None:
+        parent = {"id": "run-1", "type": "s1_parse", "projectId": "project-1"}
+        job = {
+            "id": "run-1:continue",
+            "type": "s1_parse_continue",
+            "projectId": "project-1",
+            "parentJobId": "run-1",
+            "data": {"__bidType": "技术标"},
+        }
+        service = MagicMock()
+        with patch(
+            "app.workers.redis_worker.renew_generation_lock",
+            return_value=True,
+        ), patch(
+            "app.workers.redis_worker.claim_s1_workflow_lock",
+            return_value=True,
+        ), patch(
+            "app.workers.redis_worker._s1_parse_service",
+            return_value=service,
+        ), patch(
+            "app.workers.redis_worker._terminal_parse_progress",
+            return_value={"status": "completed", "summary": "done"},
+        ), patch(
+            "app.workers.redis_worker.release_generation_lock",
+        ) as release_project_mock, patch(
+            "app.workers.redis_worker.release_s1_workflow_lock",
+        ) as release_workflow_mock:
+            completed = redis_worker._run_job(job)
+
+        self.assertTrue(completed)
+        release_project_mock.assert_called_once_with(parent)
+        release_workflow_mock.assert_called_once_with(parent)
 
 
 if __name__ == "__main__":

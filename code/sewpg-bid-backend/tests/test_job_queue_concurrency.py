@@ -5,6 +5,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from app.services import job_queue, local_job_executor
+from app.workers import docling_worker
 
 
 class _InternalJobRedis:
@@ -117,7 +118,9 @@ def test_internal_docling_job_is_idempotent_and_uses_dedicated_queue() -> None:
         )
 
     assert first.queued is True
-    assert duplicate.queued is True
+    assert duplicate.queued is False
+    assert first.accepted is True
+    assert duplicate.accepted is True
     assert first.job_id == duplicate.job_id == "run-1:docling"
     queued = client.queues[job_queue.DOCLING_QUEUE_KEY]
     assert len(queued) == 1
@@ -142,6 +145,62 @@ def test_internal_continuation_sets_parent_waiting_in_same_enqueue_script() -> N
     assert result.queued is True
     assert client.parent_statuses[job_queue._job_key("run-1")] == "waiting_continuation"
     assert len(client.queues[job_queue.QUEUE_KEY]) == 1
+
+
+def test_s1_workflow_lock_is_global_and_owner_checked() -> None:
+    client = MagicMock()
+    client.eval.return_value = 1
+    parent = {"id": "run-1", "type": "s1_parse", "projectId": "project-1"}
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        claimed = job_queue.claim_s1_workflow_lock(parent, ttl_sec=4321)
+        job_queue.release_s1_workflow_lock(parent)
+
+    assert claimed is True
+    assert client.eval.call_args_list[0].args == (
+        job_queue._ACQUIRE_OR_RENEW_IF_OWNER_SCRIPT,
+        1,
+        job_queue.S1_WORKFLOW_LOCK_KEY,
+        "run-1",
+        4321,
+    )
+    assert client.eval.call_args_list[1].args == (
+        job_queue._DELETE_IF_OWNER_SCRIPT,
+        1,
+        job_queue.S1_WORKFLOW_LOCK_KEY,
+        "run-1",
+    )
+
+
+def test_busy_s1_job_is_atomically_requeued_to_the_tail() -> None:
+    client = MagicMock()
+    client.eval.return_value = 1
+    raw_payload = json.dumps({"id": "run-2", "type": "s1_parse", "projectId": "project-2", "data": {}})
+    job = {
+        "id": "run-2",
+        "type": "s1_parse",
+        "projectId": "project-2",
+        "data": {},
+        "__queueKey": job_queue.QUEUE_KEY,
+        "__processingPayload": raw_payload,
+    }
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        requeued = job_queue.requeue_processing_job(job, "waiting")
+
+    assert requeued is True
+    call = client.eval.call_args
+    assert call.args[:6] == (
+        job_queue._REQUEUE_PROCESSING_JOB_SCRIPT,
+        4,
+        job_queue.QUEUE_KEY,
+        job_queue.processing_queue_key(job_queue.QUEUE_KEY),
+        job_queue.INFLIGHT_KEY,
+        job_queue._job_key("run-2"),
+    )
+    queued_payload = json.loads(call.args[8])
+    assert "__queueKey" not in queued_payload
+    assert "__processingPayload" not in queued_payload
 
 
 def test_dequeue_can_use_docling_queue() -> None:
@@ -217,6 +276,47 @@ def test_release_lock_deletes_only_when_owner_matches() -> None:
         "job-1",
     )
     client.delete.assert_not_called()
+
+
+def test_cancelled_docling_job_releases_parent_workflow_locks() -> None:
+    parent = {"id": "run-1", "type": "s1_parse", "projectId": "project-1"}
+    job = {
+        "id": "run-1:docling",
+        "type": "s1_docling_batch",
+        "projectId": "project-1",
+        "parentJobId": "run-1",
+        "data": {},
+    }
+
+    with patch.object(docling_worker, "mark_job_status"), patch.object(
+        docling_worker,
+        "mark_job_inflight",
+    ), patch.object(
+        docling_worker,
+        "renew_generation_lock",
+        return_value=True,
+    ), patch.object(
+        docling_worker,
+        "claim_s1_workflow_lock",
+        return_value=True,
+    ), patch.object(
+        docling_worker,
+        "execute_docling_batch",
+        return_value={"status": "cancelled", "runId": "run-1"},
+    ), patch.object(
+        docling_worker,
+        "clear_job_inflight",
+    ), patch.object(
+        docling_worker,
+        "release_generation_lock",
+    ) as release_project_mock, patch.object(
+        docling_worker,
+        "release_s1_workflow_lock",
+    ) as release_workflow_mock:
+        docling_worker._run_job(job)
+
+    release_project_mock.assert_called_once_with(parent)
+    release_workflow_mock.assert_called_once_with(parent)
 
 
 def test_local_job_executor_runs_jobs_serially() -> None:

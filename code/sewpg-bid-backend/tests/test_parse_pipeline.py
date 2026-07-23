@@ -2500,7 +2500,7 @@ class ParsePipelineTests(unittest.TestCase):
             "schemaVersion": "business-document-nav-v1",
             "sourceEngine": "docling",
             "documents": [{"id": "DOC-1", "sourcePath": "technical.pdf"}],
-            "pages": [{"pageNo": 1, "textDensity": 0.8}],
+            "pages": [{"pageNo": page_no, "textDensity": 0.8} for page_no in range(1, 556)],
             "blocks": [
                 {"id": "DOC-1:B000001", "type": "paragraph", "text": "招标文件技术规范", "pageNo": 1},
                 {"id": "DOC-1:B000002", "type": "heading", "text": "附表A.1 投标机型总方案信息表", "pageNo": 1, "bbox": [50, 80, 500, 110]},
@@ -2564,7 +2564,7 @@ class ParsePipelineTests(unittest.TestCase):
             new=fake_parse_pdf,
         ), patch(
             "app.services.parsing.extract_pdf_text",
-            return_value=("招标文件全文正文", {"pageCount": 555, "warnings": [], "requiresOcr": False}),
+            side_effect=AssertionError("技术标 DocumentNav 已包含全文，不应重复扫描 PDF"),
         ):
             response = self.client.post(
                 self.parse_results_url(project_id, "/upload-and-run"),
@@ -2573,7 +2573,7 @@ class ParsePipelineTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["sourceFiles"][0]["pageCount"], 555)
-        self.assertEqual(response.json()["sourceFiles"][0]["textLength"], len("招标文件全文正文"))
+        self.assertEqual(response.json()["sourceFiles"][0]["textLength"], len(parsing_service.nav_to_text(nav_payload)))
         appendices = response.json()["structured"]["appendices"]
         self.assertEqual(
             [item["title"] for item in appendices],

@@ -14,7 +14,7 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import desc, select
 
-from app.core.config import settings
+from app.core.config import normalize_opencode_model_selection, settings
 from app.models import async_session
 from app.models.materials import BackupRecord, SystemConfig, TemplateAsset
 from app.services.audit_service import audit_service
@@ -38,7 +38,6 @@ DEFAULT_LLM_MODEL_OPTIONS = [
     {"id": "deepseek-chat", "label": "deepseek-chat（DeepSeek 兼容名）"},
     {"id": "deepseek-reasoner", "label": "deepseek-reasoner（DeepSeek 推理）"},
     {"id": "mimo-v2.5", "label": "mimo-v2.5"},
-    {"id": "big-pickle", "label": "big-pickle"},
     {"id": "deepseek-ai/DeepSeek-V3", "label": "deepseek-ai/DeepSeek-V3"},
     {"id": "deepseek-ai/DeepSeek-R1", "label": "deepseek-ai/DeepSeek-R1"},
 ]
@@ -144,7 +143,7 @@ class SystemSettingsService:
 
         def add(value: Any, label: Any = "") -> None:
             model_id = str(value or "").strip()
-            if not model_id or model_id in seen:
+            if not model_id or model_id in {"big-pickle", "opencode/big-pickle"} or model_id in seen:
                 return
             seen.add(model_id)
             options.append({"id": model_id, "label": str(label or model_id)})
@@ -163,8 +162,15 @@ class SystemSettingsService:
     def _normalize_model_config(self, kind: str, raw: dict[str, Any]) -> dict[str, Any]:
         config = copy.deepcopy(raw or {})
         if kind == "llm":
-            model_id = str(config.get("modelId") or config.get("model") or settings.opencode_model_id or "big-pickle").strip()
-            config["providerId"] = str(config.get("providerId") or settings.default_llm_provider_id or settings.opencode_provider_id or "opencode").strip()
+            provider_id, model_id = normalize_opencode_model_selection(
+                config.get("providerId")
+                or settings.default_llm_provider_id
+                or settings.opencode_provider_id,
+                config.get("modelId")
+                or config.get("model")
+                or settings.opencode_model_id,
+            )
+            config["providerId"] = provider_id
             config["opencodeBaseUrl"] = str(config.get("opencodeBaseUrl") or settings.opencode_base_url or "").strip()
             config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or settings.default_llm_base_url or "").strip()
             config["model"] = model_id
@@ -183,8 +189,10 @@ class SystemSettingsService:
 
     @staticmethod
     def _opencode_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
-        provider_id = str(config.get("providerId") or settings.opencode_provider_id or "opencode").strip()
-        model_id = str(config.get("modelId") or config.get("model") or settings.opencode_model_id or "big-pickle").strip()
+        provider_id, model_id = normalize_opencode_model_selection(
+            config.get("providerId") or settings.opencode_provider_id,
+            config.get("modelId") or config.get("model") or settings.opencode_model_id,
+        )
         base_url = str(config.get("baseUrl") or "").strip().rstrip("/")
         api_key = str(config.get("apiKey") or "").strip()
         headers = config.get("headers") if isinstance(config.get("headers"), dict) else {}

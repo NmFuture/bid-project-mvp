@@ -223,6 +223,104 @@ class TechnicalAgenticParserTests(unittest.TestCase):
             self.assertEqual(document_map["documents"][0]["blockCount"], 0)
             self.assertEqual(document_map["documents"][0]["tableCount"], 0)
 
+    def test_prepare_prefers_document_nav_with_page_evidence_and_tables(self) -> None:
+        scripts_dir = self.runner_path().parent
+        sys.path.insert(0, str(scripts_dir))
+        try:
+            from agentic import docx_indexer
+        finally:
+            try:
+                sys.path.remove(str(scripts_dir))
+            except ValueError:
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "technical.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+            text_path = root / "DOC-1.txt"
+            text_path.write_text("不应进入索引的旧文本", encoding="utf-8")
+            nav_path = root / "DOC-1_document_nav.json"
+            nav_path.write_text(
+                json.dumps(
+                    {
+                        "documents": [{"id": "DOC-1", "sourcePath": str(pdf_path)}],
+                        "blocks": [
+                            {
+                                "id": "RAW-B1",
+                                "evidenceId": "DOC-1:P0001:TXT0001",
+                                "pageNo": 1,
+                                "type": "paragraph",
+                                "text": "第一章 招标范围",
+                            },
+                            {
+                                "id": "RAW-B2",
+                                "evidenceId": "DOC-1:P0178:B000001",
+                                "pageNo": 178,
+                                "type": "table",
+                                "tableId": "DOCLING-T0001",
+                                "text": "附表A.1 技术参数表",
+                            },
+                        ],
+                        "tables": [
+                            {
+                                "id": "DOCLING-T0001",
+                                "evidenceId": "DOC-1:P0178:T000001",
+                                "pageNo": 178,
+                                "title": "附表A.1 技术参数表",
+                                "rows": [["参数", "要求"], ["额定功率", "10MW"]],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = root / "s1_parse_manifest.json"
+            manifest = {
+                "projectId": "PRJ-TECH-NAV",
+                "bidType": "技术标",
+                "parseProfile": "technical",
+                "structuredResultPath": str(root / "s1_structured_result.json"),
+                "documents": [
+                    {
+                        "id": "DOC-1",
+                        "name": pdf_path.name,
+                        "sourcePath": str(pdf_path),
+                        "textPath": str(text_path),
+                        "documentNavPath": str(nav_path),
+                        "documentParseEngine": "docling",
+                    }
+                ],
+            }
+
+            with patch.object(
+                docx_indexer,
+                "_extract_pdf_text",
+                side_effect=AssertionError("有 DocumentNav 时不应重新扫描 PDF"),
+            ):
+                summary = docx_indexer.build_index(manifest_path, manifest)
+
+            self.assertEqual(summary["blockCount"], 2)
+            self.assertEqual(summary["tableCount"], 1)
+            conn = sqlite3.connect(summary["navStorePath"])
+            try:
+                block = conn.execute(
+                    "SELECT id, evidence_id, page_no, text FROM blocks WHERE id = ?",
+                    ("DOC-1:P0001:TXT0001",),
+                ).fetchone()
+                table = conn.execute(
+                    "SELECT evidence_id, page_no, row_count FROM tables WHERE id = ?",
+                    ("DOCLING-T0001",),
+                ).fetchone()
+                indexed_text = "\n".join(row[0] for row in conn.execute("SELECT text FROM evidence"))
+            finally:
+                conn.close()
+            self.assertEqual(block, ("DOC-1:P0001:TXT0001", "DOC-1:P0001:TXT0001", 1, "第一章 招标范围"))
+            self.assertEqual(table, ("DOC-1:P0178:T000001", 178, 2))
+            self.assertIn("额定功率 | 10MW", indexed_text)
+            self.assertNotIn("不应进入索引的旧文本", indexed_text)
+
     def test_submit_validate_finalize_writes_technical_interpretation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

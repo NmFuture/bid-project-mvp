@@ -63,7 +63,7 @@ def _enqueue_continue(project_id: str, data: dict[str, Any], run_id: str) -> Enq
         # Lua 脚本会在入队前原子写父状态；重复投递则不覆盖已有终态。
         parent_status="waiting_continuation",
     )
-    if not result.queued:
+    if not result.accepted:
         mark_job_status(parent, "waiting_docling", "continuation 暂时无法投递，等待 Docling Worker 重试。")
     return result
 
@@ -153,6 +153,7 @@ def _parse_one_pdf(
     record: dict[str, Any],
     run_id: str,
     fallback: str,
+    merge_technical_text_layer: bool,
 ) -> None:
     pdf_path = _shared_pdf_path(record.get("path"))
     document_id = _document_id(record)
@@ -176,6 +177,7 @@ def _parse_one_pdf(
                 "sourcePath": str(pdf_path),
                 "sourceSha256": source_sha256,
                 "runId": run_id,
+                "mergeTechnicalTextLayer": merge_technical_text_layer,
             },
             output_dir=project_dir,
         )
@@ -198,6 +200,7 @@ def execute_docling_batch(job: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Docling 批任务缺少 projectId 或 runId")
     bid_type = require_bid_type(data.get("__bidType"))
     fallback = "none" if bid_type == TECHNICAL_BID_TYPE else settings.business_pdf_engine_fallback
+    merge_technical_text_layer = bid_type == TECHNICAL_BID_TYPE
     project_dir = (settings.parsed_dir / project_id).resolve()
     project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,6 +215,7 @@ def execute_docling_batch(job: dict[str, Any]) -> dict[str, Any]:
                 record=record,
                 run_id=run_id,
                 fallback=fallback,
+                merge_technical_text_layer=merge_technical_text_layer,
             )
         if is_job_cancel_requested(run_id):
             return {"status": "cancelled", "runId": run_id}
@@ -219,7 +223,7 @@ def execute_docling_batch(job: dict[str, Any]) -> dict[str, Any]:
         data["__doclingError"] = str(exc)
 
     result = _enqueue_continue(project_id, data, run_id)
-    if not result.queued:
+    if not result.accepted:
         raise RuntimeError("Docling 完成后无法投递 S1 continuation")
     return {
         "status": "failed" if data.get("__doclingError") else "succeeded",

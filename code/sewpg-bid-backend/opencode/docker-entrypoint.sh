@@ -21,6 +21,19 @@ source_path = Path(sys.argv[1])
 target_path = Path(sys.argv[2])
 
 config = json.loads(source_path.read_text(encoding="utf-8"))
+if config.get("model") == "opencode/big-pickle":
+    config["model"] = "deepseek/deepseek-v4-flash"
+    providers = config.get("provider")
+    if isinstance(providers, dict):
+        legacy_provider = providers.pop("opencode", None)
+        if isinstance(legacy_provider, dict):
+            legacy_provider["name"] = "deepseek"
+            legacy_provider["models"] = {
+                "deepseek-v4-flash": {
+                    "name": "deepseek-v4-flash",
+                }
+            }
+            providers["deepseek"] = legacy_provider
 permission = config.get("permission")
 if not isinstance(permission, dict):
     permission = {}
@@ -48,8 +61,15 @@ import json
 import os
 from pathlib import Path
 
-provider_id = os.getenv("OPENCODE_PROVIDER_ID", "internal-openai")
-model_id = os.getenv("OPENCODE_MODEL_ID", "internal-model")
+provider_id = os.getenv("OPENCODE_PROVIDER_ID", "deepseek").strip() or "deepseek"
+model_id = os.getenv("OPENCODE_MODEL_ID", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
+if (provider_id, model_id) == ("opencode", "big-pickle") or model_id == "opencode/big-pickle":
+    provider_id, model_id = "deepseek", "deepseek-v4-flash"
+if model_id == "deepseek/deepseek-v4-flash":
+    provider_id, model_id = "deepseek", "deepseek-v4-flash"
+qualified_prefix = f"{provider_id}/"
+if model_id.startswith(qualified_prefix):
+    model_id = model_id[len(qualified_prefix):]
 
 config = {
     "$schema": "https://opencode.ai/config.json",

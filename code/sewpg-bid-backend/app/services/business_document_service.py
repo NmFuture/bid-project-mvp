@@ -7,7 +7,11 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
-from app.core.config import settings
+from app.core.config import (
+    DEFAULT_OPENCODE_MODEL_ID,
+    DEFAULT_OPENCODE_PROVIDER_ID,
+    settings,
+)
 from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
 from app.services.bid_document_state import apply_business_document_format_to_project, force_save_document_state
 from app.services.bid_document_flow import BidDocumentService, _build_document_payload
@@ -53,8 +57,8 @@ def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
     except Exception as first_exc:
         first_error = str(first_exc)
         configured_client = OpencodeClient()
-        fallback_provider = settings.opencode_provider_id or "opencode"
-        fallback_model = settings.opencode_model_id or "big-pickle"
+        fallback_provider = settings.opencode_provider_id or DEFAULT_OPENCODE_PROVIDER_ID
+        fallback_model = settings.opencode_model_id or DEFAULT_OPENCODE_MODEL_ID
         is_default_model = (
             configured_client.provider_id == fallback_provider
             and configured_client.model_id == fallback_model

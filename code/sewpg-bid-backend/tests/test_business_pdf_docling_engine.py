@@ -425,6 +425,80 @@ def test_run_docling_conversion_uses_detected_appendix_page_range(tmp_path, monk
     assert captured["pipeline_options"].do_ocr is False
 
 
+def test_prewarm_docling_converters_only_initializes_page_window_pipeline(monkeypatch) -> None:
+    from app.services import docling_engine
+
+    class FakeInputFormat:
+        PDF = "pdf"
+
+    initialized: list[str] = []
+    requested_modes: list[bool] = []
+
+    class FakeConverter:
+        def initialize_pipeline(self, input_format: str) -> None:
+            initialized.append(input_format)
+
+    base_models = types.ModuleType("docling.datamodel.base_models")
+    base_models.InputFormat = FakeInputFormat
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
+    monkeypatch.setattr(
+        docling_engine,
+        "_get_docling_converter",
+        lambda *, page_window_enabled: requested_modes.append(page_window_enabled) or FakeConverter(),
+    )
+
+    docling_engine.prewarm_docling_converters()
+
+    assert requested_modes == [True]
+    assert initialized == ["pdf"]
+
+
+def test_merge_technical_document_nav_keeps_full_pages_and_docling_table() -> None:
+    from app.services.docling_engine import merge_technical_document_nav
+    from app.services.document_nav import build_document_nav
+
+    text_nav = build_document_nav(
+        document_id="DOC-1",
+        source_path="technical.pdf",
+        source_engine="pymupdf-text-layer",
+        pages=[{"pageNo": page_no, "textDensity": 1} for page_no in range(1, 4)],
+        blocks=[
+            {"pageNo": 1, "text": "第一页正文", "evidenceId": "DOC-1:P0001:TXT0001"},
+            {"pageNo": 2, "text": "第二页旧文本", "evidenceId": "DOC-1:P0002:TXT0001"},
+            {"pageNo": 3, "text": "第三页正文", "evidenceId": "DOC-1:P0003:TXT0001"},
+        ],
+        tables=[],
+    )
+    docling_nav = build_document_nav(
+        document_id="DOC-1",
+        source_path="technical.pdf",
+        source_engine="docling",
+        pages=[{"pageNo": 2, "textDensity": 0}],
+        blocks=[
+            {"pageNo": 2, "text": "第二页 Docling 正文", "evidenceId": "DOC-1:P0002:B000001"},
+            {"pageNo": 2, "type": "table", "tableId": "T1", "text": "技术参数表"},
+        ],
+        tables=[{"id": "T1", "pageNo": 2, "title": "技术参数表", "rows": [["参数", "要求"]]}],
+    )
+
+    merged = merge_technical_document_nav(
+        text_layer_nav=text_nav,
+        docling_nav=docling_nav,
+        page_range=[2, 2],
+    )
+
+    merged_text = "\n".join(str(block.get("text") or "") for block in merged["blocks"])
+    assert [page["pageNo"] for page in merged["pages"]] == [1, 2, 3]
+    assert merged["pages"][1]["textDensity"] == 1
+    assert merged["quality"]["sourcePageCount"] == 3
+    assert merged["quality"]["convertedPageCount"] == 1
+    assert "第一页正文" in merged_text
+    assert "第二页 Docling 正文" in merged_text
+    assert "第二页旧文本" not in merged_text
+    assert "第三页正文" in merged_text
+    assert merged["tables"][0]["rows"] == [["参数", "要求"]]
+
+
 def test_run_docling_local_text_layer_conversion_keeps_pymupdf_table_structure(tmp_path) -> None:
     import fitz
 
