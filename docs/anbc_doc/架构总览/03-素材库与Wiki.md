@@ -46,7 +46,7 @@ flowchart LR
 
 - 路由 `app/api/routes/performance.py`，页面 `/workspace/shared/materials/performance`。
 - 服务：`performance_library_service`（业绩条目库）、`performance_package_service`（业绩打包）、`performance_material_resolver`（业绩→素材解析，供缺口填写引用）。
-- 设计文档：`doc/20260603-业绩库项目级拆分与合同附件设计说明.md`、`docs/anbc_doc/20260606-业绩库下游使用Handoff.md`。
+- 历史设计：[`20260603-业绩库项目级拆分与合同附件设计说明.md`](../../archive/20260526-old-docs/20260603-业绩库项目级拆分与合同附件设计说明.md)、[`20260606-业绩库下游使用Handoff.md`](../../archive/20260715-old-docs/20260606-业绩库下游使用Handoff.md)。当前事实以本页列出的路由和服务源码为准。
 
 ## 5. 下游消费关系（谁在读素材库）
 

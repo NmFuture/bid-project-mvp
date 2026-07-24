@@ -12,9 +12,7 @@
 当前正式口径以这些文件为准：
 
 - `./当前API接口核心版.md`
-- `../../doc/代码结构梳理.md`
-- `../../doc/需求梳理.md`
-- `../../doc/研发计划.md`
+- `../../AGENTS.md`
 - `../sewpg-bid-backend/app/api/routes/technical.py`
 - `../sewpg-bid-backend/app/api/routes/business.py`
 - `../sewpg-bid-backend/app/api/routes/business_gaps.py`

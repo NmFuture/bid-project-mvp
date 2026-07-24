@@ -67,11 +67,16 @@ for variable_name in \
   INTERNAL_LLM_BASE_URL \
   INTERNAL_LLM_API_KEY \
   DEFAULT_LLM_MODEL \
+  OPENCODE_MODEL_ID \
+  DATABASE_URL \
   POSTGRES_PASSWORD \
   MINIO_ROOT_PASSWORD \
   AUTH_ADMIN_PASSWORD; do
   require_nonempty "${variable_name}"
 done
+require_changed OPENCODE_MODEL_ID replace-with-your-internal-model
+require_changed DEFAULT_LLM_MODEL replace-with-your-internal-model
+require_changed DATABASE_URL postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform
 require_changed POSTGRES_PASSWORD bidpass
 require_changed MINIO_ROOT_PASSWORD minioadmin
 require_changed AUTH_ADMIN_PASSWORD 123456
