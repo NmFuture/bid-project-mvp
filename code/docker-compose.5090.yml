@@ -1,0 +1,25 @@
+services:
+  docling-worker:
+    image: ${DOCLING_IMAGE:-sewpg-bid/docling-worker:5090-latest}
+    build:
+      dockerfile: Dockerfile.docling-worker.cuda
+      args:
+        PYTORCH_CUDA_INDEX_URL: ${PYTORCH_CUDA_INDEX_URL:-https://download.pytorch.org/whl/cu130}
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    environment:
+      DOCLING_DEVICE: cuda
+      NVIDIA_VISIBLE_DEVICES: "0"
+      CUDA_VISIBLE_DEVICES: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+  ocr:
+    environment:
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      NVIDIA_VISIBLE_DEVICES: "0"
+      CUDA_VISIBLE_DEVICES: "0"

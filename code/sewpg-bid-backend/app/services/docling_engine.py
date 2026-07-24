@@ -19,7 +19,7 @@ AUTO_DOCLING_MODE = "auto-layout-table-ocr"
 AUTO_DOCLING_PAGE_RANGE_MODE = "auto-layout-table-page-range"
 LOCAL_TEXT_LAYER_MODE = "local-text-layer"
 DOCLING_LOCKED_VERSION = "2.108.0"
-DOCLING_PIPELINE_OPTIONS_VERSION = "sewpg-docling-cpu-v1"
+DOCLING_PIPELINE_OPTIONS_VERSION = "sewpg-docling-v2"
 _DOCLING_PAGE_WINDOW_MIN_SOURCE_PAGES = 120
 _DOCLING_PAGE_WINDOW_SKIP_FIRST_PAGES = 20
 _DOCLING_PAGE_WINDOW_MAX_PAGES = 120
@@ -70,7 +70,7 @@ def docling_pipeline_fingerprint(mode: str) -> str:
         "doclingVersion": _docling_version(),
         "pipelineOptionsVersion": DOCLING_PIPELINE_OPTIONS_VERSION,
         "mode": str(mode or AUTO_DOCLING_MODE),
-        "device": "cpu",
+        "device": str(getattr(settings, "docling_device", "cpu") or "cpu"),
         "ocrBackend": "rapidocr-onnxruntime",
         "ocrLanguages": ["chinese", "english"],
         "tableMode": "accurate",
@@ -272,17 +272,18 @@ def _docling_document_to_markdown(document: Any) -> str:
 
 def _configure_docling_auto_pipeline_options(pipeline_options: Any) -> Any:
     accelerator_options = getattr(pipeline_options, "accelerator_options", None)
+    docling_device = str(getattr(settings, "docling_device", "cpu") or "cpu")
     try:
-        from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+        from docling.datamodel.accelerator_options import AcceleratorOptions
 
         if accelerator_options is None and hasattr(pipeline_options, "accelerator_options"):
-            pipeline_options.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.CPU)
+            pipeline_options.accelerator_options = AcceleratorOptions(device=docling_device)
         elif accelerator_options is not None and hasattr(accelerator_options, "device"):
-            accelerator_options.device = AcceleratorDevice.CPU
+            accelerator_options.device = docling_device
     except (ImportError, AttributeError, TypeError):
         # 测试替身或兼容版本没有 AcceleratorOptions 时，仍显式覆盖已有设备字段。
         if accelerator_options is not None and hasattr(accelerator_options, "device"):
-            accelerator_options.device = "cpu"
+            accelerator_options.device = docling_device
 
     artifacts_path = getattr(settings, "docling_artifacts_path", None)
     artifacts_path_in_use = _docling_artifacts_path_is_usable(artifacts_path) and hasattr(pipeline_options, "artifacts_path")

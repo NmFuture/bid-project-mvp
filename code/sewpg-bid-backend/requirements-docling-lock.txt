@@ -1,4 +1,4 @@
-# 锁定 Docling CPU worker 的重型依赖，避免解析结果和镜像体积随上游版本漂移。
+# 锁定 Docling worker 的公共重型依赖；Torch 的 CPU/CUDA 变体分别锁定。
 accelerate==1.14.0
 docling==2.108.0
 docling-core==2.85.0
@@ -15,6 +15,4 @@ safetensors==0.8.0
 scipy==1.18.0
 shapely==2.1.2
 tokenizers==0.22.2
-torch==2.12.1+cpu
-torchvision==0.27.1+cpu
 transformers==5.12.1

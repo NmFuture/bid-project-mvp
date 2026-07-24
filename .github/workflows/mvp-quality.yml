@@ -7,7 +7,10 @@ on:
       - "doc/**"
       - "code/sewpg-bid-frontend/**"
       - "code/sewpg-bid-backend/**"
-      - "code/docker-compose.yml"
+      - "code/docker-compose*.yml"
+      - "code/.env*.example"
+      - "code/OCR_DEPLOY.md"
+      - "code/scripts/**"
       - ".github/workflows/mvp-quality.yml"
   pull_request:
     paths:
@@ -15,7 +18,10 @@ on:
       - "doc/**"
       - "code/sewpg-bid-frontend/**"
       - "code/sewpg-bid-backend/**"
-      - "code/docker-compose.yml"
+      - "code/docker-compose*.yml"
+      - "code/.env*.example"
+      - "code/OCR_DEPLOY.md"
+      - "code/scripts/**"
       - ".github/workflows/mvp-quality.yml"
 
 jobs:
@@ -99,6 +105,15 @@ jobs:
         env:
           APP_STORE_BACKEND: memory
           DATABASE_URL: postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform
+
+      - name: Validate 5090 Compose overlay
+        working-directory: code
+        run: >-
+          docker compose --env-file .env.example
+          -f docker-compose.yml
+          -f docker-compose.ocr.yml
+          -f docker-compose.5090.yml
+          config --quiet
 
       - name: Run backend tests
         run: python -m pytest -m "not integration"

@@ -103,7 +103,16 @@ command:
   - --no-enable-prefix-caching
   - --mm-processor-cache-gb
   - "0"
-gpus: all
+environment:
+  NVIDIA_VISIBLE_DEVICES: "0"
+  CUDA_VISIBLE_DEVICES: "0"
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ["0"]
+          capabilities: [gpu]
 ```
 
 这样可以把 GPU runtime、模型服务、业务服务的升级风险隔离开。
@@ -171,11 +180,12 @@ macOS 也可以在 Finder 中双击 `start-ocr.command`。
 OCR_IMAGE=vllm/vllm-openai:unlimited-ocr
 OCR_HOST_PORT=8000
 OCR_MODEL=baidu/Unlimited-OCR
+OCR_GPU_DEVICE_ID=0
 OCR_HF_CACHE_DIR=./.localdata/ocr/huggingface
 OCR_SHM_SIZE=8g
 OCR_HEALTHCHECK_START_PERIOD=20m
 HUGGING_FACE_HUB_TOKEN=
-HF_ENDPOINT=
+HF_ENDPOINT=https://huggingface.co
 VLLM_USE_MODELSCOPE=false
 ```
 
@@ -205,6 +215,14 @@ DEFAULT_OCR_MODEL=baidu/Unlimited-OCR
 ```bash
 INCLUDE_OCR=true ./scripts/build-airgap-bundle.sh
 ```
+
+RTX 5090 目标使用专用覆盖层和构建入口：
+
+```bash
+./scripts/build-5090-bundle.sh ./offline-dist/5090 <release-tag>
+```
+
+5090 的 Docling 也使用 GPU 0，具体版本、分支职责和现场启动流程见 [`DEPLOY_5090.md`](DEPLOY_5090.md)。
 
 Windows：
 
