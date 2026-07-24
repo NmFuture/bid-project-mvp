@@ -24,7 +24,7 @@ from app.services.material_certificate_time import (
     update_certificate_time_scopes,
     update_certificate_time_record,
 )
-from app.services.material_tag_import import build_preview, parse_tag_excel
+from app.services.material_tag_import import build_preview, parse_tag_excel, same_name_file_ids
 from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import rewrite_material_urls
@@ -277,6 +277,14 @@ class TechnicalMaterialStore:
         )
         return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
+    async def raw_rename_folder(self, *, path: str, new_name: str) -> dict[str, Any]:
+        payload = await material_store.raw_rename_folder(
+            self.ensure_path(path, "目标目录"),
+            new_name,
+            bid_type=TECHNICAL_BID_TYPE,
+        )
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
+
     async def raw_cleanup_project_folder(self, path: str, *, expected_project_id: str = "") -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
         parts = [part for part in normalized.split("/") if part]
@@ -426,29 +434,51 @@ class TechnicalMaterialStore:
         preview["fuzzyAvailable"] = True
         return preview
 
-    async def raw_tag_import_commit(self, *, items: list[dict[str, Any]]) -> dict[str, Any]:
+    async def raw_tag_import_commit(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        target_path: str = "",
+        import_mode: str = "merge",
+    ) -> dict[str, Any]:
+        merge_tags = str(import_mode or "").strip().lower() != "overwrite"
         succeeded: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
+        # applyToAllMatches 行需要按目标子树解析同名文件；惰性加载，避免普通导入多扫一次库
+        subtree_files: list[dict[str, Any]] | None = None
         for item in items or []:
             file_id = str(item.get("fileId") or "")
             tags = item.get("tags")
-            if not file_id:
+            if item.get("applyToAllMatches"):
+                # 跨机型批量应用：该行标签写入目标子树内所有同名文件（含原选定文件）
+                file_name = str(item.get("fileName") or "")
+                if subtree_files is None:
+                    normalized_target = self.ensure_root_path(target_path, "目标目录")
+                    subtree_files = await self._raw_subtree_files(normalized_target)
+                target_ids = same_name_file_ids(subtree_files, file_name)
+                if not target_ids:
+                    failed.append({"fileId": file_id, "fileName": file_name, "message": "目标目录内未找到同名文件。"})
+                    continue
+            elif file_id:
+                target_ids = [file_id]
+            else:
                 failed.append({"fileId": file_id, "message": "缺少文件 ID。"})
                 continue
-            try:
-                # 锁内 read-merge-write，避免用 preview 快照覆盖丢失期间新增的标签（H4）
-                updated = await self.set_index_tags(file_id, tags, merge=True)
-                succeeded.append(
-                    {
-                        "fileId": file_id,
-                        "name": str(updated.get("name") or ""),
-                        "tags": updated.get("tags") or [],
-                    }
-                )
-            except PeripheralError as exc:
-                failed.append({"fileId": file_id, "message": exc.detail})
-            except Exception as exc:  # pragma: no cover - 兜底
-                failed.append({"fileId": file_id, "message": str(exc)})
+            for target_id in target_ids:
+                try:
+                    # overwrite 模式走 merge=False，用 preview 给出的 mergedTags 替换当前真值
+                    updated = await self.set_index_tags(target_id, tags, merge=merge_tags)
+                    succeeded.append(
+                        {
+                            "fileId": target_id,
+                            "name": str(updated.get("name") or ""),
+                            "tags": updated.get("tags") or [],
+                        }
+                    )
+                except PeripheralError as exc:
+                    failed.append({"fileId": target_id, "message": exc.detail})
+                except Exception as exc:  # pragma: no cover - 兜底
+                    failed.append({"fileId": target_id, "message": str(exc)})
         message = f"标签导入完成：成功 {len(succeeded)} 个" + (
             f"，失败 {len(failed)} 个" if failed else ""
         )

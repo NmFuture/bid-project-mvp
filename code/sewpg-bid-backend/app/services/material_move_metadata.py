@@ -15,6 +15,7 @@ from app.services.material_taxonomy import (
 RAW_MOVE_FILE_ACTION = "move"
 RAW_MOVE_FILE_VERSION_ACTION = "version"
 RAW_MOVE_FOLDER_ACTION = "move-folder"
+RAW_RENAME_FOLDER_ACTION = "rename-folder"
 RAW_MATERIAL_OPERATOR_LABEL = "当前用户"
 
 
@@ -69,6 +70,7 @@ def build_raw_move_folder_file_ext_fields(
     folder_path: str = "",
     destination_project_id: str = "",
     destination_customer_name: str = "",
+    last_action: str = RAW_MOVE_FOLDER_ACTION,
 ) -> dict[str, Any]:
     ext = build_raw_move_file_ext_fields(
         ext_fields,
@@ -80,5 +82,5 @@ def build_raw_move_folder_file_ext_fields(
         destination_project_id=destination_project_id,
         destination_customer_name=destination_customer_name,
     )
-    ext.update({"lastAction": RAW_MOVE_FOLDER_ACTION, "lastOperator": RAW_MATERIAL_OPERATOR_LABEL})
+    ext.update({"lastAction": last_action, "lastOperator": RAW_MATERIAL_OPERATOR_LABEL})
     return ext

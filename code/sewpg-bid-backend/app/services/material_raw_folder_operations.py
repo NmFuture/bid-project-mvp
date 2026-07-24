@@ -80,8 +80,6 @@ class RawFolderOperations:
             )
             roots.append(root)
             bid_type = str(spec["name"])
-            if bid_type != BUSINESS_BID_TYPE:
-                continue
             for child in raw_material_tier_folder_specs(bid_type):
                 child_path = f"{bid_type}/{child['name']}"
                 if _can_skip_default_folder(child_path, deleted_default_paths):
@@ -96,6 +94,8 @@ class RawFolderOperations:
                     int(child["sort_order"]),
                     customer_name=str(child.get("customer_name") or "") or None,
                 )
+            if bid_type != BUSINESS_BID_TYPE:
+                continue
             standard_root = await self.find_folder(session, f"{bid_type}/通用素材")
             if standard_root is not None:
                 await ensure_business_standard_subfolders(

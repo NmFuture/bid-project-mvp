@@ -57,13 +57,9 @@ const TECHNICAL_PROJECT_PROTECTED_FOLDER_NAMES = new Set([
 
 const MATERIAL_ROOT_LABELS = {
   技术标: '技术标',
-  通用素材: '通用素材',
   标准文件: '标准文件',
-  客户素材: '客户素材',
   客户定制: '客户定制',
-  项目素材: '项目素材',
   项目定制: '项目定制',
-  标准模板: '通用素材',
 }
 
 const bidTypeTabMeta = (value) =>
@@ -263,6 +259,9 @@ const isProtectedDeleteFolderPath = (path) => {
   if (parts[1] === '项目定制' || parts[1] === '项目素材') return TECHNICAL_PROJECT_PROTECTED_FOLDER_NAMES.has(parts[3])
   return false
 }
+
+// 重命名保护口径与后端一致：仅根目录和三个默认档位目录（标准文件/客户定制/项目定制）禁止改名
+const isProtectedRenameFolderPath = (path) => PROTECTED_DELETE_FOLDER_PATHS.has(normalizePath(path))
 
 const parentPath = (path) => {
   const normalized = String(path || '').replace(/^\/+|\/+$/g, '')
@@ -550,6 +549,7 @@ function TreeNode({
   onEditTags,
   onSplitFile,
   onDeleteFolder,
+  onRenameFolder,
   onMoveDrop,
   dragTargetPath,
   setDragTargetPath,
@@ -576,6 +576,7 @@ function TreeNode({
   const normalizedNodePath = normalizePath(node.path)
   const canDragFolder = !isProtectedDeleteFolderPath(normalizedNodePath)
   const canDeleteThisFolder = Boolean(normalizedNodePath) && !isProtectedDeleteFolderPath(normalizedNodePath)
+  const canRenameThisFolder = Boolean(normalizedNodePath) && !isProtectedRenameFolderPath(normalizedNodePath)
   const isDropTarget = dragTargetPath === normalizedNodePath
   const hasBranchContent = directFiles.length > 0 || hasChildren
   const dragExpandTimerRef = useRef(null)
@@ -725,7 +726,7 @@ function TreeNode({
         </span>
         <span className="relative flex w-[4.25rem] shrink-0 items-center justify-end">
           <span
-            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder || (bulkMode && directFiles.length > 0) ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
+            className={`text-xs text-outline transition-opacity duration-150 ${canDeleteThisFolder || canRenameThisFolder || (bulkMode && directFiles.length > 0) ? 'group-hover:opacity-0 group-focus-within:opacity-0' : ''}`}
             title={displayFileCount ? `当前显示 ${displayFileCount} 个，目录总计 ${node.fileCount || 0} 个` : '空目录'}
           >
             {displayFileCount ? `${displayFileCount}/${node.fileCount || displayFileCount}` : '-'}
@@ -742,6 +743,20 @@ function TreeNode({
               className="absolute right-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-primary/10 hover:text-primary group-hover:opacity-100 focus:opacity-100"
             >
               <span aria-hidden="true" className="material-symbols-outlined text-[16px]">select_all</span>
+            </button>
+          )}
+          {!bulkMode && canRenameThisFolder && (
+            <button
+              type="button"
+              title="重命名文件夹"
+              aria-label={`重命名文件夹 ${node.name}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRenameFolder?.(normalizedNodePath)
+              }}
+              className={`absolute ${canDeleteThisFolder ? 'right-6' : 'right-0'} top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-outline opacity-0 transition-opacity hover:bg-surface-container-high hover:text-primary group-hover:opacity-100 focus:opacity-100`}
+            >
+              <span aria-hidden="true" className="material-symbols-outlined text-[16px]">drive_file_rename_outline</span>
             </button>
           )}
           {!bulkMode && canDeleteThisFolder && (
@@ -947,6 +962,7 @@ function TreeNode({
                     onEditTags={onEditTags}
                     onSplitFile={onSplitFile}
                     onDeleteFolder={onDeleteFolder}
+                    onRenameFolder={onRenameFolder}
                     onMoveDrop={onMoveDrop}
                     dragTargetPath={dragTargetPath}
                     setDragTargetPath={setDragTargetPath}
@@ -1038,6 +1054,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [tagImportSelectedMatched, setTagImportSelectedMatched] = useState({})
   const [tagImportSelectedFuzzy, setTagImportSelectedFuzzy] = useState({})
   const [tagImportAmbiguousPick, setTagImportAmbiguousPick] = useState({})
+  const [tagImportApplyAll, setTagImportApplyAll] = useState({}) // rowIndex -> 应用到全部同名文件（跨机型）
   const tagImportFileInputRef = useRef(null)
 
   // 多选框架
@@ -1372,6 +1389,28 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
+  const handleRenameFolder = async (path = selectedFolderPath) => {
+    const targetPath = normalizePath(path)
+    if (!targetPath || isProtectedRenameFolderPath(targetPath)) {
+      showToast('基础素材目录不允许重命名。', 'error')
+      return
+    }
+    const currentName = targetPath.split('/').pop()
+    const nextName = window.prompt('请输入新的文件夹名称', currentName)
+    if (!nextName || !nextName.trim() || nextName.trim() === currentName) return
+    try {
+      const result = await technicalMaterialsAPI.raw.renameFolder({ path: targetPath, newName: nextName.trim() })
+      showToast(result?.message || '文件夹重命名成功')
+      const renamedPath = normalizePath(result?.folderPath || '')
+      if (renamedPath && (selectedFolderPath === targetPath || selectedFolderPath.startsWith(`${targetPath}/`))) {
+        setSelectedFolderPath(`${renamedPath}${selectedFolderPath.slice(targetPath.length)}`)
+      }
+      await loadLibrary({ silent: true })
+    } catch (e) {
+      showToast(safeMessage(e, '文件夹重命名失败'), 'error')
+    }
+  }
+
   const handleRenameFile = async (item) => {
     if (!item?.id) return
     const currentName = String(item.name || '').trim()
@@ -1470,6 +1509,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setTagImportSelectedMatched({})
     setTagImportSelectedFuzzy({})
     setTagImportAmbiguousPick({})
+    setTagImportApplyAll({})
     if (tagImportFileInputRef.current) tagImportFileInputRef.current.value = ''
     setShowTagImportModal(true)
   }
@@ -1504,6 +1544,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       setTagImportSelectedMatched(matchedSel)
       setTagImportSelectedFuzzy({})
       setTagImportAmbiguousPick({})
+      setTagImportApplyAll({})
       setTagImportStep('preview')
     } catch (e) {
       setTagImportError(safeMessage(e, '解析预览失败，请稍后重试。'))
@@ -1518,7 +1559,13 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     const items = []
     // matched
     ;(preview.matched || []).forEach((row) => {
-      if (tagImportSelectedMatched[row.rowIndex] && row.fileId) {
+      if (!tagImportSelectedMatched[row.rowIndex]) return
+      // 跨机型批量应用：交由后端把本行清单标签写入目标目录内所有同名文件（含当前匹配项）
+      if (tagImportApplyAll[row.rowIndex] && Number(row.matches) > 1) {
+        items.push({ fileName: row.fileName, tags: normalizeTagList(row.incomingTags || row.tags || []), applyToAllMatches: true })
+        return
+      }
+      if (row.fileId) {
         items.push({ fileId: row.fileId, tags: row.mergedTags })
       }
     })
@@ -1532,9 +1579,14 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     ;(preview.ambiguous || []).forEach((row) => {
       const pickedId = tagImportAmbiguousPick[row.rowIndex]
       if (!pickedId) return
+      const incoming = normalizeTagList(row.tags || [])
+      // 全部同名文件：跨机型批量应用，后端按目标目录同名文件逐个锁内合并
+      if (pickedId === '__ALL__') {
+        items.push({ fileName: row.fileName, tags: incoming, applyToAllMatches: true })
+        return
+      }
       const candidate = (row.candidates || []).find((c) => c.fileId === pickedId)
       if (!candidate) return
-      const incoming = normalizeTagList(row.tags || [])
       // 覆盖模式:Excel 有标签整条替换;留空则保留原候选标签(防误删),与后端 matched/fuzzy 一致。
       const merged = tagImportMode === 'overwrite'
         ? (incoming.length ? incoming : normalizeTagList(candidate.tags || []))
@@ -1555,7 +1607,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setTagImportLoading(true)
     setTagImportError('')
     try {
-      const result = await technicalMaterialsAPI.raw.tagImportCommit({ items })
+      const result = await technicalMaterialsAPI.raw.tagImportCommit({ items, targetPath: tagImportTargetPath, importMode: tagImportMode })
       const failedCount = (result?.failed || []).length
       showToast(result?.message || `标签导入完成：成功 ${(result?.succeeded || []).length} 个`, failedCount ? 'warning' : 'success')
       setShowTagImportModal(false)
@@ -2111,6 +2163,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                     onEditTags={openTagEditor}
                     onSplitFile={openTechnicalSplitModal}
                     onDeleteFolder={handleDeleteFolder}
+                    onRenameFolder={handleRenameFolder}
                     onMoveDrop={handleMoveDrop}
                     dragTargetPath={dragTargetPath}
                     setDragTargetPath={setDragTargetPath}
@@ -2518,6 +2571,17 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                                   <span key={tag} className={`rounded px-1.5 py-0.5 ${(row.addedTags || []).includes(tag) ? 'bg-primary/15 text-primary' : 'bg-surface-container-high text-on-surface-variant'}`}>{tag}</span>
                                 ))}
                               </div>
+                              {Number(row.matches) > 1 && (
+                                <div className="mt-1 flex items-center gap-1.5 text-primary" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(tagImportApplyAll[row.rowIndex])}
+                                    onChange={(e) => setTagImportApplyAll((prev) => ({ ...prev, [row.rowIndex]: e.target.checked }))}
+                                    className="h-3.5 w-3.5 rounded border-outline-variant"
+                                  />
+                                  <span>应用到全部 {row.matches} 个同名文件（跨机型）</span>
+                                </div>
+                              )}
                             </div>
                           </label>
                         ))}
@@ -2569,6 +2633,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                               className="mt-1 w-full h-9 px-2 rounded-lg bg-surface-container-highest border-none text-xs"
                             >
                               <option value="">不导入</option>
+                              <option value="__ALL__">全部 {(row.candidates || []).length} 个同名文件（跨机型应用）</option>
                               {(row.candidates || []).map((c) => (
                                 <option key={c.fileId} value={c.fileId}>{c.folderPath}/{c.name}</option>
                               ))}

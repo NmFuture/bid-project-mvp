@@ -378,6 +378,22 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        await session.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_raw_folders_path' AND indexdef LIKE '%UNIQUE%'
+                    ) THEN
+                        DROP INDEX IF EXISTS idx_raw_folders_path;
+                        CREATE UNIQUE INDEX idx_raw_folders_path ON raw_folders(path);
+                    END IF;
+                END $$;
+                """
+            )
+        )
         self._ready = True
 
 

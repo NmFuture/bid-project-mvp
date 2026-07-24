@@ -438,13 +438,17 @@ def canonical_technical_material_path(path: str) -> str:
     if not parts:
         return ""
     if parts[0] == TECHNICAL_BID_TYPE:
+        # 旧档位根名（客户素材/项目素材）归一到当前口径（客户定制/项目定制）
+        legacy_tier_names = {"客户素材": "客户定制", "项目素材": "项目定制"}
+        if len(parts) >= 2 and parts[1] in legacy_tier_names:
+            return "/".join([TECHNICAL_BID_TYPE, legacy_tier_names[parts[1]], *parts[2:]])
         return "/".join(parts)
     if len(parts) >= 2 and parts[0] in {"通用素材", "标准文件", "标准模板"} and parts[1] == TECHNICAL_BID_TYPE:
         return "/".join([TECHNICAL_BID_TYPE, "标准文件", *parts[2:]])
     if len(parts) >= 3 and parts[0] in {"客户素材", "客户定制"} and parts[2] == TECHNICAL_BID_TYPE:
-        return "/".join([TECHNICAL_BID_TYPE, "客户素材", parts[1], *parts[3:]])
+        return "/".join([TECHNICAL_BID_TYPE, "客户定制", parts[1], *parts[3:]])
     if len(parts) >= 3 and parts[0] in {"项目素材", "项目定制"} and parts[2] == TECHNICAL_BID_TYPE:
-        return "/".join([TECHNICAL_BID_TYPE, "项目素材", parts[1], *parts[3:]])
+        return "/".join([TECHNICAL_BID_TYPE, "项目定制", parts[1], *parts[3:]])
     return "/".join(parts)
 
 
