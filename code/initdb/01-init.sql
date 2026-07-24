@@ -35,7 +35,7 @@ CREATE TABLE raw_folders (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_raw_folders_path ON raw_folders(path);
+CREATE UNIQUE INDEX idx_raw_folders_path ON raw_folders(path);
 CREATE INDEX idx_raw_folders_parent ON raw_folders(parent_id);
 CREATE INDEX idx_raw_folders_tier ON raw_folders(tier, bid_type);
 

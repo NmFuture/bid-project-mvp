@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import async_session
 from app.models.materials import RawFile, RawFolder
+from app.services.material_certificate_time import migrate_certificate_time_scopes_on_path_change
 from app.services.material_folder_scope import (
     is_raw_folder_move_descendant_target,
     is_raw_folder_move_protected_path,
@@ -24,8 +25,10 @@ from app.services.material_move_metadata import (
     build_raw_move_folder_file_ext_fields,
 )
 from app.services.material_raw_file_filter import raw_file_matches_bid_type, raw_folder_matches_bid_type
+from app.services.material_raw_folder_lock import lock_raw_folder_path
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.technical_wiki_preview_generation import PREVIEW_EXT_FIELD
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +171,11 @@ async def _relocate_folder_subtree(
     rename=True 时保持 parent_id 与 tier/bid_type/customer/project 等继承属性不变，
     仅改写 name 与子树 path；其余流程（冲突校验、minio key 迁移、ext_fields 审计）一致。
     """
+    old_root_path = str(source.path or "").strip("/")
+    # 按字典序对源路径和目标路径加事务级 advisory lock，避免并发 rename/move 产生重复 path。
+    for lock_path in sorted({source.path, next_root_path}):
+        await lock_raw_folder_path(session, lock_path)
+
     existing_result = await session.execute(select(RawFolder).where(RawFolder.path == next_root_path))
     if existing_result.scalar_one_or_none() is not None:
         raise PeripheralError(409, "目标目录下已存在同名文件夹。", "RAW_FOLDER_EXISTS")
@@ -221,8 +229,11 @@ async def _relocate_folder_subtree(
             minio_client.copy_object(item.minio_bucket, old_key, next_key)
             stale_source_keys.append((item.minio_bucket, old_key))
         item.minio_key = next_key
+        # 目录路径变更后，Wiki 预览缓存基于旧路径的签名失效，需要清除以便重新生成
+        updated_ext_fields = dict(item.ext_fields or {})
+        updated_ext_fields.pop(PREVIEW_EXT_FIELD, None)
         item.ext_fields = build_raw_move_folder_file_ext_fields(
-            item.ext_fields or {},
+            updated_ext_fields,
             source_minio_key=next_key,
             source_file_name=item.name,
             material_tier=(
@@ -236,6 +247,15 @@ async def _relocate_folder_subtree(
         )
 
     await session.commit()
+
+    # 目录改名后同步迁移证书识别范围，避免增量识别跳过新路径下的文件
+    bid_type = str(source.bid_type or target_parent.bid_type or "")
+    if bid_type and old_root_path:
+        migrate_certificate_time_scopes_on_path_change(
+            bid_type=bid_type,
+            old_path=old_root_path,
+            new_path=next_root_path,
+        )
 
     # commit 成功后再逐个删旧源对象；单个失败只告警，不影响整体成功（H3）
     for bucket, old_key in stale_source_keys:

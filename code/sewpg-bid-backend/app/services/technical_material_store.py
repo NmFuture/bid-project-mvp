@@ -439,7 +439,9 @@ class TechnicalMaterialStore:
         *,
         items: list[dict[str, Any]],
         target_path: str = "",
+        import_mode: str = "merge",
     ) -> dict[str, Any]:
+        merge_tags = str(import_mode or "").strip().lower() != "overwrite"
         succeeded: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
         # applyToAllMatches 行需要按目标子树解析同名文件；惰性加载，避免普通导入多扫一次库
@@ -464,8 +466,8 @@ class TechnicalMaterialStore:
                 continue
             for target_id in target_ids:
                 try:
-                    # 锁内 read-merge-write，避免用 preview 快照覆盖丢失期间新增的标签（H4）
-                    updated = await self.set_index_tags(target_id, tags, merge=True)
+                    # overwrite 模式走 merge=False，用 preview 给出的 mergedTags 替换当前真值
+                    updated = await self.set_index_tags(target_id, tags, merge=merge_tags)
                     succeeded.append(
                         {
                             "fileId": target_id,

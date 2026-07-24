@@ -1607,7 +1607,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setTagImportLoading(true)
     setTagImportError('')
     try {
-      const result = await technicalMaterialsAPI.raw.tagImportCommit({ items, targetPath: tagImportTargetPath })
+      const result = await technicalMaterialsAPI.raw.tagImportCommit({ items, targetPath: tagImportTargetPath, importMode: tagImportMode })
       const failedCount = (result?.failed || []).length
       showToast(result?.message || `标签导入完成：成功 ${(result?.succeeded || []).length} 个`, failedCount ? 'warning' : 'success')
       setShowTagImportModal(false)

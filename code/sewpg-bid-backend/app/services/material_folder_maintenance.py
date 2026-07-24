@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.models.materials import RawFile, RawFolder
-from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.material_folder_scope import (
     business_customized_child_tier_for_parent_folder_path,
     business_customized_subfolder_specs,
@@ -21,6 +21,7 @@ from app.services.material_folder_scope import (
     normalize_material_tier,
 )
 from app.services.material_taxonomy import canonical_technical_material_path
+from app.services.material_certificate_time import migrate_certificate_time_scopes_on_path_change
 from app.services.peripheral import PeripheralError
 
 
@@ -353,6 +354,7 @@ async def migrate_legacy_technical_folders(
         and canonical_technical_material_path(str(folder.path or "")).startswith("技术标/")
     ]
     legacy_folders.sort(key=lambda folder: len(str(folder.path or "").split("/")))
+    renamed_pairs: list[tuple[str, str]] = []
 
     for folder in legacy_folders:
         old_path = str(folder.path or "").strip("/")
@@ -364,6 +366,7 @@ async def migrate_legacy_technical_folders(
             files = (await session.execute(select(RawFile).where(RawFile.folder_id == folder.id))).scalars().all()
             for item in files:
                 item.folder_id = target.id
+            renamed_pairs.append((old_path, str(target.path or "").strip("/")))
             continue
 
         parent_path = "/".join(new_path.split("/")[:-1])
@@ -376,6 +379,7 @@ async def migrate_legacy_technical_folders(
         folder.bid_type = str(metadata.get("bidType") or folder.bid_type or "")
         folder.customer_name = str(metadata.get("customerName") or folder.customer_name or "") or None
         folder.project_id = str(metadata.get("projectId") or folder.project_id or "") or None
+        renamed_pairs.append((old_path, new_path))
 
     for folder in sorted(legacy_folders, key=lambda item: len(str(item.path or "").split("/")), reverse=True):
         fresh = await session.get(RawFolder, folder.id)
@@ -388,3 +392,10 @@ async def migrate_legacy_technical_folders(
         is_legacy_path = canonical_technical_material_path(fresh_path) != fresh_path
         if not has_files and not has_children and (is_legacy_path or not fresh_path.startswith(("技术标", "商务标"))):
             await session.delete(fresh)
+
+    for old_path, new_path in renamed_pairs:
+        migrate_certificate_time_scopes_on_path_change(
+            bid_type=TECHNICAL_BID_TYPE,
+            old_path=old_path,
+            new_path=new_path,
+        )

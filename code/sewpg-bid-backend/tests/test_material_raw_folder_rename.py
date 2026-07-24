@@ -24,13 +24,16 @@ class _Result:
 
 
 class _RenameSession:
-    """按序返回 rename_raw_folder 的 5 次查询：源目录、父级目录、重名冲突、子树目录、子树文件。"""
+    """按序返回 rename_raw_folder 的查询：源目录、父级目录、两次 path lock、重名冲突、子树目录、子树文件。"""
 
     def __init__(self, *, source=None, parent=None, conflict=None, folders=(), files=()):
         self._results = iter(
             (
                 _Result(scalar=source),
                 _Result(scalar=parent),
+                # _relocate_folder_subtree 会先按字典序对 source.path 和 next_root_path 加 advisory lock
+                _Result(scalar=None),
+                _Result(scalar=None),
                 _Result(scalar=conflict),
                 _Result(values=folders),
                 _Result(values=files),
@@ -44,7 +47,7 @@ class _RenameSession:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def execute(self, _statement):
+    async def execute(self, _statement, *_args, **_kwargs):
         return next(self._results)
 
     async def commit(self):

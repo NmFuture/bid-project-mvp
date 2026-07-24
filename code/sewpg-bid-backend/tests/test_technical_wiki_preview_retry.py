@@ -168,7 +168,7 @@ class BuildPreviewPlansCacheTests(unittest.IsolatedAsyncioTestCase):
             return await _build_preview_plans(_index_files())
 
     async def test_terminal_fallback_cache_hit_skips_recompute(self) -> None:
-        signature = _preview_signature("总体方案.docx", PROFILE)
+        signature = _preview_signature("总体方案.docx", PROFILE, "技术标/标准文件/EW5.0")
         cached = _cached_fallback(
             signature,
             retryable=False,
@@ -185,7 +185,7 @@ class BuildPreviewPlansCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(plans[0]["payload"]["retryable"])
 
     async def test_retryable_fallback_cache_miss_inherits_failure_count(self) -> None:
-        signature = _preview_signature("总体方案.docx", PROFILE)
+        signature = _preview_signature("总体方案.docx", PROFILE, "技术标/标准文件/EW5.0")
         cached = _cached_fallback(signature, retryable=True, llmFailures=2)
 
         plans, stats = await self._build_plans(cached)
@@ -197,7 +197,7 @@ class BuildPreviewPlansCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plans[0]["llm_failures"], 2)
 
     async def test_legacy_cache_without_failure_count_defaults_to_zero(self) -> None:
-        signature = _preview_signature("总体方案.docx", PROFILE)
+        signature = _preview_signature("总体方案.docx", PROFILE, "技术标/标准文件/EW5.0")
         cached = _cached_fallback(signature, retryable=True)
 
         plans, _stats = await self._build_plans(cached)

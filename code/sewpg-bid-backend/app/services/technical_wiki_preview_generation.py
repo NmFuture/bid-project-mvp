@@ -46,11 +46,11 @@ def _now_display() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _preview_signature(name: str, profile: dict[str, Any]) -> str:
+def _preview_signature(name: str, profile: dict[str, Any], folder_path: str = "") -> str:
     basis = {
         "schema": PREVIEW_SCHEMA_VERSION,
         "name": str(name or ""),
-        # 维持旧版预览签名边界；完整目录独立缓存，补齐目录不应触发 LLM 重算。
+        "folderPath": str(folder_path or ""),
         "headings": [str(h.get("title") or "") for h in (profile.get("headings") or [])[:MAX_CARD_HEADINGS]],
         "paragraphs": list(profile.get("paragraphs") or []),
         "tableCount": int(profile.get("tableCount") or 0),
@@ -342,7 +342,9 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
             continue
         try:
             ext, profile = await asyncio.to_thread(_docx_profile_for_raw_file, raw)
-            signature = _preview_signature(str(raw.name or ""), profile)
+            signature = _preview_signature(
+                str(raw.name or ""), profile, raw.folder.path if raw.folder else ""
+            )
             source_ext = Path(str(raw.name or "")).suffix.lower().lstrip(".")
             document_outline = document_outline_from_profile(profile, source_ext=source_ext)
             ext_fields = dict(raw.ext_fields or {})
