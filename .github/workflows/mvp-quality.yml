@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - "README.md"
-      - "doc/**"
+      - "docs/**"
       - "code/sewpg-bid-frontend/**"
       - "code/sewpg-bid-backend/**"
       - "code/docker-compose*.yml"
@@ -13,16 +13,6 @@ on:
       - "code/scripts/**"
       - ".github/workflows/mvp-quality.yml"
   pull_request:
-    paths:
-      - "README.md"
-      - "doc/**"
-      - "code/sewpg-bid-frontend/**"
-      - "code/sewpg-bid-backend/**"
-      - "code/docker-compose*.yml"
-      - "code/.env*.example"
-      - "code/OCR_DEPLOY.md"
-      - "code/scripts/**"
-      - ".github/workflows/mvp-quality.yml"
 
 jobs:
   frontend:
