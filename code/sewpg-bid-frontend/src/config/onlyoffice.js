@@ -2,6 +2,8 @@ import { ENV } from './env'
 
 // OnlyOffice Document Server 配置（环境变量驱动）
 
+const SEARCH_PLUGIN_GUID = 'asc.{5A9C9C4B-9E6F-4F57-9A22-0F4D7BBE0001}'
+
 export const loadOnlyOfficeScript = (src) =>
   new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
@@ -38,9 +40,30 @@ export const ONLYOFFICE_CONFIG = {
   apiScriptUrl: '/web-apps/apps/api/documents/api.js',
 
   // 获取完整的编辑器配置
-  getEditorConfig: ({ documentKey, title, fileUrl, callbackUrl, userId, userName }) => ({
-    document: {
-      fileType: 'docx',
+  getEditorConfig: ({
+    documentKey,
+    title,
+    fileUrl,
+    callbackUrl,
+    userId,
+    userName,
+    fileType = 'docx',
+    documentType,
+    enableSearchPlugin = true,
+  }) => {
+    const normalizedFileType = String(fileType || 'docx').toLowerCase()
+    const resolvedDocumentType = documentType
+      || (normalizedFileType === 'pdf'
+        ? 'pdf'
+        : ['xls', 'xlsx', 'csv'].includes(normalizedFileType)
+          ? 'cell'
+          : ['ppt', 'pptx'].includes(normalizedFileType)
+            ? 'slide'
+            : 'word')
+
+    return {
+      document: {
+        fileType: normalizedFileType,
       key: documentKey,
       title: title || '投标文件.docx',
       url: fileUrl,
@@ -52,7 +75,7 @@ export const ONLYOFFICE_CONFIG = {
         review: true,
       },
     },
-    documentType: 'word',
+      documentType: resolvedDocumentType,
     editorConfig: {
       callbackUrl: callbackUrl,
       lang: 'zh-CN',
@@ -79,11 +102,18 @@ export const ONLYOFFICE_CONFIG = {
         toolbarNoTabs: false,
         uiTheme: 'theme-light',
       },
+      plugins: enableSearchPlugin && resolvedDocumentType === 'word'
+        ? {
+            autostart: [SEARCH_PLUGIN_GUID],
+            pluginsData: [`${window.location.origin}/onlyoffice-search-plugin/config.json`],
+          }
+        : undefined,
     },
     height: '100%',
     width: '100%',
     type: 'desktop',
-  }),
+    }
+  },
 
   // 检查 OnlyOffice 是否可用
   isAvailable: async () => {
@@ -101,3 +131,5 @@ export const ONLYOFFICE_CONFIG = {
     }
   },
 }
+
+export const ONLYOFFICE_SEARCH_PLUGIN_GUID = SEARCH_PLUGIN_GUID

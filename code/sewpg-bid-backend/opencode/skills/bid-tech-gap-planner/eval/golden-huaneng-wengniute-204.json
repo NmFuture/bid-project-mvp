@@ -1,0 +1,1666 @@
+{
+ "fixture": "huaneng-wengniute-204",
+ "description": "华能翁牛特旗120万千瓦风电项目北区技术卷（正式投标文件）逐节人工核实的目录节点→素材映射金标。仅含目录标题与素材文件名，不含标书内容值。",
+ "sourceNote": "由正式技术卷 docx 与 137 份候选素材逐段指纹比对生成,弱匹配项逐条人工核对原文确认;模板占位符被替换导致自动比对失效的项按人工核实收录。",
+ "items": [
+  {
+   "number": "第1章",
+   "title": "标前概述",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "1.1",
+   "title": "技术评分标准索引表",
+   "kind": "materials",
+   "materials": [
+    "待填写-技术评分标准索引表.docx",
+    "发电系统.docx",
+    "发电机专题.docx"
+   ]
+  },
+  {
+   "number": "1.2",
+   "title": "与华能集团签署的战略合作协议",
+   "kind": "materials",
+   "materials": [
+    "与华能集团签署的战略合作协议.docx"
+   ]
+  },
+  {
+   "number": "1.3",
+   "title": "与华能集团新能源项目合作",
+   "kind": "materials",
+   "materials": [
+    "与华能集团新能源项目合作.docx"
+   ]
+  },
+  {
+   "number": "1.3.1",
+   "title": "华能汕头勒门（二）海上大兆瓦机组国产化示范应用",
+   "kind": "materials",
+   "materials": [
+    "与华能集团新能源项目合作.docx"
+   ]
+  },
+  {
+   "number": "1.3.2",
+   "title": "华能玉环二号海上风电场柔性低频输技术示范应用",
+   "kind": "materials",
+   "materials": [
+    "与华能集团新能源项目合作.docx"
+   ]
+  },
+  {
+   "number": "1.4",
+   "title": "风电机组自主可控推广应用的承诺",
+   "kind": "materials",
+   "materials": [
+    "待用印-风电机组自主可控推广应用的承诺.docx"
+   ]
+  },
+  {
+   "number": "1.5",
+   "title": "我司与华能集团合作自主可控技术的研发与应用",
+   "kind": "materials",
+   "materials": [
+    "我司与华能集团合作自主可控技术的研发与应用.docx"
+   ]
+  },
+  {
+   "number": "1.5.1",
+   "title": "国产化主控PLC",
+   "kind": "materials",
+   "materials": [
+    "我司与华能集团合作自主可控技术的研发与应用.docx"
+   ]
+  },
+  {
+   "number": "1.6",
+   "title": "投标关键数据一览表",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标关键数据一览表.docx"
+   ]
+  },
+  {
+   "number": "1.6.1",
+   "title": "技术指标一览表",
+   "kind": "materials",
+   "materials": [
+    "EW10.0-220上置机型参数表.xlsx",
+    "待填写-投标关键数据一览表.docx"
+   ]
+  },
+  {
+   "number": "1.7",
+   "title": "投标方案优势说明",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx"
+   ]
+  },
+  {
+   "number": "1.7.1",
+   "title": "投标方案整体优势",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx"
+   ]
+  },
+  {
+   "number": "1.7.2",
+   "title": "技术路线优势",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx",
+    "发电系统.docx",
+    "发电机专题.docx"
+   ]
+  },
+  {
+   "number": "1.8",
+   "title": "投标机型业绩情况",
+   "kind": "materials",
+   "materials": [
+    "业绩情况.docx"
+   ]
+  },
+  {
+   "number": "1.8.1",
+   "title": "近年完成的6.25MW及以上容量等级风电机组且通过240小时试运行业绩表",
+   "kind": "materials",
+   "materials": [
+    "业绩情况.docx"
+   ]
+  },
+  {
+   "number": "1.8.2",
+   "title": "近年完成的6.25MW及以上容量等级风电机组合同业绩表",
+   "kind": "materials",
+   "materials": [
+    "业绩情况.docx"
+   ]
+  },
+  {
+   "number": "1.8.3",
+   "title": "正在供货和新承接的项目情况表",
+   "kind": "materials",
+   "materials": [
+    "业绩情况.docx"
+   ]
+  },
+  {
+   "number": "1.9",
+   "title": "上海电气优势简介",
+   "kind": "materials",
+   "materials": [
+    "上海电气优势简介.docx"
+   ]
+  },
+  {
+   "number": "1.9.1",
+   "title": "基本情况",
+   "kind": "materials",
+   "materials": [
+    "上海电气优势简介.docx"
+   ]
+  },
+  {
+   "number": "1.9.2",
+   "title": "技术优势及研发投入",
+   "kind": "materials",
+   "materials": [
+    "上海电气优势简介.docx"
+   ]
+  },
+  {
+   "number": "1.9.3",
+   "title": "自主可控关键技术能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气优势简介.docx",
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "1.9.4",
+   "title": "科技创新成果及奖项",
+   "kind": "materials",
+   "materials": [
+    "上海电气优势简介.docx"
+   ]
+  },
+  {
+   "number": "1.9.5",
+   "title": "知识产权及专利",
+   "kind": "materials",
+   "materials": [
+    "上海电气优势简介.docx"
+   ]
+  },
+  {
+   "number": "1.10",
+   "title": "供货保障能力",
+   "kind": "materials",
+   "materials": [
+    "待填写-供货保障能力.docx"
+   ]
+  },
+  {
+   "number": "1.10.1",
+   "title": "生产供货能力",
+   "kind": "materials",
+   "materials": [
+    "待填写-供货保障能力.docx"
+   ]
+  },
+  {
+   "number": "1.10.2",
+   "title": "本项目供货生产基地",
+   "kind": "materials",
+   "materials": [
+    "生产制造基地专题_锡盟基地.docx",
+    "待填写-供货保障能力.docx"
+   ]
+  },
+  {
+   "number": "1.10.3",
+   "title": "供应链能力保障",
+   "kind": "materials",
+   "materials": [
+    "待填写-供货保障能力.docx"
+   ]
+  },
+  {
+   "number": "1.10.4",
+   "title": "运输能力保障",
+   "kind": "materials",
+   "materials": [
+    "待填写-供货保障能力.docx"
+   ]
+  },
+  {
+   "number": "第2章",
+   "title": "技术标准",
+   "kind": "materials",
+   "materials": [
+    "技术标准.docx"
+   ]
+  },
+  {
+   "number": "第3章",
+   "title": "风资源评估与机位排布方案",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.1",
+   "title": "总体方案概览",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "3.1.2",
+   "title": "项目概要",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.1.1",
+   "title": "风资源概要",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.2",
+   "title": "项目概况",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "3.2.1",
+   "title": "风电场概况",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.2.2",
+   "title": "计算资料、数据",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3",
+   "title": "风资源分析",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "3.3.1",
+   "title": "测风塔结果概要",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.2",
+   "title": "测风塔代表性分析",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.3",
+   "title": "测风塔数据质量分析",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.4",
+   "title": "测风数据处理和修补",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.5",
+   "title": "场区物性参数分析",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.6",
+   "title": "测风数据分析",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.7",
+   "title": "测风数据长周期订正",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.3.8",
+   "title": "风资源分析小结",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.4",
+   "title": "机组选型",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "3.4.1",
+   "title": "机组信息",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.4.2",
+   "title": "轮毂高度",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.5",
+   "title": "风机适应性分析",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "3.5.1",
+   "title": "适应性评估内容",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.5.2",
+   "title": "各机位风流体关键参数计算成果",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.5.3",
+   "title": "结论",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.6",
+   "title": "方案及发电量结果",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "3.6.1",
+   "title": "机位方案",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.6.2",
+   "title": "发电量结果",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "3.7",
+   "title": "不确定性分析",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "第4章",
+   "title": "项目技术承诺函",
+   "kind": "materials",
+   "materials": [
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "4.1",
+   "title": "发电小时数承诺函",
+   "kind": "materials",
+   "materials": [
+    "发电小时数承诺函（承诺保证值）.docx",
+    "发电小时数承诺函（承诺考核值）.docx"
+   ]
+  },
+  {
+   "number": "4.1.1",
+   "title": "*华能蒙东新能源公司赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目区）-北区电量承诺书（承诺保证值）",
+   "kind": "materials",
+   "materials": [
+    "发电小时数承诺函（承诺保证值）.docx",
+    "发电小时数承诺函（承诺考核值）.docx"
+   ]
+  },
+  {
+   "number": "4.1.2",
+   "title": "*华能蒙东新能源公司赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目区）-北区电量承诺书（承诺考核值）",
+   "kind": "materials",
+   "materials": [
+    "发电小时数承诺函（承诺保证值）.docx",
+    "发电小时数承诺函（承诺考核值）.docx"
+   ]
+  },
+  {
+   "number": "4.2",
+   "title": "投标机组可利用率承诺",
+   "kind": "materials",
+   "materials": [
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "4.3",
+   "title": "投标机组功率曲线保证率承诺",
+   "kind": "materials",
+   "materials": [
+    "W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+    "W10.0-220_空气密度1.225_湍流强度0.1_风剪切0.1_2026-01-21 16-11-38.xlsx",
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "4.4",
+   "title": "投标机组主要部件更换率承诺",
+   "kind": "materials",
+   "materials": [
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "4.5",
+   "title": "投标机组主要部件批次缺陷同意全部更换的承诺",
+   "kind": "materials",
+   "materials": [
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "4.6",
+   "title": "投标机组无故障时间承诺",
+   "kind": "materials",
+   "materials": [
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "4.7",
+   "title": "投标机组及大部件型式认证与电网性能试验承诺：",
+   "kind": "materials",
+   "materials": [
+    "待填写、待用印-项目技术承诺函.docx"
+   ]
+  },
+  {
+   "number": "第5章",
+   "title": "专题方案要求",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "5.1",
+   "title": "投标总体方案概述",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标总体方案概述.docx"
+   ]
+  },
+  {
+   "number": "5.1.1",
+   "title": "机型选择",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标总体方案概述.docx"
+   ]
+  },
+  {
+   "number": "5.1.2",
+   "title": "年等效满负荷小时数保证",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标总体方案概述.docx"
+   ]
+  },
+  {
+   "number": "5.1.3",
+   "title": "碳纤维叶片",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标总体方案概述.docx"
+   ]
+  },
+  {
+   "number": "5.2",
+   "title": "供货范围概述",
+   "kind": "materials",
+   "materials": [
+    "待填写-供货范围概述.docx"
+   ]
+  },
+  {
+   "number": "5.3",
+   "title": "投标方案技术先进性综述",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx"
+   ]
+  },
+  {
+   "number": "5.3.1",
+   "title": "投标方案整体优势",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx"
+   ]
+  },
+  {
+   "number": "5.3.2",
+   "title": "投标机组技术路线优势",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx",
+    "发电系统.docx",
+    "发电机专题.docx"
+   ]
+  },
+  {
+   "number": "5.3.3",
+   "title": "碳纤维叶片",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标方案优势说明（双TRB+碳纤叶片）.docx"
+   ]
+  },
+  {
+   "number": "5.4",
+   "title": "项目投标设备综合技术参数与性能指标",
+   "kind": "materials",
+   "materials": [
+    "待填写-项目投标设备综合技术参数与性能指标.docx"
+   ]
+  },
+  {
+   "number": "5.4.1",
+   "title": "技术指标一览表",
+   "kind": "materials",
+   "materials": [
+    "EW10.0-220上置机型参数表.xlsx",
+    "待填写-项目投标设备综合技术参数与性能指标.docx"
+   ]
+  },
+  {
+   "number": "5.5",
+   "title": "项目风资源评估与机组选型排布及发电量计算",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "5.5.1",
+   "title": "本场址风资源分析概述",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "5.5.2",
+   "title": "本场址机位排布方案",
+   "kind": "materials",
+   "materials": [
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "5.5.3",
+   "title": "本场址发电量测算结果",
+   "kind": "materials",
+   "materials": [
+    "W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+    "W10.0-220_空气密度1.225_湍流强度0.1_风剪切0.1_2026-01-21 16-11-38.xlsx",
+    "风资源评估报告.docx"
+   ]
+  },
+  {
+   "number": "5.6",
+   "title": "投标机型样机认证与测试专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标机型样机认证与测试专题.docx",
+    "EW10.0-220-CEPRI26WT1010R01上海电气低电压穿越评估证书.pdf",
+    "EW10.0-220-CEPRI26WT6008R01上海电气高电压穿越评估证书.pdf",
+    "EW10.0-220-CEPRI26WT4016R05(SPD11-SPD24-SPD24)上海电气电网适应性评估报告.pdf",
+    "EW10.0-220-T202506010418上海电气电能质量评估报告-20260206.pdf",
+    "EW10.0-220-CEPRI26WT5008R04上海电气PSD机电暂态模型验证及参数整定报告（上海电气变流器）.pdf",
+    "EW10.0-220-CEPRI26WT5009R04上海电气PSASP机电暂态模型验证及参数整定报告（上海电气变流器）.pdf",
+    "EW10.0-220-CEPRI26WT5010R04上海电气ADPSS电磁暂态模型验证报告（上海电气变流器）.pdf",
+    "EW10.0-220-125上置-CQC250304413824310上海电气设计认证D(带变压器开关柜）-20250918.pdf"
+   ]
+  },
+  {
+   "number": "5.7",
+   "title": "投标机型项目场址设计安全性专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标机型项目场址设计安全性专题.docx",
+    "载荷安全性评估报告.pdf",
+    "主轴强度复核报告.pdf",
+    "主轴轴承场址校核报告.pdf",
+    "变桨轴承场址校核报告.pdf",
+    "叶片场址校核报告.pdf",
+    "齿轮箱场址校核报告.docx"
+   ]
+  },
+  {
+   "number": "5.8",
+   "title": "项目风机各子系统专题",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "5.8.1",
+   "title": "叶片专题",
+   "kind": "materials",
+   "materials": [
+    "EW10.0-220上置-CGC202443150074（中材）S108叶片型式认证A-20250619.pdf",
+    "待填写-叶片专题.docx",
+    "叶片（碳纤维增强环氧树脂复合材料CFRP）.docx"
+   ]
+  },
+  {
+   "number": "5.8.2",
+   "title": "变桨系统专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-变桨系统专题.docx",
+    "变桨系统.docx"
+   ]
+  },
+  {
+   "number": "5.8.3",
+   "title": "主轴专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-主轴专题.docx",
+    "轮毂.docx"
+   ]
+  },
+  {
+   "number": "5.8.4",
+   "title": "齿轮箱专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-齿轮箱专题.docx",
+    "EW10.0-220上置-CGC2024461310072（德利佳）HB9000H齿轮箱型式认证A.pdf",
+    "驱动链（齿轮箱采用三级行星+一级平行轴）.docx"
+   ]
+  },
+  {
+   "number": "5.8.5",
+   "title": "机舱专题",
+   "kind": "materials",
+   "materials": [
+    "机舱专题.docx",
+    "机舱（上置）.docx"
+   ]
+  },
+  {
+   "number": "5.8.6",
+   "title": "偏航系统专题",
+   "kind": "materials",
+   "materials": [
+    "偏航系统.docx",
+    "偏航系统专题.docx"
+   ]
+  },
+  {
+   "number": "5.8.7",
+   "title": "发电机专题",
+   "kind": "materials",
+   "materials": [
+    "发电机专题.docx",
+    "EW10.0-220上置-CGC202546131009230（上海电气）双馈异步发电机EW-DFIG60.pdf",
+    "发电系统.docx"
+   ]
+  },
+  {
+   "number": "5.8.8",
+   "title": "变流器专题",
+   "kind": "materials",
+   "materials": [
+    "变流器专题.docx",
+    "EW10.0-220上置-CGC2025461310009上海电气（阳光）EW-CNVDL11410000全双馈式变流器型式认证A.pdf",
+    "EW10.0-220上置-CGC2025461310032上海电气（禾望）EW-CNVDL11410000全双馈式变流器型式认证A.pdf",
+    "发电系统.docx"
+   ]
+  },
+  {
+   "number": "5.8.9",
+   "title": "控制系统专题",
+   "kind": "materials",
+   "materials": [
+    "控制系统专题.docx",
+    "智能控制系统.docx"
+   ]
+  },
+  {
+   "number": "5.8.10",
+   "title": "防雷系统专题",
+   "kind": "materials",
+   "materials": [
+    "防雷系统专题.docx",
+    "防雷保护设计.docx"
+   ]
+  },
+  {
+   "number": "5.8.11",
+   "title": "视频监控系统专题",
+   "kind": "materials",
+   "materials": [
+    "视频监控系统（按需更新）.docx"
+   ]
+  },
+  {
+   "number": "5.8.12",
+   "title": "自动消防专题",
+   "kind": "materials",
+   "materials": [
+    "自动消防专题.docx"
+   ]
+  },
+  {
+   "number": "5.8.13",
+   "title": "叶片净空监测系统专题",
+   "kind": "materials",
+   "materials": [
+    "叶片净空监测系统专题.docx",
+    "叶片净空监测系统.docx"
+   ]
+  },
+  {
+   "number": "5.8.14",
+   "title": "升降机",
+   "kind": "materials",
+   "materials": [
+    "升降机.docx"
+   ]
+  },
+  {
+   "number": "5.8.15",
+   "title": "轮毂专题",
+   "kind": "materials",
+   "materials": [
+    "轮毂.docx",
+    "待填写-主轴专题.docx"
+   ]
+  },
+  {
+   "number": "5.8.16",
+   "title": "主轴承专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-主轴承专题.docx",
+    "EW10.0-220上置-CGC2024461310095（SKF）TRB主轴承型式认证A.pdf",
+    "EW10.0-220上置-CGC2024461310134（LYC）TRB主轴承型式认证A-20241113.pdf"
+   ]
+  },
+  {
+   "number": "5.8.17",
+   "title": "制动系统专题",
+   "kind": "materials",
+   "materials": [
+    "制动及安全系统.docx"
+   ]
+  },
+  {
+   "number": "5.8.18",
+   "title": "液压系统专题（如有）",
+   "kind": "materials",
+   "materials": [
+    "液压系统专题.docx",
+    "液压系统.docx"
+   ]
+  },
+  {
+   "number": "5.9",
+   "title": "项目风机环境适应性专题",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "5.9.1",
+   "title": "抗低温设计",
+   "kind": "materials",
+   "materials": [
+    "抗低温设计.docx"
+   ]
+  },
+  {
+   "number": "5.9.2",
+   "title": "防风沙设计",
+   "kind": "materials",
+   "materials": [
+    "防风沙设计.docx"
+   ]
+  },
+  {
+   "number": "5.9.3",
+   "title": "防紫外线、抗老化、电离辐射设计",
+   "kind": "materials",
+   "materials": [
+    "防紫外线、抗老化、电离辐射设计.docx"
+   ]
+  },
+  {
+   "number": "5.9.4",
+   "title": "抗覆冰防凝露设计",
+   "kind": "materials",
+   "materials": [
+    "抗覆冰防凝露设计.docx"
+   ]
+  },
+  {
+   "number": "5.9.5",
+   "title": "抗潮湿防腐蚀设计",
+   "kind": "materials",
+   "materials": [
+    "抗潮湿防腐蚀设计.docx"
+   ]
+  },
+  {
+   "number": "5.9.6",
+   "title": "电气绝缘方案",
+   "kind": "materials",
+   "materials": [
+    "电气绝缘方案.docx"
+   ]
+  },
+  {
+   "number": "5.9.7",
+   "title": "防雷保护设计",
+   "kind": "materials",
+   "materials": [
+    "防雷保护设计.docx",
+    "防雷系统专题.docx"
+   ]
+  },
+  {
+   "number": "5.9.8",
+   "title": "抗高温设计",
+   "kind": "materials",
+   "materials": [
+    "抗高温设计.docx"
+   ]
+  },
+  {
+   "number": "5.10",
+   "title": "投标项目塔筒专题",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "5.10.1",
+   "title": "塔筒设计方案专题报告",
+   "kind": "materials",
+   "materials": [
+    "待填写-塔筒设计方案专题报告.docx",
+    "塔架与基础工程量.docx"
+   ]
+  },
+  {
+   "number": "5.10.2",
+   "title": "风电机组法兰的专题报告",
+   "kind": "materials",
+   "materials": [
+    "风电机组法兰的专题报告.docx"
+   ]
+  },
+  {
+   "number": "5.11",
+   "title": "项目设备制造与全过程质量保障体系专题",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "5.11.1",
+   "title": "本项目主机供货制造基地-锡盟生产基地",
+   "kind": "materials",
+   "materials": [
+    "生产制造基地专题_锡盟基地.docx"
+   ]
+  },
+  {
+   "number": "5.11.2",
+   "title": "本项目叶片供货制造基地-中材叶片连云港基地",
+   "kind": "materials",
+   "materials": [
+    "本项目叶片供货制造基地.docx"
+   ]
+  },
+  {
+   "number": "5.11.3",
+   "title": "上海电气生产能力介绍",
+   "kind": "materials",
+   "materials": [
+    "上海电气生产能力介绍.docx"
+   ]
+  },
+  {
+   "number": "5.11.4",
+   "title": "全过程质量保障体系",
+   "kind": "materials",
+   "materials": [
+    "全过程质量保障体系（全生命周期质量保证）.docx"
+   ]
+  },
+  {
+   "number": "5.12",
+   "title": "投标项目设备交货进度",
+   "kind": "materials",
+   "materials": [
+    "待填写-投标项目设备交货进度.docx"
+   ]
+  },
+  {
+   "number": "5.13",
+   "title": "项目投标设备运输与现场存储方案",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.13.1",
+   "title": "项目概况",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.13.2",
+   "title": "承运项目信息",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.13.3",
+   "title": "运输路线",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.13.4",
+   "title": "道路分界点",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.13.5",
+   "title": "堆场",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.13.6",
+   "title": "道路整改要求",
+   "kind": "materials",
+   "materials": [
+    "物流解决方案.docx"
+   ]
+  },
+  {
+   "number": "5.14",
+   "title": "项目投标设备安装与调试方案",
+   "kind": "materials",
+   "materials": [
+    "风电场道路及安装要求-X2.docx"
+   ]
+  },
+  {
+   "number": "5.14.1",
+   "title": "场地道路及施工平台设计要求",
+   "kind": "materials",
+   "materials": [
+    "风电场道路及安装要求-X2.docx"
+   ]
+  },
+  {
+   "number": "5.14.2",
+   "title": "对基础要求",
+   "kind": "materials",
+   "materials": [
+    "风电场道路及安装要求-X2.docx"
+   ]
+  },
+  {
+   "number": "5.14.3",
+   "title": "安装方案简介",
+   "kind": "materials",
+   "materials": [
+    "风电场道路及安装要求-X2.docx"
+   ]
+  },
+  {
+   "number": "5.14.4",
+   "title": "调试解决方案",
+   "kind": "materials",
+   "materials": [
+    "调试解决方案.docx",
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "5.15",
+   "title": "项目技术支持及服务专题",
+   "kind": "materials",
+   "materials": [
+    "项目技术支持及服务专题.docx"
+   ]
+  },
+  {
+   "number": "5.15.1",
+   "title": "技术服务",
+   "kind": "materials",
+   "materials": [
+    "项目技术支持及服务专题.docx"
+   ]
+  },
+  {
+   "number": "5.15.2",
+   "title": "技术培训",
+   "kind": "materials",
+   "materials": [
+    "项目技术支持及服务专题.docx"
+   ]
+  },
+  {
+   "number": "5.15.3",
+   "title": "设计联络会",
+   "kind": "materials",
+   "materials": [
+    "项目技术支持及服务专题.docx"
+   ]
+  },
+  {
+   "number": "5.16",
+   "title": "设备运行和维护专题",
+   "kind": "materials",
+   "materials": [
+    "待填写-设备运行和维护专题.docx"
+   ]
+  },
+  {
+   "number": "5.16.1",
+   "title": "项目运行维护方案",
+   "kind": "materials",
+   "materials": [
+    "待填写-设备运行和维护专题.docx"
+   ]
+  },
+  {
+   "number": "5.16.2",
+   "title": "“一站式”服务承诺书",
+   "kind": "materials",
+   "materials": [
+    "待填写-设备运行和维护专题.docx"
+   ]
+  },
+  {
+   "number": "5.16.3",
+   "title": "工程服务",
+   "kind": "materials",
+   "materials": [
+    "待填写-设备运行和维护专题.docx",
+    "技术服务及售后服务.docx"
+   ]
+  },
+  {
+   "number": "5.16.4",
+   "title": "智能运维方案",
+   "kind": "materials",
+   "materials": [
+    "待填写-设备运行和维护专题.docx"
+   ]
+  },
+  {
+   "number": "5.16.5",
+   "title": "备品备件保障",
+   "kind": "materials",
+   "materials": [
+    "待填写-设备运行和维护专题.docx"
+   ]
+  },
+  {
+   "number": "5.17",
+   "title": "碳排放强度（tCO2e/万元营业收入）",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.1",
+   "title": "2024年度温室气体排放认证",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.2",
+   "title": "2024年度温室气体排放核查声明",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.3",
+   "title": "2024年温室气体核查报告",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.4",
+   "title": "绿色工厂",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.5",
+   "title": "绿色供应链",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.6",
+   "title": "绿色产品",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.7",
+   "title": "碳中和证书",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.17.8",
+   "title": "环境、社会及治理（ESG）报告 （2023年度）",
+   "kind": "materials",
+   "materials": [
+    "碳排放强度（tCO2e万元营业收入）.docx"
+   ]
+  },
+  {
+   "number": "5.18",
+   "title": "数字化智慧风场专题",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "5.18.1",
+   "title": "前言",
+   "kind": "materials",
+   "materials": [
+    "前言.docx"
+   ]
+  },
+  {
+   "number": "5.18.2",
+   "title": "智能风机监控SCADA系统",
+   "kind": "materials",
+   "materials": [
+    "智能监控系统.docx"
+   ]
+  },
+  {
+   "number": "5.18.3",
+   "title": "智能风机部件监控系统",
+   "kind": "materials",
+   "materials": [
+    "智能终端系统.docx",
+    "在线振动监测分析系统.docx",
+    "发电机位移监测分析系统.docx",
+    "叶片健康在线监测系统.docx",
+    "视频监控系统（按需更新）.docx",
+    "变桨轴承开裂在线监测系统.docx"
+   ]
+  },
+  {
+   "number": "5.18.4",
+   "title": "智能风机控制系统",
+   "kind": "materials",
+   "materials": [
+    "智能控制系统.docx",
+    "控制系统专题.docx"
+   ]
+  },
+  {
+   "number": "5.18.5",
+   "title": "智能风机场控系统",
+   "kind": "materials",
+   "materials": [
+    "智能场控系统.docx"
+   ]
+  },
+  {
+   "number": "5.18.6",
+   "title": "场控产品GridAgent",
+   "kind": "materials",
+   "materials": [
+    "场控产品GridAgent.docx"
+   ]
+  },
+  {
+   "number": "5.18.7",
+   "title": "云端故障预测及健康管理PHM系统Prognostic-Agent",
+   "kind": "materials",
+   "materials": [
+    "智能运维系统.docx"
+   ]
+  },
+  {
+   "number": "5.18.8",
+   "title": "Iwind企业数据中心",
+   "kind": "materials",
+   "materials": [
+    "Iwind企业数据中心.docx"
+   ]
+  },
+  {
+   "number": "5.18.9",
+   "title": "电网友好性方案",
+   "kind": "materials",
+   "materials": [
+    "电网友好性专题.docx"
+   ]
+  },
+  {
+   "number": "5.19",
+   "title": "上海电气风电试验检测能力专题",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.1",
+   "title": "概述",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.2",
+   "title": "机组功率特性和机械载荷测试能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.3",
+   "title": "功能与安全测试能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.4",
+   "title": "噪声测试能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.5",
+   "title": "故障电压穿越试验能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.6",
+   "title": "电网适应性试验能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.7",
+   "title": "电能质量试验能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.8",
+   "title": "可靠性试验能力-振动试验",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.9",
+   "title": "可靠性试验能力-电网模拟实验",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.10",
+   "title": "零部件试验",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.11",
+   "title": "子系统试验",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.12",
+   "title": "整机试验",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.13",
+   "title": "全功率试验能力",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.14",
+   "title": "上海电气全功率试验基地",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.15",
+   "title": "其他测试验证",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "5.19.16",
+   "title": "外部合作检测资源",
+   "kind": "materials",
+   "materials": [
+    "上海电气风电试验检测能力专题.docx"
+   ]
+  },
+  {
+   "number": "第6章",
+   "title": "产品交付、考核及验收",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.1",
+   "title": "技术资料和交付进度",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "6.1.1",
+   "title": "文件资料和图纸要求",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2",
+   "title": "试验、检验和监造",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "6.2.1",
+   "title": "我公司实施的试验和检验",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2.2",
+   "title": "型式试验报告",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2.3",
+   "title": "设备监造",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2.4",
+   "title": "机组全功率试验",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2.5",
+   "title": "运输和开箱检验",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2.6",
+   "title": "安装、调试、试运行期和质保期的检查",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.2.7",
+   "title": "风电机组并网检测",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.3",
+   "title": "设备安装、调试与试运行",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "6.3.1",
+   "title": "风电场安装调试服务人员要求",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.3.2",
+   "title": "我司安装与调试的工作内容",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.3.3",
+   "title": "调试作业安全",
+   "kind": "materials",
+   "materials": [
+    "调试解决方案.docx",
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.3.4",
+   "title": "风电机组调试方案",
+   "kind": "materials",
+   "materials": [
+    "调试解决方案.docx",
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.3.5",
+   "title": "试运行预验收阶段",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.4",
+   "title": "考核指标",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "6.4.1",
+   "title": "年上网电量及年等效满负荷小时数考核",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.4.2",
+   "title": "功率曲线的考核",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.4.3",
+   "title": "设备年平均可利用考核",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.5",
+   "title": "项目验收",
+   "kind": "structural",
+   "materials": []
+  },
+  {
+   "number": "6.5.1",
+   "title": "通过条件",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  },
+  {
+   "number": "6.5.2",
+   "title": "对我司追加考核条款",
+   "kind": "materials",
+   "materials": [
+    "待填写-产品交付、考核及验收.docx"
+   ]
+  }
+ ]
+}

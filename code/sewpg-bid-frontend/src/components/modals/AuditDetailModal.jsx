@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { auditAPI } from '../../api'
 
 const flattenObject = (input, prefix = '', output = {}) => {
   if (input === null || input === undefined) {
@@ -29,7 +28,7 @@ const toDisplay = (value) => {
   return String(value)
 }
 
-export default function AuditDetailModal({ auditId, onClose }) {
+export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [detail, setDetail] = useState(null)
@@ -38,13 +37,18 @@ export default function AuditDetailModal({ auditId, onClose }) {
     const timer = setTimeout(() => {
       setLoading(true)
       setError('')
-      auditAPI.detail(auditId)
+      if (typeof loadDetail !== 'function') {
+        setError('日志详情接口未配置。')
+        setLoading(false)
+        return
+      }
+      loadDetail(auditId)
         .then((res) => {
           setDetail(res)
         })
         .catch((e) => {
           console.error(e)
-          setError(e?.message || '审计详情加载失败')
+          setError(e?.message || '日志详情加载失败')
         })
         .finally(() => {
           setLoading(false)
@@ -52,7 +56,7 @@ export default function AuditDetailModal({ auditId, onClose }) {
     }, 0)
 
     return () => clearTimeout(timer)
-  }, [auditId])
+  }, [auditId, loadDetail])
 
   const diffRows = useMemo(() => {
     if (!detail?.diff) return []
@@ -72,10 +76,10 @@ export default function AuditDetailModal({ auditId, onClose }) {
       <div className="dialog-content w-full max-w-5xl animate-fade-in" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-surface-container-high">
           <div>
-            <h2 className="text-xl font-headline font-bold text-on-surface">审计详情</h2>
+            <h2 className="text-xl font-headline font-bold text-on-surface">日志详情</h2>
             <p className="text-xs text-outline mt-1">日志 ID：{auditId}</p>
           </div>
-          <button onClick={onClose} className="text-on-surface-variant hover:text-primary transition-colors">
+          <button onClick={onClose} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>

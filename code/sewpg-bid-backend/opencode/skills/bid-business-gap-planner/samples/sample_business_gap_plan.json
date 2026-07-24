@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "bid-business-gap-plan-v1",
+  "projectId": "PRJ-BUS-GAP-SAMPLE",
+  "projectName": "商务标缺口样例项目",
+  "bidType": "商务标",
+  "generatedAt": "2026-05-09T00:00:00Z",
+  "views": {"default": "toc", "available": ["toc", "module"]},
+  "summary": {"tocRefCount": 1, "taskCount": 1, "coverageStatus": "complete"},
+  "moduleGroups": [],
+  "tocRefs": [],
+  "tasks": []
+}

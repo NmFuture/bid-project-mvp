@@ -23,26 +23,63 @@ services:
     image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: sewpg_bid_fastapi
     environment:
       APP_ENV: production
-      DATABASE_URL: sqlite:////data/sqlite/app.db
-      SQLITE_PATH: /data/sqlite/app.db
+      APP_STORE_BACKEND: postgres
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
-      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
-      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
-      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-600}
-      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-524288000}
-      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.docx}
+      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
+      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
+      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
+      S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
+      BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
+      BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
+      BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
+      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-32212254720}
+      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.txt,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff}
       ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
       ONLYOFFICE_BACKEND_BASE_URL: ${ONLYOFFICE_BACKEND_BASE_URL:-http://fastapi:8000}
       ONLYOFFICE_CALLBACK_TOKEN: ${ONLYOFFICE_CALLBACK_TOKEN:-}
       ONLYOFFICE_CALLBACK_ALLOWED_HOSTS: ${ONLYOFFICE_CALLBACK_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
       ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS: ${ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
-      ONLYOFFICE_DOWNLOAD_MAX_BYTES: ${ONLYOFFICE_DOWNLOAD_MAX_BYTES:-524288000}
+      ONLYOFFICE_DOWNLOAD_MAX_BYTES: ${ONLYOFFICE_DOWNLOAD_MAX_BYTES:-32212254720}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET_MATERIALS: ${MINIO_BUCKET_MATERIALS:-bid-materials}
+      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS:-bid-documents}
+      MINIO_BUCKET_TEMPLATES: ${MINIO_BUCKET_TEMPLATES:-bid-templates}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_JOB_LOCK_TTL_SEC: ${REDIS_JOB_LOCK_TTL_SEC:-7200}
+      REDIS_JOB_QUEUE_LOCK_TTL_SEC: ${REDIS_JOB_QUEUE_LOCK_TTL_SEC:-21600}
+      REDIS_JOB_RESULT_TTL_SEC: ${REDIS_JOB_RESULT_TTL_SEC:-86400}
+      REDIS_WORKER_POLL_TIMEOUT_SEC: ${REDIS_WORKER_POLL_TIMEOUT_SEC:-5}
+      REDIS_DOCLING_QUEUE_KEY: ${REDIS_DOCLING_QUEUE_KEY:-bid:jobs:docling}
+      S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
+      S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
+      PARSE_PROGRESS_PERSIST_INTERVAL_SEC: ${PARSE_PROGRESS_PERSIST_INTERVAL_SEC:-2}
+      AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-admin@sewpg.com}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-123456}
+      AUTH_ADMIN_NAME: ${AUTH_ADMIN_NAME:-当前用户}
+      DEFAULT_LLM_BASE_URL: ${DEFAULT_LLM_BASE_URL:-${INTERNAL_LLM_BASE_URL:-}}
+      DEFAULT_LLM_API_KEY: ${DEFAULT_LLM_API_KEY:-${INTERNAL_LLM_API_KEY:-}}
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-${OPENCODE_MODEL_ID:-deepseek-v4-flash}}
+      DEFAULT_LLM_PROVIDER_ID: ${DEFAULT_LLM_PROVIDER_ID:-${OPENCODE_PROVIDER_ID:-deepseek}}
+      DEFAULT_OCR_BASE_URL: ${DEFAULT_OCR_BASE_URL:-}
+      DEFAULT_OCR_API_KEY: ${DEFAULT_OCR_API_KEY:-}
+      DEFAULT_OCR_MODEL: ${DEFAULT_OCR_MODEL:-deepseek-ai/DeepSeek-OCR}
+      OUTLINE_JUDGE_ENABLED: ${OUTLINE_JUDGE_ENABLED:-false}
+      OUTLINE_JUDGE_BASE_URL: ${OUTLINE_JUDGE_BASE_URL:-}
+      OUTLINE_JUDGE_API_KEY: ${OUTLINE_JUDGE_API_KEY:-}
+      OUTLINE_JUDGE_MODEL: ${OUTLINE_JUDGE_MODEL:-}
+      OUTLINE_JUDGE_TIMEOUT_SEC: ${OUTLINE_JUDGE_TIMEOUT_SEC:-600}
     expose:
       - "8000"
     depends_on:
@@ -50,8 +87,13 @@ services:
         condition: service_healthy
       onlyoffice:
         condition: service_started
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redis:
+        condition: service_healthy
     volumes:
-      - sqlite_data:/data/sqlite
       - uploads:/data/uploads
       - documents:/data/documents
       - parsed:/data/parsed
@@ -63,27 +105,176 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  worker:
+    image: ${FASTAPI_IMAGE:-sewpg-bid/fastapi:${APP_IMAGE_TAG:-latest}}
+    container_name: sewpg_bid_worker
+    command: ["python", "-m", "app.workers.redis_worker"]
+    environment:
+      APP_ENV: production
+      APP_STORE_BACKEND: postgres
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
+      UPLOADS_DIR: /data/uploads
+      DOCUMENTS_DIR: /data/documents
+      PARSED_DIR: /data/parsed
+      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
+      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
+      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
+      OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
+      S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
+      BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
+      BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
+      BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
+      MAX_UPLOAD_FILE_SIZE_BYTES: ${MAX_UPLOAD_FILE_SIZE_BYTES:-32212254720}
+      ALLOWED_UPLOAD_EXTENSIONS: ${ALLOWED_UPLOAD_EXTENSIONS:-.pdf,.doc,.docx,.md,.txt,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff}
+      ONLYOFFICE_INTERNAL_URL: ${ONLYOFFICE_INTERNAL_URL:-http://onlyoffice}
+      ONLYOFFICE_BACKEND_BASE_URL: ${ONLYOFFICE_BACKEND_BASE_URL:-http://fastapi:8000}
+      ONLYOFFICE_CALLBACK_TOKEN: ${ONLYOFFICE_CALLBACK_TOKEN:-}
+      ONLYOFFICE_CALLBACK_ALLOWED_HOSTS: ${ONLYOFFICE_CALLBACK_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
+      ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS: ${ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS:-onlyoffice,127.0.0.1,localhost}
+      ONLYOFFICE_DOWNLOAD_MAX_BYTES: ${ONLYOFFICE_DOWNLOAD_MAX_BYTES:-32212254720}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET_MATERIALS: ${MINIO_BUCKET_MATERIALS:-bid-materials}
+      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS:-bid-documents}
+      MINIO_BUCKET_TEMPLATES: ${MINIO_BUCKET_TEMPLATES:-bid-templates}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_JOB_LOCK_TTL_SEC: ${REDIS_JOB_LOCK_TTL_SEC:-7200}
+      REDIS_JOB_QUEUE_LOCK_TTL_SEC: ${REDIS_JOB_QUEUE_LOCK_TTL_SEC:-21600}
+      REDIS_JOB_RESULT_TTL_SEC: ${REDIS_JOB_RESULT_TTL_SEC:-86400}
+      REDIS_WORKER_POLL_TIMEOUT_SEC: ${REDIS_WORKER_POLL_TIMEOUT_SEC:-5}
+      REDIS_DOCLING_QUEUE_KEY: ${REDIS_DOCLING_QUEUE_KEY:-bid:jobs:docling}
+      S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
+      S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
+      PARSE_PROGRESS_PERSIST_INTERVAL_SEC: ${PARSE_PROGRESS_PERSIST_INTERVAL_SEC:-2}
+      AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-admin@sewpg.com}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-123456}
+      AUTH_ADMIN_NAME: ${AUTH_ADMIN_NAME:-当前用户}
+      DEFAULT_LLM_BASE_URL: ${DEFAULT_LLM_BASE_URL:-${INTERNAL_LLM_BASE_URL:-}}
+      DEFAULT_LLM_API_KEY: ${DEFAULT_LLM_API_KEY:-${INTERNAL_LLM_API_KEY:-}}
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-${OPENCODE_MODEL_ID:-deepseek-v4-flash}}
+      DEFAULT_LLM_PROVIDER_ID: ${DEFAULT_LLM_PROVIDER_ID:-${OPENCODE_PROVIDER_ID:-deepseek}}
+      DEFAULT_OCR_BASE_URL: ${DEFAULT_OCR_BASE_URL:-}
+      DEFAULT_OCR_API_KEY: ${DEFAULT_OCR_API_KEY:-}
+      DEFAULT_OCR_MODEL: ${DEFAULT_OCR_MODEL:-deepseek-ai/DeepSeek-OCR}
+      OUTLINE_JUDGE_ENABLED: ${OUTLINE_JUDGE_ENABLED:-false}
+      OUTLINE_JUDGE_BASE_URL: ${OUTLINE_JUDGE_BASE_URL:-}
+      OUTLINE_JUDGE_API_KEY: ${OUTLINE_JUDGE_API_KEY:-}
+      OUTLINE_JUDGE_MODEL: ${OUTLINE_JUDGE_MODEL:-}
+      OUTLINE_JUDGE_TIMEOUT_SEC: ${OUTLINE_JUDGE_TIMEOUT_SEC:-600}
+    depends_on:
+      opencode:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads:/data/uploads
+      - documents:/data/documents
+      - parsed:/data/parsed
+    healthcheck:
+      test: ["CMD", "python", "-c", "import app.workers.redis_worker"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  docling-worker:
+    image: ${DOCLING_IMAGE:-sewpg-bid/docling-worker:${APP_IMAGE_TAG:-latest}}
+    build:
+      context: ./sewpg-bid-backend
+      dockerfile: Dockerfile.docling-worker
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PYTORCH_CPU_INDEX_URL: ${PYTORCH_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    container_name: sewpg_bid_docling_worker
+    command: ["python", "-m", "app.workers.docling_worker"]
+    environment:
+      APP_ENV: production
+      UPLOADS_DIR: /data/uploads
+      DOCUMENTS_DIR: /data/documents
+      PARSED_DIR: /data/parsed
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_DOCLING_QUEUE_KEY: ${REDIS_DOCLING_QUEUE_KEY:-bid:jobs:docling}
+      REDIS_JOB_LOCK_TTL_SEC: ${REDIS_JOB_LOCK_TTL_SEC:-7200}
+      REDIS_JOB_QUEUE_LOCK_TTL_SEC: ${REDIS_JOB_QUEUE_LOCK_TTL_SEC:-21600}
+      REDIS_JOB_RESULT_TTL_SEC: ${REDIS_JOB_RESULT_TTL_SEC:-86400}
+      REDIS_WORKER_POLL_TIMEOUT_SEC: ${REDIS_WORKER_POLL_TIMEOUT_SEC:-5}
+      BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
+      S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
+      S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
+      BID_DOCLING_ARTIFACTS_PATH: /opt/docling-models
+      DOCLING_DEVICE: ${DOCLING_DEVICE:-cpu}
+      OMP_NUM_THREADS: ${DOCLING_CPU_THREADS:-8}
+      MKL_NUM_THREADS: ${DOCLING_CPU_THREADS:-8}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads:/data/uploads:ro
+      - documents:/data/documents:ro
+      - parsed:/data/parsed
+    cpus: ${DOCLING_CPU_LIMIT:-8.0}
+    mem_limit: ${DOCLING_MEMORY_LIMIT:-32g}
+    init: true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from pathlib import Path; raise SystemExit(0 if Path('/tmp/docling-worker-ready').is_file() else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: ${DOCLING_HEALTHCHECK_START_PERIOD:-10m}
+    stop_grace_period: ${DOCLING_STOP_GRACE_PERIOD:-30m}
+    restart: unless-stopped
+
   opencode:
     image: ${OPENCODE_IMAGE:-sewpg-bid/opencode:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-backend/opencode
       dockerfile: Dockerfile
       args:
-        OPENCODE_NPM_VERSION: ${OPENCODE_NPM_VERSION:-1.14.18}
+        OPENCODE_NPM_VERSION: ${OPENCODE_NPM_VERSION:-1.18.2}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: sewpg_bid_opencode
     working_dir: /workspace
     environment:
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_API_KEY: ${OPENCODE_ANTHROPIC_API_KEY:-${OPENCODE_ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-${ANTHROPIC_AUTH_TOKEN:-}}}}
+      ANTHROPIC_AUTH_TOKEN: ${OPENCODE_ANTHROPIC_AUTH_TOKEN:-${OPENCODE_ANTHROPIC_API_KEY:-${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}}}
+      ANTHROPIC_BASE_URL: ${OPENCODE_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-}}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${OPENCODE_ANTHROPIC_DEFAULT_HAIKU_MODEL:-${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${OPENCODE_ANTHROPIC_DEFAULT_OPUS_MODEL:-${ANTHROPIC_DEFAULT_OPUS_MODEL:-}}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${OPENCODE_ANTHROPIC_DEFAULT_SONNET_MODEL:-${ANTHROPIC_DEFAULT_SONNET_MODEL:-}}
+      ANTHROPIC_MODEL: ${OPENCODE_ANTHROPIC_MODEL:-${ANTHROPIC_MODEL:-}}
+      API_TIMEOUT_MS: ${OPENCODE_API_TIMEOUT_MS:-${API_TIMEOUT_MS:-3000000}}
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: ${OPENCODE_CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode}
-      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-big-pickle}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-${DEFAULT_LLM_API_KEY:-${INTERNAL_LLM_API_KEY:-}}}
+      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
+      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
       INTERNAL_LLM_BASE_URL: ${INTERNAL_LLM_BASE_URL:-}
       INTERNAL_LLM_API_KEY: ${INTERNAL_LLM_API_KEY:-}
       INTERNAL_LLM_MODEL_LABEL: ${INTERNAL_LLM_MODEL_LABEL:-Internal LLM Model}
       INTERNAL_LLM_PROVIDER_NAME: ${INTERNAL_LLM_PROVIDER_NAME:-Internal LLM Gateway}
       INTERNAL_LLM_HEADERS_JSON: ${INTERNAL_LLM_HEADERS_JSON:-}
+      BID_BACKEND_BASE_URL: ${BID_BACKEND_BASE_URL:-http://fastapi:8000}
+      OUTLINE_JUDGE_ENABLED: ${OUTLINE_JUDGE_ENABLED:-false}
+      OUTLINE_JUDGE_BASE_URL: ${OUTLINE_JUDGE_BASE_URL:-}
+      OUTLINE_JUDGE_API_KEY: ${OUTLINE_JUDGE_API_KEY:-}
+      OUTLINE_JUDGE_MODEL: ${OUTLINE_JUDGE_MODEL:-}
+      OUTLINE_JUDGE_TIMEOUT_SEC: ${OUTLINE_JUDGE_TIMEOUT_SEC:-600}
     expose:
       - "4096"
     ports:
@@ -102,6 +293,9 @@ services:
       start_period: 20s
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - documents:/data/documents
+      - parsed:/data/parsed
       - opencode_data:/root/.local/share/opencode
       - opencode_cache:/root/.cache/opencode
     restart: unless-stopped
@@ -116,17 +310,81 @@ services:
       JWT_HEADER: "${ONLYOFFICE_JWT_HEADER:-Authorization}"
       JWT_IN_BODY: "${ONLYOFFICE_JWT_IN_BODY:-false}"
       ALLOW_PRIVATE_IP_ADDRESS: "${ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS:-true}"
+      ONLYOFFICE_MAX_DOWNLOAD_BYTES: ${ONLYOFFICE_MAX_DOWNLOAD_BYTES:-32212254720}
+      ONLYOFFICE_TEMPFILE_UPLOAD_LIMIT_BYTES: ${ONLYOFFICE_TEMPFILE_UPLOAD_LIMIT_BYTES:-32212254720}
+      ONLYOFFICE_IMAGE_SIZE_LIMIT_BYTES: ${ONLYOFFICE_IMAGE_SIZE_LIMIT_BYTES:-52428800}
+      ONLYOFFICE_DOWNLOAD_TIMEOUT: ${ONLYOFFICE_DOWNLOAD_TIMEOUT:-10m}
+      ONLYOFFICE_NGINX_CLIENT_MAX_BODY_SIZE: ${ONLYOFFICE_NGINX_CLIENT_MAX_BODY_SIZE:-30720m}
+    entrypoint:
+      - /usr/local/bin/sewpg-onlyoffice-entrypoint
     expose:
       - "80"
     volumes:
+      - ./sewpg-bid-backend/onlyoffice/docker-entrypoint.sh:/usr/local/bin/sewpg-onlyoffice-entrypoint:ro
+      - ./sewpg-bid-backend/onlyoffice/fontconfig/99-sewpg-cjk-font-aliases.conf:/etc/fonts/conf.d/99-sewpg-cjk-font-aliases.conf:ro
+      - ${ONLYOFFICE_CUSTOM_FONTS_HOST_DIR:-./sewpg-bid-backend/onlyoffice/fonts}:/usr/share/fonts/truetype/custom:ro
       - onlyoffice_logs:/var/log/onlyoffice
       - onlyoffice_data:/var/www/onlyoffice/Data
       - onlyoffice_lib:/var/lib/onlyoffice
       - onlyoffice_db:/var/lib/postgresql
     restart: unless-stopped
 
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sewpg_bid_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-biduser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bidpass}
+      POSTGRES_DB: ${POSTGRES_DB:-bidplatform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-biduser} -d ${POSTGRES_DB:-bidplatform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: sewpg_bid_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: sewpg_bid_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
-  sqlite_data:
   uploads:
   documents:
   parsed:
@@ -136,3 +394,6 @@ volumes:
   onlyoffice_data:
   onlyoffice_lib:
   onlyoffice_db:
+  postgres_data:
+  redis_data:
+  minio_data:

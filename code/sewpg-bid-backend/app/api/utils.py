@@ -9,8 +9,10 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import Request
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
+from app.services.minio_client import minio_client
 
 
 def now_message(message: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -108,14 +110,44 @@ def onlyoffice_backend_base_url(request: Request) -> str:
     if host in {"127.0.0.1", "localhost"}:
         default_port = 80 if scheme == "http" else 443
         port_suffix = f":{port}" if port and port != default_port else ""
+        if platform.system() == "Darwin":
+            return f"{scheme}://host.docker.internal{port_suffix}"
         lan_ip = detect_lan_ip()
         if lan_ip:
             return f"{scheme}://{lan_ip}{port_suffix}"
-        if platform.system() == "Darwin":
-            return f"{scheme}://host.docker.internal{port_suffix}"
 
     return str(request.base_url).rstrip("/")
 
 
 def content_disposition(filename: str) -> str:
     return f"attachment; filename*=UTF-8''{quote(filename)}"
+
+
+def inline_content_disposition(filename: str) -> str:
+    return f"inline; filename*=UTF-8''{quote(filename)}"
+
+
+def minio_streaming_response(
+    payload: dict[str, Any],
+    *,
+    default_file_name: str = "download.bin",
+    default_media_type: str = "application/octet-stream",
+    inline: bool = False,
+) -> StreamingResponse:
+    response = minio_client.get_object_response(payload["bucket"], payload["key"])
+
+    def iterate_chunks():
+        try:
+            for chunk in response.stream(64 * 1024):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
+
+    file_name = str(payload.get("fileName") or default_file_name)
+    media_type = str(payload.get("mimeType") or default_media_type)
+    return StreamingResponse(
+        iterate_chunks(),
+        media_type=media_type,
+        headers={"Content-Disposition": inline_content_disposition(file_name) if inline else content_disposition(file_name)},
+    )

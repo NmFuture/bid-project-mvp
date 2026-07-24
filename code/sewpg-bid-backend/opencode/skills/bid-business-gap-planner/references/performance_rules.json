@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "bid-business-gap-performance-rules-v1",
+  "performanceBundleKeywords": ["业绩", "合同", "中标通知书", "240h", "试运行", "验收报告", "在供项目"],
+  "cooperationKeywords": ["战略协议", "框架协议", "示范应用", "供应链协同", "合作协议", "评价信", "优秀供应商"]
+}

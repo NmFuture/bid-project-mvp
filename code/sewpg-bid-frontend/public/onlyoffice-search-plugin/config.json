@@ -1,0 +1,26 @@
+{
+  "name": "Search Bridge",
+  "nameLocale": {
+    "zh-CN": "目录搜索桥接"
+  },
+  "guid": "asc.{5A9C9C4B-9E6F-4F57-9A22-0F4D7BBE0001}",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "description": "Search selected outline text from the host page.",
+      "descriptionLocale": {
+        "zh-CN": "接收外部目录点击消息并在文档内搜索定位。"
+      },
+      "url": "index.html",
+      "icons": [],
+      "isViewer": true,
+      "EditorsSupport": ["word"],
+      "isVisual": false,
+      "isModal": false,
+      "isInsideMode": false,
+      "initDataType": "none",
+      "initData": "",
+      "buttons": []
+    }
+  ]
+}

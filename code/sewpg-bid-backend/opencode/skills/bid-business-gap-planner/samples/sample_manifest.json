@@ -1,0 +1,13 @@
+{
+  "projectId": "PRJ-BUS-GAP-SAMPLE",
+  "projectName": "商务标缺口样例项目",
+  "bidType": "商务标",
+  "workDir": "/tmp/business-gap-sample",
+  "tocJsonPath": "/tmp/business-gap-sample/toc.json",
+  "parseResultPath": "/tmp/business-gap-sample/parse_result.json",
+  "businessWikiDir": "",
+  "materialScope": {"bidType": "商务标", "readableScopes": []},
+  "materialIndex": [],
+  "selectedBusinessTurbineModel": {"model": "EW6.25-202"},
+  "outputFile": "/tmp/business-gap-sample/business_gap_plan.json"
+}

@@ -2,12 +2,20 @@
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
   "share": "disabled",
-  "model": "opencode/big-pickle",
+  "model": "deepseek/deepseek-v4-flash",
   "permission": {
     "skill": {
       "*": "allow"
     },
-    "bash": "deny",
+    "bash": "allow",
+    "external_directory": {
+      "/data/parsed/**": "allow",
+      "/data/documents/**": "allow",
+      "/data/uploads/**": "allow",
+      "/tmp/**": "allow"
+    },
+    "task": "deny",
+    "read": "deny",
     "edit": "deny"
   }
 }

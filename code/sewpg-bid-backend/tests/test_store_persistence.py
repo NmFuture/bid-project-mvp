@@ -1,49 +1,82 @@
 from __future__ import annotations
 
-import tempfile
+import os
 import unittest
-from pathlib import Path
 
-from app.core.config import settings
+import pytest
+
+from app.services.bid_outline_state import complete_directory_generation_state
+from app.services.identity import build_project_material_scope
 from app.services.store import AppStore
 
 
-class StorePersistenceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        base = Path(self.temp_dir.name)
-        settings.sqlite_path = base / "sqlite" / "app.db"
-        settings.uploads_dir = base / "uploads"
-        settings.documents_dir = base / "documents"
-        settings.ensure_dirs()
-
-    def tearDown(self) -> None:
-        self.temp_dir.cleanup()
-
-    def test_project_persists_across_store_restart(self) -> None:
-        store1 = AppStore()
-        created = store1.create_project(
+class ProjectMaterialScopeTests(unittest.TestCase):
+    def test_project_material_scope_uses_selected_customer_and_material_project(self) -> None:
+        store = AppStore(storage_backend="memory")
+        project = store.create_project(
             {
-                "name": "SQLite 持久化验证",
-                "customerName": "测试业主",
+                "name": "华能项目素材范围验证",
+                "customerName": "华能集团",
+                "bidType": "技术标",
+                "materialCustomerId": "CUST-HUANENG",
+                "materialCustomerName": "华能集团",
+                "materialProjectMode": "library",
+                "materialProjectId": "MAT-HN-001",
+                "materialProjectCode": "HN-001",
+                "materialProjectName": "华能素材项目",
             }
         )
-        store1.complete_directory_generation(created["id"], {})
 
-        store2 = AppStore()
+        scope = build_project_material_scope(project)
+
+        self.assertEqual(
+            scope["paths"],
+            [
+                "技术标/标准文件",
+                "技术标/客户定制/华能集团",
+                "技术标/项目定制/MAT-HN-001",
+            ],
+        )
+        self.assertEqual(scope["identity"]["customerId"], "CUST-HUANENG")
+        self.assertEqual(scope["identity"]["projectId"], "MAT-HN-001")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires PostgreSQL")
+class StorePersistenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = AppStore(storage_backend="postgres")
+        self.store.reset_for_tests(clear_persistent=True)
+
+    def tearDown(self) -> None:
+        self.store.reset_for_tests(clear_persistent=True)
+
+    def test_project_persists_across_postgres_store_restart(self) -> None:
+        store1 = AppStore(storage_backend="postgres")
+        created = store1.create_project(
+            {
+                "name": "PostgreSQL 持久化验证",
+                "customerName": "测试业主",
+                "bidType": "技术标",
+            }
+        )
+        project_state = store1.require_project_for_update(created["id"])
+        complete_directory_generation_state(project_state, {})
+        store1.persist_project_state(project_state)
+
+        store2 = AppStore(storage_backend="postgres")
         project = store2.get_project(created["id"])
-        directory = store2.get_directory_state(created["id"])
+        directory = store2.get_project_runtime_state(created["id"])["directory_state"]
 
-        self.assertEqual(project["name"], "SQLite 持久化验证")
+        self.assertEqual(project["name"], "PostgreSQL 持久化验证")
         self.assertEqual(directory["status"], "completed")
-        self.assertTrue(settings.sqlite_path.exists())
 
     def test_project_id_continues_after_restart(self) -> None:
-        store1 = AppStore()
-        first = store1.create_project({"name": "项目一"})
+        store1 = AppStore(storage_backend="postgres")
+        first = store1.create_project({"name": "项目一", "bidType": "技术标"})
 
-        store2 = AppStore()
-        second = store2.create_project({"name": "项目二"})
+        store2 = AppStore(storage_backend="postgres")
+        second = store2.create_project({"name": "项目二", "bidType": "技术标"})
 
         self.assertEqual(first["id"], "PRJ-0001")
         self.assertEqual(second["id"], "PRJ-0002")

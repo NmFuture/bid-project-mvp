@@ -1,0 +1,400 @@
+[
+  {
+    "id": "C2-R02",
+    "rowIndex": 2,
+    "group": "轮毂",
+    "field": "轮毂材料",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hub_material",
+      "hub_weight"
+    ]
+  },
+  {
+    "id": "C2-R03",
+    "rowIndex": 3,
+    "group": "轮毂",
+    "field": "轮毂本体重量",
+    "unit": "",
+    "remark": "轮毂铸件",
+    "concepts": [
+      "hub_material",
+      "hub_weight"
+    ]
+  },
+  {
+    "id": "C2-R05",
+    "rowIndex": 5,
+    "group": "叶片",
+    "field": "叶片材料",
+    "unit": "",
+    "remark": "全玻、双碳梁、单碳梁",
+    "concepts": [
+      "blade_material"
+    ]
+  },
+  {
+    "id": "C2-R06",
+    "rowIndex": 6,
+    "group": "叶片",
+    "field": "主梁碳纤维体积百分比",
+    "unit": "",
+    "remark": "如采用碳纤维叶片，则填写此行，否则无需填写",
+    "concepts": [
+      "blade_carbon_ratio"
+    ]
+  },
+  {
+    "id": "C2-R07",
+    "rowIndex": 7,
+    "group": "叶片",
+    "field": "叶片长度",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_length"
+    ]
+  },
+  {
+    "id": "C2-R08",
+    "rowIndex": 8,
+    "group": "叶片",
+    "field": "单支叶片重量",
+    "unit": "",
+    "remark": "不含叶根法兰、叶根螺栓、导雨罩",
+    "concepts": [
+      "blade_weight"
+    ]
+  },
+  {
+    "id": "C2-R09",
+    "rowIndex": 9,
+    "group": "叶片",
+    "field": "最大弦长",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_chord_max"
+    ]
+  },
+  {
+    "id": "C2-R10",
+    "rowIndex": 10,
+    "group": "叶片",
+    "field": "叶根节圆直径",
+    "unit": "",
+    "remark": "螺栓孔中心节圆直径",
+    "concepts": [
+      "blade_root_pcd"
+    ]
+  },
+  {
+    "id": "C2-R11",
+    "rowIndex": 11,
+    "group": "叶片",
+    "field": "叶根螺栓孔数",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_root_bolt_count"
+    ]
+  },
+  {
+    "id": "C2-R12",
+    "rowIndex": 12,
+    "group": "叶片",
+    "field": "叶根螺栓规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_root_bolt_spec"
+    ]
+  },
+  {
+    "id": "C2-R13",
+    "rowIndex": 13,
+    "group": "叶片",
+    "field": "叶根螺栓强度等级",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_root_bolt_grade"
+    ]
+  },
+  {
+    "id": "C2-R14",
+    "rowIndex": 14,
+    "group": "叶片",
+    "field": "预制叶根瓦（是/否）",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_root_prefab"
+    ]
+  },
+  {
+    "id": "C2-R15",
+    "rowIndex": 15,
+    "group": "叶片",
+    "field": "预制后缘梁（是/否）",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_trailing_edge_prefab"
+    ]
+  },
+  {
+    "id": "C2-R16",
+    "rowIndex": 16,
+    "group": "叶片",
+    "field": "预埋/打孔成型工艺",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_process"
+    ]
+  },
+  {
+    "id": "C2-R17",
+    "rowIndex": 17,
+    "group": "叶片",
+    "field": "主梁区域腹板形式单/双",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_web_form"
+    ]
+  },
+  {
+    "id": "C2-R18",
+    "rowIndex": 18,
+    "group": "叶片",
+    "field": "叶尖是否完成了疲劳测试覆盖",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_tip_fatigue"
+    ]
+  },
+  {
+    "id": "C2-R19",
+    "rowIndex": 19,
+    "group": "叶片",
+    "field": "响应叶片防雷导线应采用铜导线要求",
+    "unit": "",
+    "remark": "响应/不响应",
+    "concepts": [
+      "blade_lightning_response"
+    ]
+  },
+  {
+    "id": "C2-R20",
+    "rowIndex": 20,
+    "group": "叶片",
+    "field": "防雷导线金属截面积",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_lightning_area"
+    ]
+  },
+  {
+    "id": "C2-R21",
+    "rowIndex": 21,
+    "group": "叶片",
+    "field": "叶片前缘防腐形式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_leading_edge"
+    ]
+  },
+  {
+    "id": "C2-R23",
+    "rowIndex": 23,
+    "group": "变桨轴承",
+    "field": "变桨轴承形式",
+    "unit": "",
+    "remark": "双列球轴承、三排柱等",
+    "concepts": [
+      "pitch_bearing_form"
+    ]
+  },
+  {
+    "id": "C2-R24",
+    "rowIndex": 24,
+    "group": "变桨轴承",
+    "field": "变桨轴承套圈材质",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_bearing_ring_material"
+    ]
+  },
+  {
+    "id": "C2-R25",
+    "rowIndex": 25,
+    "group": "变桨轴承",
+    "field": "保持架材质",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_bearing_cage_material"
+    ]
+  },
+  {
+    "id": "C2-R26",
+    "rowIndex": 26,
+    "group": "变桨轴承",
+    "field": "空载和启动摩擦力矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_bearing_friction"
+    ]
+  },
+  {
+    "id": "C2-R27",
+    "rowIndex": 27,
+    "group": "变桨轴承",
+    "field": "加工后滚道淬硬层深度",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_bearing_hardening"
+    ]
+  },
+  {
+    "id": "C2-R28",
+    "rowIndex": 28,
+    "group": "变桨轴承",
+    "field": "变桨轴承重量",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_bearing_weight"
+    ]
+  },
+  {
+    "id": "C2-R29",
+    "rowIndex": 29,
+    "group": "变桨轴承",
+    "field": "防腐等级",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "corrosion_level"
+    ]
+  },
+  {
+    "id": "C2-R31",
+    "rowIndex": 31,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨系统型式",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_system_type"
+    ]
+  },
+  {
+    "id": "C2-R32",
+    "rowIndex": 32,
+    "group": "变桨驱动与控制系统",
+    "field": "最大变桨速率",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_rate"
+    ]
+  },
+  {
+    "id": "C2-R33",
+    "rowIndex": 33,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨电机额定功率",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_motor_power"
+    ]
+  },
+  {
+    "id": "C2-R34",
+    "rowIndex": 34,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨电机额定扭矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_motor_rated_torque"
+    ]
+  },
+  {
+    "id": "C2-R35",
+    "rowIndex": 35,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨电机最大扭矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_motor_max_torque"
+    ]
+  },
+  {
+    "id": "C2-R36",
+    "rowIndex": 36,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨电机制动扭矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_motor_brake_torque"
+    ]
+  },
+  {
+    "id": "C2-R37",
+    "rowIndex": 37,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨减速机输出额定扭矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_gearbox_rated_torque"
+    ]
+  },
+  {
+    "id": "C2-R38",
+    "rowIndex": 38,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨减速机最大驱动扭矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_gearbox_max_torque"
+    ]
+  },
+  {
+    "id": "C2-R39",
+    "rowIndex": 39,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨减速机制动扭矩",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "pitch_gearbox_brake_torque"
+    ]
+  },
+  {
+    "id": "C2-R40",
+    "rowIndex": 40,
+    "group": "变桨驱动与控制系统",
+    "field": "变桨后备电源形式",
+    "unit": "",
+    "remark": "超级电容、蓄电池等",
+    "concepts": [
+      "pitch_backup_power"
+    ]
+  }
+]

@@ -1,0 +1,134 @@
+{
+  "schema_version": "business_bid_outline.v1",
+  "document_name": "示例招标文件.docx",
+  "outline_source": {
+    "section_title": "历史商务标投标文件目录",
+    "source_text": "一、投标函及授权文件\n（一）投标函\n（二）法定代表人授权委托书\n（三）投标专用章效力说明\n二、资格证明文件\n（一）公司介绍\n1. 工厂清单\n2. 生产基地照片\n（二）类似项目业绩证明",
+    "confidence": "high",
+    "source_type": "history_bid_toc",
+    "history_document_name": "示例历史商务标投标文件.docx"
+  },
+  "context": {
+    "outline_method": {
+      "summary": "顶层、子层级和孙层级均先学习自历史商务标投标文件；当前招标文件用于匹配 source_text、补强新增必须提交材料，但不是历史 children 保留的唯一门槛。",
+      "source_text": "投标文件应按照招标文件要求编制并提交资格、商务响应及承诺材料。"
+    },
+    "history_experience_retention": {
+      "summary": "投标专用章效力说明属于历史经验保留项：当前招标文件未找到逐字对应标题，但历史商务标中作为独立承诺/说明类目录项存在，可单独编排、可单独审查。",
+      "source_text": "（三）投标专用章效力说明"
+    },
+    "material_assembly_items_not_expanded": {
+      "summary": "历史目录中公司介绍下的工厂清单、生产基地照片属于素材库组装项，会在后续正文组装时自然展开，目录阶段不展开为 section 或 child。",
+      "source_text": "（一）公司介绍\n1. 工厂清单\n2. 生产基地照片"
+    },
+    "bid_validity": {
+      "value": "90日历天",
+      "source_text": "投标有效期：90日历天"
+    }
+  },
+  "sections": [
+    {
+      "id": "sec-001",
+      "title": "投标函及授权文件",
+      "number": "一、",
+      "level": 1,
+      "required_status": "必要",
+      "source_text": "投标文件应包括投标函、法定代表人身份证明或授权委托书。",
+      "children": [
+        {
+          "id": "sec-001-001",
+          "title": "投标函",
+          "number": "1.1",
+          "level": 2,
+          "required_status": "必要",
+          "source_text": "投标函格式",
+          "children": []
+        },
+        {
+          "id": "sec-001-002",
+          "title": "法定代表人授权委托书",
+          "number": "1.2",
+          "level": 2,
+          "required_status": "必要",
+          "source_text": "法定代表人身份证明或授权委托书",
+          "children": []
+        },
+        {
+          "id": "sec-001-003",
+          "title": "投标专用章效力说明",
+          "number": "1.3",
+          "level": 2,
+          "required_status": "待确认",
+          "source_text": "（三）投标专用章效力说明",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-002",
+      "title": "资格证明文件",
+      "number": "二、",
+      "level": 1,
+      "required_status": "必要",
+      "source_text": "资格审查资料包括营业执照、资质证书、类似项目业绩证明材料。",
+      "children": [
+        {
+          "id": "sec-002-001",
+          "title": "公司介绍",
+          "number": "2.1",
+          "level": 2,
+          "required_status": "待确认",
+          "source_text": "（一）公司介绍",
+          "children": []
+        },
+        {
+          "id": "sec-002-002",
+          "title": "类似项目业绩证明",
+          "number": "2.2",
+          "level": 2,
+          "required_status": "必要",
+          "source_text": "投标人应提供近三年类似项目业绩合同证明材料。",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-003",
+      "title": "商务偏差表",
+      "number": "三、",
+      "level": 1,
+      "required_status": "待确认",
+      "source_text": "三、商务偏差表",
+      "children": []
+    },
+    {
+      "id": "sec-004",
+      "title": "商务评分索引表",
+      "number": null,
+      "level": 1,
+      "required_status": "待确认",
+      "source_text": "商务评分索引表",
+      "children": []
+    }
+  ],
+  "review_items": [
+    {
+      "message": "投标专用章效力说明为历史经验保留项，当前招标文件未找到明确逐字对应标题；建议人工确认是否独立列出。",
+      "source_text": "（三）投标专用章效力说明",
+      "suggested_section_id": "sec-001-003",
+      "required_status": "待确认"
+    },
+    {
+      "message": "商务偏差表的目录名称来自历史商务标投标文件，当前招标文件仅找到宽泛的实质性响应要求，需人工确认是否保留。",
+      "source_text": "投标文件应对招标文件商务条款作出实质性响应。",
+      "suggested_section_id": "sec-003",
+      "required_status": "待确认"
+    },
+    {
+      "message": "招标文件要求提交联合体协议书，但是否适用于本项目投标人需结合投标人实际情况人工确认。",
+      "source_text": "接受联合体投标的，联合体各方应签订联合体协议书并随投标文件提交。",
+      "suggested_section_id": "sec-002",
+      "required_status": "待确认"
+    }
+  ]
+}

@@ -70,7 +70,7 @@ echo ========================================
 echo   ✅ 启动完成！
 echo   🌐 浏览器访问: http://localhost:5173
 echo   📡 FastAPI API: http://127.0.0.1:8000 ^(已开启自动重载^)
-echo   📝 当前为正式 backend 入口；OnlyOffice 请额外保证 8080 已启动
+echo   📝 当前为正式 backend 入口；OnlyOffice 通过本机 80 端口的 /ds 代理访问
 echo   ⏹  关闭此窗口停止前端服务
 echo   ⏹  同时关闭 "SEWPG FastAPI" 窗口
 echo ========================================

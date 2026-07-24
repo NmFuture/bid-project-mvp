@@ -1,0 +1,2621 @@
+{
+  "projectId": "PRJ-0003",
+  "projectName": "待解析项目-20260503-2309",
+  "bidType": "技术标",
+  "workDir": "/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir",
+  "tocJsonPath": "/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/toc.json",
+  "wikiDir": "",
+  "parseResultPath": "/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/parse_result.json",
+  "projectIdentity": {
+    "workspaceProjectId": "PRJ-0003",
+    "bidProjectId": "PRJ-0003",
+    "bidProjectCode": "PRJ-0003",
+    "bidProjectName": "待解析项目-20260503-2309",
+    "projectId": "MAT-HN-CHIFENG-001",
+    "projectCode": "MAT-HN-CHIFENG-001",
+    "projectName": "MAT-HN-CHIFENG-001",
+    "materialProjectMode": "library",
+    "bidType": "技术标",
+    "owner": "华能集团",
+    "customerName": "华能集团",
+    "customerId": "CUST-HUANENG",
+    "customerCanonicalName": "华能集团",
+    "customerAliases": [
+      "华能集团",
+      "华能",
+      "中国华能",
+      "华能新能源"
+    ],
+    "customerInput": "华能集团",
+    "customerMatchedBy": "material-library",
+    "matchKeys": [
+      "PRJ-0003",
+      "待解析项目-20260503-2309",
+      "MAT-HN-CHIFENG-001",
+      "华能集团",
+      "华能",
+      "中国华能",
+      "华能新能源"
+    ]
+  },
+  "materialScope": {
+    "bidType": "技术标",
+    "identity": {
+      "workspaceProjectId": "PRJ-0003",
+      "bidProjectId": "PRJ-0003",
+      "bidProjectCode": "PRJ-0003",
+      "bidProjectName": "待解析项目-20260503-2309",
+      "projectId": "MAT-HN-CHIFENG-001",
+      "projectCode": "MAT-HN-CHIFENG-001",
+      "projectName": "MAT-HN-CHIFENG-001",
+      "materialProjectMode": "library",
+      "bidType": "技术标",
+      "owner": "华能集团",
+      "customerName": "华能集团",
+      "customerId": "CUST-HUANENG",
+      "customerCanonicalName": "华能集团",
+      "customerAliases": [
+        "华能集团",
+        "华能",
+        "中国华能",
+        "华能新能源"
+      ],
+      "customerInput": "华能集团",
+      "customerMatchedBy": "material-library",
+      "matchKeys": [
+        "PRJ-0003",
+        "待解析项目-20260503-2309",
+        "MAT-HN-CHIFENG-001",
+        "华能集团",
+        "华能",
+        "中国华能",
+        "华能新能源"
+      ]
+    },
+    "readableScopes": [
+      {
+        "key": "standard",
+        "label": "通用素材",
+        "materialTier": "standard",
+        "path": "技术标/通用素材",
+        "identityMatchedBy": "bidType"
+      },
+      {
+        "key": "customer",
+        "label": "客户素材",
+        "materialTier": "customer",
+        "path": "技术标/客户素材/华能集团",
+        "customerId": "CUST-HUANENG",
+        "customerName": "华能集团",
+        "identityMatchedBy": "customer"
+      },
+      {
+        "key": "project",
+        "label": "项目素材",
+        "materialTier": "project",
+        "path": "技术标/项目素材/MAT-HN-CHIFENG-001",
+        "projectId": "MAT-HN-CHIFENG-001",
+        "projectCode": "MAT-HN-CHIFENG-001",
+        "projectName": "MAT-HN-CHIFENG-001",
+        "identityMatchedBy": "project"
+      }
+    ],
+    "paths": [
+      "技术标/通用素材",
+      "技术标/客户素材/华能集团",
+      "技术标/项目素材/MAT-HN-CHIFENG-001"
+    ],
+    "summary": "技术标/通用素材；技术标/客户素材/华能集团；技术标/项目素材/MAT-HN-CHIFENG-001"
+  },
+  "materialIndex": [
+    {
+      "id": "RAW-0448",
+      "name": "CQC250304413824310 EW10.0-220 HH25(带变压器开关柜）设计D 20250918 .PDF",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220设计认证",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0437",
+      "name": "X2平台机型投标参数_20250106.xlsx",
+      "folderPath": "技术标/通用素材/投标机型参数表（产品管理部：在线文档）",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T14:01:09.016657+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0387",
+      "name": "固定-上海电气风电试验检测能力专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-上海电气风电试验检测能力专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0388",
+      "name": "固定-数字化智慧风场专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-数字化智慧风场专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0422",
+      "name": "固定-抗潮湿防腐蚀设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-抗潮湿防腐蚀设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0423",
+      "name": "固定-抗覆冰防凝露设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-抗覆冰防凝露设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0390",
+      "name": "固定-项目技术支持及服务专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-项目技术支持及服务专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0424",
+      "name": "固定-抗高温设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-抗高温设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0425",
+      "name": "固定-电气绝缘方案.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-电气绝缘方案.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0392",
+      "name": "塔筒固化&定制-投标项目塔筒专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "塔筒固化&定制-投标项目塔筒专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "技术方案"
+      ],
+      "placeholderSamples": [
+        "[技术方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "技术方案"
+        ],
+        "placeholderSamples": [
+          "[技术方案，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0426",
+      "name": "固定-防紫外线、抗老化、电离辐射设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-防紫外线、抗老化、电离辐射设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0393",
+      "name": "塔筒固化-混塔解决方案专题（如有）.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "塔筒固化-混塔解决方案专题（如有）.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0427",
+      "name": "固定-防雷保护设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-防雷保护设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0394",
+      "name": "待填写-供货范围概述.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-供货范围概述.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "招标要求"
+      ],
+      "placeholderSamples": [
+        "[招标要求，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "招标要求"
+        ],
+        "placeholderSamples": [
+          "[招标要求，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0395",
+      "name": "待填写-投标方案技术先进性综述.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-投标方案技术先进性综述.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "投标机型"
+      ],
+      "placeholderSamples": [
+        "[投标机型，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "投标机型"
+        ],
+        "placeholderSamples": [
+          "[投标机型，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0429",
+      "name": "待填写-产品交付、考核及验收.docx",
+      "folderPath": "技术标/通用素材/技术标-产品交付、考核及验收",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-产品交付、考核及验收.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "招标要求"
+      ],
+      "placeholderSamples": [
+        "[招标要求，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "招标要求"
+        ],
+        "placeholderSamples": [
+          "[招标要求，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0396",
+      "name": "待填写-投标机型样机认证与测试专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-投标机型样机认证与测试专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "投标机型"
+      ],
+      "placeholderSamples": [
+        "[投标机型，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "投标机型"
+        ],
+        "placeholderSamples": [
+          "[投标机型，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0430",
+      "name": "固定-技术标准.docx",
+      "folderPath": "技术标/通用素材/技术标-技术标准",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-技术标准.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0397",
+      "name": "待填写-投标项目设备交货进度.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-投标项目设备交货进度.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "项目方案"
+      ],
+      "placeholderSamples": [
+        "[项目方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "项目方案"
+        ],
+        "placeholderSamples": [
+          "[项目方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0431",
+      "name": "待填写-投标说明函.docx",
+      "folderPath": "技术标/通用素材/技术标-投标说明函",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-投标说明函.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 4,
+      "placeholderLabels": [
+        "招标方",
+        "项目名称",
+        "日期",
+        "项目方案"
+      ],
+      "placeholderSamples": [
+        "[招标方，待填写]",
+        "[项目名称，待填写]",
+        "[日期，待填写]",
+        "[项目方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 4,
+        "placeholderLabels": [
+          "招标方",
+          "项目名称",
+          "日期",
+          "项目方案"
+        ],
+        "placeholderSamples": [
+          "[招标方，待填写]",
+          "[项目名称，待填写]",
+          "[日期，待填写]",
+          "[项目方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0398",
+      "name": "待填写-设备运行和维护专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-设备运行和维护专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 3,
+      "placeholderLabels": [
+        "项目名称",
+        "投标方案",
+        "投标机型"
+      ],
+      "placeholderSamples": [
+        "[项目名称，待填写]",
+        "[投标方案，待填写]",
+        "[投标机型，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 3,
+        "placeholderLabels": [
+          "项目名称",
+          "投标方案",
+          "投标机型"
+        ],
+        "placeholderSamples": [
+          "[项目名称，待填写]",
+          "[投标方案，待填写]",
+          "[投标机型，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0432",
+      "name": "固定-上海电气优势简介.docx",
+      "folderPath": "技术标/通用素材/技术标-标前概述",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-上海电气优势简介.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0399",
+      "name": "待填写-项目投标设备综合技术参数与性能指标.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-项目投标设备综合技术参数与性能指标.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 4,
+      "placeholderLabels": [
+        "投标机型",
+        "项目名称",
+        "投标方案",
+        "招标要求"
+      ],
+      "placeholderSamples": [
+        "[投标机型，待填写]",
+        "[项目名称，待填写]",
+        "[投标方案，待填写]",
+        "[招标要求，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 4,
+        "placeholderLabels": [
+          "投标机型",
+          "项目名称",
+          "投标方案",
+          "招标要求"
+        ],
+        "placeholderSamples": [
+          "[投标机型，待填写]",
+          "[项目名称，待填写]",
+          "[投标方案，待填写]",
+          "[招标要求，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0433",
+      "name": "待填写-供货保障能力.docx",
+      "folderPath": "技术标/通用素材/技术标-标前概述",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-供货保障能力.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 3,
+      "placeholderLabels": [
+        "基地名称",
+        "基地介绍",
+        "项目方案"
+      ],
+      "placeholderSamples": [
+        "[基地名称，待填写]",
+        "[基地介绍，待填写]",
+        "[项目方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 3,
+        "placeholderLabels": [
+          "基地名称",
+          "基地介绍",
+          "项目方案"
+        ],
+        "placeholderSamples": [
+          "[基地名称，待填写]",
+          "[基地介绍，待填写]",
+          "[项目方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0400",
+      "name": "机型固化&待填写-投标总体方案概述.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&待填写-投标总体方案概述.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 5,
+      "placeholderLabels": [
+        "项目名称",
+        "投标机型",
+        "投标方案",
+        "招标要求",
+        "技术方案"
+      ],
+      "placeholderSamples": [
+        "[项目名称，待填写]",
+        "[投标机型，待填写]",
+        "[投标方案，待填写]",
+        "[招标要求，待填写]",
+        "[技术方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 5,
+        "placeholderLabels": [
+          "项目名称",
+          "投标机型",
+          "投标方案",
+          "招标要求",
+          "技术方案"
+        ],
+        "placeholderSamples": [
+          "[项目名称，待填写]",
+          "[投标机型，待填写]",
+          "[投标方案，待填写]",
+          "[招标要求，待填写]",
+          "[技术方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0434",
+      "name": "待填写-投标关键数据一览表.docx",
+      "folderPath": "技术标/通用素材/技术标-标前概述",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-投标关键数据一览表.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "项目名称",
+        "投标方案"
+      ],
+      "placeholderSamples": [
+        "[项目名称，待填写]",
+        "[投标方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "项目名称",
+          "投标方案"
+        ],
+        "placeholderSamples": [
+          "[项目名称，待填写]",
+          "[投标方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0401",
+      "name": "固定-上海电气生产能力介绍.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目设备制造与全过程质量保障体系专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-上海电气生产能力介绍.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0435",
+      "name": "待填写-投标机型业绩情况.docx",
+      "folderPath": "技术标/通用素材/技术标-标前概述",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-投标机型业绩情况.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [],
+      "placeholderSamples": [
+        "待填写"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [],
+        "placeholderSamples": [
+          "待填写"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0402",
+      "name": "固定-全过程质量保障体系.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目设备制造与全过程质量保障体系专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-全过程质量保障体系.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0436",
+      "name": "机型固化-投标方案优势说明.docx",
+      "folderPath": "技术标/通用素材/技术标-标前概述",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-投标方案优势说明.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0403",
+      "name": "机型固化&定制-主轴专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&定制-主轴专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0404",
+      "name": "机型固化&定制-主轴承专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&定制-主轴承专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0438",
+      "name": "华能集团2025年第5批集采投标项目大部件品牌.xlsx",
+      "folderPath": "技术标/通用素材/短名单（采购部：邮件确认）",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0405",
+      "name": "机型固化&定制-变桨系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&定制-变桨系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0439",
+      "name": "采购部短名单(常规版）20260108.xlsx",
+      "folderPath": "技术标/通用素材/短名单（采购部：邮件确认）",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0406",
+      "name": "机型固化&定制-叶片专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&定制-叶片专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0440",
+      "name": "X2-LYC-主轴轴承TRB_电子证书.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/主轴承",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0407",
+      "name": "机型固化&定制-齿轮箱专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&定制-齿轮箱专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0441",
+      "name": "X2-SKF-主轴轴承TRB_电子证书.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/主轴承",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0408",
+      "name": "机型固化&待填写-升降机.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&待填写-升降机.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "招标要求"
+      ],
+      "placeholderSamples": [
+        "[招标要求，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "招标要求"
+        ],
+        "placeholderSamples": [
+          "[招标要求，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0442",
+      "name": "CGC202546131009230+部件认证证书主附页-上海电气风电集团股份有限公司双馈异步发电机EW-DFIG60.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/发电机",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0409",
+      "name": "机型固化&待填写-自动消防专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&待填写-自动消防专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "投标机型",
+        "招标要求"
+      ],
+      "placeholderSamples": [
+        "[投标机型，待填写]",
+        "[招标要求，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "投标机型",
+          "招标要求"
+        ],
+        "placeholderSamples": [
+          "[投标机型，待填写]",
+          "[招标要求，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0443",
+      "name": "30 部件证书-CGC2025461310009上电YG全双馈式EW-CNVDL11410000.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/变流器",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0410",
+      "name": "机型固化&待填写-视频监控系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化&待填写-视频监控系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "投标方案"
+      ],
+      "placeholderSamples": [
+        "[投标方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "投标方案"
+        ],
+        "placeholderSamples": [
+          "[投标方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0444",
+      "name": "30 部件证书-CGC2025461310032上电HW全双馈式EW-CNVDL11410000.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/变流器",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0411",
+      "name": "机型固化-偏航系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-偏航系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0445",
+      "name": "60-10 上海电气S108型风轮叶片型式A认证证书首附页 中英文 2025.06.19.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/叶片",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0412",
+      "name": "机型固化-制动系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-制动系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0446",
+      "name": "30.HB9000H_主附页-齿轮箱(签章版).pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/齿轮箱",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0413",
+      "name": "机型固化-发电机专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-发电机专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0447",
+      "name": "X2A-DLJ-认证证书.pdf",
+      "folderPath": "技术标/通用素材/证书报告（提资流程）/10-220大部件认证（完整页）/齿轮箱",
+      "materialTier": "standard",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0389",
+      "name": "固定-碳排放强度（tCO2e万元营业收入）.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-碳排放强度（tCO2e万元营业收入）.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0391",
+      "name": "固定-项目投标设备安装与调试方案.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-项目投标设备安装与调试方案.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0414",
+      "name": "机型固化-变流器专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-变流器专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0415",
+      "name": "机型固化-叶片净空监测系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-叶片净空监测系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0420",
+      "name": "机型固化-防雷系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-防雷系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "投标机型"
+      ],
+      "placeholderSamples": [
+        "[投标机型，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "投标机型"
+        ],
+        "placeholderSamples": [
+          "[投标机型，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0421",
+      "name": "固定-抗低温设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-抗低温设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0416",
+      "name": "机型固化-控制系统专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-控制系统专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0428",
+      "name": "固定-防风沙设计.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机环境适应性专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-防风沙设计.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0417",
+      "name": "机型固化-机舱专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-机舱专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0418",
+      "name": "机型固化-液压系统专题（如有）.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-液压系统专题（如有）.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0386",
+      "name": "业绩情况.docx",
+      "folderPath": "技术标/通用素材/业绩情况（商务运营部：邮件传递）",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "业绩情况.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0419",
+      "name": "机型固化-轮毂专题.docx",
+      "folderPath": "技术标/通用素材/技术标-专题方案要求/项目风机各子系统专题",
+      "materialTier": "standard",
+      "hasCleanedWord": true,
+      "cleanedFileName": "机型固化-轮毂专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0454",
+      "name": "主轴强度复核报告.pdf",
+      "folderPath": "技术标/客户素材/华能集团/部件校核报告(产品管理部：牵头组织相关科室邮件传递）",
+      "materialTier": "customer",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0455",
+      "name": "主轴轴承场址校核报告.pdf",
+      "folderPath": "技术标/客户素材/华能集团/部件校核报告(产品管理部：牵头组织相关科室邮件传递）",
+      "materialTier": "customer",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0457",
+      "name": "变桨轴承场址校核报告.pdf",
+      "folderPath": "技术标/客户素材/华能集团/部件校核报告(产品管理部：牵头组织相关科室邮件传递）",
+      "materialTier": "customer",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0458",
+      "name": "叶片场址校核报告.pdf",
+      "folderPath": "技术标/客户素材/华能集团/部件校核报告(产品管理部：牵头组织相关科室邮件传递）",
+      "materialTier": "customer",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0456",
+      "name": "偏航驱动与制动能力校核报告.docx",
+      "folderPath": "技术标/客户素材/华能集团/部件校核报告(产品管理部：牵头组织相关科室邮件传递）",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "偏航驱动与制动能力校核报告.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0459",
+      "name": "齿轮箱场址校核报告.docx",
+      "folderPath": "技术标/客户素材/华能集团/部件校核报告(产品管理部：牵头组织相关科室邮件传递）",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "齿轮箱场址校核报告.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0449",
+      "name": "固定-与华能集团新能源项目合作.docx",
+      "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-与华能集团新能源项目合作.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0450",
+      "name": "固定-与华能集团签署的战略合作协议.docx",
+      "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-与华能集团签署的战略合作协议.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0452",
+      "name": "固定-风电机组自主可控推广应用的承诺.docx",
+      "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-风电机组自主可控推广应用的承诺.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "招标方",
+        "日期"
+      ],
+      "placeholderSamples": [
+        "[招标方，待填写]",
+        "[日期，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "招标方",
+          "日期"
+        ],
+        "placeholderSamples": [
+          "[招标方，待填写]",
+          "[日期，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0451",
+      "name": "固定-我司与华能集团合作自主可控技术的研发与应用.docx",
+      "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "固定-我司与华能集团合作自主可控技术的研发与应用.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0453",
+      "name": "待填写-技术评分标准索引表.docx",
+      "folderPath": "技术标/客户素材/华能集团/技术标-标前概述",
+      "materialTier": "customer",
+      "hasCleanedWord": true,
+      "cleanedFileName": "待填写-技术评分标准索引表.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 8,
+      "placeholderLabels": [
+        "投标机型",
+        "投标方案",
+        "性能指标承诺",
+        "章节索引",
+        "风资源数据",
+        "发电小时数承诺",
+        "轮毂高度",
+        "项目方案"
+      ],
+      "placeholderSamples": [
+        "[投标机型，待填写]",
+        "[投标方案，待填写]",
+        "[性能指标承诺，待填写]",
+        "[章节索引，待填写]",
+        "[风资源数据，待填写]",
+        "[发电小时数承诺，待填写]",
+        "[轮毂高度，待填写]",
+        "[项目方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 8,
+        "placeholderLabels": [
+          "投标机型",
+          "投标方案",
+          "性能指标承诺",
+          "章节索引",
+          "风资源数据",
+          "发电小时数承诺",
+          "轮毂高度",
+          "项目方案"
+        ],
+        "placeholderSamples": [
+          "[投标机型，待填写]",
+          "[投标方案，待填写]",
+          "[性能指标承诺，待填写]",
+          "[章节索引，待填写]",
+          "[风资源数据，待填写]",
+          "[发电小时数承诺，待填写]",
+          "[轮毂高度，待填写]",
+          "[项目方案，待填写]"
+        ],
+        "detectedFrom": [
+          "filename",
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0460",
+      "name": "W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/功率曲线（解决方案部_TPM：citrix平台提取）",
+      "materialTier": "project",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0461",
+      "name": "W10.0-220_空气密度1.225_湍流强度0.1_风剪切0.1_2026-01-21 16-11-38.xlsx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/功率曲线（解决方案部_TPM：citrix平台提取）",
+      "materialTier": "project",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0462",
+      "name": "发电量担保（承诺保证值）.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/发电量担保（解决方案部_风资源处：风资源流程传递））",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "发电量担保（承诺保证值）.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0464",
+      "name": "无价格-标段一：华能赤峰市200万千瓦自建调峰能力风光储多能互补一体化+荒漠治理基地项目（翁牛特旗120万千瓦风电项目北区）报价文件.xlsx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/商务报价文件（商务运营部：邮件传递）",
+      "materialTier": "project",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0463",
+      "name": "发电量担保（承诺考核值）.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/发电量担保（解决方案部_风资源处：风资源流程传递））",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "发电量担保（承诺考核值）.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0465",
+      "name": "基础弯矩表.xlsx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/基础弯矩表（订单设计部_系统方案所_载荷设计室：技术准备流程传递）",
+      "materialTier": "project",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0466",
+      "name": "塔架与基础工程量.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/塔架与基础工程量（订单设计部_订单设计所_塔架设计室：技术准备流程传递）",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "塔架与基础工程量.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0467",
+      "name": "定制-投标机型项目场址设计安全性专题.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-投标机型项目场址设计安全性专题.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "机型安全等级描述",
+        "报告图片"
+      ],
+      "placeholderSamples": [
+        "[机型安全等级描述，待填写]",
+        "[报告图片，待补充]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "机型安全等级描述",
+          "报告图片"
+        ],
+        "placeholderSamples": [
+          "[机型安全等级描述，待填写]",
+          "[报告图片，待补充]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0468",
+      "name": "定制-本项目主机供货制造基地.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-本项目主机供货制造基地.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "基地名称",
+        "基地介绍"
+      ],
+      "placeholderSamples": [
+        "[基地名称，待填写]",
+        "[基地介绍，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "基地名称",
+          "基地介绍"
+        ],
+        "placeholderSamples": [
+          "[基地名称，待填写]",
+          "[基地介绍，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0469",
+      "name": "定制-本项目叶片供货制造基地.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-本项目叶片供货制造基地.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "基地名称",
+        "基地介绍"
+      ],
+      "placeholderSamples": [
+        "[基地名称，待填写]",
+        "[基地介绍，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "基地名称",
+          "基地介绍"
+        ],
+        "placeholderSamples": [
+          "[基地名称，待填写]",
+          "[基地介绍，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0470",
+      "name": "定制-项目投标设备运输与现场存储方案.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-项目投标设备运输与现场存储方案.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "物流方案"
+      ],
+      "placeholderSamples": [
+        "[物流方案，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "物流方案"
+        ],
+        "placeholderSamples": [
+          "[物流方案，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0471",
+      "name": "定制-项目风资源评估与机组选型排布及发电量计算.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-专题方案要求",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-项目风资源评估与机组选型排布及发电量计算.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 2,
+      "placeholderLabels": [
+        "项目名称",
+        "风资源报告"
+      ],
+      "placeholderSamples": [
+        "[项目名称，待填写]",
+        "[风资源报告，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 2,
+        "placeholderLabels": [
+          "项目名称",
+          "风资源报告"
+        ],
+        "placeholderSamples": [
+          "[项目名称，待填写]",
+          "[风资源报告，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0472",
+      "name": "定制-项目技术承诺函.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-项目技术承诺函",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-项目技术承诺函.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "项目承诺函"
+      ],
+      "placeholderSamples": [
+        "[项目承诺函，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "项目承诺函"
+        ],
+        "placeholderSamples": [
+          "[项目承诺函，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0473",
+      "name": "定制-风资源评估与机位排布方案.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/技术标-风资源评估与机位排布方案",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "定制-风资源评估与机位排布方案.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": true,
+      "placeholderCount": 1,
+      "placeholderLabels": [
+        "风资源报告"
+      ],
+      "placeholderSamples": [
+        "[风资源报告，待填写]"
+      ],
+      "fillProfile": {
+        "requiresFill": true,
+        "placeholderCount": 1,
+        "placeholderLabels": [
+          "风资源报告"
+        ],
+        "placeholderSamples": [
+          "[风资源报告，待填写]"
+        ],
+        "detectedFrom": [
+          "docx"
+        ]
+      }
+    },
+    {
+      "id": "RAW-0474",
+      "name": "物流解决方案.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/物流解决方案（商务运营部：邮件传递）",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "物流解决方案.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0475",
+      "name": "载荷安全性评估报告.pdf",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/载荷安全性评估报告（订单设计部_系统方案所_载荷设计室：技术准备流程传递）",
+      "materialTier": "project",
+      "hasCleanedWord": false,
+      "cleanedFileName": "",
+      "cleanStatus": "pending",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0476",
+      "name": "本项目叶片供货制造基地.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/项目生产制造基地专题（制造部：邮件传递）",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "本项目叶片供货制造基地.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0477",
+      "name": "生产制造基地专题_锡盟基地.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/项目生产制造基地专题（制造部：邮件传递）",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "生产制造基地专题_锡盟基地.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    },
+    {
+      "id": "RAW-0478",
+      "name": "风资源评估报告.docx",
+      "folderPath": "技术标/项目素材/MAT-HN-CHIFENG-001/风资源评估报告（解决方案部_风资源处：风资源流程传递）",
+      "materialTier": "project",
+      "hasCleanedWord": true,
+      "cleanedFileName": "风资源评估报告.docx",
+      "cleanStatus": "cleaned",
+      "turbineModelLabel": "",
+      "updatedAt": "2026-05-03T12:41:02.952798+00:00",
+      "requiresFill": false,
+      "placeholderCount": 0,
+      "placeholderLabels": [],
+      "placeholderSamples": [],
+      "fillProfile": {
+        "requiresFill": false,
+        "placeholderCount": 0,
+        "placeholderLabels": [],
+        "placeholderSamples": [],
+        "detectedFrom": []
+      }
+    }
+  ],
+  "projectTurbineModel": {
+    "model": "EW10.0-220上置",
+    "platform": "X2E-A湍",
+    "layout": "变压器上置",
+    "ratedPowerKw": 10000,
+    "rotorDiameterM": 220,
+    "status": "active",
+    "statusLabel": "01-20260312临时哦沟通吧 主变压器上置",
+    "source": "parameter_sheet",
+    "sourceFileId": "RAW-0437",
+    "sourceFileName": "X2平台机型投标参数_20250106.xlsx",
+    "aliases": [
+      "EW10.0-220上置",
+      "EW10.0-220",
+      "W10.0-220上置",
+      "W10.0-220"
+    ]
+  },
+  "outputFile": "/data/documents/PRJ-0003/technical-workspace/s4_gap_workdir/gap_plan.json"
+}

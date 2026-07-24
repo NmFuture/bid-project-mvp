@@ -1,0 +1,38 @@
+services:
+  web:
+    container_name: sewpg_bid_second_web
+
+  fastapi:
+    container_name: sewpg_bid_second_fastapi
+    environment:
+      BUSINESS_PDF_PARSE_ENGINE: docling
+      BUSINESS_PDF_ENGINE_FALLBACK: none
+      BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
+
+  worker:
+    container_name: sewpg_bid_second_worker
+    environment:
+      BUSINESS_PDF_PARSE_ENGINE: docling
+      BUSINESS_PDF_ENGINE_FALLBACK: none
+      BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
+
+  docling-worker:
+    container_name: sewpg_bid_second_docling_worker
+
+  opencode:
+    container_name: sewpg_bid_second_opencode
+
+  onlyoffice:
+    container_name: sewpg_bid_second_onlyoffice
+
+  postgres:
+    container_name: sewpg_bid_second_postgres
+
+  redis:
+    container_name: sewpg_bid_second_redis
+
+  minio:
+    container_name: sewpg_bid_second_minio
+
+  ocr:
+    container_name: sewpg_bid_second_ocr

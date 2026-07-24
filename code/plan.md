@@ -1,66 +1,33 @@
-# MVP 联调计划
+# 当前开发计划
 
-## 目标
+> 更新日期：2026-05-27
 
-最终跑通：
+## 1. 当前目标
 
-```text
-web -> fastapi -> opencode -> onlyoffice
-```
+先跑通商务标端到端。当前重点不是继续堆页面，而是把真实商务标样本从智能解析一路跑到 Word/PDF 导出。
 
-最终部署形态：
+## 2. 权威文档
 
-```text
-docker compose
-  - web
-  - fastapi
-  - opencode
-  - onlyoffice
-```
+当前只看仓库根目录 `doc/` 下 3 个文档：
 
-## 步骤
+- `doc/代码结构梳理.md`
+- `doc/需求梳理.md`
+- `doc/研发计划.md`
 
-- [x] 1. 完善 API 文档
-  - 对齐当前前端接口名和字段
-  - 明确真实阶段与 mock 阶段
+历史文档只在 `doc/archive/2026-05-26-old-docs/` 中追溯，不作为当前计划。
 
-- [x] 2. 搭 FastAPI 骨架
-  - 建立 `sewpg-bid-backend/app`
-  - 承接当前前端会先调用的基础接口
-  - 跑通 S0 / S1 / S2 / S3 / S7 / S9 / S10 的骨架返回
+## 3. 下一批工作
 
-- [x] 3. 接入 OnlyOffice
-  - 本机 Docker 部署 OnlyOffice Document Server
-  - FastAPI 接真实 `document / callback / final-document`
-  - 前端 S9 嵌入真实 OnlyOffice 并验证保存回写
-  - 当前状态：已完成，S9 已实测可编辑、保存、回写
+1. 2026-05-28 先整理真实商务标样本和验收清单。
+2. 用真实样本验证解析页“上传解析 -> 参与/不参与判断 -> 参与后建项目”的口径；不参与必须删除临时承载。
+3. 并行推进商务标智能解析、目录生成、素材库标签、共用业绩库和素材清洗。
+4. 先完成素材库/Wiki，再做素材匹配、项目事实表和 AI填写。
+5. 基于审核后的素材和 AI填写结果生成正文，再做格式处理和导出。
+6. 技术标质量提升后续单独梳理。
 
-- [x] 4. 接入 opencode
-  - Docker 部署 `opencode serve`
-  - S2 接目录生成 skill
-  - S2 采用“投标模板目录优先，招标要求修正”的生成策略
-  - S7 接初稿生成能力
-  - 当前状态：Docker 中的 `opencode` 已部署并 smoke test 通过；S2 / S7 均已接入真实生成
+## 4. 开发原则
 
-- [x] 4.5 打通 S4 / S5 / S6 mock 流程
-  - FastAPI 持久化承接 `gaps-detection / gaps / materials/submissions / review-items`
-  - S4 基于当前目录生成缺口 mock 数据
-  - S5 支持补料、标记已补录/跳过、提交审核
-  - S6 支持生成审核预览文档并返回 OnlyOffice 会话
-
-- [x] 4.8 打通 S8 mock 承接
-  - FastAPI 新增 `GET /api/projects/{id}/coverage`
-  - S8 基于 S7 章节 `generationMode` 生成覆盖树、部分覆盖项、未覆盖项
-  - 保证 `S7 -> S8 -> S9 -> S10` 可以继续走通
-
-- [ ] 5. 收成最终 Docker Compose
-  - `web`
-  - `fastapi`
-  - `opencode`
-  - `onlyoffice`
-  - 明确 `.env` / 环境变量口径，至少包含：
-    - `OPENCODE_BASE_URL`
-    - `OPENCODE_PROVIDER_ID`
-    - `OPENCODE_MODEL_ID`
-    - 外部模型 `API_KEY`
-  - 保证部署使用者可以自行配置 `opencode` 的 `baseUrl / apiKey`
+- 技术标和商务标双轨隔离，不能为了省事恢复旧通用业务入口。
+- 共享底座可以复用，但业务判断要放回对应技术标或商务标模块。
+- AI 结果必须保留人工复核入口，不能静默替代报价、承诺、法务或最终投标判断。
+- 文档只记录当前状态、验证基线和下一步，不再堆逐次调试记录。

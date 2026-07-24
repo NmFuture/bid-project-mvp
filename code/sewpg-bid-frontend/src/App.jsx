@@ -1,27 +1,15 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useCallback, useEffect, useState } from 'react'
 import AppShell from './components/layout/AppShell'
-import ProjectList from './pages/ProjectList'
-import ProjectEntryRedirect from './pages/ProjectEntryRedirect'
-import ParseResult from './pages/ParseResult'
-import DirectoryGeneration from './pages/DirectoryGeneration'
-import OutlineReview from './pages/OutlineReview'
-import GapRecognition from './pages/GapRecognition'
-import GapFilling from './pages/GapFilling'
-import MaterialReview from './pages/MaterialReview'
-import GenerateProgress from './pages/GenerateProgress'
-import CoverageHeatmap from './pages/CoverageHeatmap'
-import CoCreationEditor from './pages/CoCreationEditor'
-import FinalExport from './pages/FinalExport'
-import MaterialDB from './pages/MaterialDB'
-import MaterialWiki from './pages/MaterialWiki'
-import AuditLog from './pages/AuditLog'
+import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
-import { authAPI } from './api'
-
-const AUTH_STORAGE_KEY = 'sewpg.auth.session'
+import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
+import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
+import { renderTechnicalRoutes } from './workspaces/technical/routes'
+import { renderBusinessRoutes } from './workspaces/business/routes'
+import { renderSharedRoutes } from './workspaces/shared/routes'
 
 const readStoredSession = () => {
   if (typeof window === 'undefined') return null
@@ -29,20 +17,49 @@ const readStoredSession = () => {
     const raw = window.localStorage.getItem(AUTH_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object') return parsed
-    return null
+    if (!parsed || typeof parsed !== 'object' || !parsed.token) return null
+    if (Number.isFinite(parsed.expiresAt) && parsed.expiresAt <= Date.now()) {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY)
+      return null
+    }
+    return parsed
   } catch {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY)
     return null
+  }
+}
+
+const buildSession = (payload, fallback = {}) => {
+  const token = payload?.token || fallback.token || ''
+  const expiresIn = Number(payload?.expiresIn || fallback.expiresIn || 0)
+  const fallbackExpiresAt = Number(fallback.expiresAt || 0)
+  return {
+    token,
+    user: payload?.user || fallback.user || null,
+    expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : null,
+    expiresAt:
+      Number.isFinite(expiresIn) && expiresIn > 0
+        ? Date.now() + expiresIn * 1000
+        : Number.isFinite(fallbackExpiresAt) && fallbackExpiresAt > Date.now()
+          ? fallbackExpiresAt
+          : null,
   }
 }
 
 const persistSession = (session) => {
   if (typeof window === 'undefined') return
-  if (!session) {
+  if (!session?.token || !session?.user) {
     window.localStorage.removeItem(AUTH_STORAGE_KEY)
     return
   }
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session))
+}
+
+function WorkspaceRedirect() {
+  const { workspace } = useParams()
+  const resolved = workspaceFromSlug(workspace)
+  if (!resolved) return <Navigate to="/dashboard" replace />
+  return <Navigate to={workspaceRoute(resolved.slug, '/projects')} replace />
 }
 
 export default function App() {
@@ -58,17 +75,27 @@ export default function App() {
   useEffect(() => {
     let mounted = true
     const syncSession = async () => {
+      const stored = readStoredSession()
+      if (!stored?.token) {
+        setSession(null)
+        persistSession(null)
+        setAuthLoading(false)
+        return
+      }
       setAuthLoading(true)
       try {
-        const payload = await authAPI.me()
+        const payload = await authAPI.me(stored.token)
         if (!mounted) return
-        const next = { token: payload?.token || '', user: payload?.user || null }
+        const next = buildSession(payload, stored)
         setSession(next)
         persistSession(next)
-      } catch {
+      } catch (error) {
         if (!mounted) return
         setSession(null)
         persistSession(null)
+        if (error?.status === 401) {
+          showToast('登录已过期，请重新登录。', 'error')
+        }
       } finally {
         if (mounted) setAuthLoading(false)
       }
@@ -77,10 +104,20 @@ export default function App() {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [showToast])
+
+  useEffect(() => {
+    const handleAuthExpired = (event) => {
+      setSession(null)
+      persistSession(null)
+      showToast(event?.detail?.message || '登录已过期，请重新登录。', 'error')
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+  }, [showToast])
 
   const handleLogin = useCallback((payload) => {
-    const next = { token: payload?.token || '', user: payload?.user || null }
+    const next = buildSession(payload)
     setSession(next)
     persistSession(next)
     showToast('登录成功')
@@ -114,23 +151,13 @@ export default function App() {
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       <AppShell currentUser={session?.user} onLogout={handleLogout}>
         <Routes>
-          <Route path="/" element={<Navigate to="/projects" replace />} />
-          <Route path="/projects" element={<ProjectList showToast={showToast} />} />
-          <Route path="/projects/:id" element={<ProjectEntryRedirect />} />
-          <Route path="/projects/:id/parse" element={<ParseResult showToast={showToast} />} />
-          <Route path="/projects/:id/directory" element={<DirectoryGeneration showToast={showToast} />} />
-          <Route path="/projects/:id/outline" element={<OutlineReview showToast={showToast} />} />
-          <Route path="/projects/:id/gaps" element={<GapRecognition showToast={showToast} />} />
-          <Route path="/projects/:id/gaps-fill" element={<GapFilling showToast={showToast} />} />
-          <Route path="/projects/:id/gaps/review" element={<MaterialReview showToast={showToast} />} />
-          <Route path="/projects/:id/generate" element={<GenerateProgress showToast={showToast} />} />
-          <Route path="/projects/:id/coverage" element={<CoverageHeatmap showToast={showToast} />} />
-          <Route path="/projects/:id/editor" element={<CoCreationEditor showToast={showToast} />} />
-          <Route path="/projects/:id/export" element={<FinalExport showToast={showToast} />} />
-          <Route path="/materials/structured" element={<MaterialDB showToast={showToast} />} />
-          <Route path="/materials/wiki" element={<MaterialWiki showToast={showToast} />} />
-          <Route path="/audit" element={<AuditLog showToast={showToast} />} />
-          <Route path="/settings" element={<Settings showToast={showToast} />} />
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/dashboard" element={<Dashboard currentUser={session?.user} />} />
+          {renderTechnicalRoutes({ user: session?.user, showToast })}
+          {renderBusinessRoutes({ user: session?.user, showToast })}
+          {renderSharedRoutes({ user: session?.user, showToast })}
+          <Route path="/workspace/:workspace" element={<WorkspaceRedirect />} />
+          <Route path="/settings" element={<Settings showToast={showToast} currentUser={session?.user} />} />
         </Routes>
       </AppShell>
     </>

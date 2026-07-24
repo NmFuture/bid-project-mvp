@@ -1,0 +1,491 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import zipfile
+from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree as ET
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from prepare_history_bid_outline_inputs import build_output as build_history_outline_inputs
+from prepare_tender_map_inputs import (
+    build_checklist_hits,
+    build_inputs as build_tender_inputs,
+    build_zones,
+    parse_checklist,
+)
+from document_structure_index import build_document_structure_index
+from resolve_source_text_candidates import make_output as build_source_text_candidates
+
+
+WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+CHINESE_NUMERAL = "[一二三四五六七八九十百千万零〇两]+"
+HEADING_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"^第(?P<num>{CHINESE_NUMERAL}|\d+)章[\s　:：、.-]*(?P<title>.+)$"),
+    re.compile(r"^(?P<num>\d+(?:\.\d+)*)(?:[\s　:：、.-]+)(?P<title>.+)$"),
+    re.compile(rf"^(?P<num>{CHINESE_NUMERAL})[、.．]\s*(?P<title>.+)$"),
+    re.compile(r"^[（(](?P<num>\d+)[）)]\s*(?P<title>.+)$"),
+)
+REQUIREMENT_PATTERN = re.compile(r"(?:投标人|供应商|响应方|报价人|申请人)?(?:应|须|必须|需|需要|应当|提供|提交|编制|说明|承诺|响应)(?P<title>[^。；;\n]{2,90})")
+GENERIC_CANDIDATE_TITLES = {
+    "文件",
+    "资料",
+    "材料",
+    "证明",
+    "相关",
+    "有关",
+    "相应",
+    "要求",
+    "说明",
+    "响应",
+    "承诺",
+    "用",
+}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate business bid outline from backend manifest.")
+    parser.add_argument("manifest", nargs="?")
+    parser.add_argument("--manifest", dest="manifest_option")
+    parser.add_argument("--response", choices=("summary", "review"), default="summary")
+    args = parser.parse_args()
+
+    manifest_path = Path(str(args.manifest_option or args.manifest or "")).expanduser()
+    if not manifest_path.exists():
+        raise SystemExit(f"manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    result = run_manifest(manifest, manifest_path)
+    response = result["review"] if args.response == "review" else result["summary"]
+    print(json.dumps(response, ensure_ascii=False, indent=2))
+    return 0
+
+
+def run_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    history_inputs_file = work_dir / "history_bid_outline_inputs.json"
+    tender_map_inputs_file = work_dir / "tender_map_inputs.json"
+    outline_file = work_dir / "outline.json"
+    document_structure_index_file = work_dir / "document_structure_index.json"
+    source_text_candidates_file = work_dir / "source_text_candidates.json"
+
+    template_file = existing_path(manifest.get("templateFile"), "templateFile")
+    tender_files = tender_inputs(manifest)
+    if not tender_files:
+        raise SystemExit("tenderFiles has no usable docx entries")
+
+    history_inputs = build_history_outline_inputs(template_file)
+    history_inputs_file.write_text(json.dumps(history_inputs, ensure_ascii=False, indent=2), encoding="utf-8")
+    template_outline = history_candidates_for_toc(history_inputs)
+
+    tender_map_inputs = build_tender_map_inputs(tender_files[0], work_dir)
+    tender_map_inputs_file.write_text(json.dumps(tender_map_inputs, ensure_ascii=False, indent=2), encoding="utf-8")
+    candidates = extract_candidates_from_tender_map(tender_map_inputs, tender_files[0])
+    document_index = build_document_structure_index(tender_map_inputs)
+    document_structure_index_file.write_text(json.dumps(document_index, ensure_ascii=False, indent=2), encoding="utf-8")
+    candidate_sections = outline_sections_from_template(template_outline, [])
+    source_candidates = build_source_text_candidate_payload(candidate_sections, tender_map_inputs)
+    source_text_candidates_file.write_text(
+        json.dumps(source_candidates, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if outline_file.exists():
+        outline_file.unlink()
+
+    summary = {
+        "schema_version": "business-outline-inputs-v1",
+        "skill": "bid-business-outline-generator",
+        "historyBidOutlineInputsFile": str(history_inputs_file),
+        "tenderMapInputsFile": str(tender_map_inputs_file),
+        "documentStructureIndexFile": str(document_structure_index_file),
+        "sourceTextCandidatesFile": str(source_text_candidates_file),
+        "summary": {
+            "history_outline_candidate_count": len(template_outline),
+            "tender_candidate_count": len(candidates),
+            "tender_file_count": len(tender_files),
+            "candidate_outline_item_count": sum(1 for _section in iter_outline_sections(candidate_sections)),
+            "source_text_candidate_count": (source_candidates.get("summary") or {}).get("candidate_count", 0),
+            "history_fallback_count": (source_candidates.get("summary") or {}).get("history_fallback_count", 0),
+            "resolve_elapsed_seconds": (source_candidates.get("summary") or {}).get("elapsed_seconds", 0),
+        },
+    }
+    return {"summary": summary, "review": summary}
+
+
+def outline_sections_from_template(
+    template_outline: list[dict[str, Any]],
+    tender_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    roots: list[dict[str, Any]] = []
+    stack: list[dict[str, Any]] = []
+    for index, item in enumerate(template_outline, start=1):
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        level = max(1, min(int(item.get("level") or 1), 6))
+        candidate = first_matching_candidate(title, tender_candidates)
+        raw_text = str((candidate or {}).get("rawText") or item.get("rawText") or title)
+        candidate_source_id = str(item.get("candidate_id") or f"hist-cand-{index:03d}")
+        outline_item_id = str(item.get("outline_item_id") or outline_item_id_from_source(candidate_source_id, index))
+        section = {
+            "id": outline_item_id,
+            "candidate_source_id": candidate_source_id,
+            "title": title,
+            "number": section_number(item.get("number")),
+            "level": level,
+            "source_text": raw_text,
+            "candidate_origin": "history_outline",
+            "source_ref": source_ref(candidate) if candidate else {},
+            "children": [],
+        }
+        while stack and int(stack[-1].get("level") or 1) >= level:
+            stack.pop()
+        if stack:
+            stack[-1].setdefault("children", []).append(section)
+        else:
+            roots.append(section)
+        stack.append(section)
+    return roots
+
+
+def outline_item_id_from_source(candidate_source_id: str, index: int) -> str:
+    match = re.search(r"(\d+)$", str(candidate_source_id or ""))
+    if match:
+        return f"BIZ-FALLBACK-{int(match.group(1)):04d}"
+    return f"BIZ-FALLBACK-{index:04d}"
+
+
+def build_source_text_candidate_payload(
+    candidate_sections: list[dict[str, Any]],
+    tender_map_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    payload = build_source_text_candidates(tender_map_inputs, {"sections": candidate_sections})
+    source_id_by_item_id = {
+        str(section.get("id")): str(section.get("candidate_source_id") or "")
+        for section in iter_outline_sections(candidate_sections)
+        if section.get("id") and section.get("candidate_source_id")
+    }
+    for item in payload.get("items", []) or []:
+        item_id = str(item.get("id") or "")
+        if item_id in source_id_by_item_id:
+            item["candidate_source_id"] = source_id_by_item_id[item_id]
+    payload["schema_version"] = "business-outline-source-text-candidates-v1"
+    payload["artifact_role"] = "candidate_material"
+    payload["summary"] = {
+        **dict(payload.get("summary") or {}),
+        "candidate_outline_item_count": sum(1 for _section in iter_outline_sections(candidate_sections)),
+    }
+    return payload
+
+
+def iter_outline_sections(sections: list[dict[str, Any]]) -> Any:
+    for section in sections or []:
+        yield section
+        yield from iter_outline_sections(section.get("children", []) or [])
+
+
+def existing_path(value: Any, field: str) -> Path:
+    path = Path(str(value or "")).expanduser()
+    if not path.exists():
+        raise SystemExit(f"{field} not found: {path}")
+    return path
+
+
+def tender_inputs(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    records = manifest.get("tenderFiles") if isinstance(manifest.get("tenderFiles"), list) else []
+    result: list[dict[str, Any]] = []
+    for index, record in enumerate(records, start=1):
+        if not isinstance(record, dict):
+            continue
+        path = Path(str(record.get("path") or "")).expanduser()
+        if not path.exists():
+            continue
+        result.append(
+            {
+                "id": str(record.get("id") or f"tender-{index}"),
+                "name": str(record.get("name") or path.name),
+                "path": path,
+            }
+        )
+    return result
+
+
+def source_file_payload(item: dict[str, Any]) -> dict[str, str]:
+    return {"id": str(item.get("id") or ""), "name": str(item.get("name") or ""), "path": str(item.get("path") or "")}
+
+
+def section_number(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def history_candidates_for_toc(history_inputs: dict[str, Any]) -> list[dict[str, Any]]:
+    document_name = str(history_inputs.get("document_name") or "")
+    candidates = history_inputs.get("outline_candidates") if isinstance(history_inputs.get("outline_candidates"), list) else []
+    result: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict):
+            continue
+        title = str(candidate.get("title_hint") or "").strip()
+        if not title:
+            continue
+        result.append(
+            {
+                "candidate_id": str(candidate.get("candidate_id") or f"hist-cand-{index + 1:03d}"),
+                "number": section_number(candidate.get("number")),
+                "title": title,
+                "level": max(1, int(candidate.get("level") or 1)),
+                "sourceFile": document_name,
+                "paragraphIndex": index,
+                "rawText": str(candidate.get("source_text") or title),
+                "sourceType": str(candidate.get("source_type") or "history_bid"),
+            }
+        )
+    return result
+
+
+def build_tender_map_inputs(file_record: dict[str, Any], work_dir: Path) -> dict[str, Any]:
+    checklist_path = SCRIPT_DIR.parent / "references" / "expert-checklist.md"
+    checklist = parse_checklist(checklist_path)
+    blocks, tables = build_tender_inputs(Path(str(file_record.get("path") or "")), checklist)
+    zones = build_zones(blocks, tables, checklist)
+    return {
+        "document_name": str(file_record.get("name") or Path(str(file_record.get("path") or "")).name),
+        "source_path": str(file_record.get("path") or ""),
+        "work_dir": str(work_dir),
+        "blocks": blocks,
+        "tables": tables,
+        "zones": zones,
+        "expert_checklist_hits": build_checklist_hits(blocks, tables, zones, checklist),
+    }
+
+
+def extract_candidates_from_tender_map(tender_map_inputs: dict[str, Any], file_record: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    blocks = tender_map_inputs.get("blocks") if isinstance(tender_map_inputs.get("blocks"), list) else []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        text = str(block.get("text") or "").strip()
+        if not text:
+            continue
+        match = REQUIREMENT_PATTERN.search(text)
+        if not match:
+            continue
+        title = normalize_candidate_title(match.group("title"))
+        key = title_key(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            {
+                "id": f"BUS-CAND-{len(candidates) + 1:04d}",
+                "title": title,
+                "rawText": text,
+                "sourceFile": str(file_record.get("path") or ""),
+                "fileId": str(file_record.get("id") or ""),
+                "fileName": str(file_record.get("name") or Path(str(file_record.get("path") or "")).name),
+                "paragraphIndex": block.get("paragraph_index"),
+                "blockId": block.get("block_id"),
+                "kind": "business_requirement",
+            }
+        )
+    return candidates
+
+
+def first_matching_candidate(title: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    key = title_key(title)
+    if not key:
+        return None
+    best: tuple[float, int, dict[str, Any]] | None = None
+    for candidate in candidates:
+        candidate_key = title_key(str(candidate.get("title") or ""))
+        score = candidate_match_score(key, candidate_key)
+        if score <= 0:
+            continue
+        raw_text_len = len(str(candidate.get("rawText") or ""))
+        current = (score, -raw_text_len, candidate)
+        if best is None or current > best:
+            best = current
+    return best[2] if best else None
+
+
+def extract_outline(path: Path) -> list[dict[str, Any]]:
+    paragraphs = docx_paragraphs(path)
+    outline: list[dict[str, Any]] = []
+    for index, paragraph in enumerate(paragraphs):
+        text = paragraph.strip()
+        if not text:
+            continue
+        parsed = parse_heading(text)
+        if parsed is None:
+            continue
+        number, title, level = parsed
+        outline.append(
+            {
+                "number": number,
+                "title": title,
+                "level": level,
+                "sourceFile": path.name,
+                "paragraphIndex": index,
+                "rawText": text,
+            }
+        )
+    return outline
+
+
+def docx_paragraphs(path: Path) -> list[str]:
+    if path.suffix.lower() != ".docx":
+        return []
+    with zipfile.ZipFile(path) as archive:
+        xml = archive.read("word/document.xml")
+    root = ET.fromstring(xml)
+    paragraphs: list[str] = []
+    for paragraph in root.iter(f"{WORD_NS}p"):
+        texts = [node.text or "" for node in paragraph.iter(f"{WORD_NS}t")]
+        paragraphs.append("".join(texts).strip())
+    return paragraphs
+
+
+def parse_heading(text: str) -> tuple[str, str, int] | None:
+    for pattern in HEADING_PATTERNS:
+        match = pattern.match(text)
+        if not match:
+            continue
+        number = str(match.group("num") or "").strip()
+        title = str(match.group("title") or "").strip()
+        level = 1 if text.startswith("第") else min(number.count(".") + 1, 9)
+        if title:
+            return number, title, level
+    return None
+
+
+def extract_candidates(tender_files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for file_record in tender_files:
+        path = Path(str(file_record.get("path") or ""))
+        for index, paragraph in enumerate(docx_paragraphs(path)):
+            text = paragraph.strip()
+            if not text:
+                continue
+            match = REQUIREMENT_PATTERN.search(text)
+            if not match:
+                continue
+            title = normalize_candidate_title(match.group("title"))
+            key = title_key(title)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "id": f"BUS-CAND-{len(candidates) + 1:04d}",
+                    "title": title,
+                    "rawText": text,
+                    "sourceFile": path.name,
+                    "fileId": str(file_record.get("id") or ""),
+                    "fileName": str(file_record.get("name") or path.name),
+                    "paragraphIndex": index,
+                    "kind": "business_requirement",
+                }
+            )
+    return candidates
+
+
+def normalize_candidate_title(value: str) -> str:
+    text = re.sub(r"[，,。；;：:].*$", "", str(value or "")).strip()
+    text = re.sub(r"^(?:相关|相应|有关)", "", text).strip()
+    return text[:60]
+
+
+def candidate_match_score(history_key: str, candidate_key: str) -> float:
+    if not history_key or not candidate_key:
+        return 0.0
+    if candidate_key in GENERIC_CANDIDATE_TITLES or len(candidate_key) < 4:
+        return 0.0
+    if history_key == candidate_key:
+        return 1.0
+    if len(candidate_key) >= 6 and candidate_key in history_key:
+        return min(0.95, len(candidate_key) / max(len(history_key), 1) + 0.25)
+    if len(history_key) >= 6 and history_key in candidate_key:
+        return min(0.92, len(history_key) / max(len(candidate_key), 1) + 0.2)
+    history_terms = title_terms(history_key)
+    candidate_terms = title_terms(candidate_key)
+    if not history_terms or not candidate_terms:
+        return 0.0
+    overlap = history_terms & candidate_terms
+    if not overlap:
+        return 0.0
+    weighted_overlap = sum(len(term) for term in overlap)
+    weighted_history = sum(len(term) for term in history_terms)
+    weighted_candidate = sum(len(term) for term in candidate_terms)
+    recall = weighted_overlap / max(weighted_history, 1)
+    precision = weighted_overlap / max(weighted_candidate, 1)
+    score = (recall * 0.6) + (precision * 0.4)
+    return score if score >= 0.52 and weighted_overlap >= 4 else 0.0
+
+
+def title_terms(value: str) -> set[str]:
+    text = re.sub(r"\d+", "", str(value or ""))
+    terms = {
+        part
+        for part in re.split(r"(?:及|和|与|或|的|其|是|为|在|中|内|对|按|将|并|以及|包括|包含)", text)
+        if len(part) >= 2 and part not in GENERIC_CANDIDATE_TITLES
+    }
+    for keyword in (
+        "投标专用章",
+        "股权结构",
+        "信用中国",
+        "经营异常",
+        "严重违法",
+        "失信被执行人",
+        "履约保证",
+        "投标保证金",
+        "商务偏差",
+        "货物规格",
+        "商务部分摘要表",
+        "企业资质",
+        "营业执照",
+        "纳税信用",
+        "财务审计",
+        "业绩证明",
+        "保密承诺",
+        "授权委托",
+    ):
+        key = title_key(keyword)
+        if key and key in value:
+            terms.add(key)
+    return terms
+
+
+def source_ref(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "tender",
+        "role": "basis",
+        "fileId": str(candidate.get("fileId") or ""),
+        "fileName": str(candidate.get("fileName") or candidate.get("sourceFile") or ""),
+        "paragraphIndex": candidate.get("paragraphIndex"),
+        "searchText": str(candidate.get("rawText") or candidate.get("title") or ""),
+        "rawText": str(candidate.get("rawText") or ""),
+        "basisText": str(candidate.get("rawText") or candidate.get("title") or ""),
+        "reason": "商务标招标要求依据",
+    }
+
+
+def title_key(value: str) -> str:
+    text = re.sub(r"\s+", "", str(value or "").lower())
+    text = re.sub(r"[，,。.:：;；、（）()\[\]【】《》<>\"'“”‘’\\/_-]+", "", text)
+    return text
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

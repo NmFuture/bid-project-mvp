@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
 
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
+from app.services.material_folder_scope import material_tier_root_path, project_material_root_path
+
 
 class PeripheralError(Exception):
     def __init__(
@@ -58,27 +61,43 @@ def safe_segment(value: str, fallback: str) -> str:
     return text or fallback
 
 
+def require_peripheral_bid_type(value: str) -> str:
+    try:
+        return require_bid_type(
+            value,
+            error_message="素材操作必须显式传入技术标或商务标。",
+        )
+    except ValueError as exc:
+        raise PeripheralError(400, str(exc), "BID_TYPE_REQUIRED") from exc
+
+
 class PeripheralStore:
     def __init__(self) -> None:
         self.reset()
 
     def reset(self) -> None:
         self._id_counter = itertools.count(1)
+        technical_standard_path = material_tier_root_path(TECHNICAL_BID_TYPE, "standard")
+        technical_customer_path = material_tier_root_path(TECHNICAL_BID_TYPE, "customer")
+        technical_project_path = material_tier_root_path(TECHNICAL_BID_TYPE, "project")
+        technical_demo_project_path = project_material_root_path(TECHNICAL_BID_TYPE, "PRJ-0001")
         self._raw_base_paths = {
-            "标准模板/技术标",
-            "标准模板/商务标",
-            "客户定制/华能集团/通用材料",
-            "客户定制/大唐集团/通用材料",
-            "项目定制/PRJ-0001/技术标",
-            "项目定制/PRJ-0001/商务标",
+            TECHNICAL_BID_TYPE,
+            technical_standard_path,
+            technical_customer_path,
+            f"{technical_customer_path}/华能集团",
+            f"{technical_customer_path}/大唐集团",
+            technical_project_path,
+            technical_demo_project_path,
+            BUSINESS_BID_TYPE,
         }
         self._raw_custom_folders: set[str] = set()
         self._raw_files = [
             self._make_raw_file(
                 name="技术标模板.docx",
-                folder_path="标准模板/技术标",
+                folder_path=technical_standard_path,
                 size=156_000,
-                bid_type="技术标",
+                bid_type=TECHNICAL_BID_TYPE,
                 project_id="",
                 customer_name="平台标准",
                 version=1,
@@ -87,9 +106,9 @@ class PeripheralStore:
             ),
             self._make_raw_file(
                 name="风机参数表.xlsx",
-                folder_path="客户定制/华能集团/通用材料",
+                folder_path=f"{technical_customer_path}/华能集团",
                 size=86_000,
-                bid_type="通用",
+                bid_type=TECHNICAL_BID_TYPE,
                 project_id="",
                 customer_name="华能集团",
                 version=2,
@@ -98,9 +117,9 @@ class PeripheralStore:
             ),
             self._make_raw_file(
                 name="测风塔原始数据.zip",
-                folder_path="项目定制/PRJ-0001/技术标",
+                folder_path=technical_demo_project_path,
                 size=8_600_000,
-                bid_type="技术标",
+                bid_type=TECHNICAL_BID_TYPE,
                 project_id="PRJ-0001",
                 customer_name="测试业主",
                 version=1,
@@ -109,36 +128,12 @@ class PeripheralStore:
             ),
         ]
 
-        self._structured_items = [
-            {
-                "id": "MAT-001",
-                "name": "风机性能保证值",
-                "type": "结构化表格",
-                "icon": "table_chart",
-                "version": "2026.04",
-                "updatedAt": now_display(),
-                "tableKey": "performance_guarantee",
-                "tableLabel": "性能保证",
-            },
-            {
-                "id": "MAT-002",
-                "name": "项目业绩清单",
-                "type": "结构化表格",
-                "icon": "dataset",
-                "version": "2026.04",
-                "updatedAt": now_display(),
-                "tableKey": "project_reference",
-                "tableLabel": "项目业绩",
-            },
-        ]
-        self._structured_table_options = [
+        self._excel_table_options = [
             {"key": "performance_guarantee", "label": "性能保证"},
             {"key": "project_reference", "label": "项目业绩"},
         ]
-        self._structured_import_history: list[dict[str, Any]] = []
-        self._structured_latest_receipt: dict[str, Any] | None = None
 
-        self._wiki_tag_options = ["风资源", "技术标", "商务标", "通用材料"]
+        self._wiki_tag_options = ["技术标", "商务标", "通用素材", "客户素材", "项目素材", "日志"]
         self._wiki_type_options = ["技术标", "商务标", "通用"]
         self._wiki_tree = [
             {
@@ -253,7 +248,7 @@ class PeripheralStore:
                 "status": "online",
                 "uptime": "99.5%",
                 "latency": "138ms",
-                "detail": "目录生成与初稿生成接口可用。",
+                "detail": "目录生成与正文拼装接口可用。",
             },
             {
                 "id": "svc-onlyoffice",
@@ -412,6 +407,7 @@ class PeripheralStore:
                         "id": node["path"],
                         "name": node["name"],
                         "path": node["path"],
+                        "directFileCount": current_count,
                         "fileCount": current_count + nested_count,
                         "children": child_nodes,
                     }
@@ -422,12 +418,13 @@ class PeripheralStore:
 
     def raw_permissions(self, role: str = "member") -> dict[str, Any]:
         normalized = "admin" if role == "admin" else "member"
+        editable_actions = {"upload": True, "rename": True, "move": True, "delete": True}
         return {
             "role": normalized,
             "rules": [
-                {"pathPrefix": "标准模板", "actions": {"upload": normalized == "admin", "rename": normalized == "admin", "move": normalized == "admin", "delete": normalized == "admin"}},
-                {"pathPrefix": "客户定制/*/通用材料", "actions": {"upload": normalized == "admin", "rename": normalized == "admin", "move": normalized == "admin", "delete": normalized == "admin"}},
-                {"pathPrefix": "项目定制", "actions": {"upload": True, "rename": True, "move": True, "delete": True}},
+                {"pathPrefix": "通用素材", "actions": editable_actions},
+                {"pathPrefix": "客户素材", "actions": editable_actions},
+                {"pathPrefix": "项目素材", "actions": editable_actions},
             ],
         }
 
@@ -442,12 +439,19 @@ class PeripheralStore:
         customer_name: str = "",
         bid_type: str = "",
         keyword: str = "",
+        recursive: bool = True,
         page: int = 1,
         page_size: int = 20,
     ) -> dict[str, Any]:
         items = list(self._raw_files)
         if folder_path:
-            items = [item for item in items if item["folderPath"] == folder_path]
+            if recursive:
+                items = [
+                    item for item in items
+                    if item["folderPath"] == folder_path or str(item["folderPath"]).startswith(f"{folder_path}/")
+                ]
+            else:
+                items = [item for item in items if item["folderPath"] == folder_path]
         if project_id:
             items = [item for item in items if item.get("projectId") == project_id]
         if customer_name:
@@ -467,11 +471,12 @@ class PeripheralStore:
             "pageSize": page_size,
         }
 
-    def raw_bootstrap_folders(self, project_id: str, bid_type: str = "技术标") -> dict[str, Any]:
+    def raw_bootstrap_folders(self, project_id: str, bid_type: str) -> dict[str, Any]:
         clean_id = safe_segment(project_id, "")
         if not clean_id:
             raise PeripheralError(400, "projectId 不能为空。", "PROJECT_ID_REQUIRED")
-        root_path = f"项目定制/{clean_id}/{bid_type or '技术标'}"
+        normalized_bid_type = require_peripheral_bid_type(bid_type)
+        root_path = f"{normalized_bid_type}/项目素材/{clean_id}"
         self._raw_custom_folders.add(root_path)
         return {
             "message": "项目目录骨架初始化完成。",
@@ -550,7 +555,7 @@ class PeripheralStore:
         *,
         target_path: str = "",
         project_id: str = "",
-        bid_type: str = "技术标",
+        bid_type: str,
         on_conflict: str = "",
         files: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -560,7 +565,10 @@ class PeripheralStore:
         if not target_path:
             if not project_id:
                 raise PeripheralError(400, "请提供目标目录或项目 ID。", "RAW_TARGET_PATH_REQUIRED")
-            target_path = f"项目定制/{safe_segment(project_id, 'PRJ-UNSET')}/{bid_type or '技术标'}"
+            normalized_bid_type = require_peripheral_bid_type(bid_type)
+            target_path = f"{normalized_bid_type}/项目素材/{safe_segment(project_id, 'PRJ-UNSET')}"
+        else:
+            normalized_bid_type = require_peripheral_bid_type(bid_type)
         folder_path = self._ensure_folder(target_path)
 
         uploaded_items: list[dict[str, Any]] = []
@@ -590,7 +598,7 @@ class PeripheralStore:
                 name=next_name,
                 folder_path=folder_path,
                 size=int(item.get("size") or 0),
-                bid_type=bid_type or "技术标",
+                bid_type=normalized_bid_type,
                 project_id=project_id,
                 customer_name="测试业主" if project_id else "通用",
                 version=next_version,
@@ -714,112 +722,6 @@ class PeripheralStore:
             "downloadUrl": f"/downloads/{item['name']}",
             "message": "已生成下载地址",
         }
-
-    def structured_list(self, table: str = "all") -> dict[str, Any]:
-        items = list(self._structured_items)
-        if table and table != "all":
-            items = [item for item in items if item.get("tableKey") == table]
-        return {
-            "items": copy.deepcopy(items),
-            "total": len(items),
-            "tableOptions": copy.deepcopy(self._structured_table_options),
-            "importHistory": copy.deepcopy(self._structured_import_history),
-            "latestReceipt": copy.deepcopy(self._structured_latest_receipt),
-        }
-
-    def structured_template(self, table: str = "") -> dict[str, Any]:
-        matched = next((item for item in self._structured_table_options if item["key"] == table), self._structured_table_options[0])
-        return {
-            "table": matched,
-            "fileName": f"{matched['label']}_导入模板.xlsx",
-            "templateVersion": "2026.04",
-            "requiredFields": ["名称", "值"],
-            "optionalFields": ["备注"],
-            "templateColumns": ["名称", "值", "备注"],
-            "sampleRows": [{"名称": "样例", "值": "示例", "备注": "可选"}],
-            "notes": ["请勿修改首行字段名。", "可保留可选字段为空。"],
-        }
-
-    def structured_preview_import(self, table: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        template = self.structured_template(table)
-        return {
-            "table": template["table"],
-            "file": {"name": str((payload or {}).get("fileName") or "待导入模板.xlsx")},
-            "summary": {"totalRows": 2, "successCount": 2, "failCount": 0},
-            "mapping": {"名称": "name", "值": "value", "备注": "remark"},
-            "previewRows": [{"name": "样例A", "value": "值A", "remark": ""}, {"name": "样例B", "value": "值B", "remark": "备注"}],
-            "errors": [],
-            "canImport": True,
-        }
-
-    def structured_confirm_import(self, table: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        preview = self.structured_preview_import(table, payload)
-        receipt = {
-            "importId": self._next_id("IMP"),
-            "snapshotId": self._next_id("SNAP"),
-            "table": preview["table"],
-            "fileName": preview["file"]["name"],
-            "totalRows": preview["summary"]["totalRows"],
-            "successCount": preview["summary"]["successCount"],
-            "failCount": preview["summary"]["failCount"],
-            "version": "2026.04",
-            "operator": "当前用户",
-            "importedAt": now_display(),
-            "errors": [],
-        }
-        history = {
-            "id": receipt["importId"],
-            "status": "success",
-            "desc": f"当前用户 导入{receipt['table']['label']} {receipt['successCount']} 行",
-            "time": now_display(),
-            "tableKey": receipt["table"]["key"],
-            "tableLabel": receipt["table"]["label"],
-            "successCount": receipt["successCount"],
-            "failCount": receipt["failCount"],
-            "errors": [],
-        }
-        self._structured_import_history.insert(0, history)
-        self._structured_latest_receipt = receipt
-        self._push_audit(
-            action="导入结构化素材",
-            action_type="import",
-            module_id="materials_structured",
-            module_label="结构化素材库",
-            target=receipt["fileName"],
-        )
-        return {"message": "Imported", "receipt": copy.deepcopy(receipt), "historyItem": copy.deepcopy(history)}
-
-    def structured_create(self, data: dict[str, Any]) -> dict[str, Any]:
-        item = {
-            "id": self._next_id("MAT"),
-            "name": str(data.get("name") or "新建素材"),
-            "type": str(data.get("type") or "结构化表格"),
-            "icon": str(data.get("icon") or "table_chart"),
-            "version": str(data.get("version") or "2026.04"),
-            "updatedAt": now_display(),
-            "tableKey": str(data.get("tableKey") or "performance_guarantee"),
-            "tableLabel": str(data.get("tableLabel") or "性能保证"),
-        }
-        self._structured_items.insert(0, item)
-        return copy.deepcopy(item)
-
-    def structured_update(self, item_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        item = next((entry for entry in self._structured_items if entry["id"] == item_id), None)
-        if item is None:
-            raise PeripheralError(404, "素材不存在。", "STRUCTURED_MATERIAL_NOT_FOUND")
-        item.update({k: v for k, v in data.items() if k in {"name", "type", "icon", "version"}})
-        item["updatedAt"] = now_display()
-        return {"message": "Updated", "item": copy.deepcopy(item)}
-
-    def structured_delete(self, item_id: str) -> dict[str, Any]:
-        before = len(self._structured_items)
-        self._structured_items = [entry for entry in self._structured_items if entry["id"] != item_id]
-        if len(self._structured_items) == before:
-            raise PeripheralError(404, "素材不存在。", "STRUCTURED_MATERIAL_NOT_FOUND")
-        return {"message": "Deleted"}
-
-    def structured_import_excel(self) -> dict[str, Any]:
-        return {"imported": 12, "failed": 0}
 
     def _find_wiki_tree_node(
         self,
@@ -1133,11 +1035,11 @@ class PeripheralStore:
     def settings_excel_list(self) -> dict[str, Any]:
         return {
             "items": copy.deepcopy(self._excel_templates),
-            "tableOptions": copy.deepcopy(self._structured_table_options),
+            "tableOptions": copy.deepcopy(self._excel_table_options),
         }
 
     def settings_excel_upload(self, table_key: str, file_name: str, version: str) -> dict[str, Any]:
-        matched = next((item for item in self._structured_table_options if item["key"] == table_key), None)
+        matched = next((item for item in self._excel_table_options if item["key"] == table_key), None)
         if matched is None:
             raise PeripheralError(400, "无效的数据表类型", "XLSX_TABLE_INVALID")
         if not file_name:

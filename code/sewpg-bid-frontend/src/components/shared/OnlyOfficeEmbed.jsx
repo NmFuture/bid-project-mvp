@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo } from 'react'
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef } from 'react'
 import { ONLYOFFICE_CONFIG } from '../../config/onlyoffice'
 
 const buildHostPath = () => {
@@ -6,20 +6,42 @@ const buildHostPath = () => {
   return `${base.endsWith('/') ? base : `${base}/`}onlyoffice-host.html`
 }
 
-export default function OnlyOfficeEmbed({
+const shortHash = (value) => {
+  const text = String(value || '')
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hash = Math.imul(31, hash) + text.charCodeAt(index)
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+const buildDocumentKey = (documentKey, fileUrl) => {
+  const baseKey = String(documentKey || 'document').replace(/[^A-Za-z0-9._=-]/g, '-')
+  const urlHash = shortHash(fileUrl)
+  return `${baseKey}-${urlHash}`.slice(0, 120)
+}
+
+const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
   session,
   mode = 'edit',
   className = '',
+  enableSearchPlugin = false,
   onReady,
   onError,
-}) {
+}, ref) {
   const requestId = useId().replaceAll(':', '')
+  const iframeRef = useRef(null)
 
   const iframeSrc = useMemo(() => {
-    const fileUrl = session?.fileUrl || session?.browserFileUrl
+    const fileUrl = session?.documentServerFileUrl || session?.fileUrl || session?.browserFileUrl
     const probeUrl = session?.browserFileUrl || session?.fileUrl
+    const documentKey = buildDocumentKey(
+      `${session?.documentKey || ''}-${mode}-${enableSearchPlugin ? 'search' : 'plain'}-v3`,
+      fileUrl,
+    )
     const config = ONLYOFFICE_CONFIG.getEditorConfig({
-      documentKey: session?.documentKey,
+      documentKey,
       title: session?.title,
       // OnlyOffice Document Server resolves document URLs server-side,
       // so prefer the container-reachable internal URL here.
@@ -27,14 +49,27 @@ export default function OnlyOfficeEmbed({
       callbackUrl: session?.callbackUrl,
       userId: session?.user?.id,
       userName: session?.user?.name,
+      fileType: session?.fileType,
+      documentType: session?.documentType,
+      enableSearchPlugin,
     })
 
     if (mode === 'view') {
       config.editorConfig.mode = 'view'
+      delete config.editorConfig.callbackUrl
+      config.editorConfig.customization = {
+        ...(config.editorConfig.customization || {}),
+        autosave: false,
+        comments: false,
+        forcesave: false,
+        reviewDisplay: 'final',
+      }
       if (config.document?.permissions) {
         config.document.permissions.edit = false
         config.document.permissions.review = false
         config.document.permissions.comment = false
+        config.document.permissions.download = false
+        config.document.permissions.print = false
       }
     }
 
@@ -45,7 +80,13 @@ export default function OnlyOfficeEmbed({
       probeDocumentUrl: probeUrl,
     }
     return `${buildHostPath()}#${encodeURIComponent(JSON.stringify(payload))}`
-  }, [mode, requestId, session])
+  }, [enableSearchPlugin, mode, requestId, session])
+
+  useImperativeHandle(ref, () => ({
+    postMessage: (payload) => {
+      iframeRef.current?.contentWindow?.postMessage(payload, window.location.origin)
+    },
+  }), [])
 
   useEffect(() => {
     const handleMessage = (event) => {
@@ -70,10 +111,14 @@ export default function OnlyOfficeEmbed({
 
   return (
     <iframe
+      key={`${session?.documentKey || ''}-${session?.fileUrl || ''}`}
+      ref={iframeRef}
       title={mode === 'view' ? 'OnlyOffice 文档预览' : 'OnlyOffice 文档编辑器'}
       src={iframeSrc}
       className={className}
       allow="clipboard-read; clipboard-write"
     />
   )
-}
+})
+
+export default OnlyOfficeEmbed

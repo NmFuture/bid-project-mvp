@@ -8,7 +8,25 @@
 **/.coverage
 **/*.pyc
 
+.qoder/
+.understand-anything/
+
+CLAUDE.local.md
+*.local.md
+.claude/settings.local.json
+start_checklist/*.local.json
+start_checklist/*.local.yaml
+.env.local
+.env.*.local
+/.venv/
+/node_modules/
+/tmp/
+/output/
+/_tmp_extract_bid/
+
 code/.env
+code/.env.local
+code/.env.*.local
 code/opencode-auth/auth.json
 
 code/sewpg-bid-frontend/node_modules/
@@ -24,3 +42,6 @@ code/sewpg-bid-backend/onlyoffice/data/*.key
 code/offline-dist/
 
 code/测试文档/
+
+qa/logs/
+code/qa/logs/

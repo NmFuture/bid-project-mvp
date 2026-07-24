@@ -1,0 +1,1056 @@
+{
+  "schema": "bid-tech-table-field-mapping-v1.codex-semantic-sample",
+  "targetFile": "APPX-0017-附表C.1 总体技术参数与规格.docx",
+  "referenceMaterial": "X2平台机型投标参数_20250106.xlsx",
+  "selectedColumn": 22,
+  "platformMatched": "X2E-A湍",
+  "modelMatched": "EW10.0-220上置",
+  "summary": {
+    "fill": 24,
+    "manual": 10,
+    "total": 34
+  },
+  "decisions": [
+    {
+      "targetFieldId": "C1-R01",
+      "field": "投标机型",
+      "action": "fill",
+      "value": "EW10.0-220上置",
+      "unit": "",
+      "confidence": 0.99,
+      "selectedFact": {
+        "factId": "F0001",
+        "label": "投标机型",
+        "value": "EW10.0-220上置",
+        "unit": "",
+        "source": "projectTurbineModel",
+        "row": null,
+        "score": 0.99,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0005",
+          "label": "制造厂家/型号",
+          "value": "EW10.0-220上置",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 5,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0020",
+          "label": "制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 21,
+          "score": 0.656,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0025",
+          "label": "制造厂家/型号",
+          "value": "见商务部分",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 27,
+          "score": 0.656,
+          "usable": false,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R02",
+      "field": "机组类型",
+      "action": "fill",
+      "value": "双馈",
+      "unit": "",
+      "confidence": 0.889,
+      "selectedFact": {
+        "factId": "F0282",
+        "label": "机组类型",
+        "value": "双馈",
+        "unit": "",
+        "source": "derived",
+        "row": null,
+        "score": 0.889,
+        "usable": true,
+        "derivation": "由 F0209 发电机型式推断"
+      },
+      "alternatives": [
+        {
+          "factId": "F0209",
+          "label": "发电机型式",
+          "value": "双馈异步发电机",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 244,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R03",
+      "field": "单机容量",
+      "action": "fill",
+      "value": "10000",
+      "unit": "kW",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0006",
+        "label": "额定功率",
+        "value": "10000",
+        "unit": "kW",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 6,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0026",
+          "label": "额定功率",
+          "value": "10400",
+          "unit": "kW",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 28,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0210",
+          "label": "发电机额定功率",
+          "value": "10400",
+          "unit": "kW",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 245,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R04",
+      "field": "机组数量",
+      "action": "manual",
+      "value": "[待人工补充：机组数量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R05",
+      "field": "总装机容量",
+      "action": "manual",
+      "value": "[待人工补充：总装机容量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R06",
+      "field": "叶轮直径",
+      "action": "fill",
+      "value": "220",
+      "unit": "m",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0138",
+        "label": "叶轮直径",
+        "value": "220",
+        "unit": "m",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 163,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0008",
+          "label": "风轮直径",
+          "value": "220",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 8,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R07",
+      "field": "叶片数目",
+      "action": "fill",
+      "value": "3",
+      "unit": "",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0139",
+        "label": "叶片数目",
+        "value": "3",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 164,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R08",
+      "field": "轮毂中心高度",
+      "action": "manual",
+      "value": "[待人工补充：轮毂中心高度]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0137",
+          "label": "轮毂中心高度 / （项目定制）",
+          "value": "纯钢塔：需≤125； / 混塔、分片塔：需≥140",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 162,
+          "score": 0.722,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0110",
+          "label": "轮毂",
+          "value": "60±3%",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 129,
+          "score": 0.619,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0114",
+          "label": "轮毂(含运输支架 )",
+          "value": "63±3%(含运输支架约 2.4t)",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 134,
+          "score": 0.553,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0118",
+          "label": "轮毂：长×宽×高 / (拆除导流罩 / 中顶段和罩体 A )",
+          "value": "6.1*4.9*4.2",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 139,
+          "score": 0.553,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "该字段是项目/场址特定值，当前参考资料只有机型参数或约束，不能直接填。"
+    },
+    {
+      "targetFieldId": "C1-R09",
+      "field": "单位千瓦扫风面积",
+      "action": "fill",
+      "value": "3.80",
+      "unit": "m2/kW",
+      "confidence": 0.909,
+      "selectedFact": {
+        "factId": "F0281",
+        "label": "单位千瓦扫风面积",
+        "value": "3.80",
+        "unit": "m2/kW",
+        "source": "derived",
+        "row": null,
+        "score": 0.909,
+        "usable": true,
+        "derivation": "F0024 / F0006"
+      },
+      "alternatives": [
+        {
+          "factId": "F0024",
+          "label": "扫风面积",
+          "value": "38013.2711084365",
+          "unit": "m^2",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 25,
+          "score": 0.619,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0140",
+          "label": "扫风面积",
+          "value": "见表2.5",
+          "unit": "m^2",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 165,
+          "score": 0.619,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R10",
+      "field": "认证级别",
+      "action": "fill",
+      "value": "IEC S",
+      "unit": "",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0122",
+        "label": "认证级别",
+        "value": "IEC S",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 146,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0009",
+          "label": "安全等级",
+          "value": "IEC S",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 9,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R11",
+      "field": "参考风速Vref",
+      "action": "fill",
+      "value": "50（背风策略）",
+      "unit": "m/s",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0123",
+        "label": "极限风速（50年一遇）10min",
+        "value": "50（背风策略）",
+        "unit": "m/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 147,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R12",
+      "field": "极端风速Ve50",
+      "action": "fill",
+      "value": "70（背风）",
+      "unit": "",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0016",
+        "label": "（3s最大值）",
+        "value": "70（背风）",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 16,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0124",
+          "label": "极限风速（50年一遇）3s",
+          "value": "70（背风）",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 148,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R13",
+      "field": "轮毂高度年平均风速Vave",
+      "action": "manual",
+      "value": "[待人工补充：轮毂高度年平均风速Vave]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0137",
+          "label": "轮毂中心高度 / （项目定制）",
+          "value": "纯钢塔：需≤125； / 混塔、分片塔：需≥140",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 162,
+          "score": 0.588,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0110",
+          "label": "轮毂",
+          "value": "60±3%",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 129,
+          "score": 0.585,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0114",
+          "label": "轮毂(含运输支架 )",
+          "value": "63±3%(含运输支架约 2.4t)",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 134,
+          "score": 0.519,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0118",
+          "label": "轮毂：长×宽×高 / (拆除导流罩 / 中顶段和罩体 A )",
+          "value": "6.1*4.9*4.2",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 139,
+          "score": 0.519,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但值不可直接使用或置信度不足：轮毂中心高度 / （项目定制）=纯钢塔：需≤125； / 混塔、分片塔：需≥140，score=0.588"
+    },
+    {
+      "targetFieldId": "C1-R14",
+      "field": "湍流强度参考值Iref",
+      "action": "manual",
+      "value": "[待人工补充：湍流强度参考值Iref]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R15",
+      "field": "场址空气密度",
+      "action": "manual",
+      "value": "[待人工补充：场址空气密度]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R16",
+      "field": "保证功率曲线最优Cp值",
+      "action": "manual",
+      "value": "[待人工补充：保证功率曲线最优Cp值]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R17",
+      "field": "保证功率曲线最优Cp对应风速区间（m/s）",
+      "action": "manual",
+      "value": "[待人工补充：保证功率曲线最优Cp对应风速区间（m/s）]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R18",
+      "field": "切入风速",
+      "action": "fill",
+      "value": "3",
+      "unit": "m/s",
+      "confidence": 0.701,
+      "selectedFact": {
+        "factId": "F0010",
+        "label": "切入风速",
+        "value": "3",
+        "unit": "m/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 10,
+        "score": 0.701,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0129",
+          "label": "切入风速",
+          "value": "参照1.1",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 153,
+          "score": 0.701,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0131",
+          "label": "再启动风速",
+          "value": "参照1.1",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 155,
+          "score": 0.553,
+          "usable": false,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R19",
+      "field": "额定风速",
+      "action": "fill",
+      "value": "10.7*",
+      "unit": "m/s",
+      "confidence": 0.722,
+      "selectedFact": {
+        "factId": "F0011",
+        "label": "额定风速（静态）",
+        "value": "10.7*",
+        "unit": "m/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 11,
+        "score": 0.722,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0134",
+          "label": "风速-转速关系",
+          "value": "低于额定风速变速控制",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 158,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0135",
+          "label": "风速-桨距角关系",
+          "value": "高于额定风速变桨控制",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 159,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R20",
+      "field": "切出风速",
+      "action": "fill",
+      "value": "23",
+      "unit": "m/s",
+      "confidence": 0.722,
+      "selectedFact": {
+        "factId": "F0012",
+        "label": "切出风速（10min平均值）",
+        "value": "23",
+        "unit": "m/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 12,
+        "score": 0.722,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0012",
+          "label": "切出风速（10min平均值）",
+          "value": "23",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 12,
+          "score": 0.722,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0013",
+          "label": "软切出风速（10min平均值）",
+          "value": "20",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 13,
+          "score": 0.722,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R21",
+      "field": "再切入风速",
+      "action": "manual",
+      "value": "[待人工补充：再切入风速]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0010",
+          "label": "切入风速",
+          "value": "3",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 10,
+          "score": 0.619,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0129",
+          "label": "切入风速",
+          "value": "参照1.1",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 153,
+          "score": 0.619,
+          "usable": false,
+          "derivation": null
+        },
+        {
+          "factId": "F0131",
+          "label": "再启动风速",
+          "value": "参照1.1",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 155,
+          "score": 0.553,
+          "usable": false,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但值不可直接使用或置信度不足：切入风速=3，score=0.619"
+    },
+    {
+      "targetFieldId": "C1-R22",
+      "field": "机组设计寿命",
+      "action": "fill",
+      "value": "20",
+      "unit": "年",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0019",
+        "label": "设计使用寿命",
+        "value": "20",
+        "unit": "年",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 19,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R23",
+      "field": "风轮运行转速范围",
+      "action": "manual",
+      "value": "[待人工补充：风轮运行转速范围]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C1-R24",
+      "field": "风轮额定转速",
+      "action": "fill",
+      "value": "8",
+      "unit": "rpm",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0127",
+        "label": "风轮额定转速",
+        "value": "8",
+        "unit": "rpm",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 151,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R25",
+      "field": "叶尖速度",
+      "action": "fill",
+      "value": "92.1533845053006",
+      "unit": "m/s",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0023",
+        "label": "叶尖线速度",
+        "value": "92.1533845053006",
+        "unit": "m/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 24,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0023",
+          "label": "叶尖线速度",
+          "value": "92.1533845053006",
+          "unit": "m/s",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 24,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R26",
+      "field": "功率调整方式",
+      "action": "fill",
+      "value": "变速变桨",
+      "unit": "",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0132",
+        "label": "功率调整方式",
+        "value": "变速变桨",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 156,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0007",
+          "label": "功率调节方式",
+          "value": "变速变桨",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 7,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R27",
+      "field": "紧急制动方式",
+      "action": "fill",
+      "value": "空气动力制动",
+      "unit": "",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0133",
+        "label": "紧急制动方式",
+        "value": "空气动力制动",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 157,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R28",
+      "field": "运行环境温度",
+      "action": "fill",
+      "value": "-30~+40",
+      "unit": "℃",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0125",
+        "label": "运行环境温度",
+        "value": "-30~+40",
+        "unit": "℃",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 149,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0017",
+          "label": "机组运行温度范围",
+          "value": "-30~40（低温）",
+          "unit": "℃",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 17,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R29",
+      "field": "生存环境温度",
+      "action": "fill",
+      "value": "-40~50（低温）",
+      "unit": "℃",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0018",
+        "label": "机组生存温度范围",
+        "value": "-40~50（低温）",
+        "unit": "℃",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 18,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R30",
+      "field": "噪音（整个风力发电机组）",
+      "action": "fill",
+      "value": "符合IEC61400-11",
+      "unit": "",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0136",
+        "label": "噪音（整个风电机组）",
+        "value": "符合IEC61400-11",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 160,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R31",
+      "field": "轮毂总成重量",
+      "action": "fill",
+      "value": "60±3%",
+      "unit": "t",
+      "confidence": 0.722,
+      "selectedFact": {
+        "factId": "F0110",
+        "label": "轮毂",
+        "value": "60±3%",
+        "unit": "t",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 129,
+        "score": 0.722,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0114",
+          "label": "轮毂(含运输支架 )",
+          "value": "63±3%(含运输支架约 2.4t)",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 134,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0118",
+          "label": "轮毂：长×宽×高 / (拆除导流罩 / 中顶段和罩体 A )",
+          "value": "6.1*4.9*4.2",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 139,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0137",
+          "label": "轮毂中心高度 / （项目定制）",
+          "value": "纯钢塔：需≤125； / 混塔、分片塔：需≥140",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 162,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R32",
+      "field": "机舱总成重量",
+      "action": "fill",
+      "value": "192±3%",
+      "unit": "t",
+      "confidence": 0.722,
+      "selectedFact": {
+        "factId": "F0107",
+        "label": "机舱（总成）",
+        "value": "192±3%",
+        "unit": "t",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 126,
+        "score": 0.722,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0164",
+          "label": "机舱重量",
+          "value": "192±3%",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 189,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R33",
+      "field": "机舱尺寸",
+      "action": "fill",
+      "value": "13.55*5*4.2（变压器、变流器及其罩壳单独运输）",
+      "unit": "m",
+      "confidence": 0.804,
+      "selectedFact": {
+        "factId": "F0165",
+        "label": "机舱尺寸",
+        "value": "13.55*5*4.2（变压器、变流器及其罩壳单独运输）",
+        "unit": "m",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 190,
+        "score": 0.804,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0117",
+          "label": "主机舱: 长×宽×高 / (前顶盖拆下状态)",
+          "value": "13.55*5*4.2（变压器、变流器及其罩壳单独运输）",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 138,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C1-R34",
+      "field": "机组防雷等级",
+      "action": "fill",
+      "value": "按一级防雷保护设计",
+      "unit": "",
+      "confidence": 0.656,
+      "selectedFact": {
+        "factId": "F0100",
+        "label": "防雷措施",
+        "value": "按一级防雷保护设计",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 116,
+        "score": 0.656,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0228",
+          "label": "雷电保护等级",
+          "value": "按一级防雷保护设计",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 263,
+          "score": 0.656,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    }
+  ]
+}

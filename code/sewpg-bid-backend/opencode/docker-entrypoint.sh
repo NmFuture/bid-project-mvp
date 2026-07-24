@@ -8,14 +8,68 @@ if [ -f /bootstrap/opencode-host/auth.json ]; then
   cp /bootstrap/opencode-host/auth.json "${OPENCODE_HOME_DIR}/auth.json"
 fi
 
-if [ -n "${INTERNAL_LLM_BASE_URL:-}" ]; then
+RUNTIME_CONFIG_PATH="${OPENCODE_RUNTIME_CONFIG_PATH:-/data/documents/_runtime/opencode/opencode.runtime.json}"
+EFFECTIVE_CONFIG_PATH="/workspace/opencode.effective.json"
+
+write_effective_config() {
+  python3 - "$1" "${EFFECTIVE_CONFIG_PATH}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1])
+target_path = Path(sys.argv[2])
+
+config = json.loads(source_path.read_text(encoding="utf-8"))
+if config.get("model") == "opencode/big-pickle":
+    config["model"] = "deepseek/deepseek-v4-flash"
+    providers = config.get("provider")
+    if isinstance(providers, dict):
+        legacy_provider = providers.pop("opencode", None)
+        if isinstance(legacy_provider, dict):
+            legacy_provider["name"] = "deepseek"
+            legacy_provider["models"] = {
+                "deepseek-v4-flash": {
+                    "name": "deepseek-v4-flash",
+                }
+            }
+            providers["deepseek"] = legacy_provider
+permission = config.get("permission")
+if not isinstance(permission, dict):
+    permission = {}
+    config["permission"] = permission
+external_directory = permission.get("external_directory")
+if not isinstance(external_directory, dict):
+    external_directory = {}
+    permission["external_directory"] = external_directory
+external_directory.update({
+    "/data/parsed/**": "allow",
+    "/data/documents/**": "allow",
+    "/data/uploads/**": "allow",
+    "/tmp/**": "allow",
+})
+target_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+}
+
+if [ -f "${RUNTIME_CONFIG_PATH}" ]; then
+  write_effective_config "${RUNTIME_CONFIG_PATH}"
+  export OPENCODE_CONFIG="${EFFECTIVE_CONFIG_PATH}"
+elif [ -n "${INTERNAL_LLM_BASE_URL:-}" ]; then
   python3 - <<'PY'
 import json
 import os
 from pathlib import Path
 
-provider_id = os.getenv("OPENCODE_PROVIDER_ID", "internal-openai")
-model_id = os.getenv("OPENCODE_MODEL_ID", "internal-model")
+provider_id = os.getenv("OPENCODE_PROVIDER_ID", "deepseek").strip() or "deepseek"
+model_id = os.getenv("OPENCODE_MODEL_ID", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
+if (provider_id, model_id) == ("opencode", "big-pickle") or model_id == "opencode/big-pickle":
+    provider_id, model_id = "deepseek", "deepseek-v4-flash"
+if model_id == "deepseek/deepseek-v4-flash":
+    provider_id, model_id = "deepseek", "deepseek-v4-flash"
+qualified_prefix = f"{provider_id}/"
+if model_id.startswith(qualified_prefix):
+    model_id = model_id[len(qualified_prefix):]
 
 config = {
     "$schema": "https://opencode.ai/config.json",
@@ -40,7 +94,15 @@ config = {
         "skill": {
             "*": "allow",
         },
-        "bash": "deny",
+        "bash": "allow",
+        "external_directory": {
+            "/data/parsed/**": "allow",
+            "/data/documents/**": "allow",
+            "/data/uploads/**": "allow",
+            "/tmp/**": "allow",
+        },
+        "task": "deny",
+        "read": "deny",
         "edit": "deny",
     },
 }

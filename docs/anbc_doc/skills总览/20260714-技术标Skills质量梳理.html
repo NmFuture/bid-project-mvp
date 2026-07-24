@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>技术标 Skills 质量梳理</title>
+<style>
+:root {
+  --bg: #f5f6f7;
+  --surface: #ffffff;
+  --surface-2: #eef1f3;
+  --ink: #1c242e;
+  --ink-2: #55616e;
+  --ink-3: #8a94a0;
+  --line: #dde2e7;
+  --accent: #0e6e8c;
+  --accent-soft: #e3eff4;
+  --ok: #2f7d4a;
+  --ok-soft: #e5f2e9;
+  --warn: #a05e0b;
+  --warn-soft: #f7ecd9;
+  --crit: #a83232;
+  --crit-soft: #f8e7e7;
+  --mono: "SF Mono", "Menlo", "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181d;
+    --surface: #1b2129;
+    --surface-2: #232a33;
+    --ink: #e4e9ee;
+    --ink-2: #a4afba;
+    --ink-3: #6e7883;
+    --line: #303943;
+    --accent: #4fa8c7;
+    --accent-soft: #1c313c;
+    --ok: #6cbf88;
+    --ok-soft: #1e3226;
+    --warn: #d99a4e;
+    --warn-soft: #3a2d1a;
+    --crit: #e08585;
+    --crit-soft: #3c2222;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14181d; --surface: #1b2129; --surface-2: #232a33;
+  --ink: #e4e9ee; --ink-2: #a4afba; --ink-3: #6e7883; --line: #303943;
+  --accent: #4fa8c7; --accent-soft: #1c313c;
+  --ok: #6cbf88; --ok-soft: #1e3226;
+  --warn: #d99a4e; --warn-soft: #3a2d1a;
+  --crit: #e08585; --crit-soft: #3c2222;
+}
+:root[data-theme="light"] {
+  --bg: #f5f6f7; --surface: #ffffff; --surface-2: #eef1f3;
+  --ink: #1c242e; --ink-2: #55616e; --ink-3: #8a94a0; --line: #dde2e7;
+  --accent: #0e6e8c; --accent-soft: #e3eff4;
+  --ok: #2f7d4a; --ok-soft: #e5f2e9;
+  --warn: #a05e0b; --warn-soft: #f7ecd9;
+  --crit: #a83232; --crit-soft: #f8e7e7;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.75 -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+.wrap { max-width: 1020px; margin: 0 auto; padding: 48px 28px 96px; }
+header.doc { border-bottom: 2px solid var(--ink); padding-bottom: 24px; margin-bottom: 36px; }
+.eyebrow {
+  font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--accent); font-weight: 600; margin: 0 0 10px;
+}
+h1 { font-size: 30px; line-height: 1.3; margin: 0 0 12px; text-wrap: balance; }
+.meta { color: var(--ink-2); font-size: 13.5px; margin: 0; }
+.meta code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
+h2 { font-size: 21px; margin: 56px 0 6px; }
+h2 .no { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 10px; }
+.h2sub { color: var(--ink-2); font-size: 13.5px; margin: 0 0 20px; }
+h3 { font-size: 16px; margin: 28px 0 10px; }
+p { margin: 0 0 14px; max-width: 70ch; }
+code { font-family: var(--mono); font-size: .88em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--accent); }
+
+/* pipeline */
+.pipeline { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 20px 0 8px; }
+.stage {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px 14px; min-width: 130px; flex: 1;
+}
+.stage .st { font-size: 11.5px; letter-spacing: .08em; color: var(--accent); font-weight: 600; }
+.stage ul { margin: 6px 0 0; padding: 0; list-style: none; font-size: 13px; }
+.stage li { font-family: var(--mono); font-size: 12px; line-height: 1.9; white-space: nowrap; }
+.stage li.aux { color: var(--ink-3); }
+.arrow { align-self: center; color: var(--ink-3); font-size: 15px; }
+.pipenote { color: var(--ink-2); font-size: 13px; margin-top: 10px; }
+
+/* table */
+.tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 14px; border-top: 1px solid var(--line); vertical-align: top; }
+thead th { border-top: none; background: var(--surface-2); font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+td.num { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td .skname { font-family: var(--mono); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+td .role { display: block; color: var(--ink-2); font-size: 12.5px; }
+
+/* pills */
+.pill {
+  display: inline-block; font-size: 11.5px; font-weight: 600; line-height: 1;
+  padding: 4px 8px; border-radius: 99px; white-space: nowrap;
+}
+.pill.ok   { background: var(--ok-soft);   color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.crit { background: var(--crit-soft); color: var(--crit); }
+.pill.info { background: var(--accent-soft); color: var(--accent); }
+.pill.mute { background: var(--surface-2); color: var(--ink-3); }
+
+/* issue list */
+.issue {
+  display: grid; grid-template-columns: 52px 1fr; gap: 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 14px 18px; margin: 0 0 10px;
+}
+.issue .sev { font-family: var(--mono); font-weight: 700; font-size: 13px; padding-top: 2px; }
+.issue.p0 { border-left: 3px solid var(--crit); } .issue.p0 .sev { color: var(--crit); }
+.issue.p1 { border-left: 3px solid var(--warn); } .issue.p1 .sev { color: var(--warn); }
+.issue.p2 { border-left: 3px solid var(--ink-3); } .issue.p2 .sev { color: var(--ink-3); }
+.issue h4 { margin: 0 0 4px; font-size: 14.5px; }
+.issue p { font-size: 13.5px; color: var(--ink-2); margin: 0 0 4px; max-width: none; }
+.issue .ev { font-size: 12.5px; color: var(--ink-3); font-family: var(--mono); word-break: break-all; }
+.issue .who { margin-top: 6px; }
+
+/* skill cards */
+details.skill {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  margin: 0 0 12px; overflow: hidden;
+}
+details.skill summary {
+  cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; gap: 10px 14px;
+  align-items: center; padding: 14px 18px;
+}
+details.skill summary::-webkit-details-marker { display: none; }
+details.skill summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+details.skill[open] summary { border-bottom: 1px solid var(--line); }
+.sk-name { font-family: var(--mono); font-weight: 700; font-size: 14px; }
+.sk-role { color: var(--ink-2); font-size: 13px; flex: 1; min-width: 180px; }
+.sk-caret { color: var(--ink-3); font-size: 12px; transition: transform .15s; }
+details[open] .sk-caret { transform: rotate(90deg); }
+.sk-body { padding: 18px; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 20px 28px; }
+@media (max-width: 760px) { .sk-body { grid-template-columns: 1fr; } }
+.sk-body h5 {
+  margin: 0 0 8px; font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600;
+}
+.sk-sec { margin-bottom: 6px; }
+.tree {
+  font-family: var(--mono); font-size: 12px; line-height: 1.9; color: var(--ink-2);
+  background: var(--surface-2); border-radius: 6px; padding: 12px 14px;
+  overflow-x: auto; white-space: pre; margin: 0;
+}
+.tree b { color: var(--ink); font-weight: 600; }
+.tree .flag { color: var(--crit); }
+.tree .dim { color: var(--ink-3); }
+.sk-facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; margin: 0; }
+.sk-facts dt { color: var(--ink-3); white-space: nowrap; }
+.sk-facts dd { margin: 0; font-family: var(--mono); font-size: 12.5px; }
+.sk-issues { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--ink-2); }
+.sk-issues li { margin-bottom: 5px; }
+.sk-issues li::marker { color: var(--accent); }
+
+/* disclosure bar */
+.disc { display: flex; gap: 3px; margin: 4px 0 8px; }
+.disc span {
+  height: 8px; border-radius: 3px; flex: 1;
+}
+.disc .on { background: var(--accent); }
+.disc .part { background: color-mix(in srgb, var(--accent) 40%, var(--surface-2)); }
+.disc .off { background: var(--surface-2); border: 1px dashed var(--line); }
+.disc-label { font-size: 12px; color: var(--ink-3); display: flex; justify-content: space-between; gap: 8px; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin: 10px 0 22px; }
+.legend i { display: inline-block; width: 20px; height: 8px; border-radius: 3px; margin-right: 6px; vertical-align: 1px; }
+.legend .l1 { background: var(--accent); }
+.legend .l2 { background: color-mix(in srgb, var(--accent) 40%, var(--surface-2)); }
+.legend .l3 { background: var(--surface-2); border: 1px dashed var(--line); }
+
+/* discussion */
+.q {
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 14px 18px; margin-bottom: 10px;
+}
+.q h4 { margin: 0 0 4px; font-size: 14.5px; }
+.q p { font-size: 13.5px; color: var(--ink-2); margin: 0; max-width: none; }
+
+footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 12.5px; }
+
+/* v1 fix annotations */
+.vtag {
+  display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .06em;
+  background: var(--ok); color: #fff; padding: 3px 10px; border-radius: 99px;
+  vertical-align: 4px; margin-left: 10px;
+}
+.fixbox {
+  background: var(--ok-soft); border: 1px solid var(--ok); border-radius: 8px;
+  padding: 14px 18px; margin: 18px 0 0; font-size: 13.5px; color: var(--ink-2);
+}
+.fixbox b { color: var(--ok); }
+.issue .fix { font-size: 13px; color: var(--ok); margin: 6px 0 0; max-width: none; }
+.issue .fix::before { content: "✔ "; font-weight: 700; }
+.q .fix { font-size: 13px; color: var(--ok); margin-top: 6px; max-width: none; }
+.q .fix::before { content: "✔ "; font-weight: 700; }
+</style>
+
+<div class="wrap">
+<header class="doc">
+  <p class="eyebrow">bid-project-mvp · 内部评审 · v0 梳理 + v1 系统修复</p>
+  <h1>技术标 Skills 质量梳理<span class="vtag">v1 · 已修复</span></h1>
+  <p class="meta">范围：<code>opencode/skills/bid-tech-*</code> 共 9 个 skill ·
+  评估基准：仓库 <code>AGENTS.md</code> Skill 规范 + Claude/Anthropic skill 撰写惯例 · 梳理 2026-07-14 · 修复 2026-07-15</p>
+  <div class="fixbox">
+    <b>v1 修复说明（2026-07-15）</b>：12 个问题（P0×3 / P1×5 / P2×4）已全部系统修复。
+    关键动作：58 条清单表迁出 SKILL.md 成为带警示的独立数据文件（<code>checklist.py</code> 已改指向并验证 58 行加载通过）；
+    编号方案以源码确认为方案 B 并纠正矛盾表述；新建 <code>skills/STAGES.md</code> 统一三套阶段命名映射；
+    frontmatter 全员补齐 allowed-tools 且 description 统一中文触发条件式（模板已写入 AGENTS.md）；
+    新建 assembler/table-filler/tender-parser 三处 references/；golden eval 全部文档化；
+    styleSpec 跨 skill 耦合显式契约化（消费方清单见 <code>bid-tech-assembler/references/constraints.md</code>）。
+    format-cleaner 单测 4/4 通过。02 节总览表已更新为 v1 修复后状态；每条问题和讨论议题下方的绿色 ✔ 行是具体修复方式与决议；04 节 skill 卡片保留 v0 评审原貌供对照。
+  </div>
+</header>
+
+<h2><span class="no">01</span>流水线全景</h2>
+<p class="h2sub">9 个 skill 在技术标流水线中的位置。组装（assembler）与清洗（format-cleaner）位于末端，是本次任务重点。</p>
+
+<div class="pipeline">
+  <div class="stage"><div class="st">S0/S1 解析</div><ul><li>tender-structured-parser</li></ul></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="st">S1 模板与目录</div><ul><li>outline-generator</li></ul></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="st">S3 缺口处理</div><ul><li>gap-planner</li><li>table-filler</li><li>word-placeholder-filler</li></ul></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="st">S4 生成标书</div><ul><li><b>assembler</b></li></ul></div>
+  <div class="arrow">→</div>
+  <div class="stage"><div class="st">成稿后处理</div><ul><li><b>format-cleaner</b></li></ul></div>
+</div>
+<div class="pipeline">
+  <div class="stage" style="flex:0 1 340px"><div class="st">素材库支撑（旁路）</div><ul><li class="aux">wiki-material-builder（Wiki 索引）</li><li class="aux">tag-importer（标签模糊匹配）</li></ul></div>
+</div>
+<p class="pipenote">注意：图中阶段名是<b>用户侧</b>叫法。命令别名仍是历史编号（s1parse / s2toc / s4gap / s4fill / s4wordfill / s7_assembly），两套编号互相错位，详见问题 P1-4。</p>
+
+<h2><span class="no">02</span>总览与渐进式披露评分</h2>
+<p class="h2sub">渐进式披露三层：L0 = frontmatter description（路由）· L1 = SKILL.md 正文（流程与规则）· L2 = references / scripts（按需加载的细节）。<b>本表已更新为 v1 修复后状态</b>；v0 原始问题保留在下方问题清单与卡片中。</p>
+<div class="legend">
+  <span><i class="l1"></i>该层完整承担职责</span>
+  <span><i class="l2"></i>部分承担 / 有越界内容</span>
+  <span><i class="l3"></i>缺失或未启用</span>
+</div>
+
+<div class="tablebox">
+<table>
+<thead><tr>
+  <th>Skill</th><th>SKILL.md</th><th>脚本规模</th><th>references</th><th>tests/eval</th><th>allowed-tools</th><th>披露评级</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><span class="skname">assembler</span><span class="role">正文组装（重点）</span></td>
+  <td class="num">214 行</td><td class="num">19 文件（遗留已删）</td>
+  <td><span class="pill ok">有（3 文件）</span></td><td><span class="pill mute">无</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">format-cleaner</span><span class="role">成稿格式清洗（重点）</span></td>
+  <td class="num">57 行</td><td class="num">1 文件 906 行</td>
+  <td><span class="pill mute">无</span></td><td><span class="pill ok">tests 314 行 ✓4/4</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">gap-planner</span><span class="role">缺口识别计划</span></td>
+  <td class="num">122 行</td><td class="num">2 文件 ≈2.6k 行</td>
+  <td><span class="pill mute">无</span></td><td><span class="pill info">golden eval（已文档化）</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">outline-generator</span><span class="role">目录生成</span></td>
+  <td class="num">70 行</td><td class="num">1 文件 1.3k 行</td>
+  <td><span class="pill mute">无</span></td><td><span class="pill mute">无</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">table-filler</span><span class="role">空副表 AI 填写</span></td>
+  <td class="num">45 行</td><td class="num">2 文件 ≈5.0k 行</td>
+  <td><span class="pill ok">有（rules.md）</span></td><td><span class="pill info">golden eval（已文档化）</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">tag-importer</span><span class="role">标签模糊匹配</span></td>
+  <td class="num">65 行</td><td class="num">纯 prompt，无脚本</td>
+  <td><span class="pill mute">不需要</span></td><td><span class="pill mute">无</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标 ★范例</span></td>
+</tr>
+<tr>
+  <td><span class="skname">tender-structured-parser</span><span class="role">招标结构化解读</span></td>
+  <td class="num">141 行</td><td class="num">12 文件 ≈3.0k 行</td>
+  <td><span class="pill ok">有（checklist.md）</span></td><td><span class="pill mute">无</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">wiki-material-builder</span><span class="role">素材 Wiki 构建</span></td>
+  <td class="num">126 行</td><td class="num">2 文件 756 行</td>
+  <td><span class="pill mute">无</span></td><td><span class="pill mute">无</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">基本达标</span></td>
+</tr>
+<tr>
+  <td><span class="skname">word-placeholder-filler</span><span class="role">待填写 Word 填写</span></td>
+  <td class="num">41 行</td><td class="num">1 文件 1.2k 行</td>
+  <td><span class="pill mute">无</span></td><td><span class="pill mute">无</span></td>
+  <td><span class="pill ok">有</span></td><td><span class="pill ok">达标</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2><span class="no">03</span>问题清单（按严重度）</h2>
+<p class="h2sub">P0 = 有实际风险或内容错误，建议优先讨论；P1 = 规范一致性；P2 = 卫生与遗留。</p>
+
+<h3>P0 · 风险与内容错误</h3>
+
+<div class="issue p0"><div class="sev">P0-1</div><div>
+  <h4>SKILL.md 里的 58 行清单表是运行时数据，但没有任何警示</h4>
+  <p><code>checklist.py</code> 在运行时直接解析 <code>tender-structured-parser/SKILL.md</code> 的 Markdown 表格，行数 ≠ 58 即抛 <code>RuntimeError</code>。SKILL.md 本身完全没有提示这层耦合——任何人「顺手改文档」（增删一行、调整表格式、加一张首列为数字的新表）都会打崩 S1 解析。文档与数据双重身份是全部 9 个 skill 里最隐蔽的坑。</p>
+  <p class="ev">checklist.py:49 `_skill_path() → parents[2]/SKILL.md` · checklist.py:78 `len != 58 → raise`</p>
+  <p class="fix">v1 已修复：清单迁至 <code>references/checklist.md</code>（文件头显式声明「运行时数据，强校验 58 行」及修改规则）；<code>checklist.py</code> 改读新路径，58 行校验保留；SKILL.md 只留指针与警示。实测 <code>load_checklist()</code> 加载 58 行通过。</p>
+  <div class="who"><span class="pill crit">tender-structured-parser</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p0"><div class="sev">P0-2</div><div>
+  <h4>assembler 的编号方案前后自相矛盾</h4>
+  <p>开头声明「方案 B：Heading text 直接带章节号，<b>不依赖</b> Word 多级列表自动编号」（第 7、13 行），关键约束也重申（第 189 行）；但第 6 步终检写「确认<b>多级列表样式</b>为 第X章 / X.Y / …」（第 143 行），末尾对比表更直接写本 skill 编号 =「多级列表自动编号，text 纯标题」（第 232 行）——与方案 B 完全相反。读者无法确定当前实现到底是哪套，疑似方案 A→B 迁移后残留。</p>
+  <p class="ev">bid-tech-assembler/SKILL.md:13,143,189,232</p>
+  <p class="fix">v1 已修复：读 <code>merger.py</code>（自述"merger v2（方案 B）"、手插 <code>"{chapter_no}  {title}"</code>）和 <code>finalize.py:301</code>（主动剥 numPr）确认实现为方案 B。矛盾的末尾对比表已随死文档删除，第 6 步表述改为"剥残留 numPr + 确认前缀形态"，并在「方案 B 核心原则」加代码锚点。</p>
+  <div class="who"><span class="pill crit">assembler</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p0"><div class="sev">P0-3</div><div>
+  <h4>assembler 两处引用不存在的 skill「bid-toc-wiki-driven」</h4>
+  <p>「与 bid-toc-wiki-driven 的关系」「与 bid-toc-wiki-driven 的差异」两个整节（含两张对比表）引用的 skill 在 <code>skills/</code> 目录中不存在，全仓库也只有 assembler 自己提到它。该职责现由 <code>bid-tech-outline-generator</code> 承担。这两节约 20 行是死文档，还占用了本已超标的篇幅。</p>
+  <p class="ev">bid-tech-assembler/SKILL.md:22-31, 225-233</p>
+  <p class="fix">v1 已修复：两节死文档删除，改为 3 行「上游关系」正确指向 <code>bid-tech-outline-generator</code>。</p>
+  <div class="who"><span class="pill crit">assembler</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<h3>P1 · 规范一致性</h3>
+
+<div class="issue p1"><div class="sev">P1-4</div><div>
+  <h4>阶段命名三套体系并存，且互相错位</h4>
+  <p>用户侧阶段（S0/S1、S1、S3、S4）、历史命令别名（s1parse、s2toc、s4gap、s4fill、s4wordfill、s7_assembly_workdir）、assembler description 里的「阶段 3」三套编号同时存在：S1 阶段用 s2toc，S3 阶段用 s4gap，S4 阶段用 s7 工作目录；format-cleaner 又冒出「S2/S5」这一没有任何其他文件解释的编号。每个 skill 各自写一句别名说明，没有统一映射表——新人和下游 agent 都要逐个 skill 拼图。</p>
+  <p class="ev">gap-planner:21 · outline-generator:10 · assembler:3,168 · format-cleaner:8</p>
+  <p class="fix">v1 已修复：新建 <code>opencode/skills/STAGES.md</code> 作为唯一映射事实来源（用户阶段 ↔ 命令别名 ↔ 历史工作目录），各 SKILL.md 的九份各说各话改为一行引用。「S2/S5」已查明：format-cleaner 在后端 <code>s5_format_switch_workdir</code> 运行，目录 JSON 由 s2 产物转换（<code>technical_document_format.py:55</code>），文档已改为明确表述。历史别名本身不改名（后端与产物路径依赖，列为独立事项）。</p>
+  <div class="who"><span class="pill warn">全部流水线 skill</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p1"><div class="sev">P1-5</div><div>
+  <h4>frontmatter 不一致：3 个缺 allowed-tools，2 个 description 用英文</h4>
+  <p><code>format-cleaner</code>、<code>outline-generator</code>、<code>tender-structured-parser</code> 没有 allowed-tools（其余 6 个都有）。<code>tender-structured-parser</code> 的 description 是纯英文，<code>outline-generator</code> 中英混排——违反 AGENTS.md「Skill 说明默认使用中文」。description 风格也分三派：触发条件式 / 输入输出式 / 混合长文式。</p>
+  <p class="ev">AGENTS.md · 开发规范：「文档、注释和 Skill 说明默认使用中文」</p>
+  <p class="fix">v1 已修复：三个 skill 补齐 <code>allowed-tools: [Read, Bash]</code>（最小权限）；tender-parser 和 outline-generator 的 description 改为中文触发条件式。frontmatter 模板（中文触发条件式 + allowed-tools 必填最小化，范例 tag-importer）已写入 AGENTS.md Skill 规范。</p>
+  <div class="who"><span class="pill warn">format-cleaner</span> <span class="pill warn">outline-generator</span> <span class="pill warn">tender-structured-parser</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p1"><div class="sev">P1-6</div><div>
+  <h4>assembler description 过载，把策略写进了路由层</h4>
+  <p>description 约 160 字，塞进了输入清单、调用方式、「一把出」策略、占位符约定。description 是给路由器判断「何时用」的（L0 层），策略与用法应留在正文。对照 <code>tag-importer</code> 的 description（做什么 + 输入 + 输出 + 边界，一句话一个信息点）即是正例。</p>
+  <p class="ev">bid-tech-assembler/SKILL.md:3</p>
+  <p class="fix">v1 已修复：description 瘦身为「何时用 + 输入输出 + 边界」；「一把出」策略与占位符约定移入正文开头。</p>
+  <div class="who"><span class="pill warn">assembler</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p1"><div class="sev">P1-7</div><div>
+  <h4>渐进式披露失衡：一头超载，一头缺层</h4>
+  <p>assembler 233 行超出 AGENTS.md 建议的 100~200 行，「关键约束」17 条 bullet 里混着 <code>merger._isolate_section</code> 级别的实现细节，而 references/ 只有 2 个样式文件。table-filler 相反：47 行 SKILL.md 对着 4680 行脚本，全部行为规则压成一段 bullet 墙（C.1/C.2/C.3 特例、批量语义、越界切分规则挤在一起），没有任何 L2 层可查。9 个 skill 只有 assembler 建了 references/ 目录。</p>
+  <p class="ev">AGENTS.md · Skill 规范：「SKILL.md 建议控制在 100~200 行……详细说明拆到 references/」</p>
+  <p class="fix">v1 已修复：assembler 实现级约束（Section 隔离、整章素材 guard、rFonts 注入等）下沉到新建 <code>references/constraints.md</code>，正文 233→214 行（含新增共享契约声明，已到建议区间边缘）；table-filler 新建 <code>references/rules.md</code>（越界表判据、C.1/C.2/C.3 词典、自动选材、批量语义、金标评估五节，均注明 runner 函数定位），SKILL.md 改为规则速记 + 指针。</p>
+  <div class="who"><span class="pill warn">assembler</span> <span class="pill warn">table-filler</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p1"><div class="sev">P1-8</div><div>
+  <h4>失效引用与跨 skill 耦合</h4>
+  <p>wiki-material-builder 引用的 Handoff 文档路径 <code>doc/anbc_doc/20260618-…</code> 已失效，实际文件在 <code>docs/archive/20260618-old-docs/</code>（已归档，本身也说明该引用可能过期）。format-cleaner 的 <code>styleSpecPath</code> 默认指向<b>另一个 skill 内部</b>的 <code>bid-tech-assembler/references/heading_style.json</code>——skill 间文件级耦合，assembler 重构目录就会砸到 cleaner。</p>
+  <p class="ev">wiki-material-builder/SKILL.md:54 · format-cleaner/SKILL.md:18</p>
+  <p class="fix">v1 已修复：Handoff 路径改指 <code>docs/archive/20260618-old-docs/</code> 并注明已归档。styleSpec 耦合经排查比预想更深（format-cleaner 脚本还 import assembler 的 <code>numbering_fixer</code> 模块，后端另有两处硬引用），单纯挪 JSON 无法解耦——改为<b>显式契约化</b>：四处消费方清单写入 <code>assembler/references/constraints.md</code>，两侧 SKILL.md 声明"移动/改名须同步全部消费方"；目录级重构列为独立事项。</p>
+  <div class="who"><span class="pill warn">wiki-material-builder</span> <span class="pill warn">format-cleaner</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<h3>P2 · 卫生与遗留</h3>
+
+<div class="issue p2"><div class="sev">P2-9</div><div>
+  <h4>遗留物：__pycache__ 入库、疑似废弃脚本无标注</h4>
+  <p>wiki-material-builder 的 <code>scripts/__pycache__/</code> 提交进了仓库。assembler 的 <code>merger_v1.py</code>、<code>_postprocessor_reference.py</code> 未在 SKILL.md 出现，是否废弃无从判断。</p>
+  <p class="fix">v1 已修复：<code>__pycache__</code> 实测未被 git 追踪（.gitignore 已覆盖），本地目录已删。两个疑似废弃脚本经全仓库 grep 零引用、最后改动为 5 月底快照，已删除（git 历史可找回）。删除后 format-cleaner 单测 4/4 通过，确认跨 skill import 链路完好。</p>
+  <div class="who"><span class="pill mute">wiki-material-builder</span> <span class="pill mute">assembler</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p2"><div class="sev">P2-10</div><div>
+  <h4>测试与评估覆盖不均，且 SKILL.md 不提</h4>
+  <p>只有 format-cleaner 有单测；gap-planner、table-filler 有 golden 评估脚本但 SKILL.md 一字未提（如何跑、基线在哪、何时更新）。organiser/assembler 等重资产 skill 无任何自动化验证。AGENTS.md 要求「AI/Skill 输出必须可验证」。</p>
+  <p class="fix">v1 已修复（文档层）：gap-planner SKILL.md 新增「评估」节（命令、输入、产出、跑基线时机）；table-filler 评估方法写入 <code>references/rules.md</code> 第 6 节并在 SKILL.md 要求改动前后对比得分；word-placeholder-filler 补齐 <code>.fill_report.*</code> 命名、占位符识别范围、无批量模式三项契约（均从脚本源码核实）。为 assembler 等补自动化测试属新增开发，列为独立事项。</p>
+  <div class="who"><span class="pill mute">多数 skill</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p2"><div class="sev">P2-11</div><div>
+  <h4>权限与定位不符的小毛病</h4>
+  <p>tag-importer 声明「不写库、不改文件、只输出 JSON」，allowed-tools 却给了 Bash + Write。wiki-material-builder 的 allowed-tools 含 AskUserQuestion，与流水线「一把出、无交互」定位相抵。命名对称性：<code>bid-tech-table-filler</code> vs <code>bid-business-table-fill</code>。</p>
+  <p class="fix">v1 已修复：tag-importer 收敛为 <code>[Read]</code>；wiki-material-builder 去掉 AskUserQuestion（已核实后端经 subprocess 直跑脚本，无交互场景）。skill 改名影响后端引用，列为独立事项。</p>
+  <div class="who"><span class="pill mute">tag-importer</span> <span class="pill mute">wiki-material-builder</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<div class="issue p2"><div class="sev">P2-12</div><div>
+  <h4>硬编码边界需要一次共识</h4>
+  <p>table-filler 给 C.1/C.2/C.3 附表配了「增强词典和专题抽取规则」，tender-parser 的 <code>checklistVersion</code> 固定为 <code>excel-technical-2026-06-16</code>。AGENTS.md 说「不能按单个样本硬编码」——这两处属于业主固定模板（可接受）还是样本特化（该泛化），值得定一条明确边界写进规范。</p>
+  <p class="fix">v1 已修复：边界标准写入 AGENTS.md——业主固定模板的<b>结构特征</b>（列名、附表编号、章节框架、同义词典）可硬编码但须注明模板来源；单个项目的<b>内容值</b>（数值、日期、项目名）不可以。按此标准，现有两处均属前者，予以保留。</p>
+  <div class="who"><span class="pill mute">table-filler</span> <span class="pill mute">tender-structured-parser</span> <span class="pill ok">已修复</span></div>
+</div></div>
+
+<h2><span class="no">04</span>逐个 Skill 档案</h2>
+<p class="h2sub">点开每张卡片查看目录结构、三层披露评估与该 skill 的具体问题。重点 skill（组装、清洗）默认展开。</p>
+
+<details class="skill" open>
+<summary><span class="sk-name">bid-tech-assembler</span><span class="sk-role">S4 · 投标文件正文组装 —— 本次重点</span><span class="pill warn">部分达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-assembler/</b>
+├─ SKILL.md                233 行 <span class="flag">超出 100~200 建议</span>
+├─ references/             heading_style.json · style_spec.md
+├─ scripts/  15 个 ≈7.2k 行
+│   ├─ 主链  parse_toc → init_params → build_assembly
+│   │        → cleaner+preprocess → merger → finalize → verify
+│   ├─ run_from_manifest.py   backend 入口
+│   └─ <span class="flag">merger_v1.py / _postprocessor_reference.py  疑似遗留</span>
+└─ tools/    4 个（母版生成、渲染、XML 工具）</pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="part"></span><span class="part"></span><span class="on"></span></div>
+      <div class="disc-label"><span>L0 过载（策略入 desc）</span><span>L1 超长 + 死引用</span><span>L2 有但太薄</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S4 生成标书（desc 自称「阶段 3」）</dd>
+      <dt>调用</dt><dd>run_from_manifest.py · s7_assembly_workdir</dd>
+      <dt>输出</dt><dd>正文 docx + assembly_report + needs_review</dd>
+      <dt>frontmatter</dt><dd>name / description / allowed-tools ✓</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>内容最全的一份：7 步流程、失败恢复、backend manifest 模式俱全，「一把出 + needs_review.md 收口」的设计本身很好</li>
+      <li><b>P0-2</b> 编号方案前后矛盾（方案 B vs 末表「多级列表自动编号」）</li>
+      <li><b>P0-3</b> 两节引用不存在的 bid-toc-wiki-driven</li>
+      <li><b>P1-6/7</b> description 过载；关键约束 17 条中实现级细节应下沉 references/</li>
+      <li>建议方向：正文瘦身至 ~150 行，约束细节移 references/constraints.md，删死引用</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill" open>
+<summary><span class="sk-name">bid-tech-format-cleaner</span><span class="sk-role">成稿后 · Word 格式清洗 —— 本次重点</span><span class="pill ok">达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-format-cleaner/</b>
+├─ SKILL.md                 56 行
+├─ scripts/run_from_manifest.py   906 行
+└─ tests/test_tech_format_cleaner.py   314 行 <span class="dim">全组唯一单测</span></pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="on"></span><span class="on"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 清晰</span><span>L1 紧凑</span><span>L2 无（暂不需要）</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>成稿后（自述「S2/S5」<span style="color:var(--crit)">编号无出处</span>）</dd>
+      <dt>调用</dt><dd>run_from_manifest.py --response summary</dd>
+      <dt>输出</dt><dd>清洗 docx + tech_format_clean_report.md</dd>
+      <dt>frontmatter</dt><dd>allowed-tools <span style="color:var(--crit)">缺失</span></dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>行为规则 / 输出报告 / 常见风险三段划分干净，是流水线里书写最平衡的一份；且是唯一有单测的 skill</li>
+      <li><b>P1-5</b> 缺 allowed-tools</li>
+      <li><b>P1-8</b> styleSpecPath 默认指向 assembler 内部文件，跨 skill 耦合</li>
+      <li><b>P1-4</b> 「S2/S5 准备好的目录」编号在全仓库无解释</li>
+      <li>建议方向：补 frontmatter，样式规格上提为共享资源或各自持有副本</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-gap-planner</span><span class="sk-role">S3 · 缺口识别与处理计划</span><span class="pill ok">达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-gap-planner/</b>
+├─ SKILL.md                110 行
+└─ scripts/
+    ├─ run_from_manifest.py     2321 行
+    └─ eval_golden_baseline.py   297 行 <span class="flag">SKILL.md 未提及</span></pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="on"></span><span class="on"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 清晰</span><span>L1 规则密但有序</span><span>L2 无</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S3 缺口处理（命令 s4gap，错位一级）</dd>
+      <dt>调用</dt><dd>s4gap &lt;manifest&gt;</dd>
+      <dt>输出</dt><dd>bid-tech-gap-plan-v1 JSON</dd>
+      <dt>frontmatter</dt><dd>name / description / allowed-tools ✓</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>「铁律：items 数必须等于目录数、失败不得输出部分结果」是全组最好的完整性守门写法，值得推广</li>
+      <li>11 条判断规则 + 整章素材规则组织得当；110 行在建议区间内</li>
+      <li><b>P2-10</b> golden eval 存在但文档不提，基线维护方式不明</li>
+      <li>2321 行 runner 无任何内部结构说明，后续维护成本在脚本侧</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-outline-generator</span><span class="sk-role">S1 · 目录生成</span><span class="pill ok">达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-outline-generator/</b>
+├─ SKILL.md                 69 行
+└─ scripts/run_from_manifest.py   1301 行</pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="part"></span><span class="on"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 中英混排</span><span>L1 简洁</span><span>L2 无</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S1 模板与目录（命令 s2toc，错位一级）</dd>
+      <dt>调用</dt><dd>s2toc &lt;manifest&gt;</dd>
+      <dt>输出</dt><dd>bid-toc-json-v1 + evidence + 审核包</dd>
+      <dt>frontmatter</dt><dd>allowed-tools <span style="color:var(--crit)">缺失</span> · desc 中英混排</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>「脚本管确定性抽取 / Agent 管语义审核」的分工声明是好实践；agentReviewDigest 优先、不读全量证据的 token 意识也好</li>
+      <li>输出契约给了两种可选返回格式（完整 JSON 或仅 agentDecisions），下游消费方需要二选一判断——建议收敛为一种</li>
+      <li><b>P1-5</b> 缺 allowed-tools；description 违反中文默认约定</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-table-filler</span><span class="sk-role">S3 · 空副表 AI 填写</span><span class="pill warn">部分达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-table-filler/</b>
+├─ SKILL.md                 47 行 <span class="flag">对 4680 行脚本过薄</span>
+└─ scripts/
+    ├─ run_from_manifest.py    4680 行 <span class="flag">全组最大单文件</span>
+    └─ eval_fill_vs_golden.py   341 行 <span class="flag">SKILL.md 未提及</span></pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="on"></span><span class="part"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 清晰</span><span>L1 bullet 墙</span><span>L2 缺（最需要）</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S3 缺口处理（命令 s4fill）</dd>
+      <dt>调用</dt><dd>s4fill &lt;manifest&gt;（单次）</dd>
+      <dt>输出</dt><dd>bid-tech-table-fill-v1 + .fill_report.*</dd>
+      <dt>frontmatter</dt><dd>name / description / allowed-tools ✓</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>边界声明严格（禁全库搜索、宁缺毋滥、[待人工补充] 标黄），与 word-placeholder-filler 的职责切分写得明确</li>
+      <li><b>P1-7</b> 批量语义、S1 越界切分、C.1/C.2/C.3 特例、自动选材证据全部压在一段 bullet 里，密度过高——最该建 references/ 的 skill</li>
+      <li><b>P2-12</b> C.1/C.2/C.3 增强词典的硬编码边界待共识</li>
+      <li><b>P2-10</b> golden eval 不在文档中</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-tag-importer</span><span class="sk-role">素材库 · 标签模糊匹配兜底</span><span class="pill ok">达标 ★可作范例</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-tag-importer/</b>
+└─ SKILL.md                 65 行 <span class="dim">纯 prompt skill，无脚本</span></pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="on"></span><span class="on"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 标准范式</span><span>L1 完整闭环</span><span>L2 不需要</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>素材库管理（流水线旁路）</dd>
+      <dt>调用</dt><dd>后端直接投喂 manifest JSON</dd>
+      <dt>输出</dt><dd>bid-tech-tag-match-v1</dd>
+      <dt>frontmatter</dt><dd>✓（但 Bash/Write 权限大于所需）</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>书写质量最高的一份：铁律 → 输入示例 → 按优先级排序的匹配判据 → 带完整示例的输出契约，65 行讲完闭环</li>
+      <li>description 是全组最标准的写法：做什么 + 输入 + 输出 + 边界（仅匹配不写库）</li>
+      <li><b>P2-11</b> 声明只输出 JSON，却申请了 Bash + Write——建议收敛为 Read</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-tender-structured-parser</span><span class="sk-role">S0/S1 · 招标文件结构化解读</span><span class="pill crit">不达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-tender-structured-parser/</b>
+├─ SKILL.md                197 行
+│   └─ <span class="flag">其中 62 行 = 58 条清单表（被 checklist.py 运行时解析！）</span>
+└─ scripts/
+    ├─ parser_core.py          1215 行
+    ├─ run_from_manifest.py      54 行
+    └─ agentic/  10 个 ≈1.8k 行
+        ├─ navigator_cli.py  overview/search/read/window/table
+        ├─ <span class="flag">checklist.py:49  从 SKILL.md 读表 · :78 行数≠58 即崩</span>
+        └─ submit / validate / finalize 链</pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="part"></span><span class="part"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 英文</span><span>L1 混入数据层</span><span>L2 缺</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S0/S1 解析（命令 s1parse）</dd>
+      <dt>调用</dt><dd>prepare → 导航命令 → submit/validate/finalize</dd>
+      <dt>输出</dt><dd>technical-interpretation-v1（58 条全量）</dd>
+      <dt>frontmatter</dt><dd>allowed-tools <span style="color:var(--crit)">缺失</span> · desc 英文</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>Agent 工作流本身是全组最精巧的：小输出导航命令、四态判定、引用来源闭环、子要求逐项拆分，方法论价值高</li>
+      <li><b>P0-1</b> 58 行表兼任运行时数据却零警示——要么表头加显式警告，要么把清单移到 references/checklist.md 并让 checklist.py 指过去（后者更符合披露原则）</li>
+      <li><b>P1-5</b> 缺 allowed-tools，description 违反中文约定</li>
+      <li>「招投标阅读优先级」9 条各 2~4 行，是移入 references/ 的次优候选</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-wiki-material-builder</span><span class="sk-role">素材库 · Wiki 索引构建</span><span class="pill ok">基本达标</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-wiki-material-builder/</b>
+├─ SKILL.md                125 行
+└─ scripts/
+    ├─ run_from_manifest.py        418 行
+    ├─ technical_wiki_preview.py   338 行
+    └─ <span class="flag">__pycache__/  不应入库</span></pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="on"></span><span class="on"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 清晰</span><span>L1 schema 内嵌但必要</span><span>L2 引用已失效</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S3 前置（素材 Wiki 重建）</dd>
+      <dt>调用</dt><dd>run_from_manifest.py &lt;index.json&gt;</dd>
+      <dt>输出</dt><dd>bid-wiki-blueprint-v2</dd>
+      <dt>frontmatter</dt><dd>✓（含 AskUserQuestion，与非交互定位相抵）</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>「唯一事实来源 + 严格镜像 + 禁止臆造」的约束写得好；tier 语义表、旧版聚合结构的负面清单都很实用</li>
+      <li><b>P1-8</b> Handoff 文档引用路径失效（实际已归档到 docs/archive/）</li>
+      <li><b>P2-9</b> __pycache__ 入库；<b>P2-11</b> AskUserQuestion 权限存疑</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<details class="skill">
+<summary><span class="sk-name">bid-tech-word-placeholder-filler</span><span class="sk-role">S3 · 待填写 Word 占位符填写</span><span class="pill ok">达标（略薄）</span><span class="sk-caret">▶</span></summary>
+<div class="sk-body">
+  <div>
+    <div class="sk-sec"><h5>目录结构</h5>
+<pre class="tree"><b>bid-tech-word-placeholder-filler/</b>
+├─ SKILL.md                 36 行 <span class="dim">全组最短</span>
+└─ scripts/run_from_manifest.py   1181 行</pre></div>
+    <div class="sk-sec"><h5>渐进式披露</h5>
+      <div class="disc"><span class="on"></span><span class="part"></span><span class="off"></span></div>
+      <div class="disc-label"><span>L0 清晰</span><span>L1 偏薄</span><span>L2 无</span></div>
+    </div>
+  </div>
+  <div>
+    <dl class="sk-facts">
+      <dt>用户阶段</dt><dd>S3 缺口处理（命令 s4wordfill）</dd>
+      <dt>调用</dt><dd>s4wordfill &lt;manifest&gt;（单次）</dd>
+      <dt>输出</dt><dd>bid-tech-word-placeholder-fill-v1</dd>
+      <dt>frontmatter</dt><dd>name / description / allowed-tools ✓</dd>
+    </dl>
+    <h5 style="margin-top:16px">评估</h5>
+    <ul class="sk-issues">
+      <li>与 table-filler 的姊妹结构，职责切分（正文占位符 vs 空副表）双向声明一致，这点做得对</li>
+      <li>相比 table-filler 缺少：报告文件命名约定（.fill_report.*）、占位符样式清单是否穷尽、批量模式是否支持——1181 行脚本的行为只有 8 条 bullet 覆盖</li>
+      <li>建议方向：对齐 table-filler 的输出契约详细度</li>
+    </ul>
+  </div>
+</div>
+</details>
+
+<h2><span class="no">05</span>讨论议题</h2>
+<p class="h2sub">以下决定影响多个 skill 的改法，建议先对齐再动手。</p>
+
+<div class="q"><h4>Q1 · 58 条清单表放哪？</h4>
+<p>方案 A：留在 SKILL.md，表头加「此表被 checklist.py 运行时解析，勿改结构」警示（改动最小）。方案 B：移到 references/checklist.md，checklist.py 改指向（符合披露原则，agent 每次仍需读全表，token 成本不变）。方案 C：升级为独立 JSON/CSV 数据文件，彻底解除文档-数据耦合（最干净，改动最大）。</p>
+<p class="fix">v1 决议：采用「B+A 合体」——迁到 <code>references/checklist.md</code> 保留 Markdown 表（解析器只改路径、agent 仍可直接读表），文件头加运行时数据警示与修改规则，58 行强校验保留。比纯 JSON 少一次格式转换风险，文档-数据解耦目标已达成。</p></div>
+
+<div class="q"><h4>Q2 · 阶段命名要不要一次性收口？</h4>
+<p>历史别名（s1parse/s2toc/s4gap/s7）短期难改（后端和产物路径依赖），但至少可以：在 skills/ 根放一张「用户阶段 ↔ 命令别名 ↔ 工作目录」映射表，各 SKILL.md 引用它，替换掉现在九份各说各话的解释；并查清 format-cleaner 的「S2/S5」到底指什么。</p>
+<p class="fix">v1 决议：已建 <code>opencode/skills/STAGES.md</code>（9 个 skill 全表 + 注意事项），各 SKILL.md 改为一行引用。「S2/S5」已查明为历史工作目录编号 s2_toc_workdir / s5_format_switch_workdir。别名改名不做，列为独立事项。</p></div>
+
+<div class="q"><h4>Q3 · frontmatter 统一到什么标准？</h4>
+<p>建议定稿一条模板：description 中文、触发条件式、只管路由不带策略；allowed-tools 全员必填且按最小权限收敛（tag-importer 收到 Read，wiki-builder 去掉 AskUserQuestion？后者需确认是否真有交互场景）。可以把 tag-importer 作为 description 范例写进 AGENTS.md。</p>
+<p class="fix">v1 决议：模板已写入 AGENTS.md（中文触发条件式、只管路由、allowed-tools 必填最小化、范例 tag-importer）。tag-importer 收敛为 [Read]；wiki-builder 去掉 AskUserQuestion（后端 subprocess 直跑，确认无交互场景）。AGENTS.md 变更提交时需走 PR review。</p></div>
+
+<div class="q"><h4>Q4 · assembler 编号方案，实现到底是哪套？</h4>
+<p>需要跑一次或读 merger/finalize 源码确认现状是方案 B（文本前缀）后，把 SKILL.md 末尾对比表和第 6 步的矛盾表述改掉；同时删除 bid-toc-wiki-driven 两节死文档。这属于纠错，风险低，可以最先动。</p>
+<p class="fix">v1 决议：源码确认为方案 B（<code>merger.py</code> 手插文本前缀 heading，<code>finalize.py</code> 剥 numPr）；矛盾表述全部修正，死文档已删，并加了"编号方案以代码为准"锚点。</p></div>
+
+<div class="q"><h4>Q5 · references/ 的建设顺序？</h4>
+<p>按收益排序建议：① table-filler（47 行文档 vs 4680 行脚本，缺口最大）② assembler（约束细节下沉 + 瘦身）③ tender-parser（清单 + 阅读优先级外移）。同时约定 golden eval 的文档化格式（怎么跑、基线在哪、何时更新）。</p>
+<p class="fix">v1 决议：按此顺序全部完成——table-filler <code>references/rules.md</code>、assembler <code>references/constraints.md</code>、tender-parser <code>references/checklist.md</code>；golden eval 已在 gap-planner SKILL.md 和 table-filler rules.md 文档化。tender-parser 的「阅读优先级」9 条<b>保留在正文</b>：清单外移后 SKILL.md 已降到 141 行（达标），且该节是逐条解读时的核心裁决依据，属 L1 内容。</p></div>
+
+<footer>v0 评审快照生成于 2026-07-14（未修改文件）· v1 系统修复完成于 2026-07-15，12 个问题全部闭环，绿色 ✔ 行为修复记录 · 遗留独立事项：历史命令别名改名、skill 命名对称性、styleSpec 目录级重构、重资产 skill 自动化测试补建 · 证据均以 文件:行号 标注，可直接回查</footer>
+</div>
+
+</html>

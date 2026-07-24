@@ -1,0 +1,672 @@
+{
+  "schema": "bid-tech-table-field-mapping-v1.codex-semantic-sample",
+  "appendixId": "APPX-0018",
+  "title": "附表C.2 风轮系统技术参数",
+  "targetFile": "APPX-0018-附表C.2 风轮系统技术参数.docx",
+  "referenceMaterial": "X2平台机型投标参数_20250106.xlsx",
+  "summary": {
+    "fill": 12,
+    "manual": 24,
+    "total": 36
+  },
+  "decisions": [
+    {
+      "targetFieldId": "C2-R02",
+      "rowIndex": 2,
+      "field": "轮毂材料",
+      "action": "fill",
+      "value": "QT400-18AL",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0157",
+        "label": "轮毂材料",
+        "value": "QT400-18AL",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 185,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0107",
+          "label": "轮毂",
+          "value": "60±3%",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 129,
+          "score": 0.713,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0111",
+          "label": "轮毂(含运输支架 )",
+          "value": "63±3%(含运输支架约 2.4t)",
+          "unit": "t",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 134,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        },
+        {
+          "factId": "F0115",
+          "label": "轮毂：长×宽×高 / (拆除导流罩 / 中顶段和罩体 A )",
+          "value": "6.1*4.9*4.2",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 139,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R03",
+      "rowIndex": 3,
+      "field": "轮毂本体重量",
+      "action": "fill",
+      "value": "60±3%",
+      "unit": "t",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0158",
+        "label": "轮毂重量（含附件）",
+        "value": "60±3%",
+        "unit": "t",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 186,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R05",
+      "rowIndex": 5,
+      "field": "叶片材料",
+      "action": "fill",
+      "value": "CFRP+GFRP",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0018",
+        "label": "叶片材料",
+        "value": "CFRP+GFRP",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 22,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0143",
+          "label": "叶片材料",
+          "value": "CFRP+GFRP",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 171,
+          "score": 0.812,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R06",
+      "rowIndex": 6,
+      "field": "主梁碳纤维体积百分比",
+      "action": "manual",
+      "value": "[待人工补充：主梁碳纤维体积百分比]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R07",
+      "rowIndex": 7,
+      "field": "叶片长度",
+      "action": "fill",
+      "value": "108",
+      "unit": "m",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0019",
+        "label": "叶片长度",
+        "value": "108",
+        "unit": "m",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 23,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0144",
+          "label": "叶片长度",
+          "value": "108",
+          "unit": "m",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 172,
+          "score": 0.812,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R08",
+      "rowIndex": 8,
+      "field": "单支叶片重量",
+      "action": "fill",
+      "value": "35.5±5%",
+      "unit": "t",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0151",
+        "label": "每片重量",
+        "value": "35.5±5%",
+        "unit": "t",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 179,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R09",
+      "rowIndex": 9,
+      "field": "最大弦长",
+      "action": "fill",
+      "value": "5200max/200min",
+      "unit": "mm",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0149",
+        "label": "弦长（max/min ）",
+        "value": "5200max/200min",
+        "unit": "mm",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 177,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R10",
+      "rowIndex": 10,
+      "field": "叶根节圆直径",
+      "action": "manual",
+      "value": "[待人工补充：叶根节圆直径]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0146",
+          "label": "叶片根部到轮毂中心的距离",
+          "value": "1744",
+          "unit": "mm",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 174,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：叶片根部到轮毂中心的距离=1744，score=0.648"
+    },
+    {
+      "targetFieldId": "C2-R11",
+      "rowIndex": 11,
+      "field": "叶根螺栓孔数",
+      "action": "manual",
+      "value": "[待人工补充：叶根螺栓孔数]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R12",
+      "rowIndex": 12,
+      "field": "叶根螺栓规格",
+      "action": "manual",
+      "value": "[待人工补充：叶根螺栓规格]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0145",
+          "label": "叶片根部连接件",
+          "value": "高强螺栓",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 173,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：叶片根部连接件=高强螺栓，score=0.648"
+    },
+    {
+      "targetFieldId": "C2-R13",
+      "rowIndex": 13,
+      "field": "叶根螺栓强度等级",
+      "action": "manual",
+      "value": "[待人工补充：叶根螺栓强度等级]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R14",
+      "rowIndex": 14,
+      "field": "预制叶根瓦（是/否）",
+      "action": "manual",
+      "value": "[待人工补充：预制叶根瓦（是/否）]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R15",
+      "rowIndex": 15,
+      "field": "预制后缘梁（是/否）",
+      "action": "manual",
+      "value": "[待人工补充：预制后缘梁（是/否）]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R16",
+      "rowIndex": 16,
+      "field": "预埋/打孔成型工艺",
+      "action": "fill",
+      "value": "真空灌注",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0142",
+        "label": "叶片加工工艺",
+        "value": "真空灌注",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 170,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R17",
+      "rowIndex": 17,
+      "field": "主梁区域腹板形式单/双",
+      "action": "manual",
+      "value": "[待人工补充：主梁区域腹板形式单/双]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R18",
+      "rowIndex": 18,
+      "field": "叶尖是否完成了疲劳测试覆盖",
+      "action": "manual",
+      "value": "[待人工补充：叶尖是否完成了疲劳测试覆盖]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R19",
+      "rowIndex": 19,
+      "field": "响应叶片防雷导线应采用铜导线要求",
+      "action": "manual",
+      "value": "[待人工补充：响应叶片防雷导线应采用铜导线要求]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [
+        {
+          "factId": "F0278",
+          "label": "响应叶片防雷导线应采用铜导线要求",
+          "value": "响应",
+          "unit": "",
+          "source": "derived",
+          "row": null,
+          "score": 0.691,
+          "usable": true,
+          "derivation": "根据投标响应口径推断，需人工复核"
+        }
+      ],
+      "reason": "有相近候选，但不可直接使用或置信度不足：响应叶片防雷导线应采用铜导线要求=响应，score=0.691"
+    },
+    {
+      "targetFieldId": "C2-R20",
+      "rowIndex": 20,
+      "field": "防雷导线金属截面积",
+      "action": "manual",
+      "value": "[待人工补充：防雷导线金属截面积]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R21",
+      "rowIndex": 21,
+      "field": "叶片前缘防腐形式",
+      "action": "manual",
+      "value": "[待人工补充：叶片前缘防腐形式]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R23",
+      "rowIndex": 23,
+      "field": "变桨轴承形式",
+      "action": "fill",
+      "value": "三排滚柱内齿式轴承",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0154",
+        "label": "叶片轴承型式",
+        "value": "三排滚柱内齿式轴承",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 182,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R24",
+      "rowIndex": 24,
+      "field": "变桨轴承套圈材质",
+      "action": "manual",
+      "value": "[待人工补充：变桨轴承套圈材质]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R25",
+      "rowIndex": 25,
+      "field": "保持架材质",
+      "action": "manual",
+      "value": "[待人工补充：保持架材质]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R26",
+      "rowIndex": 26,
+      "field": "空载和启动摩擦力矩",
+      "action": "manual",
+      "value": "[待人工补充：空载和启动摩擦力矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R27",
+      "rowIndex": 27,
+      "field": "加工后滚道淬硬层深度",
+      "action": "manual",
+      "value": "[待人工补充：加工后滚道淬硬层深度]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R28",
+      "rowIndex": 28,
+      "field": "变桨轴承重量",
+      "action": "manual",
+      "value": "[待人工补充：变桨轴承重量]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R29",
+      "rowIndex": 29,
+      "field": "防腐等级",
+      "action": "fill",
+      "value": "C3（陆上）",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0247",
+        "label": "防腐等级",
+        "value": "C3（陆上）",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 293,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R31",
+      "rowIndex": 31,
+      "field": "变桨系统型式",
+      "action": "fill",
+      "value": "电变桨",
+      "unit": "",
+      "confidence": 0.812,
+      "selectedFact": {
+        "factId": "F0204",
+        "label": "变桨系统型式",
+        "value": "电变桨",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 238,
+        "score": 0.812,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [
+        {
+          "factId": "F0056",
+          "label": "变桨驱动方式",
+          "value": "电机驱动",
+          "unit": "",
+          "source": "X2平台机型投标参数_20250106.xlsx",
+          "row": 66,
+          "score": 0.648,
+          "usable": true,
+          "derivation": null
+        }
+      ],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R32",
+      "rowIndex": 32,
+      "field": "最大变桨速率",
+      "action": "fill",
+      "value": "最大5",
+      "unit": "°/s",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0058",
+        "label": "变桨速率(急停变桨速度)",
+        "value": "最大5",
+        "unit": "°/s",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 68,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    },
+    {
+      "targetFieldId": "C2-R33",
+      "rowIndex": 33,
+      "field": "变桨电机额定功率",
+      "action": "manual",
+      "value": "[待人工补充：变桨电机额定功率]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R34",
+      "rowIndex": 34,
+      "field": "变桨电机额定扭矩",
+      "action": "manual",
+      "value": "[待人工补充：变桨电机额定扭矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R35",
+      "rowIndex": 35,
+      "field": "变桨电机最大扭矩",
+      "action": "manual",
+      "value": "[待人工补充：变桨电机最大扭矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R36",
+      "rowIndex": 36,
+      "field": "变桨电机制动扭矩",
+      "action": "manual",
+      "value": "[待人工补充：变桨电机制动扭矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R37",
+      "rowIndex": 37,
+      "field": "变桨减速机输出额定扭矩",
+      "action": "manual",
+      "value": "[待人工补充：变桨减速机输出额定扭矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R38",
+      "rowIndex": 38,
+      "field": "变桨减速机最大驱动扭矩",
+      "action": "manual",
+      "value": "[待人工补充：变桨减速机最大驱动扭矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R39",
+      "rowIndex": 39,
+      "field": "变桨减速机制动扭矩",
+      "action": "manual",
+      "value": "[待人工补充：变桨减速机制动扭矩]",
+      "unit": "",
+      "confidence": 0,
+      "selectedFact": null,
+      "alternatives": [],
+      "reason": "未找到可映射的参考事实。"
+    },
+    {
+      "targetFieldId": "C2-R40",
+      "rowIndex": 40,
+      "field": "变桨后备电源形式",
+      "action": "fill",
+      "value": "超级电容",
+      "unit": "",
+      "confidence": 0.648,
+      "selectedFact": {
+        "factId": "F0057",
+        "label": "失电后的变桨驱动模式（及动力源）",
+        "value": "超级电容",
+        "unit": "",
+        "source": "X2平台机型投标参数_20250106.xlsx",
+        "row": 67,
+        "score": 0.648,
+        "usable": true,
+        "derivation": null
+      },
+      "alternatives": [],
+      "reason": "语义概念匹配并通过可用性检查。"
+    }
+  ]
+}

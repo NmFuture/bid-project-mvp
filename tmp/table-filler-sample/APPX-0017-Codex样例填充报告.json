@@ -1,0 +1,282 @@
+{
+  "schema": "bid-tech-table-fill-v1.codex-sample",
+  "target": {
+    "appendixId": "APPX-0017",
+    "title": "附表C.1 总体技术参数与规格",
+    "sourceFile": "/Users/wlb/Agent/bid-project/tmp/table-filler-sample/APPX-0017-附表C.1 总体技术参数与规格.docx",
+    "outputFile": "/Users/wlb/Agent/bid-project/tmp/table-filler-sample/APPX-0017-附表C.1 总体技术参数与规格-Codex样例填充.docx"
+  },
+  "projectTurbineModel": {
+    "model": "EW10.0-220上置",
+    "platform": "X2E-A湍",
+    "layout": "变压器上置",
+    "ratedPowerKw": 10000,
+    "rotorDiameterM": 220,
+    "status": "active",
+    "statusLabel": "01-20260312临时哦沟通吧 主变压器上置",
+    "source": "parameter_sheet",
+    "sourceFileId": "RAW-0437",
+    "sourceFileName": "X2平台机型投标参数_20250106.xlsx",
+    "aliases": [
+      "EW10.0-220上置",
+      "EW10.0-220",
+      "W10.0-220上置",
+      "W10.0-220"
+    ]
+  },
+  "referenceMaterials": [
+    {
+      "id": "RAW-0437",
+      "name": "X2平台机型投标参数_20250106.xlsx",
+      "sheet": "01-X2平台机组主参数20260120",
+      "selectedColumn": 22,
+      "platformMatched": "X2E-A湍",
+      "modelMatched": "EW10.0-220上置"
+    }
+  ],
+  "summary": {
+    "filledCount": 24,
+    "unfilledCount": 10,
+    "totalFields": 34
+  },
+  "fields": [
+    {
+      "field": "投标机型",
+      "status": "filled",
+      "value": "EW10.0-220上置",
+      "unit": "",
+      "evidence": "projectTurbineModel.model"
+    },
+    {
+      "field": "机组类型",
+      "status": "filled",
+      "value": "双馈",
+      "unit": "",
+      "evidence": "由发电机型式“双馈异步发电机”推断"
+    },
+    {
+      "field": "单机容量",
+      "status": "filled",
+      "value": "10000",
+      "unit": "kW",
+      "evidence": "row 6 额定功率"
+    },
+    {
+      "field": "机组数量",
+      "status": "unfilled",
+      "value": "[待人工补充：机组数量]",
+      "unit": "",
+      "reason": "项目特定字段，当前 manifest 未提供"
+    },
+    {
+      "field": "总装机容量",
+      "status": "unfilled",
+      "value": "[待人工补充：总装机容量]",
+      "unit": "MW",
+      "reason": "项目特定字段，当前 manifest 未提供"
+    },
+    {
+      "field": "叶轮直径",
+      "status": "filled",
+      "value": "220",
+      "unit": "m",
+      "evidence": "row 8 风轮直径"
+    },
+    {
+      "field": "叶片数目",
+      "status": "filled",
+      "value": "3",
+      "unit": "片",
+      "evidence": "row 164 叶片数目"
+    },
+    {
+      "field": "轮毂中心高度",
+      "status": "unfilled",
+      "value": "[待人工补充：轮毂中心高度]",
+      "unit": "m",
+      "reason": "项目定制；参数表仅给约束：纯钢塔：需≤125； / 混塔、分片塔：需≥140"
+    },
+    {
+      "field": "单位千瓦扫风面积",
+      "status": "filled",
+      "value": "3.80",
+      "unit": "m2/kW",
+      "evidence": "row 25 扫风面积 / row 6 额定功率"
+    },
+    {
+      "field": "认证级别",
+      "status": "filled",
+      "value": "IEC S",
+      "unit": "",
+      "evidence": "row 146 认证级别"
+    },
+    {
+      "field": "参考风速Vref",
+      "status": "filled",
+      "value": "50（背风策略）",
+      "unit": "m/s",
+      "evidence": "row 147 极限风速50年一遇10min"
+    },
+    {
+      "field": "极端风速Ve50",
+      "status": "filled",
+      "value": "70（背风）",
+      "unit": "m/s",
+      "evidence": "row 148 极限风速50年一遇3s"
+    },
+    {
+      "field": "轮毂高度年平均风速Vave",
+      "status": "unfilled",
+      "value": "[待人工补充：轮毂高度年平均风速Vave]",
+      "unit": "m/s",
+      "reason": "场址风资源字段，当前参考资料未提供"
+    },
+    {
+      "field": "湍流强度参考值Iref",
+      "status": "unfilled",
+      "value": "[待人工补充：湍流强度参考值Iref]",
+      "unit": "",
+      "reason": "场址风资源字段，当前参考资料未提供"
+    },
+    {
+      "field": "场址空气密度",
+      "status": "unfilled",
+      "value": "[待人工补充：场址空气密度]",
+      "unit": "kg/m3",
+      "reason": "场址功率曲线字段，当前参考资料未提供"
+    },
+    {
+      "field": "保证功率曲线最优Cp值",
+      "status": "unfilled",
+      "value": "[待人工补充：保证功率曲线最优Cp值]",
+      "unit": "",
+      "reason": "需功率曲线/性能文件，当前参考资料未提供"
+    },
+    {
+      "field": "保证功率曲线最优Cp对应风速区间（m/s）",
+      "status": "unfilled",
+      "value": "[待人工补充：保证功率曲线最优Cp对应风速区间（m/s）]",
+      "unit": "m/s",
+      "reason": "需功率曲线/性能文件，当前参考资料未提供"
+    },
+    {
+      "field": "切入风速",
+      "status": "filled",
+      "value": "3",
+      "unit": "m/s",
+      "evidence": "row 10 切入风速"
+    },
+    {
+      "field": "额定风速",
+      "status": "filled",
+      "value": "10.7*",
+      "unit": "m/s",
+      "evidence": "row 11 额定风速"
+    },
+    {
+      "field": "切出风速",
+      "status": "filled",
+      "value": "23",
+      "unit": "m/s",
+      "evidence": "row 12 切出风速"
+    },
+    {
+      "field": "再切入风速",
+      "status": "unfilled",
+      "value": "[待人工补充：再切入风速]",
+      "unit": "m/s",
+      "reason": "参数表仅写“参照1.1”，无明确数值"
+    },
+    {
+      "field": "机组设计寿命",
+      "status": "filled",
+      "value": "20",
+      "unit": "年",
+      "evidence": "row 19 设计使用寿命"
+    },
+    {
+      "field": "风轮运行转速范围",
+      "status": "unfilled",
+      "value": "[待人工补充：风轮运行转速范围]",
+      "unit": "rpm",
+      "reason": "当前参数表仅提供风轮额定转速，未提供运行范围"
+    },
+    {
+      "field": "风轮额定转速",
+      "status": "filled",
+      "value": "8",
+      "unit": "rpm",
+      "evidence": "row 151 风轮额定转速"
+    },
+    {
+      "field": "叶尖速度",
+      "status": "filled",
+      "value": "92.15",
+      "unit": "m/s",
+      "evidence": "row 24 叶尖线速度"
+    },
+    {
+      "field": "功率调整方式",
+      "status": "filled",
+      "value": "变速变桨",
+      "unit": "",
+      "evidence": "row 156 功率调整方式"
+    },
+    {
+      "field": "紧急制动方式",
+      "status": "filled",
+      "value": "空气动力制动",
+      "unit": "",
+      "evidence": "row 157 紧急制动方式"
+    },
+    {
+      "field": "运行环境温度",
+      "status": "filled",
+      "value": "-30~+40",
+      "unit": "℃",
+      "evidence": "row 149 运行环境温度"
+    },
+    {
+      "field": "生存环境温度",
+      "status": "filled",
+      "value": "-40~50（低温）",
+      "unit": "℃",
+      "evidence": "row 18 机组生存温度范围"
+    },
+    {
+      "field": "噪音（整个风力发电机组）",
+      "status": "filled",
+      "value": "符合IEC61400-11，≤110dB",
+      "unit": "dB",
+      "evidence": "row 160-161 噪音"
+    },
+    {
+      "field": "轮毂总成重量",
+      "status": "filled",
+      "value": "60±3%",
+      "unit": "t",
+      "evidence": "row 129 轮毂"
+    },
+    {
+      "field": "机舱总成重量",
+      "status": "filled",
+      "value": "192±3%",
+      "unit": "t",
+      "evidence": "row 126 机舱总成"
+    },
+    {
+      "field": "机舱尺寸",
+      "status": "filled",
+      "value": "13.55*5*4.2（变压器、变流器及其罩壳单独运输）",
+      "unit": "m",
+      "evidence": "row 138 主机舱长宽高"
+    },
+    {
+      "field": "机组防雷等级",
+      "status": "filled",
+      "value": "按一级防雷保护设计",
+      "unit": "",
+      "evidence": "row 116 防雷措施"
+    }
+  ]
+}

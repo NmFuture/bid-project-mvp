@@ -1,0 +1,450 @@
+[
+  {
+    "id": "C1-R01",
+    "rowIndex": 1,
+    "number": "1",
+    "group": "机型总体参数",
+    "field": "投标机型",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "model"
+    ]
+  },
+  {
+    "id": "C1-R02",
+    "rowIndex": 2,
+    "number": "2",
+    "group": "机型总体参数",
+    "field": "机组类型",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "双馈、直驱、半直驱、鼠笼、高速永磁等",
+    "concepts": [
+      "turbine_type"
+    ]
+  },
+  {
+    "id": "C1-R03",
+    "rowIndex": 3,
+    "number": "3",
+    "group": "机型总体参数",
+    "field": "单机容量",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rated_power"
+    ]
+  },
+  {
+    "id": "C1-R04",
+    "rowIndex": 4,
+    "number": "4",
+    "group": "机型总体参数",
+    "field": "机组数量",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "turbine_count"
+    ]
+  },
+  {
+    "id": "C1-R05",
+    "rowIndex": 5,
+    "number": "5",
+    "group": "机型总体参数",
+    "field": "总装机容量",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "total_capacity"
+    ]
+  },
+  {
+    "id": "C1-R06",
+    "rowIndex": 6,
+    "number": "6",
+    "group": "机型总体参数",
+    "field": "叶轮直径",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rotor_diameter"
+    ]
+  },
+  {
+    "id": "C1-R07",
+    "rowIndex": 7,
+    "number": "7",
+    "group": "机型总体参数",
+    "field": "叶片数目",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "blade_count"
+    ]
+  },
+  {
+    "id": "C1-R08",
+    "rowIndex": 8,
+    "number": "8",
+    "group": "机型总体参数",
+    "field": "轮毂中心高度",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hub_height",
+      "hub_weight"
+    ]
+  },
+  {
+    "id": "C1-R09",
+    "rowIndex": 9,
+    "number": "9",
+    "group": "机型总体参数",
+    "field": "单位千瓦扫风面积",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "swept_area",
+      "swept_area_per_kw"
+    ]
+  },
+  {
+    "id": "C1-R10",
+    "rowIndex": 10,
+    "number": "10",
+    "group": "机组安全设计等级（需同投标机型认证证书一致）",
+    "field": "认证级别",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "certification_level"
+    ]
+  },
+  {
+    "id": "C1-R11",
+    "rowIndex": 11,
+    "number": "11",
+    "group": "机组安全设计等级（需同投标机型认证证书一致）",
+    "field": "参考风速Vref",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "50年一遇（10min平均值）",
+    "concepts": [
+      "vref"
+    ]
+  },
+  {
+    "id": "C1-R12",
+    "rowIndex": 12,
+    "number": "12",
+    "group": "机组安全设计等级（需同投标机型认证证书一致）",
+    "field": "极端风速Ve50",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "50年一遇（3s极限风速）",
+    "concepts": [
+      "ve50"
+    ]
+  },
+  {
+    "id": "C1-R13",
+    "rowIndex": 13,
+    "number": "13",
+    "group": "机组安全设计等级（需同投标机型认证证书一致）",
+    "field": "轮毂高度年平均风速Vave",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "hub_height",
+      "vave",
+      "hub_weight"
+    ]
+  },
+  {
+    "id": "C1-R14",
+    "rowIndex": 14,
+    "number": "14",
+    "group": "机组安全设计等级（需同投标机型认证证书一致）",
+    "field": "湍流强度参考值Iref",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "特征湍流强度",
+    "concepts": [
+      "iref"
+    ]
+  },
+  {
+    "id": "C1-R15",
+    "rowIndex": 15,
+    "number": "15",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "场址空气密度",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "air_density"
+    ]
+  },
+  {
+    "id": "C1-R16",
+    "rowIndex": 16,
+    "number": "16",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "保证功率曲线最优Cp值",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "cp_max"
+    ]
+  },
+  {
+    "id": "C1-R17",
+    "rowIndex": 17,
+    "number": "17",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "保证功率曲线最优Cp对应风速区间（m/s）",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "cp_speed_range"
+    ]
+  },
+  {
+    "id": "C1-R18",
+    "rowIndex": 18,
+    "number": "18",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "切入风速",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "cut_in",
+      "recut_in"
+    ]
+  },
+  {
+    "id": "C1-R19",
+    "rowIndex": 19,
+    "number": "19",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "额定风速",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rated_wind_speed"
+    ]
+  },
+  {
+    "id": "C1-R20",
+    "rowIndex": 20,
+    "number": "20",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "切出风速",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "cut_out"
+    ]
+  },
+  {
+    "id": "C1-R21",
+    "rowIndex": 21,
+    "number": "21",
+    "group": "功率曲线参数（场址空气密度下）",
+    "field": "再切入风速",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "cut_in",
+      "recut_in"
+    ]
+  },
+  {
+    "id": "C1-R22",
+    "rowIndex": 22,
+    "number": "22",
+    "group": "其他总体参数",
+    "field": "机组设计寿命",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "design_life"
+    ]
+  },
+  {
+    "id": "C1-R23",
+    "rowIndex": 23,
+    "number": "23",
+    "group": "其他总体参数",
+    "field": "风轮运行转速范围",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rotor_speed_range"
+    ]
+  },
+  {
+    "id": "C1-R24",
+    "rowIndex": 24,
+    "number": "24",
+    "group": "其他总体参数",
+    "field": "风轮额定转速",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "rotor_rated_speed"
+    ]
+  },
+  {
+    "id": "C1-R25",
+    "rowIndex": 25,
+    "number": "25",
+    "group": "其他总体参数",
+    "field": "叶尖速度",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "tip_speed"
+    ]
+  },
+  {
+    "id": "C1-R26",
+    "rowIndex": 26,
+    "number": "26",
+    "group": "其他总体参数",
+    "field": "功率调整方式",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "power_control"
+    ]
+  },
+  {
+    "id": "C1-R27",
+    "rowIndex": 27,
+    "number": "27",
+    "group": "其他总体参数",
+    "field": "紧急制动方式",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "emergency_brake"
+    ]
+  },
+  {
+    "id": "C1-R28",
+    "rowIndex": 28,
+    "number": "28",
+    "group": "其他总体参数",
+    "field": "运行环境温度",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "operating_temp"
+    ]
+  },
+  {
+    "id": "C1-R29",
+    "rowIndex": 29,
+    "number": "29",
+    "group": "其他总体参数",
+    "field": "生存环境温度",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "survival_temp"
+    ]
+  },
+  {
+    "id": "C1-R30",
+    "rowIndex": 30,
+    "number": "30",
+    "group": "其他总体参数",
+    "field": "噪音（整个风力发电机组）",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "IEC 61400-11，须满足具体项目的环保要求，并通过相关环保验收",
+    "concepts": [
+      "noise"
+    ]
+  },
+  {
+    "id": "C1-R31",
+    "rowIndex": 31,
+    "number": "31",
+    "group": "其他总体参数",
+    "field": "轮毂总成重量",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "不含叶片与叶片连接螺栓",
+    "concepts": [
+      "hub_weight"
+    ]
+  },
+  {
+    "id": "C1-R32",
+    "rowIndex": 32,
+    "number": "32",
+    "group": "其他总体参数",
+    "field": "机舱总成重量",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "nacelle_weight"
+    ]
+  },
+  {
+    "id": "C1-R33",
+    "rowIndex": 33,
+    "number": "33",
+    "group": "其他总体参数",
+    "field": "机舱尺寸",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "长×宽×高",
+    "concepts": [
+      "nacelle_dimension"
+    ]
+  },
+  {
+    "id": "C1-R34",
+    "rowIndex": 34,
+    "number": "34",
+    "group": "其他总体参数",
+    "field": "机组防雷等级",
+    "targetColumn": "技术参数与规格",
+    "unit": "",
+    "remark": "",
+    "concepts": [
+      "lightning_level"
+    ]
+  }
+]

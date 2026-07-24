@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "bid-business-gap-commitment-rules-v1",
+  "explicitTriggers": ["承诺函", "承诺书", "另附承诺函", "另附承诺书", "须提供承诺函", "须提供承诺书", "应出具承诺函", "应出具承诺书", "投标人不得存在下列情形之一"],
+  "defaultModuleKey": "commitments_and_notes",
+  "defaultPlacementKeywords": ["投标人需要说明的其他内容", "其他说明", "其他内容"],
+  "technicalBoundaryTopics": ["发电量", "功率曲线", "功率偏差", "可利用率", "性能保证", "环境适应性", "技术方案", "设备配置", "控制策略"]
+}

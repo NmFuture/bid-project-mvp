@@ -1,0 +1,16 @@
+{
+  "APPX-0018": {
+    "fill": 12,
+    "manual": 24,
+    "total": 36,
+    "outputDocx": "/Users/wlb/Agent/bid-project/tmp/table-filler-sample/semantic_c2_c3/APPX-0018-附表C.2 风轮系统技术参数-语义映射样例填充.docx",
+    "report": "/Users/wlb/Agent/bid-project/tmp/table-filler-sample/semantic_c2_c3/c2_semantic_fill_report.md"
+  },
+  "APPX-0019": {
+    "fill": 21,
+    "manual": 36,
+    "total": 57,
+    "outputDocx": "/Users/wlb/Agent/bid-project/tmp/table-filler-sample/semantic_c2_c3/APPX-0019-附表C.3 机械传动部件技术参数-语义映射样例填充.docx",
+    "report": "/Users/wlb/Agent/bid-project/tmp/table-filler-sample/semantic_c2_c3/c3_semantic_fill_report.md"
+  }
+}

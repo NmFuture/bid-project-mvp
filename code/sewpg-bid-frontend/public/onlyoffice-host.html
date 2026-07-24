@@ -39,6 +39,8 @@
 
     <script>
       const HOST_SOURCE = 'onlyoffice-host'
+      const SEARCH_SOURCE = 'onlyoffice-search-bridge'
+      const SEARCH_CHANNEL_NAME = 'onlyoffice-search-bridge'
 
       const postToParent = (payload) => {
         if (!window.parent || window.parent === window) return
@@ -92,6 +94,72 @@
           script.onerror = () => reject(new Error('OnlyOffice 脚本加载失败'))
           document.body.appendChild(script)
         })
+
+      const normalizeBaseUrl = (value) => String(value || '').replace(/\/+$/, '')
+
+      const relaySearchMessage = (message) => {
+        if (!message || message.source !== SEARCH_SOURCE || message.type !== 'search-basis-text') return
+
+        const payload = {
+          type: message.type,
+          text: message.text,
+          nonce: message.nonce,
+        }
+
+        try {
+          window.localStorage.setItem('onlyoffice-search-bridge-message', JSON.stringify(payload))
+        } catch {}
+
+        if ('BroadcastChannel' in window) {
+          try {
+            const channel = new BroadcastChannel(SEARCH_CHANNEL_NAME)
+            channel.postMessage(payload)
+            channel.close()
+          } catch {}
+        }
+      }
+
+      const relaySearchResult = (message) => {
+        if (!message || message.source !== SEARCH_SOURCE || message.type !== 'search-result') return
+        postToParent(message)
+      }
+
+      window.addEventListener('message', (event) => {
+        if (event.origin !== window.location.origin) return
+        relaySearchMessage(event.data)
+        relaySearchResult(event.data)
+      })
+
+      const buildScriptCandidates = (documentServerUrl) => {
+        const candidates = []
+        const configured = normalizeBaseUrl(documentServerUrl)
+        if (configured) candidates.push(configured)
+
+        // 兜底：开发态常见场景是前端跑在 :5173，由同源 Vite 代理或 Web 容器的 /ds 转发。
+        const hostFallback = `${window.location.origin}/ds`
+        if (!candidates.includes(hostFallback)) candidates.push(hostFallback)
+
+        return candidates.map((base) => `${base}/web-apps/apps/api/documents/api.js`)
+      }
+
+      const loadScriptWithFallback = async (documentServerUrl) => {
+        const scriptUrls = buildScriptCandidates(documentServerUrl)
+        let lastError = null
+
+        for (const scriptUrl of scriptUrls) {
+          try {
+            await loadScript(scriptUrl)
+            return
+          } catch (error) {
+            lastError = error
+          }
+        }
+
+        const detail = scriptUrls.length
+          ? `（已尝试：${scriptUrls.join('；')}）`
+          : ''
+        throw new Error(`OnlyOffice 脚本加载失败${detail}`)
+      }
 
       const buildProbeErrorMessage = (documentUrl, detail) => {
         if (detail && detail !== 'Failed to fetch') return detail
@@ -175,7 +243,7 @@
           await probeDocumentUrl(requestId, probeUrl)
 
           setStatus('正在加载 OnlyOffice 脚本...')
-          await loadScript(`${documentServerUrl}/web-apps/apps/api/documents/api.js`)
+          await loadScriptWithFallback(documentServerUrl)
           if (!window.DocsAPI) throw new Error('OnlyOffice 脚本已加载，但 DocsAPI 未就绪。')
 
           setStatus('正在初始化文档...')
