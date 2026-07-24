@@ -334,6 +334,11 @@ class MaterialRuntimeTables:
                     error_message TEXT,
                     page_count INT DEFAULT 0,
                     raw_response JSONB DEFAULT '{}'::jsonb,
+                    retry_count INT DEFAULT 0,
+                    max_retries INT DEFAULT 2,
+                    input_path VARCHAR(500),
+                    locked_at TIMESTAMPTZ,
+                    audit_meta JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     created_by VARCHAR(100),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -341,6 +346,15 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        # 兼容旧表：补齐队列相关字段
+        for column_def in (
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 2",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS input_path VARCHAR(500)",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS audit_meta JSONB DEFAULT '{}'::jsonb",
+        ):
+            await session.execute(text(column_def))
         await session.execute(
             text(
                 """

@@ -2571,6 +2571,31 @@ def test_material_runtime_tables_are_outside_material_store() -> None:
         assert "from app.services.material_store import ensure_material_runtime_tables" not in source
 
 
+def test_performance_items_runtime_schema_keeps_partner_name() -> None:
+    from app.services.material_runtime_tables import MaterialRuntimeTables
+
+    class SqlCaptureSession:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def execute(self, statement: Any) -> None:
+            self.statements.append(str(statement))
+
+    session = SqlCaptureSession()
+    asyncio.run(MaterialRuntimeTables().ensure(session))
+
+    create_statement = next(
+        statement
+        for statement in session.statements
+        if "CREATE TABLE IF NOT EXISTS performance_items (" in statement
+    )
+    assert "partner_name VARCHAR(300)" in create_statement
+    assert (
+        "ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS partner_name VARCHAR(300)"
+        in session.statements
+    )
+
+
 def test_material_file_display_helpers_are_outside_material_store() -> None:
     material_source = Path("app/services/material_store.py").read_text(encoding="utf-8")
     file_source = Path("app/services/file_utils.py").read_text(encoding="utf-8")

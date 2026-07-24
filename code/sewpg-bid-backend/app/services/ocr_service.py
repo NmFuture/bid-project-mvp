@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 import mimetypes
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,6 +14,7 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import desc, select
 
+from app.core.config import settings
 from app.models import async_session
 from app.models.materials import OcrCandidate, OcrTask
 from app.services.audit_service import audit_service
@@ -23,8 +27,17 @@ from app.services.workspace_project_access import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 UNLIMITED_OCR_MODEL_MARKER = "unlimited-ocr"
+
+_OCR_MAX_CONCURRENT = 3
+_OCR_MAX_RETRIES = 2
+_OCR_WORKER_IDLE_SLEEP = 1.0
+_OCR_WAIT_POLL_INTERVAL = 0.5
+_OCR_INTERNAL_PROJECT_ID = "_internal_ocr_"
 
 
 def _ocr_project_not_found(project_id: str) -> PeripheralError:
@@ -95,6 +108,255 @@ def _extract_chat_content(raw: dict[str, Any]) -> str:
 
 
 class OcrService:
+    def __init__(self) -> None:
+        self._ocr_semaphore = asyncio.Semaphore(_OCR_MAX_CONCURRENT)
+        self._worker_task: asyncio.Task[Any] | None = None
+        self._shutdown_event = asyncio.Event()
+
+    async def start_worker(self) -> None:
+        """启动后台 OCR worker（幂等）。"""
+        if self._worker_task is None or self._worker_task.done():
+            self._shutdown_event.clear()
+            self._worker_task = asyncio.create_task(self._ocr_worker_loop())
+
+    async def stop_worker(self) -> None:
+        """优雅停止后台 OCR worker。"""
+        self._shutdown_event.set()
+        if self._worker_task is not None and not self._worker_task.done():
+            try:
+                await asyncio.wait_for(self._worker_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                self._worker_task.cancel()
+                try:
+                    await self._worker_task
+                except asyncio.CancelledError:
+                    pass
+        self._worker_task = None
+
+    async def _ocr_worker_loop(self) -> None:
+        while not self._shutdown_event.is_set():
+            try:
+                processed = await self._process_one_pending_task()
+            except Exception:
+                # Worker 不应因单条任务异常而退出
+                processed = False
+            if not processed:
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(), timeout=_OCR_WORKER_IDLE_SLEEP
+                    )
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _process_one_pending_task(self) -> bool:
+        task_id: str | None = None
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(OcrTask)
+                    .where(OcrTask.status == "pending")
+                    .order_by(OcrTask.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            task_id = row.id
+            row.locked_at = datetime.now(timezone.utc)
+            await session.commit()
+
+        if task_id is None:
+            return False
+
+        async with self._ocr_semaphore:
+            await self._process_task(task_id)
+        return True
+
+    async def _process_task(self, task_id: str) -> None:
+        async with async_session() as session:
+            task = (
+                await session.execute(select(OcrTask).where(OcrTask.id == task_id))
+            ).scalar_one_or_none()
+            if task is None:
+                return
+
+            config = await system_settings_service.get_model_secret_config("ocr")
+            if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
+                task.status = "failed"
+                task.error_message = "OCR 模型未启用或未配置"
+                await session.commit()
+                await self._record_task_audit(task, [], succeeded=False)
+                return
+
+            input_path = Path(task.input_path) if task.input_path else None
+            if input_path is None or not input_path.exists():
+                task.status = "failed"
+                task.error_message = "OCR 任务输入文件丢失"
+                await session.commit()
+                await self._record_task_audit(task, [], succeeded=False)
+                return
+
+            try:
+                content = input_path.read_bytes()
+                file_name = task.source_file_name
+                suffix = Path(file_name).suffix.lower()
+                extracted_text = ""
+                raw_response: dict[str, Any] = {}
+                page_count = 1
+                if suffix == ".pdf":
+                    extracted_text, raw_response, page_count = await self._ocr_pdf(content, config)
+                elif suffix in IMAGE_SUFFIXES:
+                    extracted_text, raw_response = await self._ocr_image(
+                        content,
+                        task.mime_type or mimetypes.guess_type(file_name)[0] or "image/png",
+                        config,
+                    )
+                    page_count = 1
+                else:
+                    raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
+
+                candidates = _extract_candidates_from_text(extracted_text)
+                task.status = "completed"
+                task.page_count = page_count
+                task.raw_response = {
+                    **raw_response,
+                    "extractedText": extracted_text,
+                }
+                task.error_message = ""
+                await session.flush()
+                for index, item in enumerate(candidates, start=1):
+                    session.add(
+                        OcrCandidate(
+                            id=f"OC-{uuid4().hex[:12]}",
+                            task_id=task_id,
+                            project_id=task.project_id,
+                            page_number=int(item.get("pageNumber") or 1),
+                            field_name=str(item.get("fieldName") or f"识别字段 {index}"),
+                            field_value=str(item.get("fieldValue") or ""),
+                            field_type=str(item.get("fieldType") or "text"),
+                            confidence=int(item.get("confidence") or 80),
+                            source_text=str(item.get("sourceText") or ""),
+                            status="pending",
+                        )
+                    )
+                await session.commit()
+                self._delete_task_input(input_path)
+            except Exception as exc:
+                await session.refresh(task)
+                is_final_failure = False
+                if int(task.retry_count or 0) < int(task.max_retries or _OCR_MAX_RETRIES):
+                    task.retry_count = int(task.retry_count or 0) + 1
+                    task.status = "pending"
+                    task.locked_at = None
+                    task.error_message = str(exc)
+                else:
+                    task.status = "failed"
+                    task.error_message = str(exc)
+                    is_final_failure = True
+                await session.commit()
+                if is_final_failure:
+                    await self._record_task_audit(task, [], succeeded=False)
+                return
+
+            await self._record_task_audit(task, candidates, succeeded=True)
+
+    def _persist_task_input(self, task_id: str, file_name: str, content: bytes) -> Path:
+        directory = settings.documents_dir / "_runtime" / "ocr_inputs" / task_id
+        directory.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(file_name).name
+        path = directory / safe_name
+        path.write_bytes(content)
+        return path
+
+    def _delete_task_input(self, input_path: Path | None) -> None:
+        if input_path is None:
+            return
+        try:
+            if input_path.exists():
+                input_path.unlink()
+            parent = input_path.parent
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+        except Exception:
+            pass
+
+    async def _record_task_audit(
+        self,
+        task: OcrTask,
+        candidates: list[OcrCandidate],
+        *,
+        succeeded: bool,
+    ) -> None:
+        audit_meta = task.audit_meta or {}
+        user = audit_meta.get("user")
+        audit_metadata = audit_meta.get("audit_metadata") or {}
+        await self._record_audit_best_effort(
+            failure_context=f"执行任务 {task.id}",
+            action="执行 OCR 识别",
+            action_type="ocr",
+            module_id="ocr",
+            module_label="OCR 识别",
+            target=f"{task.project_id} / {task.source_file_name}",
+            status="成功" if succeeded else "失败",
+            user=user,
+            diff={
+                "before": {},
+                "after": {
+                    "taskId": task.id,
+                    "candidateCount": len(candidates),
+                    "status": task.status,
+                },
+            },
+            metadata={
+                **audit_metadata,
+                "taskId": task.id,
+                "fileName": task.source_file_name,
+                "candidateCount": len(candidates),
+                "ocrStatus": task.status,
+            },
+        )
+
+    async def _record_audit_best_effort(
+        self,
+        *,
+        failure_context: str,
+        **audit_payload: Any,
+    ) -> None:
+        try:
+            await audit_service.record(**audit_payload)
+        except Exception:
+            logger.exception("OCR 审计记录失败：%s", failure_context)
+
+    async def _wait_for_task(
+        self,
+        task_id: str,
+        *,
+        timeout: float = 300.0,
+    ) -> tuple[OcrTask, list[OcrCandidate]]:
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            async with async_session() as session:
+                task = (
+                    await session.execute(select(OcrTask).where(OcrTask.id == task_id))
+                ).scalar_one_or_none()
+                if task is None:
+                    raise PeripheralError(404, "OCR 任务不存在。", "OCR_TASK_NOT_FOUND")
+                if task.status == "completed":
+                    candidates = (
+                        await session.execute(
+                            select(OcrCandidate).where(OcrCandidate.task_id == task_id).order_by(OcrCandidate.created_at)
+                        )
+                    ).scalars().all()
+                    return task, list(candidates)
+                if task.status == "failed":
+                    raise PeripheralError(
+                        500,
+                        f"OCR 识别失败：{task.error_message or '未知错误'}",
+                        "OCR_TASK_FAILED",
+                    )
+            await asyncio.sleep(_OCR_WAIT_POLL_INTERVAL)
+        raise PeripheralError(408, "OCR 识别超时。", "OCR_TASK_TIMEOUT")
+
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
             await ensure_material_runtime_tables(session)
@@ -107,27 +369,41 @@ class OcrService:
         content: bytes,
         mime_type: str = "",
     ) -> tuple[str, dict[str, Any]]:
+        await self._ensure_tables()
         config = await system_settings_service.get_model_secret_config("ocr")
         if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
             raise PeripheralError(400, "请先在系统设置中启用并配置 OCR 模型。", "OCR_CONFIG_REQUIRED")
 
         suffix = Path(file_name).suffix.lower()
-        if suffix == ".pdf":
-            text, raw_response, page_count = await self._ocr_pdf(content, config)
-        elif suffix in IMAGE_SUFFIXES:
-            text, raw_response = await self._ocr_image(
-                content,
-                mime_type or mimetypes.guess_type(file_name)[0] or "image/png",
-                config,
-            )
-            page_count = 1
-        else:
+        if suffix not in ({".pdf"} | IMAGE_SUFFIXES):
             raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
 
-        return text, {
-            "status": "completed",
-            "pageCount": page_count,
-            "rawResponse": raw_response,
+        task_id = f"OCR-{uuid4().hex[:12]}"
+        input_path = self._persist_task_input(task_id, file_name, content)
+
+        async with async_session() as session:
+            task = OcrTask(
+                id=task_id,
+                project_id=_OCR_INTERNAL_PROJECT_ID,
+                source_file_name=file_name,
+                source_path="",
+                mime_type=mime_type,
+                status="pending",
+                page_count=0,
+                retry_count=0,
+                max_retries=_OCR_MAX_RETRIES,
+                input_path=str(input_path),
+                created_by="system",
+            )
+            session.add(task)
+            await session.commit()
+
+        await self.start_worker()
+        completed_task, _candidates = await self._wait_for_task(task_id)
+        return completed_task.raw_response.get("extractedText") or "", {
+            "status": completed_task.status,
+            "pageCount": completed_task.page_count,
+            "rawResponse": completed_task.raw_response,
         }
 
     async def list_tasks(self, project_id: str) -> dict[str, Any]:
@@ -163,25 +439,12 @@ class OcrService:
         if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
             raise PeripheralError(400, "请先在系统设置中启用并配置 OCR 模型。", "OCR_CONFIG_REQUIRED")
 
-        task_id = f"OCR-{uuid4().hex[:12]}"
         suffix = Path(file_name).suffix.lower()
-        extracted_text = ""
-        raw_response: dict[str, Any] = {}
-        status = "completed"
-        error_message = ""
-        page_count = 1
-        try:
-            if suffix == ".pdf":
-                extracted_text, raw_response, page_count = await self._ocr_pdf(content, config)
-            elif suffix in IMAGE_SUFFIXES:
-                extracted_text, raw_response = await self._ocr_image(content, mime_type or mimetypes.guess_type(file_name)[0] or "image/png", config)
-            else:
-                raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
-            candidates = _extract_candidates_from_text(extracted_text)
-        except Exception as exc:
-            status = "failed"
-            error_message = str(exc)
-            candidates = []
+        if suffix not in ({".pdf"} | IMAGE_SUFFIXES):
+            raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
+
+        task_id = f"OCR-{uuid4().hex[:12]}"
+        input_path = self._persist_task_input(task_id, file_name, content)
 
         async with async_session() as session:
             task = OcrTask(
@@ -190,46 +453,37 @@ class OcrService:
                 source_file_name=file_name,
                 source_path="",
                 mime_type=mime_type,
-                status=status,
-                error_message=error_message,
-                page_count=page_count,
-                raw_response=raw_response,
+                status="pending",
+                page_count=0,
+                retry_count=0,
+                max_retries=_OCR_MAX_RETRIES,
+                input_path=str(input_path),
+                audit_meta={
+                    "user": user,
+                    "audit_metadata": audit_metadata,
+                },
                 created_by=str((user or {}).get("name") or "当前用户"),
             )
             session.add(task)
-            await session.flush()
-            for index, item in enumerate(candidates, start=1):
-                session.add(
-                    OcrCandidate(
-                        id=f"OC-{uuid4().hex[:12]}",
-                        task_id=task_id,
-                        project_id=project_id,
-                        page_number=int(item.get("pageNumber") or 1),
-                        field_name=str(item.get("fieldName") or f"识别字段 {index}"),
-                        field_value=str(item.get("fieldValue") or ""),
-                        field_type=str(item.get("fieldType") or "text"),
-                        confidence=int(item.get("confidence") or 80),
-                        source_text=str(item.get("sourceText") or ""),
-                        status="pending",
-                    )
-                )
             await session.commit()
 
-        await audit_service.record(
-            action="执行 OCR 识别",
+        await self.start_worker()
+
+        await self._record_audit_best_effort(
+            failure_context=f"提交任务 {task_id}",
+            action="提交 OCR 识别任务",
             action_type="ocr",
             module_id="ocr",
             module_label="OCR 识别",
             target=f"{project_id} / {file_name}",
-            status="成功" if status == "completed" else "失败",
+            status="成功",
             user=user,
-            diff={"before": {}, "after": {"taskId": task_id, "candidateCount": len(candidates), "status": status}},
+            diff={"before": {}, "after": {"taskId": task_id, "status": "pending"}},
             metadata={
                 **(audit_metadata or {}),
                 "taskId": task_id,
                 "fileName": file_name,
-                "candidateCount": len(candidates),
-                "ocrStatus": status,
+                "ocrStatus": "pending",
             },
         )
         return await self.detail(project_id, task_id)
@@ -305,25 +559,38 @@ class OcrService:
         import fitz
 
         document = fitz.open(stream=content, filetype="pdf")
+        total_pages = len(document)
         if _is_unlimited_ocr_config(config):
-            images = []
-            for page_index in range(min(len(document), 10)):
-                page = document.load_page(page_index)
-                pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
-                data_url = f"data:image/png;base64,{base64.b64encode(pix.tobytes('png')).decode('ascii')}"
-                images.append({"type": "image_url", "image_url": {"url": data_url}})
-            raw = await self._ocr_chat_completion(images, config, multi_page=len(images) > 1)
-            return _clean_unlimited_ocr_text(_extract_chat_content(raw)), raw, len(document)
+            # 长 PDF 按批处理，避免单请求塞入过多图片导致 token/超时问题
+            batch_size = 10
+            texts: list[str] = []
+            raw_pages: list[dict[str, Any]] = []
+            for batch_start in range(0, total_pages, batch_size):
+                images: list[dict[str, Any]] = []
+                for page_index in range(batch_start, min(total_pages, batch_start + batch_size)):
+                    page = document.load_page(page_index)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
+                    data_url = f"data:image/png;base64,{base64.b64encode(pix.tobytes('png')).decode('ascii')}"
+                    images.append({"type": "image_url", "image_url": {"url": data_url}})
+                raw = await self._ocr_chat_completion(images, config, multi_page=len(images) > 1)
+                batch_text = _clean_unlimited_ocr_text(_extract_chat_content(raw))
+                texts.append(batch_text)
+                raw_pages.append({
+                    "startPage": batch_start + 1,
+                    "endPage": min(total_pages, batch_start + batch_size),
+                    "response": raw,
+                })
+            return "\n".join(texts), {"pages": raw_pages}, total_pages
 
         texts = []
         raw_pages = []
-        for page_index in range(min(len(document), 10)):
+        for page_index in range(total_pages):
             page = document.load_page(page_index)
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             text, raw = await self._ocr_image(pix.tobytes("png"), "image/png", config)
             texts.append(text)
             raw_pages.append({"pageNumber": page_index + 1, "response": raw})
-        return "\n".join(texts), {"pages": raw_pages}, len(document)
+        return "\n".join(texts), {"pages": raw_pages}, total_pages
 
     async def detail(self, project_id: str, task_id: str) -> dict[str, Any]:
         await self._ensure_tables()
