@@ -3,7 +3,8 @@ from __future__ import annotations
 """技术标项目事实表字段 spec（148 条清单）加载与匹配支持。
 
 spec JSON 由 scripts/import_technical_fact_specs.py 从甲方清单 xlsx 生成，
-随仓库版本化。清单更新时重跑脚本即可，不要在运行时改 JSON。
+随仓库版本化。运行时也可经设置页上传新清单（POST /api/settings/technical-fact-specs），
+上传结果写到 settings.fact_specs_override_path（数据卷），存在且可读时优先于仓库默认。
 
 匹配策略（在 technical_gap_fact_table._reconcile_with_specs 中使用）：
 1. spec.label / spec.reviewLabel 经 canonical_fact_label + fact_label_key 归一后直接匹配；
@@ -11,9 +12,10 @@ spec JSON 由 scripts/import_technical_fact_specs.py 从甲方清单 xlsx 生成
 """
 
 import json
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from app.core.config import settings
 
 SPECS_PATH = Path(__file__).resolve().parent.parent / "data" / "technical_fact_field_specs.json"
 
@@ -62,13 +64,44 @@ SPEC_SOURCE_KIND_CATEGORIES = {
 }
 
 
-@lru_cache(maxsize=1)
+# 手工缓存：(path, mtime) → specs。mtime 变化（上传覆盖/脚本重跑）自动重读，
+# 解决多进程/热更新下 lru_cache 不感知文件变更的弱一致问题。
+_SPECS_CACHE: dict[tuple[str, float], tuple[dict[str, Any], ...]] = {}
+
+
+def _load_specs_file(path: Path) -> tuple[dict[str, Any], ...] | None:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    key = (str(path), mtime)
+    cached = _SPECS_CACHE.get(key)
+    if cached is None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, list):
+            return None
+        _SPECS_CACHE.clear()
+        _SPECS_CACHE[key] = tuple(spec for spec in payload if isinstance(spec, dict))
+        cached = _SPECS_CACHE[key]
+    return cached
+
+
+def clear_specs_cache() -> None:
+    """清空 spec 缓存（上传 override 成功后调用）。"""
+    _SPECS_CACHE.clear()
+
+
 def load_specs() -> tuple[dict[str, Any], ...]:
-    """加载 148 条字段 spec（含 20 条模板更新条目）。"""
-    if not SPECS_PATH.exists():
-        return ()
-    specs = json.loads(SPECS_PATH.read_text(encoding="utf-8"))
-    return tuple(spec for spec in specs if isinstance(spec, dict))
+    """加载字段 spec：override 文件存在且可读时优先，否则读仓库默认 SPECS_PATH。"""
+    override_path = Path(settings.fact_specs_override_path)
+    if override_path.is_file():
+        specs = _load_specs_file(override_path)
+        if specs is not None:
+            return specs
+    return _load_specs_file(SPECS_PATH) or ()
 
 
 def fillable_specs() -> list[dict[str, Any]]:

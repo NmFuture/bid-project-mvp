@@ -23,7 +23,7 @@ from app.services.technical_gap_domain import (
     technical_outline_number_and_title,
 )
 from app.services.technical_material_store import technical_material_store
-from app.services.turbine_models import project_turbine_model
+from app.services.turbine_models import material_model_fit, normalize_project_turbine_model, project_turbine_model
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
 
 logger = logging.getLogger(__name__)
@@ -572,7 +572,42 @@ def _technical_wiki_cards_by_path_tail() -> dict[str, dict[str, Any]]:
         return {}
 
 
-def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_model: dict[str, Any]) -> list[dict[str, Any]]:
+def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any]:
+    """事实表「投标机型」字段值 → 归一化机型 dict；无事实表/无值时返回空 dict。"""
+    if not isinstance(gap_state, dict):
+        return {}
+    fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+    for field in fact_table.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        label = re.sub(r"\s+", "", str(field.get("label") or ""))
+        value = str(field.get("value") or "").strip()
+        if label == "投标机型" and value:
+            return normalize_project_turbine_model(value)
+    return {}
+
+
+def _filter_material_index_by_fact_table(
+    items: list[dict[str, Any]],
+    gap_state: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """事实表已有「投标机型」值时，按该机型收紧素材索引。
+
+    与素材库机型过滤同一语义（technical_material_store.raw_files）：
+    剔除机型冲突素材，保留匹配与机型无关（generic）素材。
+    首轮缺口检测时事实表尚未构建，此过滤为空操作，不形成循环依赖。
+    """
+    selected = _fact_table_turbine_model(gap_state)
+    if not selected:
+        return items
+    return [item for item in items if material_model_fit(item, selected) != "conflict"]
+
+
+def _allowed_technical_material_index(
+    material_scope: dict[str, Any],
+    turbine_model: dict[str, Any],
+    gap_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
     segments_by_id = _evidence_segments_by_material_id()
@@ -639,7 +674,7 @@ def _allowed_technical_material_index(material_scope: dict[str, Any], turbine_mo
                 if wiki_card.get("wikiApplicableTypes"):
                     entry["wikiApplicableTypes"] = wiki_card["wikiApplicableTypes"]
             items.append(entry)
-    return items
+    return _filter_material_index_by_fact_table(items, gap_state)
 
 
 def _is_material_word_fill_task(item: dict[str, Any], task: dict[str, Any]) -> bool:
@@ -869,7 +904,11 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     wiki_dir = _resolve_wiki_dir(project, project_dir, work_dir)
     turbine_model = project_turbine_model(project)
     material_scope = build_project_material_scope(project)
-    material_index = _allowed_technical_material_index(material_scope, turbine_model)
+    material_index = _allowed_technical_material_index(
+        material_scope,
+        turbine_model,
+        gap_state=project.get("gap_state") if isinstance(project.get("gap_state"), dict) else None,
+    )
     appendix_source_matrix = load_appendix_source_matrix_for_project(project)
     bid_type = require_bid_type(
         project.get("bidType"),
