@@ -18,6 +18,19 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+case "${ACTION}" in
+  up|--check-only)
+    DEPLOY_MODE="online"
+    ;;
+  --offline|--check-offline)
+    DEPLOY_MODE="offline"
+    ;;
+  *)
+    echo "Unknown action: ${ACTION}. Use 'up', '--check-only', '--offline', or '--check-offline'." >&2
+    exit 1
+    ;;
+esac
+
 if [[ "$(uname -m)" != "x86_64" ]]; then
   echo "5090 deployment requires an x86_64 host." >&2
   exit 1
@@ -81,19 +94,57 @@ require_changed POSTGRES_PASSWORD bidpass
 require_changed MINIO_ROOT_PASSWORD minioadmin
 require_changed AUTH_ADMIN_PASSWORD 123456
 
+if [[ "${DEPLOY_MODE}" == "online" ]]; then
+  if ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "Online deployment must run from a checked-out main worktree." >&2
+    exit 1
+  fi
+  CURRENT_SHA="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
+  if git -C "${ROOT_DIR}" rev-parse --verify origin/main >/dev/null 2>&1 && \
+    [[ "${CURRENT_SHA}" != "$(git -C "${ROOT_DIR}" rev-parse origin/main)" ]]; then
+    echo "Current commit does not match origin/main; fetch and fast-forward main before deploying." >&2
+    exit 1
+  fi
+  if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no)" ]]; then
+    echo "Tracked files are modified; restore the approved main SHA before deploying." >&2
+    exit 1
+  fi
+
+  RELEASE_TAG="main-${CURRENT_SHA:0:12}"
+  export APP_IMAGE_TAG="${RELEASE_TAG}"
+  export WEB_IMAGE="sewpg-bid/web:${RELEASE_TAG}"
+  export FASTAPI_IMAGE="sewpg-bid/fastapi:${RELEASE_TAG}"
+  export DOCLING_IMAGE="sewpg-bid/docling-worker:${RELEASE_TAG}"
+  export OPENCODE_IMAGE="sewpg-bid/opencode:${RELEASE_TAG}"
+  export ONLYOFFICE_IMAGE="onlyoffice/documentserver:9.3.1.2"
+fi
+
 mkdir -p "${ROOT_DIR}/.localdata/ocr/huggingface"
 if [[ -z "$(find "${ROOT_DIR}/.localdata/ocr/huggingface" -mindepth 1 -print -quit)" ]]; then
-  echo "Warning: OCR model cache is empty; a truly offline start requires preloaded model weights." >&2
+  if [[ "${DEPLOY_MODE}" == "online" ]]; then
+    echo "Notice: OCR model cache is empty; the OCR container will download weights on first start." >&2
+  else
+    echo "Warning: OCR model cache is empty; offline OCR requires preloaded model weights." >&2
+  fi
 fi
 
 compose_args=(
   --env-file "${ENV_FILE}"
   -f "${ROOT_DIR}/docker-compose.yml"
-  -f "${ROOT_DIR}/docker-compose.airgap.yml"
   -f "${ROOT_DIR}/docker-compose.ocr.yml"
-  -f "${ROOT_DIR}/docker-compose.ocr.airgap.yml"
   -f "${ROOT_DIR}/docker-compose.5090.yml"
 )
+
+if [[ "${DEPLOY_MODE}" == "offline" ]]; then
+  compose_args=(
+    --env-file "${ENV_FILE}"
+    -f "${ROOT_DIR}/docker-compose.yml"
+    -f "${ROOT_DIR}/docker-compose.airgap.yml"
+    -f "${ROOT_DIR}/docker-compose.ocr.yml"
+    -f "${ROOT_DIR}/docker-compose.ocr.airgap.yml"
+    -f "${ROOT_DIR}/docker-compose.5090.yml"
+  )
+fi
 
 docker compose "${compose_args[@]}" config --quiet
 docker compose "${compose_args[@]}" config --format json | python3 -c '
@@ -111,14 +162,15 @@ for service_name in ("docling-worker", "ocr"):
         raise SystemExit(f"{service_name} GPU visibility is not restricted to GPU 0")
 '
 
-if [[ "${ACTION}" == "--check-only" ]]; then
-  echo "5090 deployment preflight passed. No containers were changed."
+if [[ "${ACTION}" == "--check-only" || "${ACTION}" == "--check-offline" ]]; then
+  echo "5090 ${DEPLOY_MODE} deployment preflight passed. No containers were changed."
   exit 0
 fi
 
-if [[ "${ACTION}" != "up" ]]; then
-  echo "Unknown action: ${ACTION}. Use 'up' or '--check-only'." >&2
-  exit 1
+if [[ "${DEPLOY_MODE}" == "online" ]]; then
+  echo "Deploying Git SHA: ${CURRENT_SHA} (${RELEASE_TAG})"
+  docker compose "${compose_args[@]}" pull onlyoffice postgres redis minio ocr
+  docker compose "${compose_args[@]}" build --pull web fastapi docling-worker opencode
 fi
 
 docker compose "${compose_args[@]}" up -d --no-build

@@ -8,7 +8,7 @@
 - 开发基线：`Dev` 负责人处理冲突并维护通用开发配置，不负责 5090 专用适配。
 - 稳定发布：部署负责人选择一个明确的 `Dev` SHA，在短期工作分支完成适配、测试并向 `main` 提交 PR；合并后删除短期分支。
 - 生产基线：`main` 只保存可发布版本，不作为日常开发分支，也不另设长期 `release` 或服务器专用分支。
-- 现场执行：远端 Codex 只部署已由部署负责人确认的 `main` SHA 对应发布包，不合并代码、不改受版本控制文件、不现场构建镜像。
+- 现场执行：远端 Codex 只部署已由部署负责人确认的 `main` SHA；允许在 5090 在线拉取仓库声明的镜像、下载模型并现场构建，但不合并代码、不提交服务器改动，也不绕过 `main` 热改受版本控制文件。
 
 “代码已进入 `main`”“发布包已生成”“服务已部署”“业务验收通过”是四个不同状态，不得混报。
 
@@ -38,77 +38,58 @@
 - 第一版 PostgreSQL、MinIO 和其他命名卷都落系统 SSD；不得自行迁移到其他磁盘。
 - 生产大模型通过集团 OpenAI-compatible 网关调用，必须使用精确模型 ID。
 
-普通开发机只用 `docker-compose.yml`。5090 实际叠加顺序固定为：
+普通开发机只用 `docker-compose.yml`。5090 默认在线构建使用：
 
 ```text
 docker-compose.yml
-docker-compose.airgap.yml
 docker-compose.ocr.yml
-docker-compose.ocr.airgap.yml
 docker-compose.5090.yml
 ```
+
+需要离线恢复时，再额外叠加 `docker-compose.airgap.yml` 和 `docker-compose.ocr.airgap.yml`，禁止 Compose 拉取或构建。
 
 ## 3. 发布前确认
 
 部署负责人必须明确以下信息：
 
 - 本次纳入的 `Dev` SHA 和最终 `main` SHA。
-- 目标发布标签，建议使用 `main-YYYYMMDD-<main短SHA>`。
+- 目标发布标签；在线脚本自动使用 `main-<main前12位SHA>`。
 - 数据结构、环境变量、镜像和模型是否有兼容性变化。
 - 上一稳定发布的 SHA、发布包和 `.env` 备份位置。
 - 5090 变更窗口和回滚负责人。
 
 真实密钥不得进入 Git、发布说明、聊天、截图、日志或 `bundle-manifest.json`。
 
-## 4. 构建 5090 离线包
+## 4. 5090 在线构建与首次部署
 
-只能在联网、干净的 `linux/amd64` 构建环境，从已审核的 `main` SHA 构建：
+5090 可以直接从已审核的 `main` SHA 在线构建。先同步并确认版本，不能从 `Dev` 或功能分支部署：
 
 ```bash
 git fetch origin main
-git switch --detach <main-sha>
+git switch main
+git pull --ff-only origin main
 test "$(git rev-parse HEAD)" = "<main-sha>"
 test -z "$(git status --porcelain)"
 
 cd code
-./scripts/build-5090-bundle.sh ./offline-dist/5090 <release-tag>
-cat ./offline-dist/5090/MAIN_SHA
-(cd ./offline-dist/5090 && sha256sum -c SHA256SUMS)
-```
-
-发布包包含：
-
-- 9 个镜像：web、FastAPI/worker、Docling、OpenCode、OnlyOffice、Redis、PostgreSQL、MinIO、OCR。
-- 5 个 Compose 文件和已写入本次镜像标签的 `.env.airgap.example`。
-- PostgreSQL `initdb/`、OnlyOffice 入口脚本、字体和 fontconfig。
-- 启动脚本、`bundle-manifest.json`、`MAIN_SHA` 和 `SHA256SUMS`。
-
-`bundle-manifest.json` 记录源 Git SHA、镜像名称和 OCR 源镜像 digest。`SHA256SUMS` 用于介质完整性校验。
-
-OCR 模型权重不在镜像 tar 内。完全离线部署前，必须把已验证的权重缓存单独预热到 `.localdata/ocr/huggingface`，随介质传输并单独生成 SHA-256 清单；空缓存只能视为预检警告，不能判定离线 OCR 就绪。
-
-## 5. 现场目录和配置
-
-每个发布包使用独立目录，不覆盖上一稳定版本。例如：
-
-```text
-/opt/sewpg-bid/releases/<release-tag>/
-├── MAIN_SHA
-├── SHA256SUMS
-├── bundle-manifest.json
-├── .env.airgap.example
-├── images/
-├── initdb/
-└── sewpg-bid-backend/onlyoffice/
-```
-
-进入发布目录后先校验，再创建受控配置：
-
-```bash
-sha256sum -c SHA256SUMS
-test "$(cat MAIN_SHA)" = "<approved-main-sha>"
 install -m 600 .env.airgap.example .env
+# 编辑 .env：写入受控凭据和精确模型 ID
+./scripts/up-5090.sh ./.env --check-only
+./scripts/up-5090.sh ./.env
 ```
+
+在线启动脚本会：
+
+- 拉取 Compose 中声明的 OnlyOffice、PostgreSQL、Redis、MinIO 和 OCR 镜像。
+- 使用 `--pull` 基于当前 `main` 源码构建 web、FastAPI/worker、GPU Docling 和 OpenCode 镜像。
+- 启动 10 个容器；OCR 缓存为空时，通过 `HF_ENDPOINT` 首次下载 `baidu/Unlimited-OCR` 权重并复用本地缓存。
+- 输出当前 Git SHA；部署记录中再保存应用镜像 ID、外部镜像 digest 和验收结果。
+
+Docker Hub 或模型源偶发失败时，可以重试失败的 pull/build；不要因此改 Compose、切换未批准镜像或删除已有卷。必要时再改走第 8 节的离线恢复路径。
+
+## 5. 配置
+
+`.env` 是服务器受控运行配置，权限保持为 `600`，不得提交。它可以从 `.env.airgap.example` 创建；这里复用的是完整生产配置模板，不代表必须离线部署。
 
 `.env` 至少要改完以下项目：
 
@@ -122,17 +103,17 @@ install -m 600 .env.airgap.example .env
 | `MINIO_ROOT_USER`、`MINIO_ROOT_PASSWORD` | 替换示例凭据 |
 | `AUTH_ADMIN_EMAIL`、`AUTH_ADMIN_PASSWORD`、`AUTH_ADMIN_NAME` | 初始管理员；必须替换 `123456` |
 | `OCR_GPU_DEVICE_ID` | 必须为 `0` |
-| `OCR_HF_CACHE_DIR` | 指向已预热并校验的模型缓存 |
+| `OCR_HF_CACHE_DIR` | 默认 `./.localdata/ocr/huggingface`；允许首次在线下载并持久化 |
+| `HF_ENDPOINT` | 5090 当前优先使用可达的 `https://hf-mirror.com` |
 
-不要改发布脚本生成的镜像标签，除非该标签与发布包 manifest 不一致且已经停止部署排查。
+在线脚本自动把四个应用镜像统一标记为 `main-<main前12位SHA>`，并使用官方 `onlyoffice/documentserver:9.3.1.2`；不需要手工修改模板里的离线镜像标签。其他外部服务使用仓库 Compose 声明的 tag，拉取后记录实际 digest。
 
 ## 6. 预检和启动
 
-先加载镜像，再做只读预检：
+先做只读预检：
 
 ```bash
-./load-airgap-images.sh ./images/sewpg-bid-images-<release-tag>.tar
-./up-5090.sh ./.env --check-only
+./scripts/up-5090.sh ./.env --check-only
 ```
 
 预检会阻断以下情况：
@@ -142,25 +123,23 @@ install -m 600 .env.airgap.example .env
 - Docling 或 OCR 没有被同时限制在 GPU 0。
 - Compose 不能完整解析。
 
-预检通过后才能启动：
+预检通过后在线拉取、构建并启动：
 
 ```bash
-./up-5090.sh ./.env
+./scripts/up-5090.sh ./.env
 ```
 
-该脚本固定执行 `docker compose ... up -d --no-build`，不会现场拉镜像或构建镜像。
+脚本先 pull 外部镜像，再 build 四个应用镜像，最后执行 `up -d --no-build`，避免启动阶段隐式重建。OCR 首次下载权重可能较慢，不要把容器处于 `starting` 立即判为失败。
 
 ## 7. 验收
 
-以下命令在发布目录执行。命令使用模板默认端口；如果 `.env` 改过端口，只替换对应端口号，禁止打印或 `source` 整个 `.env`：
+以下命令在 `code/` 目录执行。命令使用模板默认端口；如果 `.env` 改过端口，只替换对应端口号，禁止打印或 `source` 整个 `.env`：
 
 ```bash
 docker compose \
   --env-file ./.env \
   -f docker-compose.yml \
-  -f docker-compose.airgap.yml \
   -f docker-compose.ocr.yml \
-  -f docker-compose.ocr.airgap.yml \
   -f docker-compose.5090.yml \
   ps
 
@@ -186,13 +165,13 @@ nvidia-smi -i 1
 
 ## 8. 升级与回滚
 
-升级前保留上一版本的完整发布目录、镜像 tar、`.env`、数据库/对象存储备份和验收记录。不得执行 `docker compose down -v`。
+升级前保留上一版应用镜像 tag、`.env`、数据库/对象存储备份和验收记录。重要版本可以在部署成功后运行 `./scripts/build-5090-bundle.sh` 生成离线回滚包；离线包是可选回滚能力，不再是首次部署前置门禁。不得执行 `docker compose down -v`。
 
 失败回滚：
 
 1. 停止继续验收并记录失败点。
-2. 回到上一版本发布目录，核对其 `MAIN_SHA` 和 `SHA256SUMS`。
-3. 重新加载上一版本镜像 tar，使用上一版 `.env` 执行 `./up-5090.sh ./.env`。
+2. 将 `.env` 中应用镜像切回上一版已验证 tag；如已有离线包，先核对 `MAIN_SHA` 和 `SHA256SUMS` 并加载镜像。
+3. 在线回滚使用当前源码对应的上一版 tag 启动；离线包内执行 `./up-5090.sh ./.env --offline`，源码工作树内执行 `./scripts/up-5090.sh ./.env --offline`。
 4. 复查容器、GPU、API、Docling、OCR 和大模型调用。
 
 如果本次包含不可逆数据库或对象结构变更，未确认数据回滚方案前不得继续发布。
@@ -200,7 +179,7 @@ nvidia-smi -i 1
 ## 9. 禁止事项
 
 - 5090 不跟踪 `Dev`，不从功能分支部署。
-- 不在 5090 上执行 `docker pull`、`docker compose build` 或热修改代码/Compose。
+- 允许按本手册在线 pull、下载模型和 build；失败时不得临时改源码、Compose 或 Dockerfile 绕过问题，代码修复必须回到 `main`。
 - 不使用 `gpus: all`，不把本项目绑定到 GPU 1。
-- 不删除命名卷，不用新环境覆盖上一版受控 `.env`。
+- 不执行 `down -v` 或无范围的 `docker system prune`，不误删业务命名卷。
 - 不把“脚本执行结束”直接写成“部署验收通过”。

@@ -4,7 +4,7 @@
 
 ## 文档入口
 
-- [5090 发布与部署](code/DEPLOY_5090.md)：`main` 发布、离线包、GPU 0、部署、验收和回滚的唯一入口。
+- [5090 发布与部署](code/DEPLOY_5090.md)：`main` 发布、5090 在线构建、可选离线回滚、GPU 0、验收和回滚的唯一入口。
 - [本地 OCR 技术方案](code/OCR_DEPLOY.md)：普通 NVIDIA 主机及通用离线环境的 OCR 说明。
 - [后端说明](code/sewpg-bid-backend/README.md)
 - [前端说明](code/sewpg-bid-frontend/README.md)
@@ -17,7 +17,7 @@
 - `Dev` 负责人处理冲突并维护通用开发基线，不承担 5090 生产适配。
 - 部署负责人从指定 `Dev` SHA 完成 5090 适配、验证并通过 PR 更新 `main`。
 - `main` 是唯一稳定发布分支；不设长期 `release` 或服务器专用分支。
-- 5090 远端 Codex 只接收部署负责人确认的 `main` SHA 和离线发布包，执行部署与检查，不反向修改仓库。
+- 5090 远端 Codex 只接收部署负责人确认的 `main` SHA，允许在线拉固定镜像、下载模型并现场构建，执行部署与检查但不反向修改仓库。
 
 ## 本地开发
 
@@ -28,4 +28,4 @@ cd code
 docker compose up -d --build
 ```
 
-5090 不使用这条命令现场构建。生产操作只按 [5090 发布与部署](code/DEPLOY_5090.md) 执行。
+5090 可以现场构建，但必须使用 [5090 发布与部署](code/DEPLOY_5090.md) 的专用 Compose 覆盖和脚本，不能直接套用普通开发命令。
