@@ -48,12 +48,16 @@ SCHEMA = {
     "project_short": {"desc": "项目简称（用于文件名后缀，如 华能蒙东）", "auto": False},
     "client_name": {"desc": "业主单位（如 华能蒙东新能源公司）", "auto": True},
     "tender_no": {"desc": "招标编号（如 HNZB2025-12-1-382-01）", "auto": True},
+    # 风机参数：与 backend _build_project_params 字段名保持一致
     "turbine_model": {"desc": "风机机型号（如 EW8.5-220）", "auto": False},
-    "turbine_platform": {"desc": "风机平台", "auto": False},
+    "model_no": {"desc": "风机机型号（如 EW8.5-220）", "auto": False},
+    "turbine_platform": {"desc": "风机平台（如 陆上 / 海上）", "auto": False},
     "rated_power_kw": {"desc": "额定功率（单位 kW，如 8500）", "auto": False},
+    "rated_power": {"desc": "额定功率（单位 MW，如 8.5）", "auto": False},
     "rated_speed": {"desc": "额定转速（单位 rpm，如 9.8）", "auto": False},
     "rotor_diameter_m": {"desc": "风轮直径（单位 m，如 220）", "auto": False},
-    "turbine_layout": {"desc": "风机布局", "auto": False},
+    "rotor_diameter": {"desc": "风轮直径（单位 m，如 220）", "auto": False},
+    "turbine_layout": {"desc": "机组布置方式", "auto": False},
     "hub_height": {"desc": "轮毂高度（单位 m，如 145）", "auto": False},
     "wind_class": {"desc": "IEC 风区等级（如 IEC IIIA）", "auto": False},
     "site_location": {"desc": "场址位置（如 内蒙古赤峰市翁牛特旗）", "auto": False},
@@ -229,7 +233,11 @@ def cmd_init(args):
     missing_before = [k for k in SCHEMA if out.get(k) is None or out.get(k) == ""]
     if not args.keep_null:
         for k in missing_before:
-            out[k] = f"[待填写：{SCHEMA[k]['desc']}]"
+            schema_entry = SCHEMA.get(k)
+            if schema_entry is None:
+                # 保留未知字段原值，避免外部新增字段导致崩溃
+                continue
+            out[k] = f"[待填写：{schema_entry['desc']}]"
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

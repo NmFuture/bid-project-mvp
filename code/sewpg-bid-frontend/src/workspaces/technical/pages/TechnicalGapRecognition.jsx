@@ -260,13 +260,31 @@ function MaterialCandidateCard({
 }
 
 const factStatusLabels = {
+  // 表级状态
   empty: '待生成',
   draft: '待确认',
   confirmed: '已确认',
+  // 字段级七态（事实表 v2）
+  unextracted: '未提取',
+  extracted: '已自动提取',
+  pending_confirmation: '待人工确认',
+  missing_source: '缺少来源',
+  conflict: '存在冲突',
+  not_applicable: '不适用',
+  // v1 遗留（旧数据兼容展示）
   candidate: '候选',
   missing: '待补充',
-  conflict: '冲突',
 }
+
+const factFieldStatusOptions = [
+  'unextracted',
+  'extracted',
+  'pending_confirmation',
+  'confirmed',
+  'missing_source',
+  'conflict',
+  'not_applicable',
+]
 
 const FactMaintenanceModal = ({
   open,
@@ -294,7 +312,8 @@ const FactMaintenanceModal = ({
               </span>
             </div>
             <p className="mt-1 text-xs text-on-surface-variant">
-              字段：{summary.totalCount || fields.length || 0} · 已确认：{summary.confirmedCount || 0} · 待补充：{summary.missingCount || 0} · 冲突：{summary.conflictCount || 0}
+              字段：{summary.totalCount || fields.length || 0} · 已确认：{summary.confirmedCount || 0} · 待人工确认：{summary.pendingConfirmationCount || 0} · 未提取：{summary.unextractedCount || 0} · 缺少来源：{summary.missingSourceCount ?? summary.missingCount ?? 0} · 冲突：{summary.conflictCount || 0}
+              {summary.specTotal ? ` · 清单覆盖：${summary.specMatched || 0}/${summary.specTotal}` : ''}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -352,12 +371,13 @@ const FactMaintenanceModal = ({
                 <tbody className="divide-y divide-surface-container-high">
                   {fields.map((field, index) => {
                     const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+                    const isEmptyStatus = ['missing', 'missing_source', 'unextracted'].includes(field.status)
                     const statusTone = field.status === 'confirmed'
                       ? 'bg-secondary-container text-on-secondary-container'
-                      : field.status === 'missing'
-                        ? 'bg-tertiary-fixed text-on-tertiary-fixed'
-                        : field.status === 'conflict'
-                          ? 'bg-error/10 text-error'
+                      : field.status === 'conflict'
+                        ? 'bg-error/10 text-error'
+                        : field.status === 'pending_confirmation' || field.status === 'missing' || field.status === 'missing_source'
+                          ? 'bg-tertiary-fixed text-on-tertiary-fixed'
                           : 'bg-surface-container-high text-on-surface-variant'
                     const refs = asObjectArray(field.sourceRefs).slice(0, 2)
                     return (
@@ -371,25 +391,42 @@ const FactMaintenanceModal = ({
                               className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
                             />
                           ) : (
-                            <div className="font-semibold text-on-surface">{field.label}</div>
+                            <div className="font-semibold text-on-surface">
+                              {field.label}
+                              {field.needsConfirmation ? (
+                                <span className="ml-1.5 rounded bg-tertiary-fixed px-1 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径需人工确认'}>待确认口径</span>
+                              ) : null}
+                            </div>
                           )}
                           <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
+                          {field.reviewLabel && field.reviewLabel !== field.label ? (
+                            <div className="mt-0.5 text-[11px] text-outline" title={field.reviewLabel}>复核：{field.reviewLabel}</div>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2">
                           <input
                             value={field.value || ''}
                             onChange={(event) => onFieldChange(index, 'value', event.target.value)}
                             className={`h-9 w-full rounded-md border px-2 text-sm text-on-surface ${
-                              field.status === 'missing'
+                              isEmptyStatus
                                 ? 'border-tertiary bg-tertiary-fixed/40'
                                 : 'border-surface-container-high bg-surface'
                             }`}
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-md px-2 py-1 text-[11px] font-semibold ${statusTone}`}>
-                            {factStatusLabels[field.status] || field.status || '-'}
-                          </span>
+                          <select
+                            value={field.status || 'unextracted'}
+                            onChange={(event) => onFieldChange(index, 'status', event.target.value)}
+                            className={`h-7 w-full rounded-md border-0 px-1 text-[11px] font-semibold ${statusTone}`}
+                          >
+                            {factFieldStatusOptions.map((option) => (
+                              <option key={option} value={option}>{factStatusLabels[option] || option}</option>
+                            ))}
+                            {field.status && !factFieldStatusOptions.includes(field.status) ? (
+                              <option value={field.status}>{factStatusLabels[field.status] || field.status}</option>
+                            ) : null}
+                          </select>
                         </td>
                         <td className="px-3 py-2 text-xs text-on-surface-variant">
                           {field.confidence ? `${Math.round(Number(field.confidence) * 100)}%` : '-'}
@@ -1097,17 +1134,19 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
 
   const handleFactFieldChange = (index, key, value) => {
-    setFactFields((current) => current.map((field, idx) => (
-      idx === index
-        ? {
-            ...field,
-            [key]: value,
-            status: String(key === 'value' ? value : field.value || '').trim()
-              ? (field.status === 'confirmed' ? 'confirmed' : 'candidate')
-              : 'missing',
-          }
-        : field
-    )))
+    setFactFields((current) => current.map((field, idx) => {
+      if (idx !== index) return field
+      if (key === 'status') {
+        return { ...field, status: value }
+      }
+      return {
+        ...field,
+        [key]: value,
+        status: String(key === 'value' ? value : field.value || '').trim()
+          ? (field.status === 'confirmed' ? 'confirmed' : 'extracted')
+          : 'unextracted',
+      }
+    }))
   }
 
   const handleAddFactField = () => {
@@ -1122,7 +1161,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         value: '',
         unit: '',
         required: false,
-        status: 'missing',
+        status: 'unextracted',
         confidence: 1,
         sourcePriority: 360,
         sourceRefs: [{ type: 'manualFact', title: '人工新增', field: '' }],
