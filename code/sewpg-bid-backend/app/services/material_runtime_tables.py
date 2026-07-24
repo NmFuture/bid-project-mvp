@@ -239,7 +239,6 @@ class MaterialRuntimeTables:
                     row_index INT NOT NULL,
                     project_name TEXT,
                     customer_name VARCHAR(300),
-                    partner_name VARCHAR(300),
                     turbine_model VARCHAR(120),
                     turbine_models JSONB DEFAULT '[]'::jsonb,
                     contract_quantity VARCHAR(80),
@@ -259,7 +258,6 @@ class MaterialRuntimeTables:
             )
         )
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS turbine_models JSONB DEFAULT '[]'::jsonb"))
-        await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS partner_name VARCHAR(300)"))
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS contract_year INT"))
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS delivery_year INT"))
         await session.execute(text("ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS operation_year INT"))
@@ -334,6 +332,11 @@ class MaterialRuntimeTables:
                     error_message TEXT,
                     page_count INT DEFAULT 0,
                     raw_response JSONB DEFAULT '{}'::jsonb,
+                    retry_count INT DEFAULT 0,
+                    max_retries INT DEFAULT 2,
+                    input_path VARCHAR(500),
+                    locked_at TIMESTAMPTZ,
+                    audit_meta JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     created_by VARCHAR(100),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -341,6 +344,15 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        # 兼容旧表：补齐队列相关字段
+        for column_def in (
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 2",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS input_path VARCHAR(500)",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS audit_meta JSONB DEFAULT '{}'::jsonb",
+        ):
+            await session.execute(text(column_def))
         await session.execute(
             text(
                 """

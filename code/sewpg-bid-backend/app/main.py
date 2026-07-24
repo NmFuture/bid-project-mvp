@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.auth_service import auth_service
+from app.services.ocr_service import ocr_service
 from app.services.system_settings import system_settings_service
 
 
@@ -20,7 +21,11 @@ async def lifespan(app: FastAPI):
         minio_client.ensure_bucket(bucket)
     await auth_service.ensure_bootstrap_admin()
     await system_settings_service._ensure_tables()
-    yield
+    await ocr_service.start_worker()
+    try:
+        yield
+    finally:
+        await ocr_service.stop_worker()
 
 
 app = FastAPI(
