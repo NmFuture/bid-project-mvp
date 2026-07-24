@@ -1,6 +1,6 @@
 -c requirements-docling-lock.txt
 fastapi==0.115.6
-uvicorn==0.32.1
+uvicorn==0.51.0
 python-multipart==0.0.26
 httpx==0.28.1
 python-docx==1.1.2
