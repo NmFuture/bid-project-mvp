@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import mimetypes
 import re
 import time
@@ -24,6 +25,9 @@ from app.services.workspace_project_access import (
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
@@ -181,6 +185,7 @@ class OcrService:
                 task.status = "failed"
                 task.error_message = "OCR 模型未启用或未配置"
                 await session.commit()
+                await self._record_task_audit(task, [], succeeded=False)
                 return
 
             input_path = Path(task.input_path) if task.input_path else None
@@ -188,6 +193,7 @@ class OcrService:
                 task.status = "failed"
                 task.error_message = "OCR 任务输入文件丢失"
                 await session.commit()
+                await self._record_task_audit(task, [], succeeded=False)
                 return
 
             try:
@@ -235,9 +241,9 @@ class OcrService:
                     )
                 await session.commit()
                 self._delete_task_input(input_path)
-                await self._record_task_audit(task, candidates, succeeded=True)
             except Exception as exc:
                 await session.refresh(task)
+                is_final_failure = False
                 if int(task.retry_count or 0) < int(task.max_retries or _OCR_MAX_RETRIES):
                     task.retry_count = int(task.retry_count or 0) + 1
                     task.status = "pending"
@@ -246,8 +252,13 @@ class OcrService:
                 else:
                     task.status = "failed"
                     task.error_message = str(exc)
-                    await self._record_task_audit(task, [], succeeded=False)
+                    is_final_failure = True
                 await session.commit()
+                if is_final_failure:
+                    await self._record_task_audit(task, [], succeeded=False)
+                return
+
+            await self._record_task_audit(task, candidates, succeeded=True)
 
     def _persist_task_input(self, task_id: str, file_name: str, content: bytes) -> Path:
         directory = settings.documents_dir / "_runtime" / "ocr_inputs" / task_id
@@ -279,7 +290,8 @@ class OcrService:
         audit_meta = task.audit_meta or {}
         user = audit_meta.get("user")
         audit_metadata = audit_meta.get("audit_metadata") or {}
-        await audit_service.record(
+        await self._record_audit_best_effort(
+            failure_context=f"执行任务 {task.id}",
             action="执行 OCR 识别",
             action_type="ocr",
             module_id="ocr",
@@ -303,6 +315,17 @@ class OcrService:
                 "ocrStatus": task.status,
             },
         )
+
+    async def _record_audit_best_effort(
+        self,
+        *,
+        failure_context: str,
+        **audit_payload: Any,
+    ) -> None:
+        try:
+            await audit_service.record(**audit_payload)
+        except Exception:
+            logger.exception("OCR 审计记录失败：%s", failure_context)
 
     async def _wait_for_task(
         self,
@@ -446,7 +469,8 @@ class OcrService:
 
         await self.start_worker()
 
-        await audit_service.record(
+        await self._record_audit_best_effort(
+            failure_context=f"提交任务 {task_id}",
             action="提交 OCR 识别任务",
             action_type="ocr",
             module_id="ocr",
