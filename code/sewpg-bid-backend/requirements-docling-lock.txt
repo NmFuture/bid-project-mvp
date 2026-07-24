@@ -34,6 +34,6 @@ scipy==1.18.0
 shapely==2.1.2
 tokenizers==0.22.2
 torch==2.12.1
-torchvision==0.27.1
+torchvision==0.28.0
 transformers==5.12.1
 triton==3.7.1
