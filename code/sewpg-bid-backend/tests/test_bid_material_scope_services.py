@@ -2596,6 +2596,34 @@ def test_performance_items_runtime_schema_keeps_partner_name() -> None:
     )
 
 
+def test_material_runtime_tables_repairs_duplicate_folder_paths_before_unique_index() -> None:
+    from app.services.material_runtime_tables import MaterialRuntimeTables
+
+    class SqlCaptureSession:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def execute(self, statement: Any) -> None:
+            self.statements.append(str(statement))
+
+    session = SqlCaptureSession()
+    asyncio.run(MaterialRuntimeTables().ensure(session))
+
+    migration_statement = next(
+        statement
+        for statement in session.statements
+        if "CREATE UNIQUE INDEX idx_raw_folders_path" in statement
+    )
+    file_relink = migration_statement.index("UPDATE raw_files AS target")
+    child_relink = migration_statement.index("UPDATE raw_folders AS child")
+    duplicate_delete = migration_statement.index("DELETE FROM raw_folders AS target")
+    unique_index = migration_statement.index("CREATE UNIQUE INDEX idx_raw_folders_path")
+
+    assert "pg_advisory_xact_lock" in migration_statement
+    assert "MIN(id) OVER (PARTITION BY path)" in migration_statement
+    assert file_relink < child_relink < duplicate_delete < unique_index
+
+
 def test_material_file_display_helpers_are_outside_material_store() -> None:
     material_source = Path("app/services/material_store.py").read_text(encoding="utf-8")
     file_source = Path("app/services/file_utils.py").read_text(encoding="utf-8")

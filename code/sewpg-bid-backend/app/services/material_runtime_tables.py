@@ -383,6 +383,45 @@ class MaterialRuntimeTables:
                 """
                 DO $$
                 BEGIN
+                    PERFORM pg_advisory_xact_lock(
+                        hashtext('material-runtime-tables:raw-folder-path')
+                    );
+
+                    WITH duplicate_folders AS (
+                        SELECT
+                            id,
+                            MIN(id) OVER (PARTITION BY path) AS canonical_id
+                        FROM raw_folders
+                    )
+                    UPDATE raw_files AS target
+                    SET folder_id = duplicate_folders.canonical_id
+                    FROM duplicate_folders
+                    WHERE target.folder_id = duplicate_folders.id
+                      AND duplicate_folders.id <> duplicate_folders.canonical_id;
+
+                    WITH duplicate_folders AS (
+                        SELECT
+                            id,
+                            MIN(id) OVER (PARTITION BY path) AS canonical_id
+                        FROM raw_folders
+                    )
+                    UPDATE raw_folders AS child
+                    SET parent_id = duplicate_folders.canonical_id
+                    FROM duplicate_folders
+                    WHERE child.parent_id = duplicate_folders.id
+                      AND duplicate_folders.id <> duplicate_folders.canonical_id;
+
+                    WITH duplicate_folders AS (
+                        SELECT
+                            id,
+                            MIN(id) OVER (PARTITION BY path) AS canonical_id
+                        FROM raw_folders
+                    )
+                    DELETE FROM raw_folders AS target
+                    USING duplicate_folders
+                    WHERE target.id = duplicate_folders.id
+                      AND duplicate_folders.id <> duplicate_folders.canonical_id;
+
                     IF NOT EXISTS (
                         SELECT 1 FROM pg_indexes
                         WHERE indexname = 'idx_raw_folders_path' AND indexdef LIKE '%UNIQUE%'
