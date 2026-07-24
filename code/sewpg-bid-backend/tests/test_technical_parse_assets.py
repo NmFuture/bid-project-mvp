@@ -519,6 +519,8 @@ def test_technical_project_confirmation_archives_appendices_with_final_material_
 
 
 def test_technical_project_confirmation_persists_sync_state_after_failure() -> None:
+    from fastapi import HTTPException
+
     from app.services.bid_project_service import BidProjectService
     from app.services.technical_parse_assets import TechnicalParseAssetError
 
@@ -566,13 +568,17 @@ def test_technical_project_confirmation_persists_sync_state_after_failure() -> N
         "app.services.bid_project_service.persist_technical_parse_result",
         return_value=parse_result,
     ) as persist_parse_result:
-        with pytest.raises(TechnicalParseAssetError, match="索引校验失败"):
+        with pytest.raises(HTTPException) as exc_info:
             asyncio.run(service.update(project_id, {"reviewDecision": "participate"}))
 
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "索引校验失败"
     persist_parse_result.assert_called_once_with(project_id, parse_result)
 
 
 def test_technical_project_confirmation_failure_does_not_persist_participate() -> None:
+    from fastapi import HTTPException
+
     from app.services.bid_project_service import BidProjectService
     from app.services.technical_parse_assets import TechnicalParseAssetError
 
@@ -606,9 +612,11 @@ def test_technical_project_confirmation_failure_does_not_persist_participate() -
         "app.services.bid_project_service.persist_technical_parse_result",
         return_value=runtime_project["parse_result"],
     ):
-        with pytest.raises(TechnicalParseAssetError, match="索引校验失败"):
+        with pytest.raises(HTTPException) as exc_info:
             asyncio.run(service.update(project_id, {"reviewDecision": "participate"}))
 
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "索引校验失败"
     update_project.assert_not_called()
 
 

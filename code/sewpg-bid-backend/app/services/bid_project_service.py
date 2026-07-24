@@ -13,7 +13,11 @@ from app.services.business_parse_assets import BusinessParseAssetError, sync_app
 from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
 from app.services.template_store import template_fallback_payload
-from app.services.technical_parse_assets import persist_technical_parse_result, sync_technical_parse_appendices
+from app.services.technical_parse_assets import (
+    TechnicalParseAssetError,
+    persist_technical_parse_result,
+    sync_technical_parse_appendices,
+)
 from app.services.workspace_project_access import (
     create_workspace_project,
     delete_workspace_project,
@@ -164,6 +168,8 @@ class BidProjectService:
                     candidate_project,
                     parse_result,
                 )
+            except TechnicalParseAssetError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
             finally:
                 persist_technical_parse_result(project_id, parse_result)
         project = update_workspace_project(
