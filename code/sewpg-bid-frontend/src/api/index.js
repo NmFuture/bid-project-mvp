@@ -451,6 +451,8 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
+  saveFactField: (projectId, fieldId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/${fieldId}`, { method: 'PATCH', body: data }),
   recheck: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>
@@ -872,6 +874,9 @@ export const settingsAPI = {
     upload: (data) => request('/settings/default-templates', { method: 'POST', body: data }),
     activate: (id) => request(`/settings/default-templates/${id}/activate`, { method: 'POST' }),
     remove: (id) => request(`/settings/default-templates/${id}`, { method: 'DELETE' }),
+  },
+  technicalFactSpecs: {
+    upload: (data) => request('/settings/technical-fact-specs', { method: 'POST', body: data }),
   },
   health: () => request('/settings/health'),
 }
