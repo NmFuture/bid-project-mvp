@@ -616,6 +616,36 @@ def _certificate_text(path: Path) -> str:
     return ""
 
 
+def _certificate_pdf_pages(path: Path) -> list[str]:
+    """按页提取 PDF 文本层（pypdf，与 extract_pdf_text 同库，不加新依赖）。
+
+    仅 PDF 有物理页码概念；非 PDF 或提取失败返回 []（不写 page）。"""
+    if path.suffix.lower() != ".pdf":
+        return []
+    try:
+        from pypdf import PdfReader
+    except ImportError:  # pragma: no cover - 与 extract_pdf_text 同依赖
+        return []
+    try:
+        reader = PdfReader(str(path))
+        return [(page.extract_text() or "") for page in reader.pages]
+    except Exception:
+        return []
+
+
+def _certificate_param_pages(pages: list[str], params: dict[str, str]) -> dict[str, int]:
+    """定位每个命中参数首次出现的页码（1 起始）。找不到则不记。"""
+    hits: dict[str, int] = {}
+    if not pages or not params:
+        return hits
+    for index, page_text in enumerate(pages, start=1):
+        page_params = parse_certificate_wind_params(page_text)
+        for key, value in params.items():
+            if key not in hits and page_params.get(key) == value:
+                hits[key] = index
+    return hits
+
+
 def parse_certificate_wind_params(text: str) -> dict[str, str]:
     """从证书文本提取核心风资源参数（纯函数，便于测试）。
 
@@ -673,29 +703,39 @@ def facts_from_certificate_materials(
         if len(text.strip()) < _CERT_TEXT_MIN_LENGTH:
             continue
         params = parse_certificate_wind_params(text)
-        candidates: list[tuple[str, str]] = []
+        # 仅 PDF 证书补来源页码（docx 无物理页码概念，不写 page 键）
+        param_pages = _certificate_param_pages(_certificate_pdf_pages(path), params)
+        candidates: list[tuple[str, str, str]] = []
         if params.get("vref"):
-            candidates.append(("机型认证10分钟平均极限风速（m/s）", params["vref"]))
+            candidates.append(("机型认证10分钟平均极限风速（m/s）", params["vref"], "vref"))
         if params.get("iecClass"):
-            candidates.append(("机型认证安全等级", params["iecClass"]))
+            candidates.append(("机型认证安全等级", params["iecClass"], "iecClass"))
         if params.get("turbulence"):
-            candidates.append(("机型认证湍流强度（%）", params["turbulence"]))
+            candidates.append(("机型认证湍流强度（%）", params["turbulence"], "turbulence"))
         # 设计认证核心风资源参数：按 spec note 拼摘要串（有几个拼几个，不编造）
         pieces: list[str] = []
+        piece_param_keys: list[str] = []
         if params.get("vref"):
             pieces.append(f"参考风速{params['vref']}m/s")
+            piece_param_keys.append("vref")
         if params.get("turbulence"):
             pieces.append(f"湍流强度{params['turbulence']}")
+            piece_param_keys.append("turbulence")
         if params.get("extreme50"):
             pieces.append(f"50年一遇极端风速{params['extreme50']}m/s")
+            piece_param_keys.append("extreme50")
         if pieces:
-            candidates.append(("设计认证核心风资源参数", "，".join(pieces)))
-        for label, value in candidates:
+            candidates.append(("设计认证核心风资源参数", "，".join(pieces), piece_param_keys[0]))
+        for label, value, param_key in candidates:
             if label not in sink_specs or label in emitted:
                 continue
-            emitted[label] = material_fact(
+            fact = material_fact(
                 label, value, material, location="证书文本层", confidence=0.85
             )
+            page = param_pages.get(param_key)
+            if page is not None:
+                fact["sourceRef"]["page"] = page
+            emitted[label] = fact
     return list(emitted.values())
 
 

@@ -10,6 +10,9 @@ from fastapi.responses import FileResponse
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_folder_scope import project_material_root_path
 from app.services.technical_gap_fact_table import (
+    FACT_STATUS_CONFIRMED,
+    FACT_STATUS_MISSING_SOURCE,
+    FACT_STATUS_NOT_APPLICABLE,
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
     empty_project_fact_table,
@@ -53,6 +56,13 @@ from app.services.url_utils import onlyoffice_backend_base_url
 
 
 PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
+
+# 逐字段确认的终态集合：全部字段进入终态后表级 status 自动升 confirmed
+PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
+    FACT_STATUS_CONFIRMED,
+    FACT_STATUS_NOT_APPLICABLE,
+    FACT_STATUS_MISSING_SOURCE,
+}
 
 
 def _raise_gap_error(exc: Exception, not_found_detail: str) -> None:
@@ -534,6 +544,81 @@ class TechnicalGapService:
             return copy.deepcopy(table)
         except Exception as exc:
             _raise_gap_error(exc, "Gap facts not found")
+
+    async def save_fact_field(
+        self,
+        project_id: str,
+        field_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别，再维护项目事实表。")
+            table = gap_state.get("projectFactTable")
+            if not isinstance(table, dict) or table.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
+                raise KeyError(field_id)
+            fields = [field for field in (table.get("fields") or []) if isinstance(field, dict)]
+            # 字段定位与前端行 key 一致：优先 id（build 时生成的 FACT-XXXX），其次 key
+            target_index = next(
+                (
+                    index
+                    for index, field in enumerate(fields)
+                    if str(field.get("id") or "") == str(field_id)
+                    or str(field.get("key") or "") == str(field_id)
+                ),
+                None,
+            )
+            if target_index is None:
+                raise KeyError(field_id)
+            payload = data or {}
+            confirm = bool(payload.get("confirm", True))
+            operator = str(payload.get("operator") or "当前用户")
+            saved_at = now_iso()
+            merged = copy.deepcopy(fields[target_index])
+            if "value" in payload:
+                merged["value"] = str(payload.get("value") or "")
+            if "status" in payload:
+                merged["status"] = str(payload.get("status") or "")
+            normalized = normalize_project_fact_field(
+                merged,
+                index=target_index + 1,
+                confirm=confirm,
+                operator=operator,
+                saved_at=saved_at,
+            )
+            fields[target_index] = normalized
+            summary = summarize_project_fact_fields(fields)
+            all_terminal = bool(fields) and all(
+                str(field.get("status") or "") in PROJECT_FACT_FIELD_TERMINAL_STATUSES for field in fields
+            )
+            status = str(table.get("status") or "draft")
+            confirmed_at = str(table.get("confirmedAt") or "")
+            confirmed_by = str(table.get("confirmedBy") or "")
+            if all_terminal:
+                status = "confirmed"
+                confirmed_at = confirmed_at or saved_at
+                confirmed_by = operator
+            table = {
+                **table,
+                "status": status,
+                "updatedAt": saved_at,
+                "confirmedAt": confirmed_at,
+                "confirmedBy": confirmed_by,
+                "fields": fields,
+                "summary": summary,
+            }
+            gap_state["projectFactTable"] = table
+            project["updatedAt"] = saved_at
+            persist_technical_gap_project(project)
+            return {
+                "field": copy.deepcopy(normalized),
+                "summary": copy.deepcopy(summary),
+                "status": status,
+            }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap fact field not found")
 
     async def recheck(self, project_id: str) -> dict[str, Any]:
         try:
