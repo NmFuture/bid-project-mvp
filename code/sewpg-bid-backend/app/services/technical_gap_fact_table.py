@@ -1037,7 +1037,15 @@ def project_material_fact_fields(
     if not materials:
         return []
     prepared = prepare_project_fact_materials(project, materials)
+    # 延迟 import 避免循环：专项模块复用本模块的 material_fact/clean_fact_text
+    from app.services.technical_fact_special_extractors import (
+        facts_from_certificate_materials,
+        run_special_extractor,
+        special_extractor_for_material,
+    )
+
     facts: list[dict[str, Any]] = []
+    cert_materials: list[tuple[dict[str, Any], Path]] = []
     for material in prepared:
         if not isinstance(material, dict):
             continue
@@ -1050,11 +1058,22 @@ def project_material_fact_fields(
             continue
         if str(path.resolve()) in (excluded_paths or set()):
             continue
+        kind = special_extractor_for_material(material)
+        if kind == "certificate":
+            # 证书按"型式认证 > 设计认证"成组处理
+            cert_materials.append((material, path))
+            continue
+        if kind:
+            special_facts = run_special_extractor(kind, path, material, project)
+            if special_facts is not None:
+                facts.extend(special_facts)
+                continue
         suffix = path.suffix.lower()
         if suffix in {".docx", ".doc"}:
             facts.extend(facts_from_docx_material(path, material))
         elif suffix in {".xlsx", ".xlsm"}:
             facts.extend(facts_from_xlsx_material(path, material, project))
+    facts.extend(facts_from_certificate_materials(cert_materials, project))
     facts.extend(derived_material_fact_fields(project, facts))
     return facts
 
@@ -1143,7 +1162,8 @@ def material_is_fact_relevant(material: dict[str, Any]) -> bool:
     )
     return bool(
         re.search(
-            r"参数|机型|功率曲线|风资源|发电量|报价|容量|安全|场址|载荷|工程量|技术承诺|投标关键数据",
+            r"参数|机型|功率曲线|风资源|发电量|报价|容量|安全|场址|载荷|工程量|技术承诺|投标关键数据|"
+            r"弯矩|认证|承诺函|生产制造基地",
             text,
         )
     )

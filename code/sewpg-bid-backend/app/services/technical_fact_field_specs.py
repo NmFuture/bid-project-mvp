@@ -47,6 +47,9 @@ SPEC_LABEL_ALIASES: dict[str, list[str]] = {
     "招标叶轮直径（m）": ["叶轮直径"],
     "投标方案名称": ["投标方案"],
     "函件签署日期": ["日期"],
+    # spec label"发电小时数/电量承诺函版本"含"发电小时"，canonical 会坍缩为"保证有效小时数"，
+    # 专项抽取器改产出此别名归位（technical_fact_special_extractors.facts_from_hours_commitment_docx）
+    "发电小时数/电量承诺函版本": ["电量承诺函版本"],
 }
 
 # 骨架字段分类（sourceKind → 事实表 category）
