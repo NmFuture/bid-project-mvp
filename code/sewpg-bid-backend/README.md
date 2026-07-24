@@ -51,6 +51,10 @@ sewpg-bid-backend/
 - `app/core/config.py`
   - 环境变量与本地目录配置
 
-## 下一步
+## 文档入口
 
-后续不要再按旧单线 route 或旧三条独立拆任务推进。当前以 `/Users/wlb/Agent/bid-project/doc/需求梳理.md`、`/Users/wlb/Agent/bid-project/doc/研发计划.md` 和 `/Users/wlb/Agent/bid-project/code/progress.md` 为准，先跑通商务标端到端。
+- 团队规则：[`../../AGENTS.md`](../../AGENTS.md)
+- API 契约：[`../sewpg-bid-api/当前API接口核心版.md`](../sewpg-bid-api/当前API接口核心版.md)
+- 5090 发布：[`../DEPLOY_5090.md`](../DEPLOY_5090.md)
+
+旧单线 route 和已经归档的计划文档不作为当前开发入口；接口事实以现有路由、测试和 API 客户端为准。

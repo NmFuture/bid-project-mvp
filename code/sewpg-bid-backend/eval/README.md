@@ -1,7 +1,8 @@
 # Technical Bid Evaluation
 
-This directory contains the field-level evaluation system described in
-`../../../doc/17-评测体系建设计划.md`.
+This directory contains the field-level evaluation system. Its original design
+is retained as a [historical plan](../../../docs/archive/20260526-old-docs/17-评测体系建设计划.md);
+the code and contracts in this directory are the current implementation facts.
 
 The evaluation code is intentionally isolated from the production S3 filling
 skills. Files under `eval/` may read exported skill artifacts and generated

@@ -12,6 +12,8 @@
 - NVIDIA GPU 主机带 OCR 启动：`./start-ocr.sh`
 - 离线带 OCR 启动：`ENABLE_OCR=true ./up-airgap.sh ./.env`
 
+以上是通用环境入口。5090 生产环境必须使用 [`DEPLOY_5090.md`](DEPLOY_5090.md)、`build-5090-bundle.sh` 和 `up-5090.sh`，不得用通用 `start-ocr.sh` 代替生产流程。
+
 ## 当前 Mac 设备怎么启动
 
 当前 Apple Silicon Mac 可以一键启动产品本体，但不能本机启动 `vLLM + baidu/Unlimited-OCR` 真推理服务，因为 Docker Desktop for Mac 没有 NVIDIA CUDA runtime。
@@ -266,6 +268,12 @@ docker compose -f docker-compose.yml -f docker-compose.ocr.yml config
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ocr.yml ps ocr
 curl http://127.0.0.1:8000/health
+```
+
+这里的 `8000/health` 是 OCR 服务，不是 FastAPI。主系统 API 通过 web 代理验证：
+
+```bash
+curl --fail http://127.0.0.1:80/api/healthz
 ```
 
 后端单测：

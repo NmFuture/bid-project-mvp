@@ -1,7 +1,7 @@
 # Material Search Fallback Plan
 
-This is the implementation note for `doc/18` H13-H15. It is intentionally not
-enabled in production yet.
+This is a historical implementation note for the former H13-H15 plan. It is
+intentionally not enabled in production yet.
 
 ## Decision
 
