@@ -128,6 +128,8 @@ def test_compose_overrides_include_docling_worker_and_bind_ocr_to_gpu_zero() -> 
     assert second["services"]["docling-worker"]["container_name"] == "sewpg_bid_second_docling_worker"
     assert airgap["services"]["docling-worker"]["pull_policy"] == "never"
     assert "DOCLING_IMAGE" in airgap["services"]["docling-worker"]["image"]
+    assert airgap["services"]["postgres"]["pull_policy"] == "never"
+    assert airgap["services"]["minio"]["pull_policy"] == "never"
     assert "gpus" not in ocr
     devices = ocr["deploy"]["resources"]["reservations"]["devices"]
     assert devices == [
@@ -171,6 +173,12 @@ def test_airgap_build_scripts_export_docling_image() -> None:
         assert "sewpg-bid/docling-worker:" in script
         assert "docling-worker" in script
         assert "DOCLING_IMAGE" in script.upper()
+        assert "pgvector/pgvector:pg16" in script
+        assert "minio/minio:RELEASE.2025-04-22T22-12-26Z" in script
+        assert "initdb" in script
+        assert "onlyoffice" in script
+        assert "MAIN_SHA" in script
+        assert "SHA256SUMS" in script
 
 
 def test_5090_release_scripts_build_off_host_and_never_build_on_target() -> None:
@@ -183,11 +191,30 @@ def test_5090_release_scripts_build_off_host_and_never_build_on_target() -> None
     assert 'DEPLOY_TARGET="${DEPLOY_TARGET:-generic}"' in generic_bundle_script
     assert 'docker-compose.5090.yml' in generic_bundle_script
     assert '"ocrSourceDigest"' in generic_bundle_script
+    assert '"gitSha"' in generic_bundle_script
+    assert 'POSTGRES_SOURCE_IMAGE="${POSTGRES_SOURCE_IMAGE:-pgvector/pgvector:pg16}"' in generic_bundle_script
+    assert 'MINIO_SOURCE_IMAGE="${MINIO_SOURCE_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"' in generic_bundle_script
 
     assert "docker pull" not in target_script
     assert "docker compose build" not in target_script
     assert "up -d --no-build" in target_script
+    assert 'require_changed OPENCODE_MODEL_ID replace-with-your-internal-model' in target_script
+    assert 'require_changed DEFAULT_LLM_MODEL replace-with-your-internal-model' in target_script
+    assert 'require_changed DATABASE_URL postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform' in target_script
     assert 'require_changed POSTGRES_PASSWORD bidpass' in target_script
     assert 'require_changed MINIO_ROOT_PASSWORD minioadmin' in target_script
     assert 'require_changed AUTH_ADMIN_PASSWORD 123456' in target_script
     assert 'devices[0].get("device_ids") != ["0"]' in target_script
+
+
+def test_airgap_env_template_contains_required_5090_settings() -> None:
+    env_template = (CODE_ROOT / ".env.airgap.example").read_text(encoding="utf-8")
+
+    for setting in (
+        "AUTH_ADMIN_EMAIL=admin@sewpg.com",
+        "AUTH_ADMIN_PASSWORD=123456",
+        "AUTH_ADMIN_NAME=管理员",
+        "OCR_GPU_DEVICE_ID=0",
+        "DEFAULT_LLM_MODEL=replace-with-your-internal-model",
+    ):
+        assert setting in env_template
