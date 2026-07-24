@@ -12,7 +12,7 @@
 - NVIDIA GPU 主机带 OCR 启动：`./start-ocr.sh`
 - 离线带 OCR 启动：`ENABLE_OCR=true ./up-airgap.sh ./.env`
 
-以上是通用环境入口。5090 生产环境必须使用 [`DEPLOY_5090.md`](DEPLOY_5090.md)、`build-5090-bundle.sh` 和 `up-5090.sh`，不得用通用 `start-ocr.sh` 代替生产流程。
+以上是通用环境入口。5090 生产环境必须使用 [`DEPLOY_5090.md`](DEPLOY_5090.md) 和 `up-5090.sh`：默认允许在线拉取 OCR 镜像并在首次启动时下载权重；`build-5090-bundle.sh` 只用于额外制作离线回滚包。不得用通用 `start-ocr.sh` 代替 5090 流程。
 
 ## 当前 Mac 设备怎么启动
 
@@ -218,7 +218,13 @@ DEFAULT_OCR_MODEL=baidu/Unlimited-OCR
 INCLUDE_OCR=true ./scripts/build-airgap-bundle.sh
 ```
 
-RTX 5090 目标使用专用覆盖层和构建入口：
+RTX 5090 默认在线部署入口：
+
+```bash
+./scripts/up-5090.sh ./.env
+```
+
+需要额外制作离线回滚包时再运行：
 
 ```bash
 ./scripts/build-5090-bundle.sh ./offline-dist/5090 <release-tag>
