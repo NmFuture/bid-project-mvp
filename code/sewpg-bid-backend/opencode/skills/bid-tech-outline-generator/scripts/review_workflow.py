@@ -731,6 +731,7 @@ def tender_headings(
     *,
     cursor: int = 0,
     page_size: int = 200,
+    review: bool = False,
 ) -> dict[str, Any]:
     if cursor < 0:
         raise SystemExit("headings cursor must be zero or greater")
@@ -789,7 +790,11 @@ def tender_headings(
         and file_id not in appendix_file_ids
     )
     headings_exhausted = bool(state.get("headings_exhausted"))
-    if headings_exhausted:
+    if review:
+        files, next_cursor_value, pagination_complete, source_heading_count = (
+            _paged_heading_files(files_by_id, cursor=cursor, page_size=page_size)
+        )
+    elif headings_exhausted:
         if cursor != 0:
             raise SystemExit("headings cursor must be 0 after headings are exhausted")
         files: list[dict[str, Any]] = []
@@ -819,21 +824,22 @@ def tender_headings(
         for file_id in full_review_file_ids
     ]
     files.extend(full_review_files)
-    write_json(
-        state_path,
-        {
-            "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
-            "input_fingerprint": chunks_fingerprint,
-            "next_cursor": next_cursor_value if not pagination_complete else 0,
-            "headings_exhausted": pagination_complete,
-            "headings_catalog_digest": headings_catalog_digest,
-            "source_heading_count": source_heading_count,
-            "appendix_count": len(appendices),
-            "requires_full_review": bool(full_review_file_ids),
-            "full_review_file_ids": full_review_file_ids,
-            "complete": complete,
-        },
-    )
+    if not review:
+        write_json(
+            state_path,
+            {
+                "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+                "input_fingerprint": chunks_fingerprint,
+                "next_cursor": next_cursor_value if not pagination_complete else 0,
+                "headings_exhausted": pagination_complete,
+                "headings_catalog_digest": headings_catalog_digest,
+                "source_heading_count": source_heading_count,
+                "appendix_count": len(appendices),
+                "requires_full_review": bool(full_review_file_ids),
+                "full_review_file_ids": full_review_file_ids,
+                "complete": complete,
+            },
+        )
     return {
         "schema_version": "tender-headings.v1",
         "file_count": len(files_by_id),
@@ -845,6 +851,7 @@ def tender_headings(
         "requires_full_review": bool(full_review_file_ids),
         "full_review_pending_chunk_count": full_review_pending_count,
         "complete": complete,
+        "review": review,
         "files": files,
     }
 

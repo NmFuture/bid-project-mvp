@@ -4,10 +4,12 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -21,6 +23,7 @@ from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
 from app.services.opencode_client import OpencodeClient
 from app.services.parsing import IMAGE_SUFFIXES, _ocr_fallback_text
 from app.services.bid_runtime_state import build_directory_opencode_output, now_iso
+from app.services.system_settings import system_settings_service
 from app.services.template_store import is_valid_docx_file
 from app.services.workspace_artifacts import workspace_dir
 from app.services.workspace_project_access import (
@@ -35,7 +38,12 @@ BUSINESS_OUTLINE_SKILL_COMMAND = "business-outline"
 TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
 TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 TECH_OUTLINE_HANDOFF_DECISION_UNITS = 1
+TECH_OUTLINE_CHAPTER_WORKERS = 6
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
+
+
+class _ChapterParallelUnsupported(RuntimeError):
+    pass
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
 
@@ -141,6 +149,171 @@ manifest：{manifest_path}
 """.strip()
 
 
+def _build_outline_chapter_prompt(
+    manifest_path: Path,
+    chapter: dict[str, Any],
+) -> str:
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+这是 S2 技术标目录的独立章节决策会话，只处理一级章：{chapter.get('number')} {chapter.get('title')}（chapter_id={chapter.get('chapter_id')}）。
+manifest：{manifest_path}
+
+准备产物已经由后端生成，不要执行 `s2outline prepare`。先用 `template-headings` 按 `next_cursor` 读完模板目录，再用 `headings` 按 `next_cursor` 读完整本招标目录，以便识别跨章等价项。
+然后循环执行 `decision-next`。每个决策单元都按 Skill 自主使用 `search`、`section`、`read` 阅读相关招标原文，完成“保留 / 建议增加 / 建议删除”三类判断并执行 `decision-batch`。同一章包含多个决策单元时继续处理，直到 `decision-next complete=true`。
+不要执行 `appendix-next`、`review-complete`、`decisions`、`compose` 或 `finalize`，也不要处理其他一级章。完成后只返回简短 JSON：{{"workflowStage":"chapter_complete"}}。
+""".strip()
+
+
+def _outline_chapter_base_urls() -> list[str]:
+    configured = [
+        item.strip().rstrip("/")
+        for item in os.getenv("OPENCODE_CHAPTER_BASE_URLS", "").split(",")
+        if item.strip()
+    ]
+    return configured or [str(settings.opencode_base_url).rstrip("/")]
+
+
+def _prepare_outline_chapter_workspaces(
+    manifest_path: Path,
+    structure: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Path], Path, dict[str, str]]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    runner = _load_technical_outline_runner()
+    runner.write_template_structure(manifest, manifest_path)
+    chapters = list(runner.decision_workflow.decision_chapters(structure)["chapters"])
+    chapter_root = work_dir.parent / f".{work_dir.name}-chapter-decisions"
+    if chapter_root.exists():
+        shutil.rmtree(chapter_root)
+    chapter_root.mkdir(parents=True)
+
+    chapter_manifests: dict[str, Path] = {}
+    baseline_files = [path for path in work_dir.iterdir() if path.is_file()]
+    for index, chapter in enumerate(chapters, start=1):
+        chapter_id = str(chapter["chapter_id"])
+        chapter_dir = chapter_root / f"chapter-{index:02d}"
+        chapter_dir.mkdir()
+        for source in baseline_files:
+            shutil.copy2(source, chapter_dir / source.name)
+        chapter_manifest = copy.deepcopy(manifest)
+        chapter_manifest["workDir"] = str(chapter_dir)
+        chapter_manifest["outputFile"] = str(chapter_dir / "toc.json")
+        chapter_manifest["_runtimeDecisionChapterId"] = chapter_id
+        chapter_manifest_path = chapter_dir / "s2_input.json"
+        chapter_manifest_path.write_text(
+            json.dumps(chapter_manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        chapter_manifests[chapter_id] = chapter_manifest_path
+
+    cursor = 0
+    while True:
+        headings = runner.dispatch_command(
+            "headings",
+            manifest,
+            manifest_path,
+            ["--cursor", str(cursor), "--page-size", "200"],
+        )
+        if headings.get("requires_full_review"):
+            shutil.rmtree(chapter_root, ignore_errors=True)
+            raise _ChapterParallelUnsupported("招标文件缺少可分页目录结构")
+        if headings.get("complete"):
+            break
+        cursor = int(headings["next_cursor"])
+    workflow_binding = runner._strict_workflow_binding(manifest, work_dir) or {}
+    return chapters, chapter_manifests, chapter_root, workflow_binding
+
+
+def _run_parallel_outline_chapters(
+    manifest_path: Path,
+    structure: dict[str, Any],
+    *,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> list[str]:
+    runner = _load_technical_outline_runner()
+    chapters, chapter_manifests, chapter_root, workflow_binding = (
+        _prepare_outline_chapter_workspaces(manifest_path, structure)
+    )
+    session_ids: dict[str, str] = {}
+    chapter_base_urls = _outline_chapter_base_urls()
+    model_config = system_settings_service.get_opencode_model_config_sync()
+    chapter_indexes = {
+        str(chapter["chapter_id"]): index for index, chapter in enumerate(chapters)
+    }
+
+    def run_chapter(chapter: dict[str, Any]) -> tuple[str, str]:
+        chapter_id = str(chapter["chapter_id"])
+        chapter_manifest_path = chapter_manifests[chapter_id]
+        chapter_manifest = json.loads(chapter_manifest_path.read_text(encoding="utf-8"))
+        chapter_work_dir = Path(str(chapter_manifest["workDir"]))
+
+        def validate_complete() -> dict[str, Any]:
+            binding = runner._strict_workflow_binding(chapter_manifest, chapter_work_dir) or {}
+            return runner.decision_workflow.chapter_decision_progress(
+                chapter_work_dir,
+                structure,
+                chapter_id,
+                workflow_binding=binding,
+            )
+
+        def session_ready(details: dict[str, Any]) -> None:
+            if progress_callback:
+                progress_callback(
+                    "outline_session_ready",
+                    {**details, "chapterId": chapter_id, "chapterTitle": chapter.get("title")},
+                )
+
+        result = OpencodeClient(
+            base_url=chapter_base_urls[chapter_indexes[chapter_id] % len(chapter_base_urls)],
+            timeout_ms=int(settings.opencode_timeout_sec * 1000),
+            model_config=model_config,
+        ).run_outline_decision_session(
+            _build_outline_chapter_prompt(chapter_manifest_path, chapter),
+            session_title=f"S2 目录决策·{chapter.get('number') or chapter_id}",
+            completion_validator=validate_complete,
+            session_ready_callback=session_ready,
+            stream_callback=(
+                (lambda details: progress_callback("outline_delta", details))
+                if progress_callback
+                else None
+            ),
+        )
+        return chapter_id, str(result["sessionId"])
+
+    try:
+        with ThreadPoolExecutor(
+            max_workers=min(
+                TECH_OUTLINE_CHAPTER_WORKERS,
+                len(chapter_base_urls),
+                max(1, len(chapters)),
+            )
+        ) as executor:
+            futures = {executor.submit(run_chapter, chapter): chapter for chapter in chapters}
+            for future in as_completed(futures):
+                chapter_id, session_id = future.result()
+                session_ids[chapter_id] = session_id
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+        runner.decision_workflow.merge_chapter_decisions(
+            work_dir,
+            structure,
+            {
+                chapter_id: Path(
+                    json.loads(path.read_text(encoding="utf-8"))["workDir"]
+                )
+                for chapter_id, path in chapter_manifests.items()
+            },
+            workflow_binding=workflow_binding,
+        )
+    except Exception:
+        raise
+    else:
+        shutil.rmtree(chapter_root, ignore_errors=True)
+    return [session_ids[str(chapter["chapter_id"])] for chapter in chapters]
+
+
 def _technical_outline_handoff_state(
     manifest_path: Path,
     *,
@@ -175,7 +348,7 @@ manifest：{manifest_path}
 
 不要执行 `s2outline prepare`、`template-headings`、`decision-next`、`decision-batch`、`next-batch` 或 `review-batch`，不要重新读取全量模板或决策状态文件。
 
-从 `s2outline appendix-next` 开始，按 Skill 完成技术附表判断。随后只做一次全局复核：用 `s2outline headings` 按 `next_cursor` 分页读完整本招标目录，逐项查漏；疑似缺项必须用 `s2outline section` 详读原文，必要时用 `search` 定位后继续详读。发现遗漏或误判就用 `review-corrections` 写回并重新复核，不能只写在总结里。
+从 `s2outline appendix-next` 开始，按 Skill 完成技术附表判断。随后只做一次全局复核：用 `s2outline headings --review` 按 `next_cursor` 从头分页读完整本招标目录，逐项查漏；疑似缺项必须用 `s2outline section` 详读原文，必要时用 `search` 定位后继续详读。发现遗漏或误判就用 `review-corrections` 写回并重新复核，不能只写在总结里。
 
 确认无问题后依次执行 `s2outline review-complete`、`s2outline decisions`、`s2outline compose` 和 `{TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}`。最后原样返回 finalize 的严格 JSON，不加 Markdown 或解释。
 """.strip()
@@ -295,19 +468,37 @@ def _run_outline_skill(
     prompt = _build_outline_finalize_prompt(manifest_path)
     try:
         trusted_input = _capture_trusted_technical_outline_input(manifest_path)
-        previous_decided_count = [-1]
-
-        def handoff_state(handoff_index: int) -> dict[str, Any]:
-            del handoff_index
-            state = _technical_outline_handoff_state(
+        chapter_session_ids: list[str] = []
+        handoff_kwargs: dict[str, Any] = {}
+        try:
+            chapter_session_ids = _run_parallel_outline_chapters(
                 manifest_path,
-                previous_decided_count=previous_decided_count[0],
+                trusted_input["templateStructure"],
+                progress_callback=progress_callback,
             )
-            previous_decided_count[0] = int(state["decidedCount"])
-            return state
+        except _ChapterParallelUnsupported:
+            previous_decided_count = [-1]
 
-        return _load_outline_result(
-            OpencodeClient(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
+            def handoff_state(handoff_index: int) -> dict[str, Any]:
+                del handoff_index
+                state = _technical_outline_handoff_state(
+                    manifest_path,
+                    previous_decided_count=previous_decided_count[0],
+                )
+                previous_decided_count[0] = int(state["decidedCount"])
+                return state
+
+            handoff_kwargs = {
+                "handoff_prompt_factory": lambda index: _build_outline_handoff_prompt(
+                    manifest_path,
+                    index,
+                ),
+                "handoff_state_callback": handoff_state,
+            }
+
+        generated = OpencodeClient(
+            timeout_ms=int(settings.opencode_timeout_sec * 1000)
+        ).generate_outline_with_trace(
                 prompt,
                 session_ready_callback=(
                     (lambda details: progress_callback("outline_session_ready", details))
@@ -321,16 +512,28 @@ def _run_outline_skill(
                 ),
                 early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
                 terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
-                handoff_prompt_factory=lambda index: _build_outline_handoff_prompt(
-                    manifest_path,
-                    index,
-                ),
-                handoff_state_callback=handoff_state,
-            ),
+                **handoff_kwargs,
+            )
+        loaded = _load_outline_result(
+            generated,
             manifest_path,
             expected_bid_type=bid_type,
             trusted_technical_input=trusted_input,
         )
+        if chapter_session_ids:
+            output_trace = loaded.setdefault("opencodeOutput", {})
+            final_session_id = str(output_trace.get("sessionId") or "")
+            output_trace["sessionIds"] = [
+                *chapter_session_ids,
+                *([final_session_id] if final_session_id else []),
+            ]
+            output_trace["chapterSessionCount"] = len(chapter_session_ids)
+            output_trace["parallelChapterWorkers"] = min(
+                TECH_OUTLINE_CHAPTER_WORKERS,
+                len(_outline_chapter_base_urls()),
+                len(chapter_session_ids),
+            )
+        return loaded
     except Exception as exc:
         if progress_callback:
             progress_callback(

@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -66,8 +67,14 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.parallel_outline_patcher = patch(
+            "app.services.outline_generation._run_parallel_outline_chapters",
+            return_value=[],
+        )
+        self.parallel_outline_patcher.start()
 
     def tearDown(self) -> None:
+        self.parallel_outline_patcher.stop()
         self.client.close()
         self.temp_dir.cleanup()
 
@@ -237,15 +244,8 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("s2toc ", prompt)
         self.assertEqual(kwargs.get("early_tool_command"), "s2outline-finalize")
         self.assertTrue(callable(kwargs.get("terminal_validator")))
-        self.assertTrue(callable(kwargs.get("handoff_prompt_factory")))
-        self.assertTrue(callable(kwargs.get("handoff_state_callback")))
-        first_handoff_prompt = kwargs["handoff_prompt_factory"](1)
-        next_handoff_prompt = kwargs["handoff_prompt_factory"](2)
-        self.assertIn("最多完成 1 个", first_handoff_prompt)
-        self.assertIn("prepare", first_handoff_prompt)
-        self.assertIn("不要重复执行 prepare", next_handoff_prompt)
-        self.assertIn("不要执行 template-headings、headings", next_handoff_prompt)
-        self.assertIn("不得执行 appendix-next", next_handoff_prompt)
+        self.assertIsNone(kwargs.get("handoff_prompt_factory"))
+        self.assertIsNone(kwargs.get("handoff_state_callback"))
         match = re.search(r"manifest[：:]\s*(?P<path>.+)", prompt)
         self.assertIsNotNone(match)
         manifest_path = Path(str(match.group("path")).strip())
@@ -343,6 +343,12 @@ class DirectoryGenerationTests(unittest.TestCase):
             )
             if batch["complete"]:
                 break
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [section_id],
+            )
             runner.dispatch_command(
                 "decision-batch",
                 manifest,
@@ -1016,6 +1022,160 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("首次执行", prompt)
         self.assertLess(len(prompt), 1000)
 
+    def test_technical_outline_prepares_isolated_workspaces_per_root_chapter(self) -> None:
+        from app.services.outline_generation import (
+            _capture_trusted_technical_outline_input,
+            _prepare_outline_chapter_workspaces,
+        )
+
+        root = Path(self.temp_dir.name) / "parallel-chapters"
+        root.mkdir(parents=True)
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        manifest_path = root / "s2_input.json"
+        self._write_docx(
+            template,
+            [
+                ("第一章 总体方案", "Heading 1"),
+                ("1.1 实施组织", "Heading 2"),
+                ("第二章 质量安全", "Heading 1"),
+                ("2.1 质量保证", "Heading 2"),
+            ],
+        )
+        self._write_docx(
+            tender,
+            [
+                ("1 技术要求", "Heading 1"),
+                ("投标人应提交总体方案。", None),
+            ],
+        )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                    "outputFile": str(root / "toc.json"),
+                    "requireComposedOutline": True,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        trusted = _capture_trusted_technical_outline_input(manifest_path)
+        chapters, chapter_manifests, chapter_root, binding = (
+            _prepare_outline_chapter_workspaces(
+                manifest_path,
+                trusted["templateStructure"],
+            )
+        )
+        try:
+            child_payloads = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in chapter_manifests.values()
+            ]
+            self.assertEqual(len(chapters), 2)
+            self.assertEqual(len({item["workDir"] for item in child_payloads}), 2)
+            self.assertEqual(
+                {item["_runtimeDecisionChapterId"] for item in child_payloads},
+                set(chapter_manifests),
+            )
+            self.assertTrue(binding["headingsStateDigest"])
+        finally:
+            shutil.rmtree(chapter_root, ignore_errors=True)
+
+    def test_technical_outline_uses_configured_opencode_instances_for_chapters(self) -> None:
+        from app.services.outline_generation import (
+            TECH_OUTLINE_CHAPTER_WORKERS,
+            _outline_chapter_base_urls,
+        )
+
+        self.assertEqual(TECH_OUTLINE_CHAPTER_WORKERS, 6)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENCODE_CHAPTER_BASE_URLS": (
+                    "http://opencode:4096, http://opencode-2:4096,"
+                    "http://opencode-3:4096,http://opencode-4:4096,"
+                    "http://opencode-5:4096,http://opencode-6:4096"
+                )
+            },
+        ):
+            self.assertEqual(
+                _outline_chapter_base_urls(),
+                [
+                    "http://opencode:4096",
+                    "http://opencode-2:4096",
+                    "http://opencode-3:4096",
+                    "http://opencode-4:4096",
+                    "http://opencode-5:4096",
+                    "http://opencode-6:4096",
+                ],
+            )
+
+    def test_parallel_outline_chapters_load_model_config_once_before_workers(self) -> None:
+        self.parallel_outline_patcher.stop()
+        from app.services.outline_generation import _run_parallel_outline_chapters
+
+        root = Path(self.temp_dir.name) / "parallel-model-config"
+        root.mkdir(parents=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text("{}", encoding="utf-8")
+        chapter_root = root / "chapters"
+        chapter_root.mkdir()
+        chapters = [
+            {"chapter_id": "TPL-0001", "number": "第1章", "title": "第一章"},
+            {"chapter_id": "TPL-0002", "number": "第2章", "title": "第二章"},
+        ]
+        chapter_manifests: dict[str, Path] = {}
+        for chapter in chapters:
+            chapter_dir = chapter_root / str(chapter["chapter_id"])
+            chapter_dir.mkdir()
+            path = chapter_dir / "s2_input.json"
+            path.write_text(
+                json.dumps({"workDir": str(chapter_dir)}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            chapter_manifests[str(chapter["chapter_id"])] = path
+
+        model_config = {
+            "providerId": "configured-provider",
+            "modelId": "configured-model",
+            "timeoutMs": 45000,
+        }
+        runner = MagicMock()
+        runner.decision_workflow.chapter_decision_progress.return_value = {
+            "complete": True
+        }
+
+        with (
+            patch(
+                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                return_value=(chapters, chapter_manifests, chapter_root, {}),
+            ),
+            patch(
+                "app.services.outline_generation._load_technical_outline_runner",
+                return_value=runner,
+            ),
+            patch(
+                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                return_value=model_config,
+            ) as load_config,
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.run_outline_decision_session.side_effect = [
+                {"sessionId": "ses-1"},
+                {"sessionId": "ses-2"},
+            ]
+            session_ids = _run_parallel_outline_chapters(manifest_path, {})
+
+        load_config.assert_called_once_with()
+        self.assertEqual(set(session_ids), {"ses-1", "ses-2"})
+        self.assertEqual(client_class.call_count, 2)
+        for call in client_class.call_args_list:
+            self.assertIs(call.kwargs["model_config"], model_config)
+
     def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
         from app.services.outline_generation import (
             _build_outline_handoff_prompt,
@@ -1148,6 +1308,12 @@ class DirectoryGenerationTests(unittest.TestCase):
             self.assertTrue(headings["complete"])
             batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
             runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            runner.dispatch_command(
                 "decision-batch",
                 manifest,
                 manifest_path,
@@ -1218,6 +1384,12 @@ class DirectoryGenerationTests(unittest.TestCase):
             runner.write_template_structure(manifest, manifest_path)
             headings = runner.dispatch_command("headings", manifest, manifest_path, [])
             batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
             runner.dispatch_command(
                 "decision-batch",
                 manifest,
@@ -1317,6 +1489,15 @@ class DirectoryGenerationTests(unittest.TestCase):
                 batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
                 if batch["complete"]:
                     break
+                appendix_evidence_id = runner.review_workflow.decision_appendix_items(root)[0][
+                    "evidence_id"
+                ]
+                runner.dispatch_command(
+                    "read",
+                    manifest,
+                    manifest_path,
+                    [appendix_evidence_id],
+                )
                 runner.dispatch_command(
                     "decision-batch",
                     manifest,

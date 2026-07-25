@@ -36,8 +36,9 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
+      OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096,http://opencode-2:4096,http://opencode-3:4096,http://opencode-4:4096,http://opencode-5:4096,http://opencode-6:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
-      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-6}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
@@ -85,6 +86,16 @@ services:
     depends_on:
       opencode:
         condition: service_healthy
+      opencode-2:
+        condition: service_healthy
+      opencode-3:
+        condition: service_healthy
+      opencode-4:
+        condition: service_healthy
+      opencode-5:
+        condition: service_healthy
+      opencode-6:
+        condition: service_healthy
       onlyoffice:
         condition: service_started
       postgres:
@@ -119,8 +130,9 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
+      OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096,http://opencode-2:4096,http://opencode-3:4096,http://opencode-4:4096,http://opencode-5:4096,http://opencode-6:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
-      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-6}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
@@ -165,6 +177,16 @@ services:
       OUTLINE_JUDGE_TIMEOUT_SEC: ${OUTLINE_JUDGE_TIMEOUT_SEC:-600}
     depends_on:
       opencode:
+        condition: service_healthy
+      opencode-2:
+        condition: service_healthy
+      opencode-3:
+        condition: service_healthy
+      opencode-4:
+        condition: service_healthy
+      opencode-5:
+        condition: service_healthy
+      opencode-6:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -237,7 +259,7 @@ services:
     stop_grace_period: ${DOCLING_STOP_GRACE_PERIOD:-30m}
     restart: unless-stopped
 
-  opencode:
+  opencode: &opencode-service
     image: ${OPENCODE_IMAGE:-sewpg-bid/opencode:${APP_IMAGE_TAG:-latest}}
     build:
       context: ./sewpg-bid-backend/opencode
@@ -298,6 +320,66 @@ services:
       - opencode_data:/root/.local/share/opencode
       - opencode_cache:/root/.cache/opencode
     restart: unless-stopped
+
+  opencode-2:
+    <<: *opencode-service
+    container_name: sewpg_bid_opencode_2
+    ports: []
+    volumes:
+      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - documents:/data/documents
+      - parsed:/data/parsed
+      - opencode_data_2:/root/.local/share/opencode
+      - opencode_cache_2:/root/.cache/opencode
+
+  opencode-3:
+    <<: *opencode-service
+    container_name: sewpg_bid_opencode_3
+    ports: []
+    volumes:
+      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - documents:/data/documents
+      - parsed:/data/parsed
+      - opencode_data_3:/root/.local/share/opencode
+      - opencode_cache_3:/root/.cache/opencode
+
+  opencode-4:
+    <<: *opencode-service
+    container_name: sewpg_bid_opencode_4
+    ports: []
+    volumes:
+      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - documents:/data/documents
+      - parsed:/data/parsed
+      - opencode_data_4:/root/.local/share/opencode
+      - opencode_cache_4:/root/.cache/opencode
+
+  opencode-5:
+    <<: *opencode-service
+    container_name: sewpg_bid_opencode_5
+    ports: []
+    volumes:
+      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - documents:/data/documents
+      - parsed:/data/parsed
+      - opencode_data_5:/root/.local/share/opencode
+      - opencode_cache_5:/root/.cache/opencode
+
+  opencode-6:
+    <<: *opencode-service
+    container_name: sewpg_bid_opencode_6
+    ports: []
+    volumes:
+      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
+      - uploads:/data/uploads:ro
+      - documents:/data/documents
+      - parsed:/data/parsed
+      - opencode_data_6:/root/.local/share/opencode
+      - opencode_cache_6:/root/.cache/opencode
 
   onlyoffice:
     image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.3.1.2}
@@ -389,6 +471,16 @@ volumes:
   parsed:
   opencode_data:
   opencode_cache:
+  opencode_data_2:
+  opencode_cache_2:
+  opencode_data_3:
+  opencode_cache_3:
+  opencode_data_4:
+  opencode_cache_4:
+  opencode_data_5:
+  opencode_cache_5:
+  opencode_data_6:
+  opencode_cache_6:
   onlyoffice_logs:
   onlyoffice_data:
   onlyoffice_lib:

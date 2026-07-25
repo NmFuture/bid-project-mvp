@@ -251,6 +251,52 @@ def _chapter_groups(items: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
     return groups
 
 
+def decision_chapters(structure: dict[str, Any]) -> dict[str, Any]:
+    """返回可并行处理的一级章清单，不包含任何业务判断。"""
+    _, items = _annotated_items(structure)
+    by_id = {str(item["template_id"]): item for item in items}
+    chapters = []
+    for chapter_id, target_ids in _chapter_groups(items):
+        chapter = by_id[chapter_id]
+        chapters.append(
+            {
+                "chapter_id": chapter_id,
+                "number": str(chapter.get("number") or ""),
+                "title": str(chapter.get("title") or ""),
+                "item_count": len(target_ids),
+            }
+        )
+    return {
+        "schema_version": "technical-outline-decision-chapters.v1",
+        "chapter_count": len(chapters),
+        "chapters": chapters,
+    }
+
+
+def chapter_decision_progress(
+    work_dir: Path,
+    structure: dict[str, Any],
+    chapter_id: str,
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    annotated, items = _annotated_items(structure)
+    groups = dict(_chapter_groups(items))
+    expected_ids = set(groups.get(chapter_id) or [])
+    if not expected_ids:
+        raise SystemExit("chapter_id must reference a root template chapter")
+    state = _load_state(work_dir, annotated["input_fingerprint"], workflow_binding)
+    decided_ids = expected_ids & set(state.get("template_decisions") or {})
+    active = state.get("active_batch") or {}
+    return {
+        "chapterId": chapter_id,
+        "decidedCount": len(decided_ids),
+        "remainingCount": len(expected_ids - decided_ids),
+        "activeBatch": bool(active.get("target_ids")),
+        "complete": decided_ids == expected_ids and not active.get("target_ids"),
+    }
+
+
 def _decision_units(items: list[dict[str, Any]]) -> list[tuple[str, str, list[str]]]:
     by_id = {str(item["template_id"]): item for item in items}
     units: list[tuple[str, str, list[str]]] = []
@@ -332,6 +378,7 @@ def next_decision_batch(
     structure: dict[str, Any],
     *,
     max_items: int = 50,
+    chapter_id: str = "",
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if max_items < 1 or max_items > 50:
@@ -340,7 +387,12 @@ def next_decision_batch(
     fingerprint = annotated["input_fingerprint"]
     state = _load_state(work_dir, fingerprint, workflow_binding)
     by_id = {str(item["template_id"]): item for item in items}
-    decided_count = len(state.get("template_decisions") or {})
+    chapter_groups = dict(_chapter_groups(items))
+    selected_chapter_ids = chapter_groups.get(chapter_id) if chapter_id else None
+    if chapter_id and selected_chapter_ids is None:
+        raise SystemExit("decision-next chapter_id must reference a root template chapter")
+    scoped_ids = set(selected_chapter_ids or by_id)
+    decided_count = len(scoped_ids & set(state.get("template_decisions") or {}))
     active = state.get("active_batch") or {}
     active_ids = list(active.get("target_ids") or [])
     if active_ids:
@@ -349,7 +401,7 @@ def next_decision_batch(
             target_ids=active_ids,
             by_id=by_id,
             decided_count=decided_count,
-            item_count=len(items),
+            item_count=len(scoped_ids),
             chapter_id=str(active.get("chapter_id") or active_ids[0]),
             decision_unit_id=str(active.get("decision_unit_id") or active_ids[0]),
         )
@@ -358,11 +410,12 @@ def next_decision_batch(
     pending_unit = next(
         (
             (
-                chapter_id,
+                unit_chapter_id,
                 decision_unit_id,
                 [target_id for target_id in unit_ids if target_id not in decided],
             )
-            for chapter_id, decision_unit_id, unit_ids in _decision_units(items)
+            for unit_chapter_id, decision_unit_id, unit_ids in _decision_units(items)
+            if (not chapter_id or unit_chapter_id == chapter_id)
             if any(target_id not in decided for target_id in unit_ids)
         ),
         None,
@@ -386,7 +439,7 @@ def next_decision_batch(
         target_ids=target_ids,
         by_id=by_id,
         decided_count=decided_count,
-        item_count=len(items),
+        item_count=len(scoped_ids),
         chapter_id=chapter_id,
         decision_unit_id=decision_unit_id,
     )
@@ -402,6 +455,52 @@ def next_decision_batch(
     state["active_batch"] = selected_state
     _write_json(_state_path(work_dir), state)
     return selected_response
+
+
+def merge_chapter_decisions(
+    work_dir: Path,
+    structure: dict[str, Any],
+    chapter_work_dirs: dict[str, Path],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """校验各章结果完整后合并到主状态，拒绝重复和跨章写入。"""
+    annotated, items = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    groups = dict(_chapter_groups(items))
+    if set(chapter_work_dirs) != set(groups):
+        raise SystemExit("chapter decision workspaces must exactly match template chapters")
+
+    merged = _new_state(fingerprint, workflow_binding)
+    addition_ids: set[str] = set()
+    for chapter_id, target_ids in groups.items():
+        chapter_state = _load_state(
+            Path(chapter_work_dirs[chapter_id]),
+            fingerprint,
+            workflow_binding,
+        )
+        decisions = chapter_state.get("template_decisions") or {}
+        if set(decisions) != set(target_ids):
+            raise SystemExit(f"chapter decision is incomplete: {chapter_id}")
+        if (chapter_state.get("active_batch") or {}).get("target_ids"):
+            raise SystemExit(f"chapter decision still has an active batch: {chapter_id}")
+        merged["template_decisions"].update(deepcopy(decisions))
+        for addition in chapter_state.get("additions") or []:
+            node_id = str(addition.get("node_id") or "")
+            if not node_id or node_id in addition_ids:
+                raise SystemExit(f"chapter addition node_id is missing or duplicate: {node_id}")
+            addition_ids.add(node_id)
+            merged["additions"].append(deepcopy(addition))
+            merged["addition_chapters"][node_id] = chapter_id
+
+    _write_json(_state_path(work_dir), merged)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "chapter_count": len(groups),
+        "decided_count": len(merged["template_decisions"]),
+        "addition_count": len(merged["additions"]),
+        "complete": True,
+    }
 
 
 def submit_decision_batch(

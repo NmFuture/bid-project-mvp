@@ -294,6 +294,7 @@ def dispatch_command(
             work_dir,
             cursor=cursor,
             page_size=page_size,
+            review="--review" in command_args,
         )
     if command == "search":
         query = _required_arg(command_args, 0, "search query")
@@ -458,6 +459,7 @@ def dispatch_command(
                 work_dir,
                 structure,
                 max_items=max_items,
+                chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
                 workflow_binding=workflow_binding,
             )
         if command == "decision-reopen":

@@ -3165,6 +3165,70 @@ class TocSkillScriptTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "inventory.*changed"):
                 outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
 
+    def test_bid_outline_chapter_decisions_are_isolated_and_merge_completely(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [
+                {"number": "1", "title": "总体方案", "level": 1},
+                {"number": "1.1", "title": "实施组织", "level": 2},
+                {"number": "2", "title": "质量安全", "level": 1},
+                {"number": "2.1", "title": "质量保证", "level": 2},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chapter_catalog = decision_workflow.decision_chapters(structure)
+            chapter_dirs = {
+                item["chapter_id"]: root / item["chapter_id"]
+                for item in chapter_catalog["chapters"]
+            }
+            chapter_titles = {}
+            for chapter_id, chapter_dir in chapter_dirs.items():
+                chapter_dir.mkdir()
+                while True:
+                    batch = decision_workflow.next_decision_batch(
+                        chapter_dir,
+                        structure,
+                        chapter_id=chapter_id,
+                    )
+                    if batch["complete"]:
+                        break
+                    chapter_titles[chapter_id] = tuple(item["title"] for item in batch["items"])
+                    decision_workflow.submit_decision_batch(
+                        chapter_dir,
+                        structure,
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板专家经验仍适用。",
+                                }
+                                for item in batch["items"]
+                            ],
+                            "additions": [],
+                        },
+                    )
+
+            merged = decision_workflow.merge_chapter_decisions(
+                root,
+                structure,
+                chapter_dirs,
+            )
+            state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(chapter_catalog["chapter_count"], 2)
+        self.assertEqual(set(chapter_titles.values()), {
+            ("总体方案", "实施组织"),
+            ("质量安全", "质量保证"),
+        })
+        self.assertTrue(merged["complete"])
+        self.assertEqual(merged["decided_count"], 4)
+        self.assertEqual(len(state["template_decisions"]), 4)
+
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
         decision_workflow = load_outline_script("run_from_manifest").decision_workflow
         structure = {
@@ -4840,6 +4904,12 @@ class TocSkillScriptTests(unittest.TestCase):
                 manifest_path,
                 [section_id, "--cursor", first_page["next_cursor"], "--max-chars", "200"],
             )
+            review_headings = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--review", "--cursor", "0", "--page-size", "1"],
+            )
 
         self.assertEqual(section_id, "TEN-1:S0001")
         self.assertEqual(first_page["section"]["title"], "1 总体技术要求")
@@ -4847,6 +4917,8 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIn("投标人应提交场址安全适应性专题报告。", [item["text"] for item in combined])
         self.assertNotIn("2 供货范围", [item["text"] for item in combined])
         self.assertTrue(second_page["complete"])
+        self.assertTrue(review_headings["review"])
+        self.assertGreater(review_headings["returned_heading_count"], 0)
 
     def test_bid_outline_search_locates_full_text_without_marking_evidence_as_read(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

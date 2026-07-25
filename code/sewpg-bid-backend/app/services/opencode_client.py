@@ -34,8 +34,13 @@ class OpencodeClient:
         provider_id: str | None = None,
         model_id: str | None = None,
         timeout_ms: int | float | None = None,
+        model_config: dict[str, Any] | None = None,
     ) -> None:
-        config = system_settings_service.get_opencode_model_config_sync()
+        config = (
+            model_config
+            if model_config is not None
+            else system_settings_service.get_opencode_model_config_sync()
+        )
         self.base_url = str(base_url or config.get("opencodeBaseUrl") or settings.opencode_base_url).rstrip("/")
         self.provider_id = str(provider_id or config.get("providerId") or settings.opencode_provider_id)
         self.model_id = str(model_id or config.get("modelId") or config.get("model") or settings.opencode_model_id)
@@ -151,6 +156,48 @@ class OpencodeClient:
         return {
             "summary": result.get("summary"),
             "nodes": result.get("nodes"),
+        }
+
+    def run_outline_decision_session(
+        self,
+        prompt_text: str,
+        *,
+        session_title: str,
+        completion_validator: Callable[[], dict[str, Any]],
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """运行一个独立章节决策会话，最终结果以持久化状态为准。"""
+        session = self.create_session(session_title)
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                    "sessionPhase": "chapter_decision",
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback or (lambda _details: None),
+            early_tool_command="",
+            assistant_stop_validator=completion_validator,
+        )
+        info = response.get("info") if isinstance(response.get("info"), dict) else {}
+        if info.get("error"):
+            raise RuntimeError(self._format_response_error(info["error"]))
+        state = response.get("_assistantStopValidation")
+        if not isinstance(state, dict):
+            state = completion_validator()
+        if not bool(state.get("complete")):
+            raise RuntimeError(f"S2 章节决策会话未完成：{session_title}")
+        return {
+            "sessionId": session_id,
+            "state": state,
+            "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
     def generate_outline_with_trace(
@@ -954,6 +1001,22 @@ class OpencodeClient:
                 messages = self.list_session_messages(session_id)
                 self._raise_session_error_if_present(session_id, messages)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+                if (
+                    tool_output
+                    and early_tool_command == "s2outline-finalize"
+                    and terminal_validator is not None
+                ):
+                    self._stop_s2_outline_session_after_finalize(
+                        session_id,
+                        finished=finished,
+                    )
+                    return self._s2_terminal_validator_response(
+                        session_id=session_id,
+                        messages=messages,
+                        terminal_validator=terminal_validator,
+                        stream_callback=stream_callback,
+                        elapsed_seconds=time.monotonic() - progress_started_at,
+                    )
                 if tool_output and not (
                     early_tool_command == "s2outline-finalize" and terminal_validator is not None
                 ):
@@ -1464,6 +1527,15 @@ class OpencodeClient:
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+            if tool_output and terminal_validator is not None:
+                self._stop_s2_outline_session_after_finalize(session_id)
+                return self._s2_terminal_validator_response(
+                    session_id=session_id,
+                    messages=messages,
+                    terminal_validator=terminal_validator,
+                    stream_callback=stream_callback,
+                    elapsed_seconds=time.monotonic() - progress_started_at,
+                )
             if tool_output and terminal_validator is None:
                 self._stop_s2_outline_session_after_finalize(session_id)
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -1887,6 +1959,47 @@ class OpencodeClient:
         if not OpencodeClient._s2_outline_finalize_output_is_terminal(output):
             raise RuntimeError("Opencode 已停止，但技术标目录 finalize 校验未返回 finalized。")
         return output
+
+    def _s2_terminal_validator_response(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        terminal_validator: Callable[[], dict[str, Any]],
+        stream_callback: Callable[[dict[str, Any]], None] | None,
+        elapsed_seconds: float,
+    ) -> dict[str, Any]:
+        validated_output = self._run_s2_terminal_validator(terminal_validator)
+        snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+        trace_parts = list(snapshot.get("parts") or [])
+        trace_parts.append(
+            {
+                "type": "text",
+                "text": "s2outline finalize 已完成，后端已停止会话并通过终态校验。",
+            }
+        )
+        response = self._tool_output_response(
+            session_id=session_id,
+            output=validated_output,
+            trace_parts=trace_parts,
+        )
+        completion_source = "s2outline-terminal-validator"
+        response["_completionSource"] = completion_source
+        if stream_callback is not None:
+            stream_callback(
+                {
+                    "status": "received",
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                    "receivedAt": response["_traceReceivedAt"],
+                    "parts": self._normalize_output_parts(trace_parts),
+                    "earlyCompletion": True,
+                    "completionSource": completion_source,
+                    "elapsedSeconds": max(0, int(elapsed_seconds)),
+                }
+            )
+        return response
 
     @staticmethod
     def _session_polling_idle_timeout(early_tool_command: str = "") -> float:

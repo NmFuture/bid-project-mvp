@@ -22,7 +22,7 @@ s2outline prepare <manifest>
 
 ```bash
 s2outline template-headings <manifest> [--cursor 0] [--page-size 40]
-s2outline headings <manifest> [--cursor 0] [--page-size 40]
+s2outline headings <manifest> [--cursor 0] [--page-size 40] [--review]
 ```
 
 两个命令都按 `next_cursor` 只向后分页，直到 `complete=true`；成功读取过的 cursor 不再重复。先完整掌握模板一至三级目录，再掌握整本招标文件结构，后续每章不再读取全量目录。完整模板用于识别跨章等价节点，不能把后续已有节点重复建议增加。
@@ -108,7 +108,7 @@ s2outline appendix-decision-batch <manifest> '<batch-json>'
 
 ## 5. 全局查漏
 
-全部章节和附表完成后，只做一次全局复核：
+全部章节和附表完成后，只做一次全局复核。此时使用 `headings --review` 从 cursor 0 开始按 `next_cursor` 重新分页读取完整招标目录；`--review` 只提供复核视图，不重置首次阅读状态：
 
 1. 从招标侧检查遗漏：逐项重扫完整招标目录，使用 `section` 详读疑似缺项，不能只抽查少数自选关键词。查找模板未覆盖的独立响应、评分点、承诺、报告、计算书、清单和交付物。
 2. 从模板侧检查不适用、重复或可合并节点，并复核是否存在无独立成章价值、归属不合理的内容。
