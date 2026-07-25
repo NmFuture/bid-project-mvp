@@ -49,10 +49,10 @@ class ProjectMaterialScopeRouteTests(unittest.TestCase):
             [
                 "技术标/标准文件",
                 "技术标/客户定制/华能集团",
-                "技术标/项目定制/MAT-HN-001",
+                "技术标/项目定制/华能项目素材范围验证",
             ],
         )
-        self.assertEqual(payload["path"], "技术标/项目定制/MAT-HN-001")
+        self.assertEqual(payload["path"], "技术标/项目定制/华能项目素材范围验证")
         self.assertEqual([item["key"] for item in payload["readableScopes"]], ["standard", "customer", "project"])
         self.assertEqual(payload["identity"]["customerId"], "CUST-HUANENG")
         self.assertEqual(payload["identity"]["projectId"], "MAT-HN-001")
