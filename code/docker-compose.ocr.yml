@@ -35,7 +35,9 @@ services:
     environment:
       HF_HOME: /root/.cache/huggingface
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      NVIDIA_VISIBLE_DEVICES: ${OCR_GPU_DEVICE_ID:-0}
+      CUDA_VISIBLE_DEVICES: "0"
       VLLM_USE_MODELSCOPE: ${VLLM_USE_MODELSCOPE:-false}
     ports:
       - "${OCR_HOST_PORT:-8000}:8000"
@@ -49,7 +51,7 @@ services:
           devices:
             - driver: nvidia
               device_ids:
-                - "${OCR_GPU_DEVICE_ID:-1}"
+                - "${OCR_GPU_DEVICE_ID:-0}"
               capabilities: [gpu]
     ipc: host
     shm_size: ${OCR_SHM_SIZE:-8g}

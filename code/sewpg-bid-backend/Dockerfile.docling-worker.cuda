@@ -1,0 +1,43 @@
+FROM python:3.12-slim
+
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PYTORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu130
+ARG HF_ENDPOINT=https://hf-mirror.com
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10 \
+    HF_ENDPOINT=${HF_ENDPOINT} \
+    HF_HUB_DISABLE_XET=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    BID_DOCLING_ARTIFACTS_PATH=/opt/docling-models \
+    DOCLING_DEVICE=cuda
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-docling-lock.txt requirements-docling-worker.txt requirements-torch-cuda.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow \
+    && pip install --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt \
+    && pip install --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt \
+    && pip check \
+    && python -c "import torch; assert torch.version.cuda == '13.0', f'expected CUDA 13.0 torch, got {torch.version.cuda}'"
+
+COPY scripts/download_docling_models.py ./scripts/download_docling_models.py
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    python scripts/download_docling_models.py /opt/docling-models --quiet
+
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+COPY app ./app
+
+CMD ["python", "-m", "app.workers.docling_worker"]
