@@ -35,6 +35,27 @@ def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
 
 
+def evidence_search_text(record: dict[str, Any]) -> str:
+    rows = [row for row in record.get("rows") or [] if isinstance(row, dict)]
+    if rows:
+        candidate_rows = rows[1:] if len(rows) > 1 else rows
+        cells = [cell for row in candidate_rows for cell in row.get("cells") or []]
+    else:
+        cells = list(record.get("cells") or [])
+
+    meaningful = [
+        clean_text(cell)
+        for cell in cells
+        if re.search(r"[A-Za-z\u4e00-\u9fff]", clean_text(cell))
+    ]
+    preferred = [value for value in meaningful if 2 <= len(value) <= 80]
+    if preferred:
+        return max(preferred, key=len)
+    if meaningful:
+        return min(meaningful, key=len)
+    return clean_text(record.get("text"))
+
+
 def _payload_digest(payload: Any) -> str:
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1418,18 +1439,24 @@ def search_tender(
     }
 
 
+def controlled_tender_basis(work_dir: Path, evidence_id: str) -> dict[str, str]:
+    evidence_id = clean_text(evidence_id)
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    _, record = _find_evidence(chunks, evidence_id)
+    return {
+        "evidence_id": evidence_id,
+        "file_id": clean_text(record.get("file_id")),
+        "search_text": evidence_search_text(record),
+    }
+
+
 def resolve_tender_basis(work_dir: Path, evidence_id: str) -> dict[str, str]:
     chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
     access = _load_evidence_access(work_dir, chunks)
     evidence_id = clean_text(evidence_id)
     if evidence_id not in set(access.get("evidence_ids") or []):
         raise SystemExit(f"evidenceId 尚未通过受控阅读返回: {evidence_id}")
-    _, record = _find_evidence(chunks, evidence_id)
-    return {
-        "evidence_id": evidence_id,
-        "file_id": clean_text(record.get("file_id")),
-        "search_text": clean_text(record.get("text")),
-    }
+    return controlled_tender_basis(work_dir, evidence_id)
 
 
 def _table_is_fully_read(chunk: dict[str, Any], state_entry: dict[str, Any]) -> bool:

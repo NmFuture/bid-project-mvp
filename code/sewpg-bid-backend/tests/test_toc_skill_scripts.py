@@ -4981,6 +4981,73 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(basis["file_id"], "TEN-1")
         self.assertEqual(basis["search_text"], "投标人必须提交海上运输安全专项方案。")
 
+    def test_bid_outline_table_evidence_uses_meaningful_cell_text_for_location(self) -> None:
+        review_workflow = load_outline_script("review_workflow")
+
+        self.assertEqual(
+            review_workflow.evidence_search_text(
+                {"cells": ["2", "抗低温", "√"], "text": "2 | 抗低温 | √"}
+            ),
+            "抗低温",
+        )
+        self.assertEqual(
+            review_workflow.evidence_search_text(
+                {
+                    "type": "table",
+                    "rows": [
+                        {"cells": ["序号", "货物名称", "品牌或制造商名称"]},
+                        {"cells": ["1", "主控系统", "自主可控品牌"]},
+                    ],
+                    "text": "序号 | 货物名称 | 品牌或制造商名称 | 1 | 主控系统 | 自主可控品牌",
+                }
+            ),
+            "自主可控品牌",
+        )
+
+    def test_bid_outline_tender_search_validation_uses_controlled_table_evidence(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+        review_workflow = load_outline_script("review_workflow")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 环境适应性", style="Heading 1")
+            table = tender_doc.add_table(rows=2, cols=3)
+            for column, value in enumerate(["序号", "要求", "响应"]):
+                table.cell(0, column).text = value
+            for column, value in enumerate(["2", "抗低温", "√"]):
+                table.cell(1, column).text = value
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            table_result = review_workflow.read_table(root, "TEN-1:T0001", start=1, end=2)
+            evidence_id = table_result["rows"][1]["evidence_id"]
+            basis = review_workflow.resolve_tender_basis(root, evidence_id)
+            nodes = [{"tender_basis": basis, "children": []}]
+
+            access_path = root / "tender_evidence_access.json"
+            access = json_load(access_path)
+            access["evidence_ids"] = []
+            access["events"] = []
+            access_path.write_text(json.dumps(access, ensure_ascii=False), encoding="utf-8")
+
+            outline_runner.validate_tender_search_texts(nodes, manifest, work_dir=root)
+            nodes[0]["tender_basis"] = {**basis, "search_text": "被篡改的定位文本"}
+            with self.assertRaisesRegex(SystemExit, "受控证据不一致"):
+                outline_runner.validate_tender_search_texts(nodes, manifest, work_dir=root)
+
     def test_bid_outline_headings_pages_toc_items_with_same_cursor_contract(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 

@@ -1154,7 +1154,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
 
     action_counts: Counter[str] = Counter()
     total_nodes = validate_nodes(nodes, action_counts=action_counts)
-    validate_tender_search_texts(nodes, manifest)
+    validate_tender_search_texts(nodes, manifest, work_dir=work_dir)
     validate_technical_appendix(
         nodes,
         work_dir=work_dir,
@@ -1254,18 +1254,21 @@ def validate_tender_basis(value: Any, node_path: str) -> None:
         raise SystemExit(f"{node_path}.tender_basis.search_text must be non-empty")
 
 
-def validate_tender_search_texts(nodes: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+def validate_tender_search_texts(
+    nodes: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    *,
+    work_dir: Path | None = None,
+) -> None:
     if not manifest.get("tenderFiles"):
         return
+    sources_by_id = {
+        str(source.get("id") or "").strip(): source
+        for source in tender_inputs(manifest)
+        if str(source.get("id") or "").strip()
+    }
+    controlled_work_dir = work_dir or Path(str(manifest.get("workDir") or ""))
     text_by_file_id: dict[str, list[str]] = {}
-    for source in tender_inputs(manifest):
-        file_id = str(source.get("id") or "").strip()
-        if not file_id:
-            continue
-        text_by_file_id[file_id] = [
-            normalize_space(paragraph.get("text"))
-            for paragraph in read_docx_paragraphs(Path(str(source.get("path") or "")))
-        ]
 
     def validate(items: list[dict[str, Any]], path: str) -> None:
         for index, node in enumerate(items):
@@ -1274,9 +1277,27 @@ def validate_tender_search_texts(nodes: list[dict[str, Any]], manifest: dict[str
             if isinstance(basis, dict):
                 file_id = str(basis.get("file_id") or "").strip()
                 search_text = normalize_space(basis.get("search_text"))
-                paragraphs = text_by_file_id.get(file_id)
-                if paragraphs is None:
+                evidence_id = str(basis.get("evidence_id") or "").strip()
+                if file_id not in sources_by_id:
                     raise SystemExit(f"{node_path}.tender_basis.file_id 未对应 manifest tenderFile: {file_id}")
+                if evidence_id:
+                    expected = review_workflow.controlled_tender_basis(controlled_work_dir, evidence_id)
+                    if (
+                        file_id != expected["file_id"]
+                        or search_text != normalize_space(expected["search_text"])
+                    ):
+                        raise SystemExit(
+                            f"{node_path}.tender_basis 与受控证据不一致: {evidence_id}"
+                        )
+                    validate(node.get("children") or [], f"{node_path}.children")
+                    continue
+                if file_id not in text_by_file_id:
+                    source = sources_by_id[file_id]
+                    text_by_file_id[file_id] = [
+                        normalize_space(paragraph.get("text"))
+                        for paragraph in read_docx_paragraphs(Path(str(source.get("path") or "")))
+                    ]
+                paragraphs = text_by_file_id[file_id]
                 if not any(search_text in paragraph for paragraph in paragraphs):
                     raise SystemExit(f"{node_path}.tender_basis.search_text 无法在 tenderFile 定位: {search_text}")
             validate(node.get("children") or [], f"{node_path}.children")

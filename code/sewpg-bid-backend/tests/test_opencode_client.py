@@ -1650,6 +1650,95 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(response["_completionSource"], "s2outline-terminal-validator")
         stop_session.assert_called_once_with("ses-s2-finalized")
 
+    def test_s2_outline_combined_finalize_tool_stops_before_assistant_finishes(self) -> None:
+        client = OpencodeClient()
+        finalized_payload = {
+            "schema_version": "technical-outline.v1",
+            "outputFile": "/data/documents/PRJ/toc.json",
+            "summary": {"total_nodes": 270, "workflowStage": "finalized"},
+        }
+        finalized_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-finalize", "finish": "tool-calls"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": (
+                                    "s2outline section /data/documents/PRJ/s2_input.json TEN-2:S0279 "
+                                    "--max-chars 30000 && "
+                                    "s2outline finalize /data/documents/PRJ/s2_input.json"
+                                )
+                            },
+                            "exit": 0,
+                            "output": "...output truncated...",
+                        },
+                    }
+                ],
+            }
+        ]
+
+        with (
+            patch.object(client, "list_session_messages", return_value=finalized_messages),
+            patch.object(client, "_stop_s2_outline_session_after_finalize") as stop_session,
+        ):
+            response = client._wait_for_s2_outline_finalize_after_prompt_return(
+                session_id="ses-s2-combined-finalize",
+                idle_timeout=0.01,
+                stream_callback=None,
+                terminal_validator=lambda: finalized_payload,
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s2outline-terminal-validator")
+        stop_session.assert_called_once_with("ses-s2-combined-finalize")
+
+    def test_s2_outline_terminal_validator_runs_once_per_finalize_tool_call(self) -> None:
+        client = OpencodeClient()
+        failed_finalize_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-failed-finalize", "finish": "tool-calls"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": "s2outline finalize /data/documents/PRJ/s2_input.json"
+                            },
+                            "exit": 0,
+                            "output": "evidenceId not authorized",
+                        },
+                    }
+                ],
+            }
+        ]
+        validator_calls = 0
+
+        def invalid_terminal_output() -> dict:
+            nonlocal validator_calls
+            validator_calls += 1
+            raise RuntimeError("not finalized")
+
+        with (
+            patch.object(client, "list_session_messages", return_value=failed_finalize_messages),
+            patch.object(client, "_raise_s2_outline_finalize_opencode_stalled", return_value=None),
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            response = client._wait_for_s2_outline_finalize_after_prompt_return(
+                session_id="ses-s2-failed-finalize",
+                idle_timeout=0.01,
+                stream_callback=None,
+                terminal_validator=invalid_terminal_output,
+            )
+
+        self.assertIsNone(response)
+        self.assertEqual(validator_calls, 1)
+
     def test_s2_outline_stopped_session_releases_prompt_when_terminal_validation_fails(self) -> None:
         client = OpencodeClient()
         release_worker = threading.Event()

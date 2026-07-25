@@ -910,6 +910,7 @@ class OpencodeClient:
         error_holder: dict[str, Exception] = {}
         finished = threading.Event()
         abort_sent = False
+        validated_finalize_attempts: set[str] = set()
 
         def raise_if_cancelled() -> None:
             nonlocal abort_sent
@@ -1056,6 +1057,32 @@ class OpencodeClient:
                             }
                     )
                     return early_response
+
+                finalize_candidate = self._latest_completed_s2_outline_finalize_command(messages)
+                if (
+                    early_tool_command == "s2outline-finalize"
+                    and terminal_validator is not None
+                    and finalize_candidate
+                    and finalize_candidate not in validated_finalize_attempts
+                ):
+                    validated_finalize_attempts.add(finalize_candidate)
+                    try:
+                        validated_output = self._run_s2_terminal_validator(terminal_validator)
+                    except RuntimeError:
+                        pass
+                    else:
+                        self._stop_s2_outline_session_after_finalize(
+                            session_id,
+                            finished=finished,
+                        )
+                        return self._s2_terminal_validator_response(
+                            session_id=session_id,
+                            messages=messages,
+                            terminal_validator=terminal_validator,
+                            stream_callback=stream_callback,
+                            elapsed_seconds=time.monotonic() - progress_started_at,
+                            validated_output=validated_output,
+                        )
 
             if (
                 early_tool_command == "s2outline-finalize"
@@ -1519,6 +1546,7 @@ class OpencodeClient:
             last_activity = time.monotonic()
             last_heartbeat = last_activity
         heartbeat_index = 0
+        validated_finalize_attempts: set[str] = set()
 
         while time.monotonic() < deadline:
             if cancel_check is not None and cancel_check():
@@ -1567,6 +1595,27 @@ class OpencodeClient:
                         }
                     )
                 return early_response
+            finalize_candidate = self._latest_completed_s2_outline_finalize_command(messages)
+            if (
+                terminal_validator is not None
+                and finalize_candidate
+                and finalize_candidate not in validated_finalize_attempts
+            ):
+                validated_finalize_attempts.add(finalize_candidate)
+                try:
+                    validated_output = self._run_s2_terminal_validator(terminal_validator)
+                except RuntimeError:
+                    pass
+                else:
+                    self._stop_s2_outline_session_after_finalize(session_id)
+                    return self._s2_terminal_validator_response(
+                        session_id=session_id,
+                        messages=messages,
+                        terminal_validator=terminal_validator,
+                        stream_callback=stream_callback,
+                        elapsed_seconds=time.monotonic() - progress_started_at,
+                        validated_output=validated_output,
+                    )
             if terminal_validator is not None and self._session_messages_show_assistant_stop(messages):
                 validated_output = self._run_s2_terminal_validator(terminal_validator)
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -1916,6 +1965,37 @@ class OpencodeClient:
         return ""
 
     @staticmethod
+    def _latest_completed_s2_outline_finalize_command(messages: list[dict[str, Any]]) -> str:
+        finalize_segment = re.compile(
+            r"(?:^|&&|\|\||;)\s*"
+            r"s2outline[ \t]+finalize[ \t]+/[A-Za-z0-9._/-]+"
+            r"\s*(?=$|&&|\|\||;)",
+        )
+        for message in reversed(messages):
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            for part in reversed(message.get("parts") or []):
+                if not isinstance(part, dict) or part.get("type") != "tool":
+                    continue
+                if str(part.get("tool") or "") != "bash":
+                    continue
+                state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                if state.get("status") != "completed":
+                    continue
+                metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+                exit_code = state.get("exit")
+                if exit_code is None:
+                    exit_code = metadata.get("exit")
+                if exit_code not in (None, 0):
+                    continue
+                raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+                command = str(raw_input.get("command") or "").strip()
+                if finalize_segment.search(command):
+                    message_id = str(info.get("id") or "")
+                    part_id = str(part.get("id") or "")
+                    return f"{message_id}:{part_id}:{command}"
+        return ""
+
+    @staticmethod
     def _last_tool_trace(messages: list[dict[str, Any]]) -> dict[str, Any]:
         for message in reversed(messages):
             message_info = message.get("info") if isinstance(message.get("info"), dict) else {}
@@ -1968,8 +2048,10 @@ class OpencodeClient:
         terminal_validator: Callable[[], dict[str, Any]],
         stream_callback: Callable[[dict[str, Any]], None] | None,
         elapsed_seconds: float,
+        validated_output: str | None = None,
     ) -> dict[str, Any]:
-        validated_output = self._run_s2_terminal_validator(terminal_validator)
+        if validated_output is None:
+            validated_output = self._run_s2_terminal_validator(terminal_validator)
         snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
         trace_parts = list(snapshot.get("parts") or [])
         trace_parts.append(
