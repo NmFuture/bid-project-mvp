@@ -418,10 +418,10 @@ def dispatch_command(
                 len(command_args) != 2 or command_args[0] != "--max-items"
             ):
                 raise SystemExit(
-                    "appendix-next usage: appendix-next <manifest> [--max-items 20]"
+                    "appendix-next usage: appendix-next <manifest> [--max-items 40]"
                 )
             try:
-                max_items = int(_option_value(command_args, "--max-items", "20"))
+                max_items = int(_option_value(command_args, "--max-items", "40"))
             except ValueError as exc:
                 raise SystemExit("appendix-next --max-items must be an integer") from exc
             return decision_workflow.next_appendix_batch(

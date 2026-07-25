@@ -743,11 +743,11 @@ def next_appendix_batch(
     structure: dict[str, Any],
     appendix_items: list[dict[str, Any]],
     *,
-    max_items: int = 20,
+    max_items: int = 40,
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    if max_items < 1 or max_items > 20:
-        raise SystemExit("appendix-next max_items must be between 1 and 20")
+    if max_items < 1 or max_items > 40:
+        raise SystemExit("appendix-next max_items must be between 1 and 40")
     annotated, template_items = _annotated_items(structure)
     fingerprint = annotated["input_fingerprint"]
     state = _load_state(work_dir, fingerprint, workflow_binding)
@@ -766,6 +766,7 @@ def next_appendix_batch(
     active_ids = list(active.get("appendix_ids") or [])
     submission_contract = {
         "items_must_match_batch": True,
+        "items_must_keep_returned_order": True,
         "exclude_fields": ["appendix_id", "decision", "reason"],
         "include_fields": [
             "appendix_id",
@@ -775,12 +776,15 @@ def next_appendix_batch(
             "reason",
         ],
         "include_parent_id": "必须引用本批 root_addition.node_id 或已有唯一技术附表根节点",
-        "missing_rule": "清单存在 present 候选时，source_status=missing 没有独立表格，必须 exclude",
+        "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
         "root_addition": {
             "required_when": "首次 include 且尚无唯一的技术附表根节点",
-            "fields": ["node_id", "parent_id", "number", "title", "reason"],
-            "parent_id": None,
-            "title": "技术附表",
+            "fields": ["node_id", "reason"],
+            "generated_fields": {
+                "parent_id": None,
+                "number": "附录",
+                "title": "技术附表",
+            },
         },
     }
     if active_ids:
@@ -895,13 +899,9 @@ def submit_appendix_batch(
         )
 
     inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
-    inventory_has_present = any(
-        str(item.get("source_status") or "") == "present" for item in inventory
-    )
     for index, appendix_id in enumerate(actual_ids):
         if (
-            inventory_has_present
-            and decision_values[index] == "include"
+            decision_values[index] == "include"
             and str(inventory_by_id[appendix_id].get("source_status") or "") == "missing"
         ):
             raise SystemExit(
@@ -956,21 +956,22 @@ def submit_appendix_batch(
             )
         if not isinstance(root_addition, dict):
             raise SystemExit("appendix-decision-batch root_addition must be an object")
-        root_fields = {
+        allowed_root_fields = {
             "node_id",
             "parent_id",
             "number",
             "title",
             "reason",
         }
-        missing_root_fields = root_fields - set(root_addition)
+        required_root_fields = {"node_id", "reason"}
+        missing_root_fields = required_root_fields - set(root_addition)
         if missing_root_fields:
             raise SystemExit(
                 "appendix-decision-batch root_addition."
                 + sorted(missing_root_fields)[0]
                 + " is required"
             )
-        if set(root_addition) - root_fields:
+        if set(root_addition) - allowed_root_fields:
             raise SystemExit(
                 "appendix-decision-batch root_addition has unsupported fields"
             )
@@ -978,14 +979,20 @@ def submit_appendix_batch(
             root_addition.get("node_id"),
             "appendix-decision-batch root_addition.node_id",
         )
-        root_number = _required_json_string(
-            root_addition.get("number"),
-            "appendix-decision-batch root_addition.number",
-        )
-        root_title = _required_json_string(
-            root_addition.get("title"),
-            "appendix-decision-batch root_addition.title",
-        )
+        if "number" in root_addition:
+            _required_json_string(
+                root_addition.get("number"),
+                "appendix-decision-batch root_addition.number",
+            )
+        if "title" in root_addition:
+            submitted_root_title = _required_json_string(
+                root_addition.get("title"),
+                "appendix-decision-batch root_addition.title",
+            )
+            if submitted_root_title != "技术附表":
+                raise SystemExit(
+                    "appendix-decision-batch root_addition.title must be exactly 技术附表"
+                )
         root_reason = _required_json_string(
             root_addition.get("reason"),
             "appendix-decision-batch root_addition.reason",
@@ -1002,10 +1009,6 @@ def submit_appendix_batch(
             )
         if root_addition.get("parent_id") is not None:
             raise SystemExit("appendix-decision-batch root_addition.parent_id must be null")
-        if root_addition["title"] != "技术附表":
-            raise SystemExit(
-                "appendix-decision-batch root_addition.title must be exactly 技术附表"
-        )
         valid_root_id = root_node_id
         batch_node_ids.add(root_node_id)
         new_changes.append(
@@ -1013,8 +1016,8 @@ def submit_appendix_batch(
                 "operation": "add",
                 "node_id": root_node_id,
                 "parent_id": None,
-                "number": root_number,
-                "title": root_title,
+                "number": "附录",
+                "title": "技术附表",
                 "suggestion_action": "建议增加",
                 "suggestion_reason": root_reason,
             }

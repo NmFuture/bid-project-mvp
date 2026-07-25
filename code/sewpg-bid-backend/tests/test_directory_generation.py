@@ -231,7 +231,8 @@ class DirectoryGenerationTests(unittest.TestCase):
 
     def _technical_manifest_from_prompt(self, prompt: str, kwargs: dict) -> Path:
         self.assertIn("Use the bid-tech-outline-generator skill", prompt)
-        self.assertIn("appendix-next", prompt)
+        self.assertIn("s2outline appendix-next", prompt)
+        self.assertIn("--max-items 40", prompt)
         self.assertIn("s2outline headings", prompt)
         self.assertIn("s2outline section", prompt)
         self.assertIn("review-corrections", prompt)
@@ -1019,6 +1020,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn("不要执行 `s2outline prepare`", prompt)
         self.assertIn("`template-headings`", prompt)
         self.assertIn("`decision-next`", prompt)
+        self.assertIn("outline_decision_state.json", prompt)
+        self.assertIn("outline_authoring_decisions.json", prompt)
+        self.assertIn("toc.json", prompt)
+        self.assertIn("不要直接读取或修改", prompt)
+        self.assertIn("只使用 `s2outline` 受控命令", prompt)
         self.assertNotIn("首次执行", prompt)
         self.assertLess(len(prompt), 1000)
 
@@ -2113,6 +2119,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ("附表D.7 性能及考核承诺保证表", None),
             ],
         )
+        tender_doc = Document(tender_path)
+        appendix_table = tender_doc.add_table(rows=2, cols=2)
+        appendix_table.cell(0, 0).text = "承诺事项"
+        appendix_table.cell(0, 1).text = "投标响应"
+        tender_doc.save(tender_path)
 
         with patch(
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",

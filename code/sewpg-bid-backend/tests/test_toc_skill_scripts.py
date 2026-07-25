@@ -998,6 +998,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "`additions` 即使为空也必须写 `[]`",
             "s2outline appendix-next",
             "s2outline appendix-decision-batch",
+            "--max-items 40",
+            "严格保持返回顺序",
+            "`source_status=missing` 必须 `exclude`",
             "root_addition",
             "`present`",
             "`missing`",
@@ -2970,9 +2973,9 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            for invalid_max_items in (0, 21):
+            for invalid_max_items in (0, 41):
                 with self.subTest(max_items=invalid_max_items):
-                    with self.assertRaisesRegex(SystemExit, "between 1 and 20"):
+                    with self.assertRaisesRegex(SystemExit, "between 1 and 40"):
                         outline_runner.dispatch_command(
                             "appendix-next",
                             manifest,
@@ -3005,6 +3008,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 batch["submission_contract"],
                 {
                     "items_must_match_batch": True,
+                    "items_must_keep_returned_order": True,
                     "exclude_fields": ["appendix_id", "decision", "reason"],
                     "include_fields": [
                         "appendix_id",
@@ -3014,12 +3018,15 @@ class TocSkillScriptTests(unittest.TestCase):
                         "reason",
                     ],
                     "include_parent_id": "必须引用本批 root_addition.node_id 或已有唯一技术附表根节点",
-                    "missing_rule": "清单存在 present 候选时，source_status=missing 没有独立表格，必须 exclude",
+                    "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
                     "root_addition": {
                         "required_when": "首次 include 且尚无唯一的技术附表根节点",
-                        "fields": ["node_id", "parent_id", "number", "title", "reason"],
-                        "parent_id": None,
-                        "title": "技术附表",
+                        "fields": ["node_id", "reason"],
+                        "generated_fields": {
+                            "parent_id": None,
+                            "number": "附录",
+                            "title": "技术附表",
+                        },
                     },
                 },
             )
@@ -3658,7 +3665,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 "operation": "add",
                 "node_id": "ADD-TECH-APPENDIX",
                 "parent_id": None,
-                "number": "第7章",
+                "number": "附录",
                 "title": "技术附表",
                 "suggestion_action": "建议增加",
                 "suggestion_reason": "Tender contains controlled appendices.",
@@ -3667,7 +3674,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(
             outline["nodes"][-1],
             {
-                "number": "第7章",
+                "number": "附录",
                 "title": "技术附表",
                 "suggestion_action": "建议增加",
                 "suggestion_reason": "Tender contains controlled appendices.",
@@ -3858,7 +3865,10 @@ class TocSkillScriptTests(unittest.TestCase):
                 structure,
                 {
                     "batch_token": batch["batch_token"],
-                    "root_addition": valid_root,
+                    "root_addition": {
+                        "node_id": "ADD-TECH-APPENDIX",
+                        "reason": "Required appendix root.",
+                    },
                     "items": [include_item],
                 },
                 inventory,
@@ -3867,6 +3877,12 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
         self.assertEqual(len(final_state["additions"]), 3)
+        appendix_root = next(
+            item for item in final_state["additions"] if item.get("node_id") == "ADD-TECH-APPENDIX"
+        )
+        self.assertEqual(appendix_root["parent_id"], None)
+        self.assertEqual(appendix_root["number"], "附录")
+        self.assertEqual(appendix_root["title"], "技术附表")
 
     def test_bid_outline_appendix_cli_rejects_non_string_json_fields_atomically(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

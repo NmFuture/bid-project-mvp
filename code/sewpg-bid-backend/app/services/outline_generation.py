@@ -346,9 +346,9 @@ Use the {OUTLINE_SKILL_NAME} skill.
 
 manifest：{manifest_path}
 
-不要执行 `s2outline prepare`、`template-headings`、`decision-next`、`decision-batch`、`next-batch` 或 `review-batch`，不要重新读取全量模板或决策状态文件。
+不要执行 `s2outline prepare`、`template-headings`、`decision-next`、`decision-batch`、`next-batch` 或 `review-batch`。不要直接读取或修改 `outline_decision_state.json`、`outline_authoring_decisions.json`、`toc.json` 或 Skill 脚本，只使用 `s2outline` 受控命令。
 
-从 `s2outline appendix-next` 开始，按 Skill 完成技术附表判断。随后只做一次全局复核：用 `s2outline headings --review` 按 `next_cursor` 从头分页读完整本招标目录，逐项查漏；疑似缺项必须用 `s2outline section` 详读原文，必要时用 `search` 定位后继续详读。发现遗漏或误判就用 `review-corrections` 写回并重新复核，不能只写在总结里。
+从 `s2outline appendix-next {manifest_path} --max-items 40` 开始，按 Skill 完成技术附表判断。随后只做一次全局复核：用 `s2outline headings --review` 按 `next_cursor` 从头分页读完整本招标目录，逐项查漏；疑似缺项必须用 `s2outline section` 详读原文，必要时用 `search` 定位后继续详读。发现遗漏或误判就用 `review-corrections` 写回并重新复核，不能只写在总结里。
 
 确认无问题后依次执行 `s2outline review-complete`、`s2outline decisions`、`s2outline compose` 和 `{TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}`。最后原样返回 finalize 的严格 JSON，不加 Markdown 或解释。
 """.strip()
@@ -604,7 +604,7 @@ manifest：{manifest_path}
 
 历史投标模板提供目录经验，当前招标文件提供本项目要求。完整学习模板一至三级目录，模板已有第三级目录统一进入结果供用户确认，但不预设任何模板节点必须保留。每个模板节点由 Opencode 自主选择保留或建议删除，并自主判断建议增加项；建议删除的节点仍保留供用户确认。最终目录最多三级，第四级及更深层级只作为对应第三级节点的内容参考，不把参数、条款或表格字段机械扩成目录，再结合招标文件逐项判断。
 
-严格按 Skill 执行受控流程。`prepare` 只执行一次；完成后不要再执行同功能的 `s2outline template`，不要直接读取 `template_structure.json`，模板节点只通过 `decision-next` 按章获取。招标目录必须按 `next_cursor` 分页读到 `complete=true`；每章自主使用 `s2outline section` 阅读相关章节或小节，使用 `s2outline search` 跨章节查漏并继续详读原文。每个决策单元一次提交保留、建议增加、建议删除，不做章节复核。完成全部章节和附表后只做一次全局复核；发现遗漏或误判必须用 `review-corrections` 写入目录决策，不能只记在总结或留给后续阶段。确认无问题后执行 `review-complete`、`decisions` 和 `compose`。不得编写临时脚本批量拼装判断，不得自行写入 manifest.outputFile 或决策状态文件，也不得读取决策状态文件。最后执行：
+严格按 Skill 执行受控流程。`prepare` 只执行一次；完成后不要再执行同功能的 `s2outline template`，不要直接读取 `template_structure.json`，模板节点只通过 `decision-next` 按章获取。招标目录必须按 `next_cursor` 分页读到 `complete=true`；每章自主使用 `s2outline section` 阅读相关章节或小节，使用 `s2outline search` 跨章节查漏并继续详读原文。每个决策单元一次提交保留、建议增加、建议删除，不做章节复核。完成全部章节后用 `s2outline appendix-next {manifest_path} --max-items 40` 判断附表，再只做一次全局复核；发现遗漏或误判必须用 `review-corrections` 写入目录决策，不能只记在总结或留给后续阶段。确认无问题后执行 `review-complete`、`decisions` 和 `compose`。不得编写临时脚本批量拼装判断，不得自行写入 manifest.outputFile 或决策状态文件，也不得读取决策状态文件。最后执行：
 
 首次执行 `s2outline prepare {manifest_path}` 时，Bash 必须显式设置 `timeout=300000`。若仍超时，只增大 timeout 后重试同一命令；不要检查脚本或包装器，不要绕过 `s2outline`。
 
