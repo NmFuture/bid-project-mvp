@@ -53,13 +53,27 @@ def test_prepare_migrates_legacy_project_id_folder_and_creates_appendix_folder()
     ) as create_folder, patch(
         "app.services.technical_project_material_folder.technical_material_store.raw_bootstrap_folders",
         new=AsyncMock(return_value={}),
-    ) as bootstrap:
-        result = asyncio.run(prepare_technical_project_material_folder(project))
+    ) as bootstrap, patch(
+        "app.services.technical_project_material_folder.technical_material_store.raw_batch_move_files",
+        new=AsyncMock(return_value={"succeeded": ["RAW-0001"], "failed": []}),
+    ) as move_files:
+        result = asyncio.run(
+            prepare_technical_project_material_folder(
+                project,
+                appendix_material_ids=["RAW-0001"],
+            )
+        )
 
     migrate.assert_awaited_once_with(path="技术标/项目定制/PRJ-0007", new_name="海上风电项目")
     bootstrap.assert_not_awaited()
     create_folder.assert_awaited_once_with("技术标/项目定制/海上风电项目", "附表")
+    move_files.assert_awaited_once_with(
+        file_ids=["RAW-0001"],
+        target_path="技术标/项目定制/海上风电项目/附表",
+        on_conflict="overwrite",
+    )
     assert result["appendixPath"] == "技术标/项目定制/海上风电项目/附表"
+    assert result["movedAppendixCount"] == 1
 
 
 def test_prepare_is_idempotent_when_named_folder_and_appendix_exist() -> None:
@@ -84,7 +98,10 @@ def test_prepare_is_idempotent_when_named_folder_and_appendix_exist() -> None:
     ) as create_folder, patch(
         "app.services.technical_project_material_folder.technical_material_store.raw_bootstrap_folders",
         new=AsyncMock(),
-    ) as bootstrap:
+    ) as bootstrap, patch(
+        "app.services.technical_project_material_folder.technical_material_store.raw_batch_move_files",
+        new=AsyncMock(return_value={"succeeded": [], "failed": []}),
+    ):
         asyncio.run(
             prepare_technical_project_material_folder(
                 {"id": "PRJ-0007", "bidType": "技术标", "name": "海上风电项目"}

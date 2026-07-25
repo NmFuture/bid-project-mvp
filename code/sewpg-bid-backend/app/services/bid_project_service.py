@@ -141,8 +141,31 @@ class BidProjectService:
                     for item in existing_projects
                 ):
                     raise HTTPException(status_code=409, detail="已存在相同项目，请修改项目名称。")
+                parse_result = (
+                    current_project.get("parse_result")
+                    if isinstance(current_project.get("parse_result"), dict)
+                    else {}
+                )
+                structured = (
+                    parse_result.get("structured")
+                    if isinstance(parse_result.get("structured"), dict)
+                    else {}
+                )
+                sync_state = (
+                    structured.get("technicalAppendixMaterialSync")
+                    if isinstance(structured.get("technicalAppendixMaterialSync"), dict)
+                    else {}
+                )
+                appendix_material_ids = [
+                    str(item.get("materialId") or "")
+                    for item in sync_state.get("items") or []
+                    if isinstance(item, dict) and str(item.get("materialId") or "")
+                ]
                 try:
-                    bootstrap_status = await prepare_technical_project_material_folder(candidate_project)
+                    bootstrap_status = await prepare_technical_project_material_folder(
+                        candidate_project,
+                        appendix_material_ids=appendix_material_ids,
+                    )
                 except PeripheralError as exc:
                     raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
             else:

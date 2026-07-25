@@ -555,6 +555,32 @@ class TechnicalMaterialStore:
             on_conflict=on_conflict,
         )))
 
+    async def raw_batch_move_files(
+        self,
+        *,
+        file_ids: list[str],
+        target_path: str,
+        on_conflict: str = "",
+    ) -> dict[str, Any]:
+        normalized_target = self.ensure_write_path(target_path, "目标目录")
+        succeeded: list[str] = []
+        failed: list[dict[str, str]] = []
+        for file_id in dict.fromkeys(str(item or "").strip() for item in file_ids):
+            if not file_id:
+                continue
+            try:
+                await material_store.raw_move_file(
+                    file_id=file_id,
+                    target_path=normalized_target,
+                    bid_type=TECHNICAL_BID_TYPE,
+                    on_conflict=on_conflict,
+                )
+                succeeded.append(file_id)
+            except PeripheralError as exc:
+                failed.append({"fileId": file_id, "message": exc.detail})
+        await self._refresh_index({})
+        return {"succeeded": succeeded, "failed": failed, "targetPath": normalized_target}
+
     async def raw_move_folder(self, *, source_path: str, target_parent_path: str) -> dict[str, Any]:
         normalized_source = self.ensure_path(source_path, "源目录")
         normalized_target_parent = self.ensure_parent_path(target_parent_path, "目标父级目录")

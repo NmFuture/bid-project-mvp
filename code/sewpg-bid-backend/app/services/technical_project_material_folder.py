@@ -36,7 +36,11 @@ def _walk_tree(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-async def prepare_technical_project_material_folder(project: dict[str, Any]) -> dict[str, Any]:
+async def prepare_technical_project_material_folder(
+    project: dict[str, Any],
+    *,
+    appendix_material_ids: list[str] | None = None,
+) -> dict[str, Any]:
     """按项目名称准备项目目录，并保留稳定项目 ID 作为目录归属标识。"""
 
     project_name = _project_folder_name(project)
@@ -92,9 +96,24 @@ async def prepare_technical_project_material_folder(project: dict[str, Any]) -> 
             if exc.code != "RAW_FOLDER_EXISTS":
                 raise
 
+    move_result = await technical_material_store.raw_batch_move_files(
+        file_ids=appendix_material_ids or [],
+        target_path=appendix_path,
+        on_conflict="overwrite",
+    )
+    failed_moves = [item for item in move_result.get("failed") or [] if isinstance(item, dict)]
+    if failed_moves:
+        raise PeripheralError(
+            500,
+            f"附表目录迁移失败，共 {len(failed_moves)} 个文件未迁移。",
+            "TECHNICAL_APPENDIX_FOLDER_MIGRATION_FAILED",
+            {"failed": failed_moves},
+        )
+
     return {
         "status": "ok",
         "projectId": material_project_id,
         "path": target_path,
         "appendixPath": appendix_path,
+        "movedAppendixCount": len(move_result.get("succeeded") or []),
     }
