@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -302,6 +303,80 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
     appendices = result["parseResult"]["structured"]["appendices"]
     assert [item["selectedForMaterial"] for item in appendices] == [False, True]
     assert result["selectedCount"] == 1
+    persist_state.assert_called_once_with(project)
+
+
+def test_refresh_technical_parse_result_preserves_appendix_runtime_state(tmp_path: Path) -> None:
+    from app.services.bid_parse_service import BidParseService
+
+    structured_path = tmp_path / "s1_structured_result.json"
+    structured_path.write_text(
+        json.dumps(
+            {
+                "items": [],
+                "structured": {
+                    "appendices": [
+                        {"id": "APPX-A", "title": "附表A（原始解析）"},
+                        {"id": "APPX-B", "title": "附表B（原始解析）"},
+                        {"id": "APPX-C", "title": "附表C（原始解析）"},
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    project = {
+        "id": "PRJ-TECH-001",
+        "bidType": "技术标",
+        "parse_result": {
+            "status": "completed",
+            "items": [],
+            "structured": {
+                "appendices": [
+                    {
+                        "id": "APPX-A",
+                        "title": "附表A",
+                        "selectedForMaterial": True,
+                        "assetMaterialId": "RAW-A",
+                        "assetSyncStatus": "synced",
+                    },
+                    {"id": "APPX-B", "title": "附表B", "selectedForMaterial": False},
+                ],
+                "technicalAppendixMaterialSync": {
+                    "schemaVersion": "technical-appendix-material-sync-v1",
+                    "items": [{"appendixId": "APPX-A", "materialId": "RAW-A"}],
+                    "pendingDeleteIds": [],
+                },
+            },
+        },
+        "parse_storage": {"structuredResultPath": str(structured_path)},
+    }
+
+    class _TechnicalProjectService:
+        bid_type = "技术标"
+
+        @staticmethod
+        def ensure_project(_project_id: str) -> dict[str, object]:
+            return project
+
+    service = BidParseService(_TechnicalProjectService(), "/api/technical")
+    with patch.object(service, "require_project_for_update", return_value=project), patch(
+        "app.services.bid_parse_service._materialize_technical_evidence_refs",
+        side_effect=lambda structured, **_kwargs: structured,
+    ), patch("app.services.bid_parse_service.persist_workspace_project_state") as persist_state:
+        refreshed = service._refresh_technical_parse_result_from_structured_file(project["id"])
+
+    appendices = refreshed["structured"]["appendices"]
+    assert appendices[0]["title"] == "附表A（原始解析）"
+    assert appendices[0]["selectedForMaterial"] is True
+    assert appendices[0]["assetMaterialId"] == "RAW-A"
+    assert appendices[0]["assetSyncStatus"] == "synced"
+    assert appendices[1]["selectedForMaterial"] is False
+    assert appendices[2]["selectedForMaterial"] is True
+    assert refreshed["structured"]["technicalAppendixMaterialSync"]["items"] == [
+        {"appendixId": "APPX-A", "materialId": "RAW-A"}
+    ]
     persist_state.assert_called_once_with(project)
 
 

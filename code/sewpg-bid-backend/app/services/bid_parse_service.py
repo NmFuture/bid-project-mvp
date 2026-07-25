@@ -1543,6 +1543,47 @@ def _merge_technical_evidence_refs(existing_refs: Any, records: list[dict[str, A
     return merged
 
 
+_TECHNICAL_APPENDIX_RUNTIME_FIELDS = (
+    "selectedForMaterial",
+    "assetMaterialId",
+    "assetSyncStatus",
+)
+
+
+def _merge_technical_appendix_runtime_state(
+    structured: dict[str, Any],
+    current_structured: dict[str, Any],
+) -> dict[str, Any]:
+    """原始解析文件不承载审核后的附表选择，刷新时必须保留运行态字段。"""
+
+    merged = copy.deepcopy(structured)
+    current_appendices = (
+        current_structured.get("appendices")
+        if isinstance(current_structured.get("appendices"), list)
+        else []
+    )
+    current_by_id = {
+        str(item.get("id") or ""): item
+        for item in current_appendices
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    appendices = merged.get("appendices") if isinstance(merged.get("appendices"), list) else []
+    for appendix in appendices:
+        if not isinstance(appendix, dict):
+            continue
+        current = current_by_id.get(str(appendix.get("id") or ""))
+        if current is not None:
+            for field in _TECHNICAL_APPENDIX_RUNTIME_FIELDS:
+                if field in current:
+                    appendix[field] = copy.deepcopy(current[field])
+        appendix.setdefault("selectedForMaterial", True)
+
+    sync_state = current_structured.get("technicalAppendixMaterialSync")
+    if isinstance(sync_state, dict):
+        merged["technicalAppendixMaterialSync"] = copy.deepcopy(sync_state)
+    return merged
+
+
 def _technical_source_text(parts: list[str]) -> str:
     return " / ".join(part for part in parts if str(part or "").strip())
 
@@ -1803,6 +1844,12 @@ class BidParseService:
 
         items, structured = loaded
         structured = _materialize_technical_evidence_refs(structured, structured_path=structured_path)
+        current_structured = (
+            parse_result.get("structured")
+            if isinstance(parse_result.get("structured"), dict)
+            else {}
+        )
+        structured = _merge_technical_appendix_runtime_state(structured, current_structured)
         interpretation = structured.get("technicalInterpretation") if isinstance(structured, dict) else {}
         materialized_items = interpretation.get("items") if isinstance(interpretation, dict) else None
         if isinstance(materialized_items, list):
