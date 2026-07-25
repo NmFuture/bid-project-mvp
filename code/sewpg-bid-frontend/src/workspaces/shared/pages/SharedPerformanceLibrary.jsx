@@ -472,6 +472,41 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
     })
   }
 
+  const openCreateDialog = (categoryId, categoryName) => {
+    if (!categoryId) return
+    setEditTarget({ categoryId, categoryName })
+    setEditForm({
+      projectName: '',
+      customerName: '',
+      partnerName: '',
+      turbineModel: '',
+      contractQuantity: '',
+      trialOperationQuantity: '',
+      commissionedCapacityMw: '',
+      deliveryOrOperationTime: '',
+      contractYear: '',
+      deliveryYear: '',
+      operationYear: '',
+      contactInfo: '',
+    })
+  }
+
+  const deleteItem = async (row) => {
+    if (!row?.id || !row?.categoryId) return
+    if (!window.confirm(`确认删除业绩明细：${row.projectName || row.id}？\n删除后其项目合同附件也会一并删除。`)) return
+    try {
+      const result = await performanceAPI.deleteItem(row.categoryId, row.id)
+      showToast(result?.message || '业绩明细已删除')
+      await loadItems()
+      if (detail?.item?.id === row.categoryId) {
+        const payload = await performanceAPI.category(row.categoryId)
+        setDetail(payload || null)
+      }
+    } catch (error) {
+      showToast(error?.message || '业绩明细删除失败', 'error')
+    }
+  }
+
   const closeEditDialog = () => {
     if (savingEdit) return
     setEditTarget(null)
@@ -483,16 +518,23 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   }
 
   const saveItemEdit = async () => {
-    if (!editTarget?.id || !editTarget?.categoryId) return
+    if (!editTarget?.categoryId) return
+    const isCreate = !editTarget.id
     setSavingEdit(true)
     try {
-      const result = await performanceAPI.updateItem(editTarget.categoryId, editTarget.id, editForm)
-      showToast(result?.message || '业绩明细已更新')
+      const result = isCreate
+        ? await performanceAPI.createItem(editTarget.categoryId, editForm)
+        : await performanceAPI.updateItem(editTarget.categoryId, editTarget.id, editForm)
+      showToast(result?.message || (isCreate ? '业绩明细已新增' : '业绩明细已更新'))
       setEditTarget(null)
       setEditForm({})
       await loadItems()
+      if (isCreate && detail?.item?.id === editTarget.categoryId) {
+        const payload = await performanceAPI.category(editTarget.categoryId)
+        setDetail(payload || null)
+      }
     } catch (error) {
-      showToast(error?.message || '业绩明细更新失败', 'error')
+      showToast(error?.message || (isCreate ? '业绩明细新增失败' : '业绩明细更新失败'), 'error')
     } finally {
       setSavingEdit(false)
     }
@@ -699,15 +741,26 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                         ) : null}
                       </td>
                       <td className="px-3 py-2.5">
-                        <button
-                          type="button"
-                          onClick={() => openEditDialog(row)}
-                          title="编辑业绩明细"
-                          aria-label={`编辑 ${row.projectName || row.id}`}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-outline hover:bg-primary/10 hover:text-primary"
-                        >
-                          <span aria-hidden="true" className="material-symbols-outlined text-[16px]">edit</span>
-                        </button>
+                        <div className="flex flex-col items-start gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openEditDialog(row)}
+                            title="编辑业绩明细"
+                            aria-label={`编辑 ${row.projectName || row.id}`}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-outline hover:bg-primary/10 hover:text-primary"
+                          >
+                            <span aria-hidden="true" className="material-symbols-outlined text-[16px]">edit</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteItem(row)}
+                            title="删除业绩明细"
+                            aria-label={`删除 ${row.projectName || row.id}`}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-outline hover:bg-error/10 hover:text-error"
+                          >
+                            <span aria-hidden="true" className="material-symbols-outlined text-[16px]">delete</span>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -868,8 +921,10 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           <div className="wizard-modal-surface flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
               <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold">编辑业绩明细</h2>
-                <p className="mt-1 text-xs text-on-surface-variant">{editTarget.projectName || editTarget.id} · {editTarget.categoryName || editTarget.categoryId}</p>
+                <h2 className="truncate text-base font-semibold">{editTarget.id ? '编辑业绩明细' : '新增业绩明细'}</h2>
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  {editTarget.id ? `${editTarget.projectName || editTarget.id} · ` : ''}{editTarget.categoryName || editTarget.categoryId}
+                </p>
               </div>
               <button onClick={closeEditDialog} disabled={savingEdit} className="close-plain flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-on-surface-variant hover:text-primary disabled:opacity-50" aria-label="关闭">
                 <span className="material-symbols-outlined text-base">close</span>
@@ -915,6 +970,12 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
               <div className="flex shrink-0 items-center gap-1.5">
                 {currentDetailItem ? (
                   <>
+                    <button
+                      onClick={() => openCreateDialog(currentDetailItem.id, currentDetailItem.name)}
+                      className="rounded-md bg-primary/10 px-2.5 py-1.5 text-xs text-primary hover:bg-primary/15"
+                    >
+                      新增明细
+                    </button>
                     <button
                       onClick={() => toggleCategoryStatus(currentDetailItem)}
                       className={`rounded-md px-2.5 py-1.5 text-xs ${currentDetailItem.status === 'disabled' ? 'bg-secondary-container text-on-secondary-container hover:bg-secondary-container/80' : 'bg-error-container/70 text-error ring-1 ring-error/25 hover:bg-error-container'}`}

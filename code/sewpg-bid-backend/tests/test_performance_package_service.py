@@ -945,3 +945,167 @@ class PerformanceItemUpdateTests(unittest.IsolatedAsyncioTestCase):
                 await service.update_item("PERCAT-0001", "PERITEM-9999", {"partnerName": "新合作方"})
         self.assertEqual(context.exception.status_code, 404)
         self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_NOT_FOUND")
+
+
+class PerformanceItemCreateTests(unittest.IsolatedAsyncioTestCase):
+    def _created_row(self, **overrides) -> dict:
+        row = {
+            "id": 7,
+            "category_id": 1,
+            "row_index": 4,
+            "project_name": "新项目",
+            "customer_name": "",
+            "partner_name": "",
+            "turbine_model": "EW6.25-202",
+            "turbine_models": ["EW6.25-202"],
+            "contract_quantity": "",
+            "trial_operation_quantity": "",
+            "commissioned_capacity_mw": "",
+            "delivery_or_operation_time": "",
+            "contract_year": 2022,
+            "delivery_year": 2021,
+            "operation_year": None,
+            "time_facts": {},
+            "contact_info": "",
+            "row_values": {},
+            "created_at": None,
+            "updated_at": None,
+        }
+        row.update(overrides)
+        return row
+
+    async def test_create_item_inserts_with_derived_payloads(self) -> None:
+        service = PerformancePackageService()
+        expected_row_values = {
+            "项目名称": "新项目",
+            "型号": "EW6.25-202",
+            "合同时间": "2022年",
+            "交货时间": "2021年",
+        }
+        expected_time_facts = {
+            "contractTimeRaw": "2022年",
+            "deliveryTimeRaw": "2021年",
+            "operationTimeRaw": "",
+            "deliveryOrOperationTimeRaw": "2021年",
+            "contractYear": 2022,
+            "deliveryYear": 2021,
+            "operationYear": None,
+            "years": [2022, 2021],
+        }
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(row={"id": 1}),
+                _FakePerformanceResult(scalar=4),
+                _FakePerformanceResult(row=self._created_row()),
+                _FakePerformanceResult(),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            result = await service.create_item(
+                "PERCAT-0001",
+                {
+                    "projectName": " 新项目 ",
+                    "turbineModel": "EW6.25-202",
+                    "contractYear": "2022年",
+                    "deliveryYear": 2021,
+                },
+            )
+
+        self.assertIn("FROM performance_categories", session.statements[0])
+        self.assertIn("MAX(row_index)", session.statements[1])
+        self.assertIn("INSERT INTO performance_items", session.statements[2])
+        self.assertIn("RETURNING *", session.statements[2])
+        self.assertIn("UPDATE performance_categories SET updated_at = NOW()", session.statements[3])
+        insert_params = session.params[2]
+        self.assertEqual(insert_params["category_id"], 1)
+        self.assertEqual(insert_params["row_index"], 4)
+        self.assertEqual(insert_params["project_name"], "新项目")
+        self.assertEqual(insert_params["turbine_model"], "EW6.25-202")
+        self.assertEqual(insert_params["contract_year"], 2022)
+        self.assertEqual(insert_params["delivery_year"], 2021)
+        self.assertIsNone(insert_params["operation_year"])
+        self.assertEqual(json.loads(insert_params["turbine_models"]), ["EW6.25-202"])
+        self.assertEqual(json.loads(insert_params["row_values"]), expected_row_values)
+        self.assertEqual(json.loads(insert_params["time_facts"]), expected_time_facts)
+        self.assertTrue(session.committed)
+        self.assertEqual(result["message"], "业绩明细已新增")
+        self.assertEqual(result["item"]["id"], "PERITEM-0007")
+        self.assertEqual(result["item"]["rowIndex"], 4)
+        self.assertEqual(result["item"]["projectName"], "新项目")
+
+    async def test_create_item_rejects_unknown_fields(self) -> None:
+        service = PerformancePackageService()
+        with self.assertRaises(PeripheralError) as context:
+            await service.create_item("PERCAT-0001", {"status": "enabled"})
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_FIELDS_INVALID")
+
+    async def test_create_item_rejects_empty_content(self) -> None:
+        service = PerformancePackageService()
+        with self.assertRaises(PeripheralError) as context:
+            await service.create_item("PERCAT-0001", {})
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_CREATE_EMPTY")
+
+    async def test_create_item_rejects_invalid_year(self) -> None:
+        service = PerformancePackageService()
+        with self.assertRaises(PeripheralError) as context:
+            await service.create_item("PERCAT-0001", {"contractYear": "abc"})
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_YEAR_INVALID")
+
+    async def test_create_item_raises_not_found_for_missing_category(self) -> None:
+        service = PerformancePackageService()
+        session = _FakePerformanceSession(results=[_FakePerformanceResult(row=None)])
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ):
+            with self.assertRaises(PeripheralError) as context:
+                await service.create_item("PERCAT-9999", {"projectName": "新项目"})
+        self.assertEqual(context.exception.status_code, 404)
+        self.assertEqual(context.exception.code, "PERFORMANCE_CATEGORY_NOT_FOUND")
+
+
+class PerformanceItemDeleteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_item_removes_row_attachments_and_minio_objects(self) -> None:
+        service = PerformancePackageService()
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(rows=[{"minio_bucket": "mat-bucket", "minio_key": "perf/item-2.docx"}]),
+                _FakePerformanceResult(row={"id": 2}),
+                _FakePerformanceResult(),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ), patch("app.services.performance_package_service.minio_client") as mock_minio:
+            result = await service.delete_item("PERCAT-0001", "PERITEM-0002")
+
+        self.assertIn("DELETE FROM performance_item_attachments", session.statements[0])
+        self.assertIn("RETURNING minio_bucket, minio_key", session.statements[0])
+        self.assertIn("DELETE FROM performance_items", session.statements[1])
+        self.assertIn("UPDATE performance_categories SET updated_at = NOW()", session.statements[2])
+        self.assertEqual(session.params[0], {"item_id": 2, "category_id": 1})
+        mock_minio.remove_object.assert_called_once_with("mat-bucket", "perf/item-2.docx")
+        self.assertTrue(session.committed)
+        self.assertEqual(result["message"], "业绩明细已删除")
+        self.assertEqual(result["id"], "PERITEM-0002")
+
+    async def test_delete_item_raises_not_found_for_missing_row(self) -> None:
+        service = PerformancePackageService()
+        session = _FakePerformanceSession(
+            results=[
+                _FakePerformanceResult(rows=[]),
+                _FakePerformanceResult(row=None),
+            ]
+        )
+        with patch("app.services.performance_package_service.async_session", return_value=session), patch(
+            "app.services.performance_package_service.ensure_material_runtime_tables", new=AsyncMock()
+        ), patch("app.services.performance_package_service.minio_client") as mock_minio:
+            with self.assertRaises(PeripheralError) as context:
+                await service.delete_item("PERCAT-0001", "PERITEM-9999")
+        self.assertEqual(context.exception.status_code, 404)
+        self.assertEqual(context.exception.code, "PERFORMANCE_ITEM_NOT_FOUND")
+        mock_minio.remove_object.assert_not_called()
