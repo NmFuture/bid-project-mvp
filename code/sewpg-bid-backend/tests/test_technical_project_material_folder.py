@@ -90,6 +90,9 @@ def test_prepare_is_idempotent_when_named_folder_and_appendix_exist() -> None:
         "app.services.technical_project_material_folder.technical_material_store.raw_tree",
         new=raw_tree,
     ), patch(
+        "app.services.technical_project_material_folder.technical_material_store.raw_project_folder_owner",
+        new=AsyncMock(return_value="PRJ-0007"),
+    ), patch(
         "app.services.technical_project_material_folder.technical_material_store.raw_migrate_project_folder",
         new=AsyncMock(),
     ) as migrate, patch(
@@ -125,6 +128,9 @@ def test_prepare_rejects_named_folder_owned_by_another_project() -> None:
     with patch(
         "app.services.technical_project_material_folder.technical_material_store.raw_tree",
         new=AsyncMock(return_value=_tree(foreign_node)),
+    ), patch(
+        "app.services.technical_project_material_folder.technical_material_store.raw_project_folder_owner",
+        new=AsyncMock(return_value="PRJ-0008"),
     ), pytest.raises(PeripheralError) as exc_info:
         asyncio.run(
             prepare_technical_project_material_folder(

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.models import async_session
-from app.models.materials import WikiAttachment
+from app.models.materials import RawFolder, WikiAttachment
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.business_material_splitter import (
     confirm_business_material_split,
@@ -153,6 +153,18 @@ class TechnicalMaterialStore:
 
     async def raw_tree(self) -> dict[str, Any]:
         return self._with_urls(_technical_tree(await material_store.raw_tree(bid_type=TECHNICAL_BID_TYPE)))
+
+    async def raw_project_folder_owner(self, path: str) -> str:
+        normalized = self.ensure_path(path, "项目素材目录")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) != 3 or parts[:2] != [TECHNICAL_BID_TYPE, "项目定制"]:
+            raise PeripheralError(400, "只能查询技术标项目定制目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
+        async with async_session() as session:
+            result = await session.execute(select(RawFolder.project_id).where(RawFolder.path == normalized))
+            project_id = result.scalar_one_or_none()
+        if project_id is None:
+            raise PeripheralError(404, "项目素材目录不存在。", "RAW_FOLDER_NOT_FOUND")
+        return str(project_id or "").strip()
 
     async def raw_files(
         self,

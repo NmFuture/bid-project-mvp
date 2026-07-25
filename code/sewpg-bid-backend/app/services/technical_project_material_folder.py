@@ -64,12 +64,14 @@ async def prepare_technical_project_material_folder(
         None,
     )
 
-    if target_node is not None and str(target_node.get("projectId") or "") != material_project_id:
-        raise PeripheralError(
-            409,
-            "已存在相同项目，请修改项目名称。",
-            "PROJECT_NAME_DUPLICATE",
-        )
+    if target_node is not None:
+        target_owner = await technical_material_store.raw_project_folder_owner(target_path)
+        if target_owner != material_project_id:
+            raise PeripheralError(
+                409,
+                "已存在相同项目，请修改项目名称。",
+                "PROJECT_NAME_DUPLICATE",
+            )
 
     if owned_node is not None and str(owned_node.get("path") or "") != target_path:
         if target_node is not None:
