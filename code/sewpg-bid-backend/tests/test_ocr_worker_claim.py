@@ -158,5 +158,30 @@ class OcrWorkerConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service._worker_tasks, [])
 
 
+class OcrWorkerLifecycleTests(unittest.TestCase):
+    def test_worker_resources_are_recreated_across_event_loops(self) -> None:
+        service = OcrService()
+        generations: list[tuple[asyncio.Event, asyncio.Semaphore]] = []
+
+        async def run_generation() -> None:
+            with patch.object(
+                service,
+                "_process_one_pending_task",
+                new=AsyncMock(return_value=False),
+            ):
+                await service.start_worker()
+                await asyncio.sleep(0.01)
+                self.assertTrue(all(not task.done() for task in service._worker_tasks))
+                generations.append((service._shutdown_event, service._ocr_semaphore))
+                await service.stop_worker()
+                self.assertEqual(service._worker_tasks, [])
+
+        asyncio.run(run_generation())
+        asyncio.run(run_generation())
+
+        self.assertIsNot(generations[0][0], generations[1][0])
+        self.assertIsNot(generations[0][1], generations[1][1])
+
+
 if __name__ == "__main__":
     unittest.main()

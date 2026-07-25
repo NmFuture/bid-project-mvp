@@ -117,25 +117,36 @@ class OcrService:
 
     async def start_worker(self) -> None:
         """启动后台 OCR worker（幂等），并发数 = _OCR_MAX_CONCURRENT。"""
-        self._worker_tasks = [task for task in self._worker_tasks if not task.done()]
-        if not self._worker_tasks:
-            self._shutdown_event.clear()
-            self._worker_tasks = [
-                asyncio.create_task(self._ocr_worker_loop())
-                for _ in range(_OCR_MAX_CONCURRENT)
-            ]
+        completed_tasks = [task for task in self._worker_tasks if task.done()]
+        for task in completed_tasks:
+            if not task.cancelled():
+                task.exception()
+
+        active_tasks = [task for task in self._worker_tasks if not task.done()]
+        if active_tasks:
+            self._worker_tasks = active_tasks
+            return
+
+        # asyncio 同步原语会绑定首次使用它们的 event loop；每代 worker 必须独立创建。
+        self._shutdown_event = asyncio.Event()
+        self._ocr_semaphore = asyncio.Semaphore(_OCR_MAX_CONCURRENT)
+        self._worker_tasks = [
+            asyncio.create_task(self._ocr_worker_loop())
+            for _ in range(_OCR_MAX_CONCURRENT)
+        ]
 
     async def stop_worker(self) -> None:
         """优雅停止后台 OCR worker。"""
         self._shutdown_event.set()
-        tasks = [task for task in self._worker_tasks if not task.done()]
-        if tasks:
-            _done, pending = await asyncio.wait(tasks, timeout=10.0)
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-        self._worker_tasks = []
+        tasks = list(self._worker_tasks)
+        try:
+            if tasks:
+                _done, pending = await asyncio.wait(tasks, timeout=10.0)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._worker_tasks = []
 
     async def _ocr_worker_loop(self) -> None:
         while not self._shutdown_event.is_set():
@@ -483,6 +494,7 @@ class OcrService:
             )
             session.add(task)
             await session.commit()
+            pending_payload = task.to_dict(candidates=[])
 
         await self.start_worker()
 
@@ -503,7 +515,7 @@ class OcrService:
                 "ocrStatus": "pending",
             },
         )
-        return await self.detail(project_id, task_id)
+        return pending_payload
 
     async def _ocr_image(self, content: bytes, mime_type: str, config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         data_url = f"data:{mime_type or 'image/png'};base64,{base64.b64encode(content).decode('ascii')}"
