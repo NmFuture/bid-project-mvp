@@ -268,6 +268,11 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
     )
     customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "").strip()
     project_id = str(identity.get("projectId") or identity.get("bidProjectId") or project.get("id") or "").strip()
+    project_folder_name = (
+        str(project.get("name") or "").strip()
+        if bid_type == TECHNICAL_BID_TYPE
+        else project_id
+    )
     standard_root = material_scope_root_name(bid_type, "standard")
     customer_root = material_scope_root_name(bid_type, "customer")
     project_root = material_scope_root_name(bid_type, "project")
@@ -292,13 +297,13 @@ def build_project_material_scope(project: dict[str, Any]) -> dict[str, Any]:
                 "identityMatchedBy": "customer",
             }
         )
-    if project_id:
+    if project_id and project_folder_name:
         scopes.append(
             {
                 "key": "project",
                 "label": project_root,
                 "materialTier": "project",
-                "path": f"{bid_type}/{project_root}/{project_id}",
+                "path": f"{bid_type}/{project_root}/{project_folder_name}",
                 "projectId": project_id,
                 "projectCode": str(identity.get("projectCode") or ""),
                 "projectName": str(identity.get("projectName") or ""),

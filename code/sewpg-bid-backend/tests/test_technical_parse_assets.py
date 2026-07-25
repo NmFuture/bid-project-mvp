@@ -43,7 +43,7 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
                 {
                     "id": "RAW-TECH-001",
                     "name": "待填写-附表A.1 投标机型总方案信息表.docx",
-                    "folderPath": "技术标/项目定制/MAT-TECH-001",
+                    "folderPath": "技术标/项目定制/技术标附表入库测试/附表",
                 }
             ]
         }
@@ -66,9 +66,6 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
     }
 
     with patch(
-        "app.services.technical_parse_assets.technical_material_store.raw_bootstrap_folders",
-        new=AsyncMock(return_value={"payload": {"path": "技术标/项目定制/MAT-TECH-001"}}),
-    ) as bootstrap_folders, patch(
         "app.services.technical_parse_assets.technical_material_store.raw_upload",
         side_effect=fake_raw_upload,
     ), patch(
@@ -79,9 +76,8 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
 
     assert result["status"] == "synced"
     assert result["syncedCount"] == 1
-    bootstrap_folders.assert_awaited_once_with("MAT-TECH-001")
     assert len(upload_calls) == 1
-    assert upload_calls[0]["target_path"] == "技术标/项目定制/MAT-TECH-001"
+    assert upload_calls[0]["target_path"] == "技术标/项目定制/技术标附表入库测试/附表"
     assert upload_calls[0]["project_id"] == "MAT-TECH-001"
     assert upload_calls[0]["project_code"] == "TECH-2026-001"
     assert upload_calls[0]["material_tier"] == "project"
@@ -96,7 +92,7 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
         }
     ]
     rebuild_index.assert_awaited_once_with()
-    assert result["targetPath"] == "技术标/项目定制/MAT-TECH-001"
+    assert result["targetPath"] == "技术标/项目定制/技术标附表入库测试/附表"
 
 
 def test_sync_technical_parse_appendices_reconciles_to_latest_selection(tmp_path: Path) -> None:
@@ -695,7 +691,7 @@ def test_technical_project_confirmation_failure_does_not_persist_participate() -
     update_project.assert_not_called()
 
 
-def test_participated_project_rename_does_not_bootstrap_stable_material_folder() -> None:
+def test_participated_project_rename_migrates_material_folder() -> None:
     from app.services.bid_project_service import BidProjectService
 
     project_id = "PRJ-TECH-001"
@@ -718,14 +714,28 @@ def test_participated_project_rename_does_not_bootstrap_stable_material_folder()
     with patch.object(service, "ensure_project", return_value=runtime_project), patch(
         "app.services.bid_project_service.update_workspace_project",
         return_value=updated_project,
-    ):
+    ), patch(
+        "app.services.bid_project_service.list_workspace_projects",
+        return_value={"items": [runtime_project]},
+    ), patch(
+        "app.services.bid_project_service.prepare_technical_project_material_folder",
+        new=AsyncMock(
+            return_value={
+                "status": "ok",
+                "projectId": project_id,
+                "path": "技术标/项目定制/新项目名称",
+                "appendixPath": "技术标/项目定制/新项目名称/附表",
+            }
+        ),
+    ) as prepare_folder:
         result = asyncio.run(service.update(project_id, {"name": "新项目名称"}))
 
     bootstrap_material_folder.assert_not_awaited()
-    assert "materialFolderBootstrap" not in result
+    prepare_folder.assert_awaited_once()
+    assert result["materialFolderBootstrap"]["path"] == "技术标/项目定制/新项目名称"
 
 
-def test_technical_project_confirmation_bootstraps_stable_material_folder() -> None:
+def test_technical_project_confirmation_prepares_named_material_folder() -> None:
     from app.services.bid_project_service import BidProjectService
 
     project_id = "PRJ-TECH-001"
@@ -755,7 +765,20 @@ def test_technical_project_confirmation_bootstraps_stable_material_folder() -> N
     with patch(
         "app.services.bid_project_service.update_workspace_project",
         return_value=updated_project,
-    ), patch.object(service, "ensure_project", return_value=updated_project):
+    ), patch.object(service, "ensure_project", return_value=updated_project), patch(
+        "app.services.bid_project_service.list_workspace_projects",
+        return_value={"items": [updated_project]},
+    ), patch(
+        "app.services.bid_project_service.prepare_technical_project_material_folder",
+        new=AsyncMock(
+            return_value={
+                "status": "ok",
+                "projectId": "MAT-FINAL-001",
+                "path": "技术标/项目定制/华能100MW风电项目",
+                "appendixPath": "技术标/项目定制/华能100MW风电项目/附表",
+            }
+        ),
+    ) as prepare_folder:
         result = asyncio.run(
             service.update(
                 project_id,
@@ -767,9 +790,11 @@ def test_technical_project_confirmation_bootstraps_stable_material_folder() -> N
             )
         )
 
-    bootstrap_material_folder.assert_awaited_once_with("MAT-FINAL-001")
+    bootstrap_material_folder.assert_not_awaited()
+    prepare_folder.assert_awaited_once()
     assert result["materialFolderBootstrap"] == {
         "status": "ok",
         "projectId": "MAT-FINAL-001",
-        "path": "技术标/项目定制/MAT-FINAL-001",
+        "path": "技术标/项目定制/华能100MW风电项目",
+        "appendixPath": "技术标/项目定制/华能100MW风电项目/附表",
     }

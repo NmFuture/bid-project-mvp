@@ -12,12 +12,14 @@ from app.services.bid_project_state import update_project_state
 from app.services.business_parse_assets import BusinessParseAssetError, sync_approved_business_parse_assets
 from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
+from app.services.peripheral import PeripheralError
 from app.services.template_store import template_fallback_payload
 from app.services.technical_parse_assets import (
     TechnicalParseAssetError,
     persist_technical_parse_result,
     sync_technical_parse_appendices,
 )
+from app.services.technical_project_material_folder import prepare_technical_project_material_folder
 from app.services.workspace_project_access import (
     create_workspace_project,
     delete_workspace_project,
@@ -119,31 +121,49 @@ class BidProjectService:
                 str(current_project.get("reviewDecision") or "").strip().lower() == "participate"
                 and any(
                     field in (data or {})
-                    for field in ("materialProjectId", "materialProjectMode")
+                    for field in ("name", "materialProjectId", "materialProjectMode")
                 )
             )
         )
         if should_bootstrap:
-            material_scope = build_project_material_scope(candidate_project)
-            identity = material_scope["identity"]
-            material_project_id = str(
-                identity.get("projectId") or project_id
-            )
-            project_scope = next(
-                (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
-                {},
-            )
-            bootstrap_result = await self.bootstrap_material_folder(material_project_id)
-            bootstrap_payload = (
-                bootstrap_result.get("payload")
-                if isinstance(bootstrap_result, dict) and isinstance(bootstrap_result.get("payload"), dict)
-                else {}
-            )
-            bootstrap_status = {
-                "status": "ok",
-                "projectId": material_project_id,
-                "path": str(bootstrap_payload.get("path") or project_scope.get("path") or ""),
-            }
+            if self.bid_type == TECHNICAL_BID_TYPE:
+                project_name = str(candidate_project.get("name") or "").strip()
+                if not project_name:
+                    raise HTTPException(status_code=400, detail="请先完善项目名称。")
+                existing_projects = list_workspace_projects(
+                    bid_type=TECHNICAL_BID_TYPE,
+                    page=1,
+                    page_size=1_000_000,
+                ).get("items") or []
+                if any(
+                    str(item.get("id") or "") != project_id
+                    and str(item.get("name") or "").strip() == project_name
+                    for item in existing_projects
+                ):
+                    raise HTTPException(status_code=409, detail="已存在相同项目，请修改项目名称。")
+                try:
+                    bootstrap_status = await prepare_technical_project_material_folder(candidate_project)
+                except PeripheralError as exc:
+                    raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            else:
+                material_scope = build_project_material_scope(candidate_project)
+                identity = material_scope["identity"]
+                material_project_id = str(identity.get("projectId") or project_id)
+                project_scope = next(
+                    (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
+                    {},
+                )
+                bootstrap_result = await self.bootstrap_material_folder(material_project_id)
+                bootstrap_payload = (
+                    bootstrap_result.get("payload")
+                    if isinstance(bootstrap_result, dict) and isinstance(bootstrap_result.get("payload"), dict)
+                    else {}
+                )
+                bootstrap_status = {
+                    "status": "ok",
+                    "projectId": material_project_id,
+                    "path": str(bootstrap_payload.get("path") or project_scope.get("path") or ""),
+                }
         business_sync_status: dict[str, Any] | None = None
         if self.sync_business_parse_assets and decision == "participate":
             try:

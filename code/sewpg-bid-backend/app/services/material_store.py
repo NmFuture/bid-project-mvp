@@ -423,7 +423,14 @@ class MaterialStore:
             raw_tree=lambda: self.raw_tree(bid_type=bid_type),
         )
 
-    async def raw_rename_folder(self, path: str, new_name: str, *, bid_type: str) -> dict[str, Any]:
+    async def raw_rename_folder(
+        self,
+        path: str,
+        new_name: str,
+        *,
+        bid_type: str,
+        allow_identity_folder: bool = False,
+    ) -> dict[str, Any]:
         return await rename_raw_folder(
             path=path,
             new_name=new_name,
@@ -432,6 +439,7 @@ class MaterialStore:
             raw_object_key=raw_object_key,
             infer_material_tier_from_folder=infer_material_tier_from_raw_folder,
             raw_tree=lambda: self.raw_tree(bid_type=bid_type),
+            allow_identity_folder=allow_identity_folder,
         )
 
 

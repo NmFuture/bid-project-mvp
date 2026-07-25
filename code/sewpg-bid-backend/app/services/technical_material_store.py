@@ -285,6 +285,19 @@ class TechnicalMaterialStore:
         )
         return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
+    async def raw_migrate_project_folder(self, *, path: str, new_name: str) -> dict[str, Any]:
+        normalized = self.ensure_path(path, "旧项目素材目录")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) != 3 or parts[:2] != [TECHNICAL_BID_TYPE, "项目定制"]:
+            raise PeripheralError(400, "只能迁移技术标项目定制目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
+        payload = await material_store.raw_rename_folder(
+            normalized,
+            new_name,
+            bid_type=TECHNICAL_BID_TYPE,
+            allow_identity_folder=True,
+        )
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
+
     async def raw_cleanup_project_folder(self, path: str, *, expected_project_id: str = "") -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
         parts = [part for part in normalized.split("/") if part]

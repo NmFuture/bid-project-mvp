@@ -220,10 +220,12 @@ async def sync_technical_parse_appendices(
         (item for item in material_scope["readableScopes"] if item.get("key") == "project"),
         {},
     )
-    target_path = str(project_scope.get("path") or "").strip()
+    project_path = str(project_scope.get("path") or "").strip()
+    if not project_path:
+        raise TechnicalParseAssetError("项目名称为空，无法同步技术标附表。")
+    target_path = f"{project_path}/附表"
     uploaded_items: list[dict[str, Any]] = []
     if files:
-        await technical_material_store.raw_bootstrap_folders(material_project_id)
         result = await technical_material_store.raw_upload(
             target_path=target_path,
             project_id=material_project_id,
