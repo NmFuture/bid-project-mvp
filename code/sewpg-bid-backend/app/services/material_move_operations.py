@@ -132,6 +132,7 @@ async def move_raw_file(
         )
         await session.commit()
         # commit 后立即取一份快照作为兜底，避免二次读时被并发删除导致误报失败（L2）
+        await session.refresh(item)
         await session.refresh(item, attribute_names=["folder"])
         committed_payload = item.to_dict()
 
@@ -331,6 +332,7 @@ async def rename_raw_folder(
     raw_object_key: RawObjectKeyBuilder,
     infer_material_tier_from_folder: MaterialTierResolver,
     raw_tree: RawTreeLoader,
+    allow_identity_folder: bool = False,
 ) -> dict[str, Any]:
     """同父级重命名文件夹：复用移动的子树路径改写与级联更新，不改变父级与继承属性。"""
     folder_path = str(path or "").strip().strip("/")
@@ -341,7 +343,7 @@ async def rename_raw_folder(
         raise PeripheralError(400, "文件夹名称不能为空。", "RAW_FOLDER_NAME_REQUIRED")
     if RAW_FOLDER_NAME_ILLEGAL_CHARS.search(name):
         raise PeripheralError(400, "文件夹名称不能包含 \\ / : * ? \" < > | 字符。", "RAW_FOLDER_NAME_INVALID")
-    if is_raw_folder_rename_protected_path(folder_path):
+    if is_raw_folder_rename_protected_path(folder_path) and not allow_identity_folder:
         raise PeripheralError(400, "该基础目录不允许重命名。", "RAW_FOLDER_RENAME_PROTECTED")
 
     async with async_session() as session:
