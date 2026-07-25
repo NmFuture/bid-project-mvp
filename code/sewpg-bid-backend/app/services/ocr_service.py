@@ -6,13 +6,13 @@ import logging
 import mimetypes
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, or_, select, update
 
 from app.core.config import settings
 from app.models import async_session
@@ -38,6 +38,8 @@ _OCR_MAX_RETRIES = 2
 _OCR_WORKER_IDLE_SLEEP = 1.0
 _OCR_WAIT_POLL_INTERVAL = 0.5
 _OCR_INTERNAL_PROJECT_ID = "_internal_ocr_"
+# processing 任务锁超时（秒）：超时视为进程崩溃遗留，允许回收重领
+_OCR_LOCK_TIMEOUT_SECONDS = 600
 
 
 def _ocr_project_not_found(project_id: str) -> PeripheralError:
@@ -110,28 +112,30 @@ def _extract_chat_content(raw: dict[str, Any]) -> str:
 class OcrService:
     def __init__(self) -> None:
         self._ocr_semaphore = asyncio.Semaphore(_OCR_MAX_CONCURRENT)
-        self._worker_task: asyncio.Task[Any] | None = None
+        self._worker_tasks: list[asyncio.Task[Any]] = []
         self._shutdown_event = asyncio.Event()
 
     async def start_worker(self) -> None:
-        """启动后台 OCR worker（幂等）。"""
-        if self._worker_task is None or self._worker_task.done():
+        """启动后台 OCR worker（幂等），并发数 = _OCR_MAX_CONCURRENT。"""
+        self._worker_tasks = [task for task in self._worker_tasks if not task.done()]
+        if not self._worker_tasks:
             self._shutdown_event.clear()
-            self._worker_task = asyncio.create_task(self._ocr_worker_loop())
+            self._worker_tasks = [
+                asyncio.create_task(self._ocr_worker_loop())
+                for _ in range(_OCR_MAX_CONCURRENT)
+            ]
 
     async def stop_worker(self) -> None:
         """优雅停止后台 OCR worker。"""
         self._shutdown_event.set()
-        if self._worker_task is not None and not self._worker_task.done():
-            try:
-                await asyncio.wait_for(self._worker_task, timeout=10.0)
-            except asyncio.TimeoutError:
-                self._worker_task.cancel()
-                try:
-                    await self._worker_task
-                except asyncio.CancelledError:
-                    pass
-        self._worker_task = None
+        tasks = [task for task in self._worker_tasks if not task.done()]
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=10.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        self._worker_tasks = []
 
     async def _ocr_worker_loop(self) -> None:
         while not self._shutdown_event.is_set():
@@ -149,27 +153,40 @@ class OcrService:
                     pass
 
     async def _process_one_pending_task(self) -> bool:
-        task_id: str | None = None
+        now = datetime.now(timezone.utc)
+        lock_timeout_at = now - timedelta(seconds=_OCR_LOCK_TIMEOUT_SECONDS)
+        # 可领取条件：未锁定的 pending，或锁超时（进程崩溃遗留）的 processing
+        claimable = or_(
+            and_(OcrTask.status == "pending", OcrTask.locked_at.is_(None)),
+            and_(OcrTask.status == "processing", OcrTask.locked_at < lock_timeout_at),
+        )
         async with async_session() as session:
-            row = (
+            candidate_id = (
                 await session.execute(
-                    select(OcrTask)
-                    .where(OcrTask.status == "pending")
+                    select(OcrTask.id)
+                    .where(claimable)
                     .order_by(OcrTask.created_at)
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            if row is None:
+            if candidate_id is None:
                 return False
-            task_id = row.id
-            row.locked_at = datetime.now(timezone.utc)
+            # 单条原子条件更新完成 claim，避免多 worker/副本重复领取同一任务
+            claimed_id = (
+                await session.execute(
+                    update(OcrTask)
+                    .where(OcrTask.id == candidate_id, claimable)
+                    .values(status="processing", locked_at=now)
+                    .returning(OcrTask.id)
+                )
+            ).scalar_one_or_none()
             await session.commit()
-
-        if task_id is None:
-            return False
+            if claimed_id is None:
+                # 被其他 worker 抢走，返回 True 继续抢下一条而不空转 sleep
+                return True
 
         async with self._ocr_semaphore:
-            await self._process_task(task_id)
+            await self._process_task(claimed_id)
         return True
 
     async def _process_task(self, task_id: str) -> None:
