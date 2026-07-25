@@ -34,6 +34,7 @@ BUSINESS_OUTLINE_SKILL_NAME = "bid-business-outline-generator"
 BUSINESS_OUTLINE_SKILL_COMMAND = "business-outline"
 TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
 TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
+TECH_OUTLINE_HANDOFF_DECISION_UNITS = 1
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
@@ -103,6 +104,81 @@ def _finalize_current_technical_outline(manifest_path: Path) -> dict[str, Any]:
         return runner.finalize_manifest(manifest, manifest_path)
     except SystemExit as exc:
         raise RuntimeError(str(exc)) from exc
+
+
+def _build_outline_handoff_prompt(manifest_path: Path, handoff_index: int) -> str:
+    first_pass = handoff_index == 1
+    startup = (
+        "先执行一次 `s2outline prepare`，再将招标目录按 `next_cursor` 分页读到 complete=true。"
+        if first_pass
+        else (
+            "步骤 1 和步骤 2 已由前序会话完整完成。继续使用现有决策状态；"
+            "不要重复执行 prepare，不要执行 template-headings、headings、next-batch 或 review-batch，"
+            "也不要重新读取全量模板或招标目录。直接从 decision-next 开始当前决策单元。"
+        )
+    )
+    mandatory_start = (
+        ""
+        if first_pass
+        else (
+            "加载 Skill 后，第一条非 Skill 工具调用必须是 Bash，且 command 必须精确等于："
+            f"`s2outline decision-next {manifest_path}`。"
+            "禁止调用 Read、Glob、Grep，也不要执行 pwd、ls、cat 或搜索 manifest；"
+            "manifest 路径已经给出，不需要探路。"
+        )
+    )
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+这是 S2 技术标目录的第 {handoff_index} 个受控接力会话。
+manifest：{manifest_path}
+
+{startup}
+{mandatory_start}
+本会话只做模板正文目录的自主判断：循环调用 `decision-next`，每个决策单元都按 Skill 自主使用 `search` 和 `section` 阅读相关招标原文，再提交“保留 / 建议增加 / 建议删除”。最多完成 {TECH_OUTLINE_HANDOFF_DECISION_UNITS} 个成功提交的决策单元；不足时做到 `decision-next complete=true` 为止。
+
+本会话不得执行 appendix-next、review-complete、decisions、compose 或 finalize。到达本会话边界后立即停止，不要继续读后续章节；只返回一个简短 JSON：{{"workflowStage":"decision_checkpoint"}}。
+""".strip()
+
+
+def _technical_outline_handoff_state(
+    manifest_path: Path,
+    *,
+    previous_decided_count: int,
+) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runner = _load_technical_outline_runner()
+    try:
+        progress = runner.dispatch_command("decision-next", manifest, manifest_path, [])
+    except SystemExit as exc:
+        raise RuntimeError(str(exc)) from exc
+    decided_count = int(progress.get("decided_count") or 0)
+    complete = bool(progress.get("complete"))
+    if not complete and decided_count <= previous_decided_count:
+        raise RuntimeError(
+            "S2 目录接力会话没有提交新的目录判断，已停止以避免空转。"
+        )
+    return {
+        "complete": complete,
+        "decidedCount": decided_count,
+        "remainingCount": int(progress.get("remaining_count") or 0),
+    }
+
+
+def _build_outline_finalize_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+这是 S2 技术标目录的最终收口会话。模板正文目录的三类判断已经由前序接力会话全部完成并持久化。
+
+manifest：{manifest_path}
+
+不要执行 `s2outline prepare`、`template-headings`、`decision-next`、`decision-batch`、`next-batch` 或 `review-batch`，不要重新读取全量模板或决策状态文件。
+
+从 `s2outline appendix-next` 开始，按 Skill 完成技术附表判断。随后只做一次全局复核：用 `s2outline headings` 按 `next_cursor` 分页读完整本招标目录，逐项查漏；疑似缺项必须用 `s2outline section` 详读原文，必要时用 `search` 定位后继续详读。发现遗漏或误判就用 `review-corrections` 写回并重新复核，不能只写在总结里。
+
+确认无问题后依次执行 `s2outline review-complete`、`s2outline decisions`、`s2outline compose` 和 `{TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}`。最后原样返回 finalize 的严格 JSON，不加 Markdown 或解释。
+""".strip()
 
 
 def _is_business_bid(bid_type: Any) -> bool:
@@ -216,9 +292,20 @@ def _run_outline_skill(
     if _is_business_bid(bid_type):
         return _run_business_outline_skill(manifest_path, progress_callback=progress_callback)
 
-    prompt = _build_outline_prompt(manifest_path, bid_type)
+    prompt = _build_outline_finalize_prompt(manifest_path)
     try:
         trusted_input = _capture_trusted_technical_outline_input(manifest_path)
+        previous_decided_count = [-1]
+
+        def handoff_state(handoff_index: int) -> dict[str, Any]:
+            del handoff_index
+            state = _technical_outline_handoff_state(
+                manifest_path,
+                previous_decided_count=previous_decided_count[0],
+            )
+            previous_decided_count[0] = int(state["decidedCount"])
+            return state
+
         return _load_outline_result(
             OpencodeClient(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
                 prompt,
@@ -234,6 +321,11 @@ def _run_outline_skill(
                 ),
                 early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
                 terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
+                handoff_prompt_factory=lambda index: _build_outline_handoff_prompt(
+                    manifest_path,
+                    index,
+                ),
+                handoff_state_callback=handoff_state,
             ),
             manifest_path,
             expected_bid_type=bid_type,
@@ -303,13 +395,15 @@ def _build_outline_prompt(manifest_path: Path, bid_type: Any) -> str:
     return f"""
 Use the {skill_name} skill.
 
-生成 S2 {bid_type_text}目录。目录学习、招标新增项和适用性建议由 Opencode 按 Skill 逐项判断；不得进行粒度收敛，也不得把未判断节点自动当成必要。
+生成 S2 {bid_type_text}目录。目录学习、招标新增项和适用性建议由 Opencode 按 Skill 自主判断，不得把未判断节点自动当成必要。
 
 manifest：{manifest_path}
 
 历史投标模板提供目录经验，当前招标文件提供本项目要求。完整学习模板一至三级目录，模板已有第三级目录统一进入结果供用户确认，但不预设任何模板节点必须保留。每个模板节点由 Opencode 自主选择保留或建议删除，并自主判断建议增加项；建议删除的节点仍保留供用户确认。最终目录最多三级，第四级及更深层级只作为对应第三级节点的内容参考，不把参数、条款或表格字段机械扩成目录，再结合招标文件逐项判断。
 
-先执行 `s2outline prepare {manifest_path}` 和 `s2outline headings {manifest_path}`。有可靠目录时只读目录；无目录时按 `next_cursor` 分页；若 `requires_full_review=true`，则用 `next-batch/review-batch` 审完受控分块并重跑 headings，直到 `complete=true`。随后由 Opencode 自主选择 `s2outline next-batch`、`s2outline read`、`s2outline window`、`s2outline table`、`s2outline tables`、`s2outline review-batch` 详读重点；有可靠结构时不要求读完所有正文、表格或附表，`requirementCount` 不作为完成门禁。执行 `s2outline status {manifest_path}` 后，循环执行 `s2outline decision-next {manifest_path} --max-items 50` 和 `s2outline decision-batch {manifest_path} '<batch-json>'`。`decision-next` 会把模板目录与招标目录在同一批输入中，Opencode 必须现场对照并自主完成保留、建议增加、建议删除三类判断，不设置默认保留或默认删除；不得编写 Python、Shell、heredoc、循环或临时 JSON 文件批量拼装判断。`remaining_count=0` 后执行不带 JSON 的 `s2outline decisions {manifest_path}`，再执行 `s2outline compose {manifest_path}` 生成 `technical-outline.v1`；不得自行写入 manifest.outputFile 或决策状态文件。最后执行：
+严格按 Skill 执行受控流程。`prepare` 只执行一次；完成后不要再执行同功能的 `s2outline template`，不要直接读取 `template_structure.json`，模板节点只通过 `decision-next` 按章获取。招标目录必须按 `next_cursor` 分页读到 `complete=true`；每章自主使用 `s2outline section` 阅读相关章节或小节，使用 `s2outline search` 跨章节查漏并继续详读原文。每个决策单元一次提交保留、建议增加、建议删除，不做章节复核。完成全部章节和附表后只做一次全局复核；发现遗漏或误判必须用 `review-corrections` 写入目录决策，不能只记在总结或留给后续阶段。确认无问题后执行 `review-complete`、`decisions` 和 `compose`。不得编写临时脚本批量拼装判断，不得自行写入 manifest.outputFile 或决策状态文件，也不得读取决策状态文件。最后执行：
+
+首次执行 `s2outline prepare {manifest_path}` 时，Bash 必须显式设置 `timeout=300000`。若仍超时，只增大 timeout 后重试同一命令；不要检查脚本或包装器，不要绕过 `s2outline`。
 
 {TECH_OUTLINE_FINALIZE_COMMAND} {manifest_path}
 
@@ -559,7 +653,17 @@ def _validate_technical_compose_report(
             workspace_appendix_items = (
                 runner.review_workflow.decision_appendix_items(work_dir)
             )
-            if workspace_appendix_items != trusted_appendix_items:
+            _, trusted_appendix_digest = (
+                runner.decision_workflow._normalized_appendix_inventory(
+                    trusted_appendix_items
+                )
+            )
+            _, workspace_appendix_digest = (
+                runner.decision_workflow._normalized_appendix_inventory(
+                    workspace_appendix_items
+                )
+            )
+            if workspace_appendix_digest != trusted_appendix_digest:
                 raise RuntimeError("技术标目录工作区附表清单与后端可信快照不一致。")
             workflow_proof = runner.review_workflow.require_headings_complete(
                 work_dir,
@@ -1537,7 +1641,11 @@ def _clean_tender_basis(value: dict[str, Any] | None) -> dict[str, str] | None:
     search_text = str(value.get("search_text") or value.get("searchText") or "").strip()
     if not file_id or not search_text:
         return None
-    return {"fileId": file_id, "searchText": search_text}
+    result = {"fileId": file_id, "searchText": search_text}
+    evidence_id = str(value.get("evidence_id") or value.get("evidenceId") or "").strip()
+    if evidence_id:
+        result["evidenceId"] = evidence_id
+    return result
 
 
 def _nodes_from_toc_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

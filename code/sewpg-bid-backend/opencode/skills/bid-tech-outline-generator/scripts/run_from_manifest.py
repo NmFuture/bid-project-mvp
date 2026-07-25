@@ -6,6 +6,7 @@ import re
 import sys
 import zipfile
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -23,7 +24,10 @@ import decision_workflow
 AGENTIC_COMMANDS = {
     "prepare",
     "template",
+    "template-headings",
     "headings",
+    "search",
+    "section",
     "next",
     "next-batch",
     "read",
@@ -33,10 +37,12 @@ AGENTIC_COMMANDS = {
     "review-chunk",
     "review-batch",
     "decision-next",
-    "decision-context",
     "decision-batch",
+    "decision-reopen",
+    "review-corrections",
     "appendix-next",
     "appendix-decision-batch",
+    "review-complete",
     "decisions",
     "compose",
     "validate",
@@ -44,13 +50,15 @@ AGENTIC_COMMANDS = {
     "finalize",
 }
 NAVIGATION_COMMANDS = frozenset(
-    {"headings", "decision-next", "decision-context", "appendix-next"}
+    {"template-headings", "headings", "search", "section", "decision-next", "appendix-next"}
 )
 NAVIGATION_OUTPUT_HARD_LIMIT_BYTES = 24000
 NAVIGATION_RETRY_HINTS = {
+    "template-headings": "请减小 --page-size，并使用同一 --cursor 重试",
     "headings": "请减小 --page-size，并使用同一 --cursor 重试",
+    "search": "请减小 --max-results 或 --max-chars，并使用同一 --cursor 重试",
+    "section": "请减小 --max-chars，并使用同一 --cursor 重试",
     "decision-next": "请减小 --max-items 或 --max-chars 后重试",
-    "decision-context": "请减小 --max-chars，并使用同一 batch-token 和 --cursor 重试",
     "appendix-next": "请减小 --max-items 后重试",
 }
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
@@ -90,7 +98,7 @@ class NavigationOutputBudgetError(SystemExit):
 def _navigation_state_paths(command: str, work_dir: Path) -> tuple[Path, ...]:
     if command == "headings":
         return (work_dir / "tender_headings_state.json",)
-    if command in {"decision-next", "decision-context", "appendix-next"}:
+    if command in {"decision-next", "appendix-next"}:
         return (work_dir / decision_workflow.STATE_FILE_NAME,)
     return ()
 
@@ -166,7 +174,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-context|decision-batch|appendix-next|appendix-decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]; decision-next <manifest> [--max-items 50] [--max-chars 12000]; decision-context <manifest> <batch-token> [--cursor 0] [--max-chars 12000]; appendix-next <manifest> [--max-items 20]; appendix-decision-batch <manifest> '<batch-json>'"
+            "usage: s2outline [prepare|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|review-complete|decisions|compose|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -190,30 +198,6 @@ def _required_arg(args: list[str], index: int, label: str) -> str:
     return str(args[index]).strip()
 
 
-def _decision_context_args(args: list[str]) -> tuple[str, str, int]:
-    batch_token = _required_arg(args, 0, "decision-context batch-token")
-    values = {"--cursor": "0", "--max-chars": "12000"}
-    index = 1
-    while index < len(args):
-        option = str(args[index])
-        if option not in values:
-            raise SystemExit(
-                "decision-context only accepts --cursor and --max-chars options"
-            )
-        if index + 1 >= len(args):
-            raise SystemExit(f"decision-context {option} requires a value")
-        values[option] = str(args[index + 1])
-        index += 2
-    cursor = values["--cursor"].strip()
-    if not cursor.isdigit():
-        raise SystemExit("decision-context --cursor must be a non-negative integer")
-    try:
-        max_chars = int(values["--max-chars"])
-    except ValueError as exc:
-        raise SystemExit("decision-context --max-chars must be an integer") from exc
-    return batch_token, str(int(cursor)), max_chars
-
-
 def _requires_composed_outline(manifest: dict[str, Any]) -> bool:
     return bool(
         manifest.get("_runtimeRequireComposedOutline")
@@ -230,6 +214,58 @@ def _strict_workflow_binding(
     return review_workflow.require_headings_complete(work_dir, tender_inputs(manifest))
 
 
+def _resolve_decision_evidence(
+    work_dir: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    normalized = deepcopy(payload)
+    raw_items = normalized.get("items")
+    if not isinstance(raw_items, list):
+        raise SystemExit("decision-batch items must be a list")
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            raise SystemExit(f"decision-batch items[{index}] must be an object")
+        decision = str(item.get("decision") or "").strip()
+        if decision == "retain":
+            has_evidence = bool(str(item.get("evidence_id") or "").strip())
+            has_reason = bool(str(item.get("reason") or "").strip())
+            if has_evidence == has_reason:
+                if not has_evidence and not (work_dir / "tender_evidence_access.json").is_file():
+                    item["reason"] = "历史兼容：保留模板节点。"
+                    continue
+                raise SystemExit(
+                    f"decision-batch items[{index}] retain requires exactly one of evidence_id or reason"
+                )
+            allowed = {"target_id", "decision", "evidence_id", "reason"}
+            if set(item) - allowed:
+                raise SystemExit(f"decision-batch items[{index}] retain has unsupported fields")
+            if has_evidence:
+                item["tender_basis"] = review_workflow.resolve_tender_basis(
+                    work_dir, str(item.pop("evidence_id"))
+                )
+            continue
+        if decision == "suggest_delete":
+            if set(item) != {"target_id", "decision", "reason"}:
+                raise SystemExit(
+                    f"decision-batch items[{index}] suggest_delete accepts only reason"
+                )
+            continue
+    additions = normalized.get("additions")
+    if not isinstance(additions, list):
+        raise SystemExit("decision-batch additions must be a list")
+    if any(isinstance(item, dict) and "appendix_id" in item for item in additions):
+        raise SystemExit("技术附表必须通过 appendix-decision-batch 决策")
+    for index, addition in enumerate(additions):
+        if not isinstance(addition, dict):
+            raise SystemExit(f"decision-batch additions[{index}] must be an object")
+        evidence_id = str(addition.pop("evidence_id", "") or "").strip()
+        if not evidence_id:
+            raise SystemExit(f"decision-batch additions[{index}].evidence_id is required")
+        addition["tender_basis"] = review_workflow.resolve_tender_basis(
+            work_dir, evidence_id
+        )
+    return normalized
+
+
 def dispatch_command(
     command: str,
     manifest: dict[str, Any],
@@ -239,6 +275,18 @@ def dispatch_command(
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     if command in {"prepare", "template"}:
         return write_template_structure(manifest, manifest_path)
+    if command == "template-headings":
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        page_size = int(_option_value(command_args, "--page-size", "40"))
+        structure = load_json_dict(
+            work_dir / "template_structure.json",
+            "templateStructureFile",
+        )
+        return decision_workflow.template_headings(
+            structure,
+            cursor=cursor,
+            page_size=page_size,
+        )
     if command == "headings":
         cursor = int(_option_value(command_args, "--cursor", "0"))
         page_size = int(_option_value(command_args, "--page-size", "200"))
@@ -246,6 +294,28 @@ def dispatch_command(
             work_dir,
             cursor=cursor,
             page_size=page_size,
+        )
+    if command == "search":
+        query = _required_arg(command_args, 0, "search query")
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        max_results = int(_option_value(command_args, "--max-results", "20"))
+        max_chars = int(_option_value(command_args, "--max-chars", "8000"))
+        return review_workflow.search_tender(
+            work_dir,
+            query,
+            cursor=cursor,
+            max_results=max_results,
+            max_chars=max_chars,
+        )
+    if command == "section":
+        section_id = _required_arg(command_args, 0, "sectionId")
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        max_chars = int(_option_value(command_args, "--max-chars", "12000"))
+        return review_workflow.read_section(
+            work_dir,
+            section_id,
+            cursor=cursor,
+            max_chars=max_chars,
         )
     if command == "next":
         return review_workflow.next_review_chunk(work_dir)
@@ -322,10 +392,12 @@ def dispatch_command(
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
     if command in {
         "decision-next",
-        "decision-context",
         "decision-batch",
+        "decision-reopen",
+        "review-corrections",
         "appendix-next",
         "appendix-decision-batch",
+        "review-complete",
         "decisions",
     }:
         workflow_binding = _strict_workflow_binding(manifest, work_dir)
@@ -380,30 +452,54 @@ def dispatch_command(
         if command == "decision-next":
             try:
                 max_items = int(_option_value(command_args, "--max-items", "50"))
-                max_context_chars = int(
-                    _option_value(command_args, "--max-chars", "12000")
-                )
             except ValueError as exc:
-                raise SystemExit(
-                    "decision-next --max-items and --max-chars must be integers"
-                ) from exc
+                raise SystemExit("decision-next --max-items must be an integer") from exc
             return decision_workflow.next_decision_batch(
                 work_dir,
                 structure,
                 max_items=max_items,
-                max_context_chars=max_context_chars,
-                comparison_context=review_workflow.decision_comparison_context(work_dir),
                 workflow_binding=workflow_binding,
             )
-        if command == "decision-context":
-            batch_token, cursor, max_chars = _decision_context_args(command_args)
-            return decision_workflow.next_decision_context_page(
+        if command == "decision-reopen":
+            if len(command_args) != 1:
+                raise SystemExit("decision-reopen requires exactly one chapter_id")
+            return decision_workflow.reopen_decision_chapter(
                 work_dir,
                 structure,
-                batch_token,
-                cursor=cursor,
-                max_chars=max_chars,
-                comparison_context=review_workflow.decision_comparison_context(work_dir),
+                _required_arg(command_args, 0, "decision-reopen chapter_id"),
+                workflow_binding=workflow_binding,
+            )
+        if command == "review-corrections":
+            if len(command_args) != 1:
+                raise SystemExit("review-corrections requires exactly one JSON payload")
+            try:
+                correction_payload = json.loads(command_args[0])
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"review-corrections JSON is invalid: {exc}") from exc
+            if not isinstance(correction_payload, dict):
+                raise SystemExit("review-corrections JSON must be an object")
+            normalized_payload = _resolve_decision_evidence(work_dir, correction_payload)
+            return decision_workflow.apply_global_review_corrections(
+                work_dir,
+                structure,
+                normalized_payload,
+                appendix_items=appendix_items,
+                workflow_binding=workflow_binding,
+            )
+        if command == "review-complete":
+            if len(command_args) != 1:
+                raise SystemExit("review-complete requires exactly one JSON payload")
+            try:
+                review_payload = json.loads(command_args[0])
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"review-complete JSON is invalid: {exc}") from exc
+            if not isinstance(review_payload, dict):
+                raise SystemExit("review-complete JSON must be an object")
+            return decision_workflow.complete_global_review(
+                work_dir,
+                structure,
+                review_payload,
+                appendix_items=appendix_items,
                 workflow_binding=workflow_binding,
             )
         if command == "decisions":
@@ -414,6 +510,7 @@ def dispatch_command(
                 structure,
                 appendix_items=appendix_items,
                 workflow_binding=workflow_binding,
+                require_global_review=True,
             )
         decisions_text = _required_arg(command_args, 0, "decision batch JSON")
         try:
@@ -422,12 +519,16 @@ def dispatch_command(
             raise SystemExit(f"decision batch JSON is invalid: {exc}") from exc
         if not isinstance(decision_batch, dict):
             raise SystemExit("decision batch JSON must be an object")
+        if "additions" not in decision_batch:
+            raise SystemExit(
+                "decision-batch additions is required; use [] when there is no addition"
+            )
+        normalized_batch = _resolve_decision_evidence(work_dir, decision_batch)
         return decision_workflow.submit_decision_batch(
             work_dir,
             structure,
-            decision_batch,
+            normalized_batch,
             appendix_items=appendix_items,
-            comparison_context=review_workflow.decision_comparison_context(work_dir),
             workflow_binding=workflow_binding,
         )
     if command == "compose":
@@ -1135,8 +1236,16 @@ def validate_nodes(
 def validate_tender_basis(value: Any, node_path: str) -> None:
     if value is None:
         return
-    if not isinstance(value, dict) or set(value) != {"file_id", "search_text"}:
-        raise SystemExit(f"{node_path}.tender_basis must contain only file_id and search_text")
+    allowed_key_sets = (
+        {"file_id", "search_text"},
+        {"evidence_id", "file_id", "search_text"},
+    )
+    if not isinstance(value, dict) or set(value) not in allowed_key_sets:
+        raise SystemExit(
+            f"{node_path}.tender_basis must contain file_id/search_text and optional evidence_id"
+        )
+    if "evidence_id" in value and not str(value.get("evidence_id") or "").strip():
+        raise SystemExit(f"{node_path}.tender_basis.evidence_id must be non-empty")
     if not str(value.get("file_id") or "").strip():
         raise SystemExit(f"{node_path}.tender_basis.file_id must be non-empty")
     if not str(value.get("search_text") or "").strip():

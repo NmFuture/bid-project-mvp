@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -224,34 +224,28 @@ class DirectoryGenerationTests(unittest.TestCase):
 
     def _technical_manifest_from_prompt(self, prompt: str, kwargs: dict) -> Path:
         self.assertIn("Use the bid-tech-outline-generator skill", prompt)
-        self.assertIn("s2outline prepare", prompt)
+        self.assertIn("appendix-next", prompt)
         self.assertIn("s2outline headings", prompt)
-        self.assertIn("s2outline next-batch", prompt)
-        self.assertIn("s2outline tables", prompt)
-        self.assertIn("s2outline review-batch", prompt)
-        self.assertIn("s2outline status", prompt)
-        self.assertIn("s2outline decision-next", prompt)
-        self.assertIn("s2outline decision-batch", prompt)
-        self.assertIn("s2outline decisions", prompt)
-        self.assertIn("s2outline compose", prompt)
-        self.assertIn("自主选择", prompt)
-        self.assertIn("完整学习模板一至三级目录", prompt)
-        self.assertIn("模板已有第三级目录统一进入结果供用户确认", prompt)
-        self.assertIn("不得进行粒度收敛", prompt)
-        self.assertIn("最终目录最多三级", prompt)
-        self.assertIn("第四级及更深层级只作为对应第三级节点的内容参考", prompt)
-        self.assertIn("再结合招标文件", prompt)
-        self.assertIn("模板目录与招标目录在同一批输入中", prompt)
-        self.assertIn("不作为完成门禁", prompt)
-        self.assertIn("不得把未判断节点自动当成必要", prompt)
-        self.assertIn("remaining_count=0", prompt)
+        self.assertIn("s2outline section", prompt)
+        self.assertIn("review-corrections", prompt)
+        self.assertIn("review-complete", prompt)
+        self.assertIn("decisions", prompt)
+        self.assertIn("compose", prompt)
+        self.assertIn("不要执行 `s2outline prepare`", prompt)
+        self.assertIn("模板正文目录的三类判断已经由前序接力会话全部完成", prompt)
         self.assertIn("s2outline finalize", prompt)
         self.assertNotIn("s2toc ", prompt)
-        self.assertNotIn("粒度收敛和增删建议必须由 Opencode", prompt)
-        self.assertNotIn("required_status", prompt)
-        self.assertNotIn("source_refs", prompt)
         self.assertEqual(kwargs.get("early_tool_command"), "s2outline-finalize")
         self.assertTrue(callable(kwargs.get("terminal_validator")))
+        self.assertTrue(callable(kwargs.get("handoff_prompt_factory")))
+        self.assertTrue(callable(kwargs.get("handoff_state_callback")))
+        first_handoff_prompt = kwargs["handoff_prompt_factory"](1)
+        next_handoff_prompt = kwargs["handoff_prompt_factory"](2)
+        self.assertIn("最多完成 1 个", first_handoff_prompt)
+        self.assertIn("prepare", first_handoff_prompt)
+        self.assertIn("不要重复执行 prepare", next_handoff_prompt)
+        self.assertIn("不要执行 template-headings、headings", next_handoff_prompt)
+        self.assertIn("不得执行 appendix-next", next_handoff_prompt)
         match = re.search(r"manifest[：:]\s*(?P<path>.+)", prompt)
         self.assertIsNotNone(match)
         manifest_path = Path(str(match.group("path")).strip())
@@ -275,6 +269,23 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(len(roots), 2)
         headings = runner.dispatch_command("headings", manifest, manifest_path, [])
         self.assertTrue(headings["complete"])
+        section_id = next(
+            item["section_id"]
+            for file_item in headings["files"]
+            for item in file_item["items"]
+            if item.get("section_id")
+        )
+        section = runner.dispatch_command(
+            "section", manifest, manifest_path, [section_id]
+        )
+        evidence_id = next(
+            record["evidence_id"]
+            for record in section["records"]
+            if record.get("evidence_id")
+        )
+        appendix_candidates = runner.review_workflow.decision_appendix_items(
+            manifest_path.parent
+        )
 
         additions = []
         if first_root_title != "投标响应概述":
@@ -307,18 +318,21 @@ class DirectoryGenerationTests(unittest.TestCase):
         }
         if appendix_basis:
             appendix_addition["tender_basis"] = appendix_basis
-        additions.extend(
-            [
-                {
-                    "node_id": "ADD-MOCK-APPENDIX",
-                    "parent_id": None,
-                    "number": appendix_number,
-                    "title": "技术附表",
-                    "reason": "招标文件包含需单独确认的技术附表。",
-                },
-                appendix_addition,
-            ]
-        )
+        if not appendix_candidates:
+            additions.extend(
+                [
+                    {
+                        "node_id": "ADD-MOCK-APPENDIX",
+                        "parent_id": None,
+                        "number": appendix_number,
+                        "title": "技术附表",
+                        "reason": "招标文件包含需单独确认的技术附表。",
+                    },
+                    appendix_addition,
+                ]
+            )
+        for addition in additions:
+            addition["evidence_id"] = evidence_id
         pending_additions = additions
         while True:
             batch = runner.dispatch_command(
@@ -338,7 +352,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板中的专业目录仍适用于本项目",
+                                }
                                 for item in batch["items"]
                             ],
                             "additions": pending_additions,
@@ -348,6 +366,49 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ],
             )
             pending_additions = []
+        if appendix_candidates:
+            appendix_batch = runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": appendix_batch["batch_token"],
+                            "root_addition": {
+                                "node_id": "ADD-MOCK-APPENDIX",
+                                "parent_id": None,
+                                "number": appendix_number,
+                                "title": "技术附表",
+                                "reason": "招标文件包含需单独确认的技术附表。",
+                            },
+                            "items": [
+                                {
+                                    "appendix_id": item["appendix_id"],
+                                    "decision": "include",
+                                    "node_id": f"ADD-MOCK-APPENDIX-{index}",
+                                    "parent_id": "ADD-MOCK-APPENDIX",
+                                    "reason": "招标文件要求独立填写。",
+                                }
+                                for index, item in enumerate(
+                                    appendix_batch["items"], start=1
+                                )
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+        runner.dispatch_command("section", manifest, manifest_path, [section_id])
+        runner.dispatch_command(
+            "review-complete",
+            manifest,
+            manifest_path,
+            [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
+        )
         runner.dispatch_command("decisions", manifest, manifest_path, [])
         return runner.compose_manifest(manifest, manifest_path)
 
@@ -907,29 +968,26 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         prompt = _build_outline_prompt(Path("C:/workspace/s2_input.json"), "技术标")
 
-        self.assertIn("s2outline prepare", prompt)
-        self.assertIn("s2outline headings", prompt)
-        self.assertIn("s2outline next-batch", prompt)
-        self.assertIn("s2outline tables", prompt)
-        self.assertIn("s2outline review-batch", prompt)
-        self.assertIn("s2outline status", prompt)
-        self.assertIn("s2outline decision-next", prompt)
-        self.assertIn("s2outline decision-batch", prompt)
-        self.assertIn("s2outline decisions", prompt)
-        self.assertIn("s2outline compose", prompt)
-        self.assertIn("自主选择", prompt)
+        self.assertIn("Use the bid-tech-outline-generator skill", prompt)
+        self.assertIn("next_cursor", prompt)
+        self.assertIn("decision-next", prompt)
+        self.assertIn("review-corrections", prompt)
+        self.assertIn("review-complete", prompt)
+        self.assertIn("decisions", prompt)
+        self.assertIn("compose", prompt)
+        self.assertIn("自主判断", prompt)
         self.assertIn("完整学习模板一至三级目录", prompt)
         self.assertIn("模板已有第三级目录统一进入结果供用户确认", prompt)
-        self.assertIn("不得进行粒度收敛", prompt)
         self.assertIn("最终目录最多三级", prompt)
         self.assertIn("第四级及更深层级只作为对应第三级节点的内容参考", prompt)
         self.assertIn("再结合招标文件", prompt)
-        self.assertIn("不作为完成门禁", prompt)
         self.assertIn("不得把未判断节点自动当成必要", prompt)
-        self.assertIn("remaining_count=0", prompt)
         self.assertIn("不得自行写入", prompt)
         self.assertIn("s2outline finalize", prompt)
-        self.assertIn("technical-outline.v1", prompt)
+        self.assertIn("timeout=300000", prompt)
+        self.assertIn("不要检查脚本或包装器", prompt)
+        self.assertNotIn("--max-items 50", prompt)
+        self.assertNotIn("decision-context", prompt)
         self.assertNotIn("历史投标模板是主骨架", prompt)
         self.assertNotIn("仅因招标未提及", prompt)
         self.assertNotIn("没有不适用证据", prompt)
@@ -937,6 +995,66 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("粒度收敛和增删建议必须由 Opencode", prompt)
         self.assertNotIn("source_refs", prompt)
         self.assertLess(len(prompt), 1800)
+
+    def test_technical_outline_finalize_prompt_resumes_after_template_decisions(self) -> None:
+        from app.services.outline_generation import _build_outline_finalize_prompt
+
+        prompt = _build_outline_finalize_prompt(Path("C:/workspace/s2_input.json"))
+
+        self.assertIn("Use the bid-tech-outline-generator skill", prompt)
+        self.assertIn("appendix-next", prompt)
+        self.assertIn("s2outline headings", prompt)
+        self.assertIn("s2outline section", prompt)
+        self.assertIn("review-corrections", prompt)
+        self.assertIn("review-complete", prompt)
+        self.assertIn("s2outline decisions", prompt)
+        self.assertIn("s2outline compose", prompt)
+        self.assertIn("s2outline finalize", prompt)
+        self.assertIn("不要执行 `s2outline prepare`", prompt)
+        self.assertIn("`template-headings`", prompt)
+        self.assertIn("`decision-next`", prompt)
+        self.assertNotIn("首次执行", prompt)
+        self.assertLess(len(prompt), 1000)
+
+    def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
+        from app.services.outline_generation import (
+            _build_outline_handoff_prompt,
+            _technical_outline_handoff_state,
+        )
+
+        prompt = _build_outline_handoff_prompt(Path("C:/workspace/s2_input.json"), 1)
+        self.assertIn("最多完成 1 个", prompt)
+        resumed_prompt = _build_outline_handoff_prompt(Path("C:/workspace/s2_input.json"), 2)
+        self.assertIn("第一条非 Skill 工具调用必须是 Bash", resumed_prompt)
+        self.assertIn(
+            "s2outline decision-next C:\\workspace\\s2_input.json",
+            resumed_prompt,
+        )
+        self.assertIn("禁止调用 Read、Glob、Grep", resumed_prompt)
+
+        root = Path(self.temp_dir.name) / "handoff-no-progress"
+        root.mkdir(parents=True, exist_ok=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text(
+            json.dumps({"workDir": str(root)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        runner = MagicMock()
+        runner.dispatch_command.return_value = {
+            "complete": False,
+            "decided_count": 12,
+            "remaining_count": 20,
+        }
+
+        with patch(
+            "app.services.outline_generation._load_technical_outline_runner",
+            return_value=runner,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "没有提交新的目录判断"):
+                _technical_outline_handoff_state(
+                    manifest_path,
+                    previous_decided_count=12,
+                )
 
     def test_technical_outline_loader_does_not_trust_agent_modified_manifest_gate(self) -> None:
         from app.services.outline_generation import _load_outline_result
@@ -1038,7 +1156,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板中的专业目录仍适用于本项目",
+                                }
                                 for item in batch["items"]
                             ],
                             "additions": [],
@@ -1046,6 +1168,18 @@ class DirectoryGenerationTests(unittest.TestCase):
                         ensure_ascii=False,
                     )
                 ],
+            )
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
             )
             runner.dispatch_command("decisions", manifest, manifest_path, [])
             return runner.compose_manifest(manifest, manifest_path)
@@ -1082,7 +1216,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         def write_rebased_artifacts(_prompt: str, *args, **kwargs) -> dict:
             self._write_docx(tender, [("第一章 被篡改的招标要求", "Heading 1")])
             runner.write_template_structure(manifest, manifest_path)
-            runner.dispatch_command("headings", manifest, manifest_path, [])
+            headings = runner.dispatch_command("headings", manifest, manifest_path, [])
             batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
             runner.dispatch_command(
                 "decision-batch",
@@ -1093,7 +1227,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板中的专业目录仍适用于本项目",
+                                }
                                 for item in batch["items"]
                             ],
                             "additions": [],
@@ -1101,6 +1239,18 @@ class DirectoryGenerationTests(unittest.TestCase):
                         ensure_ascii=False,
                     )
                 ],
+            )
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
             )
             runner.dispatch_command("decisions", manifest, manifest_path, [])
             return runner.compose_manifest(manifest, manifest_path)
@@ -1167,17 +1317,6 @@ class DirectoryGenerationTests(unittest.TestCase):
                 batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
                 if batch["complete"]:
                     break
-                context_cursor = 0
-                while True:
-                    context = runner.dispatch_command(
-                        "decision-context",
-                        manifest,
-                        manifest_path,
-                        [batch["batch_token"], "--cursor", str(context_cursor)],
-                    )
-                    if context["complete"]:
-                        break
-                    context_cursor = int(context["next_cursor"])
                 runner.dispatch_command(
                     "decision-batch",
                     manifest,
@@ -1187,7 +1326,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                             {
                                 "batch_token": batch["batch_token"],
                                 "items": [
-                                    {"target_id": item["target_id"], "decision": "retain"}
+                                    {
+                                        "target_id": item["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板中的专业目录仍适用于本项目",
+                                    }
                                     for item in batch["items"]
                                 ],
                                 "additions": [],
@@ -1232,6 +1375,18 @@ class DirectoryGenerationTests(unittest.TestCase):
                         ensure_ascii=False,
                     )
                 ],
+            )
+            runner.dispatch_command(
+                "read",
+                manifest,
+                manifest_path,
+                [appendix_batch["items"][0]["evidence_id"]],
+            )
+            runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
             )
             runner.dispatch_command("decisions", manifest, manifest_path, [])
             return runner.compose_manifest(manifest, manifest_path)
@@ -1284,6 +1439,12 @@ class DirectoryGenerationTests(unittest.TestCase):
         state["headings_state_digest"] = workflow_binding["headingsStateDigest"]
         state["finalized_decisions_digest"] = ""
         state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        runner.dispatch_command(
+            "review-complete",
+            manifest,
+            manifest_path,
+            [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
+        )
         runner.dispatch_command("decisions", manifest, manifest_path, [])
         runner.compose_manifest(manifest, manifest_path)
 
@@ -1361,7 +1522,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                     "title": "叶片专题",
                     "suggestion_action": "待确认",
                     "suggestion_reason": "确认专题归属。",
-                    "tender_basis": {"file_id": "TEN-1", "search_text": "投标人应编制叶片专题。"},
+                    "tender_basis": {
+                        "evidence_id": "TEN-1:B000123",
+                        "file_id": "TEN-1",
+                        "search_text": "投标人应编制叶片专题。",
+                    },
                     "children": [],
                 }
             ]
@@ -1377,7 +1542,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                     "title": "叶片专题",
                     "suggestionAction": "待确认",
                     "suggestionReason": "确认专题归属。",
-                    "tenderBasis": {"fileId": "TEN-1", "searchText": "投标人应编制叶片专题。"},
+                    "tenderBasis": {
+                        "evidenceId": "TEN-1:B000123",
+                        "fileId": "TEN-1",
+                        "searchText": "投标人应编制叶片专题。",
+                    },
                     "children": [],
                 }
             ],
@@ -1780,7 +1949,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(appendix["children"][0]["number"], "附表D.7")
         self.assertEqual(
             appendix["children"][0]["tender_basis"],
-            {"file_id": "TEN-1", "search_text": "附表D.7 性能及考核承诺保证表"},
+            {
+                "evidence_id": "TEN-1:B000003",
+                "file_id": "TEN-1",
+                "search_text": "附表D.7 性能及考核承诺保证表",
+            },
         )
         self.assertEqual(appendix["children"][0]["children"], [])
 

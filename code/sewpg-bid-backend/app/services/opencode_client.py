@@ -160,7 +160,56 @@ class OpencodeClient:
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
         terminal_validator: Callable[[], dict[str, Any]] | None = None,
+        handoff_prompt_factory: Callable[[int], str] | None = None,
+        handoff_state_callback: Callable[[int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        handoff_session_ids: list[str] = []
+        if handoff_prompt_factory is not None or handoff_state_callback is not None:
+            if handoff_prompt_factory is None or handoff_state_callback is None:
+                raise ValueError("handoff prompt factory and state callback must be provided together")
+            for handoff_index in range(1, 257):
+                session = self.create_session(f"S2 目录决策·接力 {handoff_index}")
+                handoff_session_id = str(session.get("id") or "")
+                handoff_session_ids.append(handoff_session_id)
+                if session_ready_callback:
+                    session_ready_callback(
+                        {
+                            "sessionId": handoff_session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "sessionPhase": "decision_handoff",
+                            "sessionIndex": handoff_index,
+                        }
+                    )
+                validated_handoff_state: dict[str, Any] = {}
+
+                def validate_handoff_stop() -> dict[str, Any]:
+                    state = handoff_state_callback(handoff_index)
+                    validated_handoff_state.update(state)
+                    return state
+
+                handoff_response = self._send_prompt_with_session_polling(
+                    handoff_session_id,
+                    handoff_prompt_factory(handoff_index),
+                    stream_callback=stream_callback,
+                    early_tool_command="s2outline-decision-batch",
+                    assistant_stop_validator=validate_handoff_stop,
+                )
+                handoff_info = (
+                    handoff_response.get("info")
+                    if isinstance(handoff_response.get("info"), dict)
+                    else {}
+                )
+                if handoff_info.get("error"):
+                    raise RuntimeError(self._format_response_error(handoff_info["error"]))
+                handoff_state = validated_handoff_state or handoff_state_callback(handoff_index)
+                if not isinstance(handoff_state, dict) or "complete" not in handoff_state:
+                    raise RuntimeError("S2 目录接力状态回调未返回 complete。")
+                if bool(handoff_state["complete"]):
+                    break
+            else:
+                raise RuntimeError("S2 目录决策接力超过 256 个会话，已停止以避免无限循环。")
+
         session = self.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
@@ -169,6 +218,8 @@ class OpencodeClient:
                     "sessionId": session_id,
                     "providerId": self.provider_id,
                     "modelId": self.model_id,
+                    "sessionPhase": "finalize" if handoff_session_ids else "full",
+                    "sessionIndex": len(handoff_session_ids) + 1,
                 }
             )
         response = self._send_prompt_with_session_polling(
@@ -179,9 +230,13 @@ class OpencodeClient:
             terminal_validator=terminal_validator,
         )
         parsed = self._extract_outline_json(response)
+        output_trace = self._build_output_trace(session_id, response)
+        if handoff_session_ids:
+            output_trace["sessionIds"] = [*handoff_session_ids, session_id]
+            output_trace["handoffSessionCount"] = len(handoff_session_ids)
         return {
             **parsed,
-            "opencodeOutput": self._build_output_trace(session_id, response),
+            "opencodeOutput": output_trace,
         }
 
     def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
@@ -799,6 +854,7 @@ class OpencodeClient:
         early_tool_command: str = "",
         cancel_check: Callable[[], bool] | None = None,
         terminal_validator: Callable[[], dict[str, Any]] | None = None,
+        assistant_stop_validator: Callable[[], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if stream_callback is None and not early_tool_command:
             return self.send_prompt(session_id, prompt_text)
@@ -901,7 +957,7 @@ class OpencodeClient:
                 if tool_output and not (
                     early_tool_command == "s2outline-finalize" and terminal_validator is not None
                 ):
-                    if early_tool_command == "s2outline-finalize":
+                    if early_tool_command in {"s2outline-finalize", "s2outline-decision-batch"}:
                         self._stop_s2_outline_session_after_finalize(
                             session_id,
                             finished=finished,
@@ -937,11 +993,13 @@ class OpencodeClient:
                             }
                     )
                     return early_response
-                if (
-                    early_tool_command == "s2outline-finalize"
-                    and terminal_validator is not None
-                    and self._session_messages_show_assistant_stop(messages)
-                ):
+
+            if (
+                early_tool_command == "s2outline-finalize"
+                and terminal_validator is not None
+            ):
+                messages = self.list_session_messages(session_id)
+                if self._session_messages_show_assistant_stop(messages):
                     self._stop_s2_outline_session_after_finalize(
                         session_id,
                         finished=finished,
@@ -975,6 +1033,36 @@ class OpencodeClient:
                                 "completionSource": completion_source,
                             }
                         )
+                    return early_response
+
+            if assistant_stop_validator is not None:
+                messages = self.list_session_messages(session_id)
+                self._raise_session_error_if_present(session_id, messages)
+                if self._session_messages_show_assistant_stop(messages):
+                    self.abort_session(session_id)
+                    if not finished.wait(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
+                        raise RuntimeError(
+                            "OpenCode assistant 已完成接力会话，但消息请求未在 abort 后停止。"
+                        )
+                    validated = assistant_stop_validator()
+                    snapshot = self._get_session_output_snapshot_from_messages(
+                        session_id,
+                        messages,
+                    )
+                    trace_parts = list(snapshot.get("parts") or [])
+                    trace_parts.append(
+                        {
+                            "type": "text",
+                            "text": "OpenCode 已完成本次决策单元，后端校验持久化进度后继续下一会话。",
+                        }
+                    )
+                    early_response = self._tool_output_response(
+                        session_id=session_id,
+                        output=json.dumps(validated, ensure_ascii=False),
+                        trace_parts=trace_parts,
+                    )
+                    early_response["_completionSource"] = "assistant-stop-validator"
+                    early_response["_assistantStopValidation"] = validated
                     return early_response
 
         if early_tool_command == "s1parse-finalize":
@@ -1649,6 +1737,17 @@ class OpencodeClient:
         if not words:
             return False
         first_word = Path(words[0]).name
+        if expected == "s2outline-decision-batch":
+            if first_word == "s2outline":
+                return len(words) >= 3 and words[1] == "decision-batch"
+            if first_word == "run_from_manifest.py":
+                return len(words) >= 3 and words[1] == "decision-batch"
+            return (
+                first_word.startswith("python")
+                and len(words) >= 4
+                and Path(words[1]).name == "run_from_manifest.py"
+                and words[2] == "decision-batch"
+            )
         if expected == "s1parse-finalize":
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
         if expected == "btplnav-finalize":

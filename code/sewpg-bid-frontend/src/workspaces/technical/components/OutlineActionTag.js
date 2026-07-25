@@ -10,8 +10,9 @@ const actionClassName = (action) => {
 
 export default function OutlineActionTag({ action, basis, reason, onFocusBasis }) {
   const className = `shrink-0 rounded border px-2 py-1 text-[11px] font-semibold ${actionClassName(action)}`
+  const canFocusBasis = Boolean(basis) && (action === '必要' || action === '建议增加')
 
-  if (!basis) {
+  if (!canFocusBasis) {
     return createElement('span', { className, title: reason || '' }, action)
   }
 
