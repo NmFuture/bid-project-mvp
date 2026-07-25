@@ -132,6 +132,7 @@ async def move_raw_file(
         )
         await session.commit()
         # commit 后立即取一份快照作为兜底，避免二次读时被并发删除导致误报失败（L2）
+        await session.refresh(item)
         await session.refresh(item, attribute_names=["folder"])
         committed_payload = item.to_dict()
 
