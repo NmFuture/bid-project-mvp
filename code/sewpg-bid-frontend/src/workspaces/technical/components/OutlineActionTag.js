@@ -8,22 +8,32 @@ const actionClassName = (action) => {
   return 'border-secondary/20 bg-secondary-container text-on-secondary-container'
 }
 
+const withImmediateTooltip = (trigger, text) => {
+  if (!text) return trigger
+  return createElement('span', { className: 'group relative shrink-0' },
+    trigger,
+    createElement('span', {
+      role: 'tooltip',
+      className: 'pointer-events-none absolute right-0 top-full z-30 mt-1 hidden w-max max-w-80 whitespace-normal rounded-sm border border-outline-variant bg-surface px-2 py-1 text-xs font-normal leading-4 text-on-surface shadow-sm group-hover:block',
+    }, text))
+}
+
 export default function OutlineActionTag({ action, basis, reason, onFocusBasis }) {
   const className = `shrink-0 rounded border px-2 py-1 text-[11px] font-semibold ${actionClassName(action)}`
   const canFocusBasis = Boolean(basis) && (action === '必要' || action === '建议增加')
 
   if (!canFocusBasis) {
-    return createElement('span', { className, title: reason || '' }, action)
+    return withImmediateTooltip(createElement('span', { className }, action), reason)
   }
 
-  const title = reason ? `${reason}；点击定位招标依据` : '点击定位招标依据'
-  return createElement('button', {
+  const tooltip = reason ? `${reason}；点击定位招标依据` : '点击定位招标依据'
+  const button = createElement('button', {
     type: 'button',
     className: `${className} transition-colors hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-secondary/30`,
-    title,
     onClick: (event) => {
       event.stopPropagation()
       onFocusBasis?.(basis)
     },
   }, action)
+  return withImmediateTooltip(button, tooltip)
 }

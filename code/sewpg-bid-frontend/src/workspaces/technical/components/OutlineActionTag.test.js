@@ -14,9 +14,13 @@ test('有招标依据时将状态标签渲染为检索原文按钮', () => {
     }),
   )
 
-  assert.match(html, /^<button/)
-  assert.match(html, />必要<\/button>$/)
-  assert.match(html, /点击定位招标依据/)
+  assert.match(html, /^<span/)
+  assert.match(html, /<button[^>]*>必要<\/button>/)
+  assert.match(html, /role="tooltip"[^>]*>招标文件明确要求；点击定位招标依据<\/span>/)
+  assert.match(html, /group-hover:block/)
+  assert.match(html, /right-0/)
+  assert.doesNotMatch(html, /left-0/)
+  assert.doesNotMatch(html, /title=/)
   assert.doesNotMatch(html, /find_in_page|material-symbols-outlined/)
 })
 
@@ -31,7 +35,12 @@ test('没有招标依据时保留不可点击的状态标签', () => {
   )
 
   assert.match(html, /^<span/)
-  assert.match(html, />待确认<\/span>$/)
+  assert.match(html, /<span[^>]*>待确认<\/span>/)
+  assert.match(html, /role="tooltip"[^>]*>人工新增目录项<\/span>/)
+  assert.match(html, /group-hover:block/)
+  assert.match(html, /right-0/)
+  assert.doesNotMatch(html, /left-0/)
+  assert.doesNotMatch(html, /title=/)
   assert.doesNotMatch(html, /<button/)
 })
 
@@ -45,11 +54,14 @@ test('建议增加有招标依据时可以点击定位原文', () => {
     }),
   )
 
-  assert.match(html, /^<button/)
-  assert.match(html, />建议增加<\/button>$/)
+  assert.match(html, /^<span/)
+  assert.match(html, /<button[^>]*>建议增加<\/button>/)
+  assert.match(html, /role="tooltip"[^>]*>招标文件要求独立提交；点击定位招标依据<\/span>/)
+  assert.match(html, /group-hover:block/)
+  assert.doesNotMatch(html, /title=/)
 })
 
-test('建议删除即使误带招标依据也只显示悬浮理由', () => {
+test('建议删除仅悬停时立即显示浅色理由提示', () => {
   const html = renderToStaticMarkup(
     OutlineActionTag({
       action: '建议删除',
@@ -60,12 +72,17 @@ test('建议删除即使误带招标依据也只显示悬浮理由', () => {
   )
 
   assert.match(html, /^<span/)
-  assert.match(html, /title="与已有章节重复"/)
+  assert.match(html, /role="tooltip"[^>]*>与已有章节重复<\/span>/)
+  assert.match(html, /group-hover:block/)
+  assert.match(html, /bg-surface/)
+  assert.match(html, /text-on-surface/)
+  assert.doesNotMatch(html, /group-focus-within:block/)
   assert.doesNotMatch(html, /<button/)
+  assert.doesNotMatch(html, /title=/)
   assert.doesNotMatch(html, /点击定位招标依据/)
 })
 
-test('必要来自专家经验时只显示悬浮保留理由', () => {
+test('必要来自专家经验时仅悬停立即显示浅色理由提示', () => {
   const html = renderToStaticMarkup(
     OutlineActionTag({
       action: '必要',
@@ -76,6 +93,26 @@ test('必要来自专家经验时只显示悬浮保留理由', () => {
   )
 
   assert.match(html, /^<span/)
-  assert.match(html, /title="成熟投标方案所需的专业组织章节"/)
+  assert.match(html, /role="tooltip"[^>]*>成熟投标方案所需的专业组织章节<\/span>/)
+  assert.match(html, /group-hover:block/)
+  assert.match(html, /bg-surface/)
+  assert.match(html, /text-on-surface/)
+  assert.doesNotMatch(html, /group-focus-within:block/)
+  assert.doesNotMatch(html, /<button/)
+  assert.doesNotMatch(html, /title=/)
+})
+
+test('没有招标依据也没有理由时保持普通状态标签', () => {
+  const html = renderToStaticMarkup(
+    OutlineActionTag({
+      action: '必要',
+      basis: null,
+      reason: '',
+      onFocusBasis: () => {},
+    }),
+  )
+
+  assert.match(html, /^<span/)
+  assert.doesNotMatch(html, /<details/)
   assert.doesNotMatch(html, /<button/)
 })
