@@ -20,8 +20,10 @@ from app.services.technical_wiki_preview_prompt import (
     PREVIEW_SCHEMA_VERSION,
     build_batch_preview_prompt,
     build_evidence_segments,
+    build_preview_prompt,
     document_outline_from_profile,
     parse_batch_preview_reply,
+    parse_preview_reply,
 )
 from app.services.wiki_blueprint_common import MAX_CARD_HEADINGS, MAX_SYNC_DOCX_BYTES, extract_docx_profile
 
@@ -472,12 +474,67 @@ async def _persist_preview_payloads(payload_by_id: dict[str, dict[str, Any]]) ->
         await session.commit()
 
 
+def _completed_payload(
+    plan: dict[str, Any],
+    preview: dict[str, Any],
+    model: str,
+    *,
+    scope: str = "batch",
+) -> dict[str, Any]:
+    return {
+        **plan["base"],
+        "status": "completed",
+        "skipReason": "",
+        "retryable": False,
+        "model": model,
+        # llmScope 记录该份预览来自批量回复还是单份补打，便于回溯批量丢份的实际收敛情况。
+        "metadata": {"cleanStatus": str(plan.get("clean_status") or ""), "llmScope": scope},
+        "preview": preview,
+    }
+
+
+def _retry_single_preview(client: Any, plan: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
+    """单份补打：批量丢份或整批超时后，用单文件 prompt 重打这一份。
+
+    单份输入远小于一批，正是 `futurecode 生成超时，请缩短输入` 的对症解法。
+    返回 (preview, model, error)；成功时 error 为空。
+    """
+    from app.services.opencode_client import OpencodeClient
+
+    try:
+        prompt = build_preview_prompt(
+            str(plan.get("name") or ""),
+            str(plan.get("path") or ""),
+            str(plan.get("tier_label") or ""),
+            plan.get("profile") or {},
+        )
+        result = client.send_text_prompt("技术标素材预览（单份补打）", prompt)
+        preview = parse_preview_reply(str(result.get("reply") or ""), OpencodeClient._parse_json_payload)
+    except Exception as exc:  # noqa: BLE001 - 单份补打失败只降级这一份，不影响同批其他份
+        return None, "", str(exc)[:120]
+    if not preview:
+        return None, "", "单份回复无有效内容"
+    return preview, str(result.get("modelId") or ""), ""
+
+
 def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     from app.services.opencode_client import OpencodeClient
 
     out: dict[str, dict[str, Any]] = {}
+    if not plans:
+        return out
+
     try:
         client = OpencodeClient()
+    except Exception as exc:  # noqa: BLE001 - 客户端都建不起来，逐份补打同样无意义
+        for plan in plans:
+            out[plan["fileId"]] = _llm_failure_fallback_payload(plan, str(exc)[:200])
+        return out
+
+    previews: dict[str, Any] = {}
+    model = ""
+    batch_error = ""
+    try:
         prompt = build_batch_preview_prompt(
             [
                 {
@@ -493,25 +550,24 @@ def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, di
         result = client.send_text_prompt("技术标素材预览", prompt)
         previews = parse_batch_preview_reply(str(result.get("reply") or ""), OpencodeClient._parse_json_payload)
         model = str(result.get("modelId") or "")
-    except Exception as exc:  # noqa: BLE001
-        for plan in plans:
-            out[plan["fileId"]] = _llm_failure_fallback_payload(plan, str(exc)[:200])
-        return out
+    except Exception as exc:  # noqa: BLE001 - 整批失败仍逐份补打，不直接降级
+        batch_error = str(exc)[:200]
 
+    missing: list[dict[str, Any]] = []
     for plan in plans:
         preview = previews.get(plan["fileId"])
         if preview:
-            out[plan["fileId"]] = {
-                **plan["base"],
-                "status": "completed",
-                "skipReason": "",
-                "retryable": False,
-                "model": model,
-                "metadata": {"cleanStatus": str(plan.get("clean_status") or "")},
-                "preview": preview,
-            }
+            out[plan["fileId"]] = _completed_payload(plan, preview, model)
         else:
-            out[plan["fileId"]] = _llm_failure_fallback_payload(plan, "LLM 批量回复缺该文件或无效")
+            missing.append(plan)
+
+    for plan in missing:
+        base_reason = batch_error or "LLM 批量回复缺该文件或无效"
+        preview, single_model, error = _retry_single_preview(client, plan)
+        if preview:
+            out[plan["fileId"]] = _completed_payload(plan, preview, single_model or model, scope="single")
+        else:
+            out[plan["fileId"]] = _llm_failure_fallback_payload(plan, f"{base_reason}；单份补打失败：{error}")
     return out
 
 

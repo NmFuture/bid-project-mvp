@@ -864,6 +864,19 @@ def chapter_master_score(material: dict[str, Any], title: str, child_titles: lis
     return score
 
 
+def display_match_score(material: dict[str, Any], title: str) -> float:
+    """对外展示分（0~1），与 attach_recalled_segments 同口径。
+
+    文件名精确命中固定 0.99（自动定案同款判据 title_matches_file_name），
+    其余启发式一律封顶 0.98。供不走片段召回的整章素材（chapter_master）直接盖分：
+    前端「已就绪」只认 matchScore，缺分会一路回落到 confidence 显示成错误的低分。
+    注意不要用 chapter_master_score，那是无界的内部排序分，不外泄前端。
+    """
+    if title_matches_file_name(material, title):
+        return EXACT_MATCH_SCORE
+    return round(min(material_score(material, title), HEURISTIC_SCORE_CAP), 2)
+
+
 def pick_material(candidates: list[dict[str, Any]], title: str, *, usage: str = "section_merge") -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     materials = dedupe_materials(candidates)
     if not materials:
@@ -890,6 +903,7 @@ def pick_chapter_master_material(
     )
     selected = dict(ranked[0])
     selected["usage"] = "chapter_master"
+    selected["matchScore"] = display_match_score(selected, title)
     selected["matchReason"] = f"整章素材覆盖“{title}”及其子节。"
     alternatives = [dict(item) for item in ranked[1:]]
     return selected, alternatives
@@ -2359,6 +2373,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     )
                     matched_material = dict(accepted)
                     matched_material["usage"] = "chapter_master"
+                    matched_material["matchScore"] = display_match_score(matched_material, title)
                     matched_material["matchReason"] = f"整章素材覆盖“{title}”及其子节。"
             if matched_material:
                 coverage_role = "chapter_master"
@@ -2694,6 +2709,9 @@ def aggregate_converged_containers(plan_items: list[dict[str, Any]]) -> None:
             continue
         aggregated = dict(sample)
         aggregated["usage"] = "chapter_master"
+        if aggregated.get("matchScore") is None:
+            # 子节带来的分是对子节标题算的，这里只在缺分时兜底，不覆盖已有分。
+            aggregated["matchScore"] = display_match_score(aggregated, str(container.get("title") or ""))
         aggregated["matchReason"] = "多数子节收敛到同一素材，父级经验聚合。"
         container["matchedMaterials"] = [aggregated]
         container["coverageRole"] = "chapter_master"
@@ -2793,6 +2811,9 @@ def collapse_empirically_converged_chapters(plan_items: list[dict[str, Any]]) ->
         shared_material = dict(shared_material)
         if material_requires_fill(shared_material):
             continue
+        if shared_material.get("matchScore") is None:
+            # 同上：子节收敛上来的素材只在缺分时兜底盖分。
+            shared_material["matchScore"] = display_match_score(shared_material, str(header.get("title") or ""))
 
         header["coverageRole"] = "chapter_master"
         header["status"] = "matched"
