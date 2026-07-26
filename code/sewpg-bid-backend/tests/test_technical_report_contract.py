@@ -54,27 +54,32 @@ class TechnicalReportContractTests(unittest.TestCase):
             TECH_ASSEMBLY,
             "_run_tech_format_cleaner_step",
             namespace_overrides={
-                "TECH_FORMAT_CLEANER_SKILL_NAME": "bid-tech-format-cleaner",
-                "ASSEMBLER_SKILL_DIR": Path("assembler"),
+                "TECH_DOCUMENT_RESOURCES_DIR": Path("resources"),
                 "_prepare_tech_format_outline": lambda _toc, work: work / "outline.json",
                 "_run_local_tech_format_cleaner": lambda _manifest: (_ for _ in ()).throw(RuntimeError("offline")),
+                "finalize_merged_output": lambda _input, _output, _params: {},
+                "_warnings_from_delivery_scan": lambda _scan: [],
             },
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            output_path = root / "assembled.formatted.docx"
             result = run_cleaner(
                 project={},
                 toc_json_path=root / "toc.json",
                 assembled_path=root / "assembled.docx",
+                output_path=output_path,
+                project_params={},
                 work_dir=root,
             )
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["outputFile"], str(root / "assembled.docx"))
+        self.assertEqual(result["engine"], "python")
+        self.assertEqual(result["outputFile"], str(output_path))
         self.assertEqual(result["reportFile"], "")
-        self.assertEqual(result["summary"], {})
+        self.assertEqual(result["summary"], {"fallback": True})
         self.assertEqual(result["warnings"], [])
-        self.assertEqual(result["opencodeOutput"], {})
+        self.assertEqual(result["error"], "offline")
 
     def test_service_helpers_filter_dirty_plan_cards_and_numeric_summary(self) -> None:
         optional_helpers = ("_iter_dicts", "_safe_int")

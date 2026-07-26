@@ -5,14 +5,17 @@ import copy
 import json
 import re
 import shutil
-import subprocess
-import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.config import BASE_DIR, settings
+from app.core.config import settings
+from app.document_processing.technical_document.assembly import (
+    finalize_merged_output,
+    run_from_manifest as run_assembly_manifest,
+)
+from app.document_processing.technical_document.formatting import run_manifest as run_format_manifest
 from app.services.bid_fill_generation_state import save_fill_generation_result_state
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
@@ -36,13 +39,7 @@ from app.services.workspace_artifacts import legacy_workspace_roots, technical_w
 from app.services.wiki_export import export_wiki
 
 
-ASSEMBLER_SKILL_NAME = "bid-tech-assembler"
-ASSEMBLER_SKILL_COMMAND = "s7assemble"
-ASSEMBLER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / "bid-tech-assembler"
-ASSEMBLER_RUNNER = ASSEMBLER_SKILL_DIR / "scripts" / "run_from_manifest.py"
-TECH_FORMAT_CLEANER_SKILL_NAME = "bid-tech-format-cleaner"
-TECH_FORMAT_CLEANER_SKILL_DIR = BASE_DIR / "opencode" / "skills" / TECH_FORMAT_CLEANER_SKILL_NAME
-TECH_FORMAT_CLEANER_RUNNER = TECH_FORMAT_CLEANER_SKILL_DIR / "scripts" / "run_from_manifest.py"
+TECH_DOCUMENT_RESOURCES_DIR = Path(__file__).resolve().parents[1] / "document_processing" / "technical_document" / "resources"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
@@ -70,8 +67,6 @@ def assemble_tech_bid_for_project_with_progress(
     gap_plan_path = _prepare_gap_plan(project_id, work_dir)
     if not gap_plan_path:
         raise ValueError("请先完成素材匹配，再组装技术标正文。")
-    wiki_dir = work_dir / "wiki"
-    wiki_dir.mkdir(parents=True, exist_ok=True)
     material_library_dir = work_dir / "selected_materials"
     assembly_gap_plan_path, material_cards = _stage_selected_gap_plan_materials(
         gap_plan_path,
@@ -79,8 +74,6 @@ def assemble_tech_bid_for_project_with_progress(
     )
     assembler_owns_material_cleanup = False
     try:
-        gap_plan_card_count = 0
-        synthesized_card_count = 0
         template_file = _select_template_file(template_file_records)
         project_params = _build_project_params(project, toc_json_path)
         turbine_model = project_turbine_model(project)
@@ -90,10 +83,8 @@ def assemble_tech_bid_for_project_with_progress(
                 "inputs_ready",
                 {
                     "tocJsonPath": str(toc_json_path),
-                    "wikiCardCount": len(material_cards),
+                    "selectedMaterialCount": len(material_cards),
                     "exportedMaterialCount": len([item for item in material_cards if item.get("available")]),
-                    "synthesizedMaterialCardCount": synthesized_card_count,
-                    "gapPlanMaterialCardCount": gap_plan_card_count,
                 },
             )
 
@@ -110,13 +101,13 @@ def assemble_tech_bid_for_project_with_progress(
             "workDir": str(work_dir),
             "tocJsonPath": str(toc_json_path),
             "gapPlanPath": str(assembly_gap_plan_path),
-            "wikiDir": str(wiki_dir),
             "materialLibraryDir": str(material_library_dir),
             "templateFile": str(template_file) if template_file else "",
             "projectParamsPath": str(work_dir / "project_params.json"),
             "projectParams": project_params,
             "projectTurbineModel": turbine_model,
             "outputFile": str(output_file),
+            "finalizeOutput": False,
         }
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -168,10 +159,16 @@ def assemble_tech_bid_for_project_with_progress(
             },
         )
 
+    format_output_path = output_file
+    if assembled_path.resolve() == output_file.resolve():
+        format_output_path = work_dir / f"{output_file.stem}_formatted{output_file.suffix}"
+
     format_clean = _run_tech_format_cleaner_step(
         project=project,
         toc_json_path=toc_json_path,
         assembled_path=assembled_path,
+        output_path=format_output_path,
+        project_params=project_params,
         work_dir=work_dir,
         progress_callback=progress_callback,
     )
@@ -186,51 +183,25 @@ def assemble_tech_bid_for_project_with_progress(
     file_name = final_output_path.name
     run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
     filled_at = now_iso()
-
-    opencode_output = result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {}
-    opencode_output.update(
-        {
-            "skill": ASSEMBLER_SKILL_NAME,
-            "workDir": str(work_dir),
+    format_warnings = _normalize_warnings(format_clean.get("warnings"))
+    execution_warnings = [*assembly_warnings, *format_warnings]
+    execution_status = "completed" if format_clean.get("status") == "completed" else "completed_with_fallback"
+    execution = {
+        "engine": "python",
+        "pipeline": "technical-document-assembly-cleaning",
+        "runId": work_dir.name,
+        "stage": "completed",
+        "status": execution_status,
+        "artifacts": {
             "manifestPath": str(manifest_path),
-            "outputFile": str(final_output_path),
+            "planFile": str(plan_path),
             "rawOutputFile": str(assembled_path),
-            "assemblyReport": "",
-            "needsReview": "",
-            "summary": assembly_summary,
-            "warnings": assembly_warnings,
-            "coverage": {
-                "usedMaterialCount": coverage["fullCover"],
-                "unassembledMaterialCount": coverage["noCover"],
-            },
-            "formatClean": format_clean,
-        }
-    )
-    if not opencode_output.get("parts"):
-        opencode_output["status"] = "received"
-        opencode_output["sessionId"] = ""
-        opencode_output["providerId"] = "futurecode"
-        opencode_output["modelId"] = ASSEMBLER_SKILL_NAME
-        opencode_output["receivedAt"] = filled_at
-        opencode_output["parts"] = [
-            {
-                "type": "text",
-                "text": json.dumps(
-                    {
-                        "skill": ASSEMBLER_SKILL_NAME,
-                        "manifestPath": str(manifest_path),
-                        "outputFile": str(final_output_path),
-                        "rawOutputFile": str(assembled_path),
-                        "assemblyReport": "",
-                        "needsReview": "",
-                        "summary": assembly_summary,
-                        "warnings": assembly_warnings,
-                        "formatClean": format_clean,
-                    },
-                    ensure_ascii=False,
-                ),
-            }
-        ]
+            "outputFile": str(final_output_path),
+        },
+        "warnings": execution_warnings,
+        "error": str(format_clean.get("error") or ""),
+    }
+    opencode_output = {"execution": execution}
 
     project_for_update = require_workspace_project_for_update(
         project_id,
@@ -251,12 +222,11 @@ def assemble_tech_bid_for_project_with_progress(
         file_name=file_name,
         coverage=coverage,
         assembly={
-            "skill": "bid-tech-assembler",
+            "engine": "python",
             "workDir": str(work_dir),
             "manifestPath": str(manifest_path),
             "tocJsonPath": str(toc_json_path),
             "gapPlanPath": str(assembly_gap_plan_path),
-            "wikiDir": str(wiki_dir),
             "materialLibraryDir": str(material_library_dir),
             "outputFile": str(final_output_path),
             "rawOutputFile": str(assembled_path),
@@ -267,6 +237,7 @@ def assemble_tech_bid_for_project_with_progress(
             "summary": assembly_summary,
             "warnings": assembly_warnings,
             "formatClean": format_clean,
+            "execution": execution,
         },
     )
     persist_workspace_project_state(project_for_update)
@@ -1201,36 +1172,11 @@ def _run_assembler_manifest(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    if progress_callback:
-        progress_callback(
-            "assembler_session_ready",
-            {
-                "sessionId": str(manifest_path),
-                "providerId": "local-skill",
-                "modelId": ASSEMBLER_SKILL_NAME,
-            },
-        )
     return _run_local_assembler(manifest_path)
 
 
 def _run_local_assembler(manifest_path: Path) -> dict[str, Any]:
-    completed = subprocess.run(
-        [sys.executable, str(ASSEMBLER_RUNNER), "--manifest", str(manifest_path), "--response", "summary"],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    parsed = json.loads(completed.stdout or "{}")
-    parsed["opencodeOutput"] = {
-        "status": "received",
-        "sessionId": str(manifest_path),
-        "providerId": "local-skill",
-        "modelId": ASSEMBLER_SKILL_NAME,
-        "receivedAt": now_iso(),
-        "parts": [{"type": "text", "text": completed.stdout or ""}],
-    }
-    return parsed
+    return run_assembly_manifest(manifest_path)
 
 
 def _run_tech_format_cleaner_step(
@@ -1238,19 +1184,22 @@ def _run_tech_format_cleaner_step(
     project: dict[str, Any],
     toc_json_path: Path,
     assembled_path: Path,
+    output_path: Path,
+    project_params: dict[str, Any],
     work_dir: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     manifest_path = work_dir / "tech_format_clean_input.json"
     outline_path = _prepare_tech_format_outline(toc_json_path, work_dir)
-    output_path = assembled_path.with_name(f"{assembled_path.stem}.formatted.docx")
     manifest = {
         "schemaVersion": "bid-tech-format-clean-manifest-v1",
         "inputFile": str(assembled_path),
         "outlineFile": str(outline_path),
         "outputFile": str(output_path),
         "projectName": str(project.get("name") or project.get("id") or "技术标项目"),
-        "styleSpecPath": str(ASSEMBLER_SKILL_DIR / "references" / "heading_style.json"),
+        "styleSpecPath": str(TECH_DOCUMENT_RESOURCES_DIR / "heading_style.json"),
+        "forceCanonicalToc": True,
+        "preserveAssembledHeadingTree": True,
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1260,7 +1209,6 @@ def _run_tech_format_cleaner_step(
             {
                 "manifestPath": str(manifest_path),
                 "inputFile": str(assembled_path),
-                "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
             },
         )
 
@@ -1273,7 +1221,7 @@ def _run_tech_format_cleaner_step(
         clean_warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else clean_summary.get("warnings")
         clean = {
             "status": "completed",
-            "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
+            "engine": "python",
             "manifestPath": str(manifest_path),
             "inputFile": str(assembled_path),
             "outlineFile": str(outline_path),
@@ -1281,54 +1229,37 @@ def _run_tech_format_cleaner_step(
             "reportFile": "",
             "summary": clean_summary,
             "warnings": _normalize_warnings(clean_warnings),
-            "opencodeOutput": result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {},
         }
         if progress_callback:
             progress_callback(
                 "format_cleaner_completed",
-                {"summary": clean["summary"], "outputFile": clean["outputFile"], "skill": TECH_FORMAT_CLEANER_SKILL_NAME},
+                {"summary": clean["summary"], "outputFile": clean["outputFile"]},
             )
         return clean
     except Exception as exc:
+        fallback_scan = finalize_merged_output(assembled_path, output_path, project_params)
         clean = {
             "status": "failed",
-            "skill": TECH_FORMAT_CLEANER_SKILL_NAME,
+            "engine": "python",
             "manifestPath": str(manifest_path),
             "inputFile": str(assembled_path),
             "outlineFile": str(outline_path),
-            "outputFile": str(assembled_path),
+            "outputFile": str(output_path),
             "reportFile": "",
-            "summary": {},
-            "warnings": [],
-            "opencodeOutput": {},
+            "summary": {"fallback": True},
+            "warnings": _warnings_from_delivery_scan(fallback_scan),
             "error": str(exc),
         }
         if progress_callback:
             progress_callback(
                 "format_cleaner_failed",
-                {"error": str(exc), "manifestPath": str(manifest_path), "skill": TECH_FORMAT_CLEANER_SKILL_NAME},
+                {"error": str(exc), "manifestPath": str(manifest_path), "outputFile": str(output_path)},
             )
         return clean
 
 
 def _run_local_tech_format_cleaner(manifest_path: Path) -> dict[str, Any]:
-    completed = subprocess.run(
-        [sys.executable, str(TECH_FORMAT_CLEANER_RUNNER), str(manifest_path), "--response", "summary"],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    parsed = json.loads(completed.stdout or "{}")
-    parsed["opencodeOutput"] = {
-        "status": "received",
-        "sessionId": str(manifest_path),
-        "providerId": "local-skill",
-        "modelId": TECH_FORMAT_CLEANER_SKILL_NAME,
-        "receivedAt": now_iso(),
-        "parts": [{"type": "text", "text": completed.stdout or ""}],
-    }
-    return parsed
+    return run_format_manifest(manifest_path)
 
 
 def _prepare_tech_format_outline(toc_json_path: Path, work_dir: Path) -> Path:
@@ -1413,32 +1344,6 @@ def _infer_tech_format_level_from_number(value: str) -> int | None:
     if re.fullmatch(r"附表\d+", candidate) or re.fullmatch(r"技术附表[A-Za-z]", candidate):
         return 1
     return None
-
-
-def _build_assembler_prompt(manifest_path: Path) -> str:
-    return f"""
-Use the {ASSEMBLER_SKILL_NAME} skill.
-
-你现在在做 S4 生成标书（技术标正文拼装）。后端已经准备好 manifest、S1 目录 JSON、Wiki 文件系统副本、素材库导出目录和输出路径。
-
-manifest：{manifest_path}
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整正文 docx 和 assembly_plan.json 写入 manifest 指定路径，并只在 stdout 打印小型摘要 JSON：
-
-{ASSEMBLER_SKILL_COMMAND} {manifest_path}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-返回格式必须是：
-{{
-  "schema_version": "bid-tech-assembly-v1",
-  "outputFile": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/投标文件-正文.docx",
-  "assemblyReport": "",
-  "needsReview": "",
-  "planFile": "/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_plan.json",
-  "summary": {{"total": 0, "byStatus": {{}}, "usedPathCount": 0, "warningCount": 0}},
-  "warnings": []
-}}
-""".strip()
 
 
 def _load_json_list(path: Path) -> list[dict[str, Any]]:
@@ -1607,6 +1512,19 @@ def _normalize_warnings(value: Any) -> list[dict[str, Any]]:
             count = 0
         if code and message and count > 0:
             warnings.append({"code": code, "message": message, "count": count})
+    return warnings
+
+
+def _warnings_from_delivery_scan(scan: dict[str, Any]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for code, key, message in (
+        ("PLACEHOLDER_REMAINS", "placeholders", "交付稿中仍有占位符"),
+        ("EMPTY_SECTION", "empty_leaf_headings", "交付稿中存在空章节"),
+        ("DUPLICATE_HEADING", "dup_alerts", "交付稿中存在重复标题"),
+    ):
+        count = len(scan.get(key) or [])
+        if count:
+            warnings.append({"code": code, "message": f"{message}：{count} 处", "count": count})
     return warnings
 
 
