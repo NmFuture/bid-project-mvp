@@ -70,6 +70,11 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _docling_device_env() -> str:
+    value = os.getenv("DOCLING_DEVICE", "cpu").strip().lower() or "cpu"
+    return value if value in {"auto", "cpu", "cuda"} else "cpu"
+
+
 def _int_tuple_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -138,6 +143,7 @@ class Settings:
     business_pdf_engine_fallback: str
     business_pdf_ocr_fallback_enabled: bool
     docling_artifacts_path: Path
+    docling_device: str
     bid_internal_api_base_url: str
     onlyoffice_internal_url: str
     onlyoffice_backend_base_url: str
@@ -225,6 +231,7 @@ settings = Settings(
     docling_artifacts_path=Path(
         _first_env("BID_DOCLING_ARTIFACTS_PATH", "DOCLING_ARTIFACTS_PATH", default="/opt/docling-models")
     ),
+    docling_device=_docling_device_env(),
     bid_internal_api_base_url=os.getenv("BID_INTERNAL_API_BASE_URL", "http://fastapi:8000").rstrip("/"),
     onlyoffice_internal_url=os.getenv("ONLYOFFICE_INTERNAL_URL", "http://127.0.0.1:8080"),
     onlyoffice_backend_base_url=os.getenv("ONLYOFFICE_BACKEND_BASE_URL", "").rstrip("/"),

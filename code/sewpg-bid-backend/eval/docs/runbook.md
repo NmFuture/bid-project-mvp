@@ -1,6 +1,7 @@
 # Evaluation Runbook
 
-This runbook maps the implementation to `doc/17`.
+This runbook covers the evaluation implementation described in
+[`../README.md`](../README.md).
 
 ## Stage A - Scaffold
 

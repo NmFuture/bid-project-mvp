@@ -10,8 +10,24 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
+from app.core.config import settings
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.opencode_client import OpencodeClient
+from app.services.system_settings import system_settings_service
+
+
+def _db_llm_config(**overrides: object) -> dict:
+    config = {
+        "enabled": True,
+        "providerId": "custom-provider",
+        "modelId": "custom-model",
+        "model": "custom-model",
+        "baseUrl": "https://llm.example.com/v1",
+        "opencodeBaseUrl": "http://db-opencode:4096",
+        "timeoutMs": 30000,
+    }
+    config.update(overrides)
+    return config
 
 
 class OpencodeClientTests(unittest.TestCase):
@@ -21,6 +37,32 @@ class OpencodeClientTests(unittest.TestCase):
         client.__enter__.return_value = client
         client.post.side_effect = side_effect
         return client
+
+    def test_init_uses_db_config_when_llm_active(self) -> None:
+        with patch.object(
+            system_settings_service,
+            "get_opencode_model_config_sync",
+            return_value=_db_llm_config(),
+        ):
+            client = OpencodeClient()
+        self.assertEqual(client.base_url, "http://db-opencode:4096")
+        self.assertEqual(client.provider_id, "custom-provider")
+        self.assertEqual(client.model_id, "custom-model")
+
+    def test_init_falls_back_to_env_config_when_llm_not_active(self) -> None:
+        for config in (
+            _db_llm_config(enabled=False),
+            _db_llm_config(baseUrl=""),
+        ):
+            with self.subTest(config=config), patch.object(
+                system_settings_service,
+                "get_opencode_model_config_sync",
+                return_value=config,
+            ):
+                client = OpencodeClient()
+            self.assertEqual(client.base_url, settings.opencode_base_url.rstrip("/"))
+            self.assertEqual(client.provider_id, settings.opencode_provider_id)
+            self.assertEqual(client.model_id, settings.opencode_model_id)
 
     def test_repair_examples_keep_technical_reports_empty_and_business_reports_unchanged(self) -> None:
         client = OpencodeClient()

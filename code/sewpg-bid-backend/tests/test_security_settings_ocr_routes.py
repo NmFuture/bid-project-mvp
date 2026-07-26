@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import tempfile
+import time
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -27,7 +28,6 @@ from app.services.auth_service import _password_hash
 from app.services.bid_project_state import project_parse_input_records
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
-from app.services.ocr_service import ocr_service
 from app.services.system_settings import OPENCODE_RUNTIME_CONFIG_PATH, system_settings_service
 from app.services.store import store
 
@@ -89,12 +89,13 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         asyncio.run(self._snapshot_persistent_state())
         self._register_persistent_cleanups()
         asyncio.run(self._create_test_operator())
-        self.client = TestClient(
-            app,
-            base_url="http://127.0.0.1:8000",
-            headers={"user-agent": self.test_user_agent},
+        self.client = self.enterContext(
+            TestClient(
+                app,
+                base_url="http://127.0.0.1:8000",
+                headers={"user-agent": self.test_user_agent},
+            )
         )
-        self.addCleanup(self.client.close)
         login = self.client.post("/api/auth/login", json={"email": self.test_user_email, "password": "123456"})
         self.assertEqual(login.status_code, 200)
         self.token = login.json()["token"]
@@ -313,39 +314,27 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
                 self.user_ids.add(user_id)
         return response
 
-    def _drain_task(self, task_id: str) -> dict[str, Any]:
-        """在测试环境中手动驱动 OCR worker 把任务跑到终态。"""
-
-        async def _run() -> dict[str, Any]:
-            # 避免测试里自动启动的后台 worker 与手动处理冲突
-            await ocr_service.stop_worker()
-            for _ in range(5):
-                await ocr_service._process_task(task_id)
-                async with async_session() as session:
-                    task = (
-                        await session.execute(select(OcrTask).where(OcrTask.id == task_id))
-                    ).scalar_one_or_none()
-                    if task is not None and task.status in ("completed", "failed"):
-                        return task.to_dict()
-            async with async_session() as session:
-                task = (
-                    await session.execute(select(OcrTask).where(OcrTask.id == task_id))
-                ).scalar_one_or_none()
-                if task is None:
-                    raise AssertionError(f"OCR task {task_id} disappeared")
-                raise AssertionError(f"OCR task {task_id} did not reach terminal state: {task.status} / {task.error_message}")
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(_run())
-            finally:
-                loop.close()
-        else:
-            return asyncio.run_coroutine_threadsafe(_run(), loop).result()
+    def _wait_for_ocr_task(
+        self,
+        project_id: str,
+        task_id: str,
+        *,
+        timeout: float = 15.0,
+    ) -> dict[str, Any]:
+        """通过公开接口等待 lifespan worker 将 OCR 任务处理到终态。"""
+        deadline = time.monotonic() + timeout
+        last_payload: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            response = self.client.get(
+                f"/api/technical/projects/{project_id}/ocr/tasks/{task_id}",
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            last_payload = response.json()
+            if last_payload.get("status") in ("completed", "failed"):
+                return last_payload
+            time.sleep(0.05)
+        self.fail(f"OCR task {task_id} did not reach terminal state: {last_payload}")
 
     def test_auth_rejects_wrong_password_and_accepts_real_session(self) -> None:
         wrong = self.client.post("/api/auth/login", json={"email": self.test_user_email, "password": "wrong"})
@@ -667,7 +656,7 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             payload = run.json()
             self.assertEqual(payload["status"], "pending")
             task_id = payload["id"]
-            completed = self._drain_task(task_id)
+            completed = self._wait_for_ocr_task(project_id, task_id)
 
         self.assertEqual(completed["status"], "completed")
 
@@ -758,7 +747,7 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             self.assertEqual(run.status_code, 200)
             self.assertEqual(run.json()["status"], "pending")
             task_id = run.json()["id"]
-            self._drain_task(task_id)
+            self._wait_for_ocr_task(project_id, task_id)
 
         payload = captured["json"]
         self.assertEqual(payload["model"], "baidu/Unlimited-OCR")
@@ -815,7 +804,7 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             self.assertEqual(run.status_code, 200)
             self.assertEqual(run.json()["status"], "pending")
             task_id = run.json()["id"]
-            completed = self._drain_task(task_id)
+            completed = self._wait_for_ocr_task(project_id, task_id)
 
         self.assertEqual(completed["status"], "failed")
         self.assertEqual(completed["retryCount"], 2)

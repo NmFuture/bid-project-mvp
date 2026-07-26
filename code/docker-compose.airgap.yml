@@ -26,3 +26,9 @@ services:
   redis:
     image: ${REDIS_IMAGE:-redis:7-alpine}
     pull_policy: never
+
+  postgres:
+    pull_policy: never
+
+  minio:
+    pull_policy: never

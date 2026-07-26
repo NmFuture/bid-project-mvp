@@ -341,7 +341,11 @@ export const technicalProjectsAPI = {
     timeoutMs: 5 * 60 * 1000,
     retryCount: 0,
   }),
-  delete: (id) => request(`/technical/projects/${id}`, { method: 'DELETE' }),
+  delete: (id) => request(`/technical/projects/${id}`, {
+    method: 'DELETE',
+    timeoutMs: 5 * 60 * 1000,
+    retryCount: 0,
+  }),
   materialsPath: (id) => request(`/technical/projects/${id}/materials-path`),
   templateFallback: (id) => request(`/technical/projects/${id}/template-fallback`),
   updateTemplateFallback: (id, data) =>
@@ -607,7 +611,11 @@ export const businessProjectsAPI = {
   get: (id) => request(`/business/projects/${id}`),
   create: (data) => request('/business/projects', { method: 'POST', body: data }),
   update: (id, data) => request(`/business/projects/${id}`, { method: 'PUT', body: data }),
-  delete: (id) => request(`/business/projects/${id}`, { method: 'DELETE' }),
+  delete: (id) => request(`/business/projects/${id}`, {
+    method: 'DELETE',
+    timeoutMs: 5 * 60 * 1000,
+    retryCount: 0,
+  }),
   templateFallback: (id) => request(`/business/projects/${id}/template-fallback`),
   updateTemplateFallback: (id, data) =>
     request(`/business/projects/${id}/template-fallback`, { method: 'PUT', body: data }),
@@ -748,6 +756,10 @@ export const performanceAPI = {
   updateCategoryStatus: (id, data) => request(`/materials/performance/categories/${id}/status`, { method: 'PATCH', body: data }),
   updateItem: (categoryId, itemId, data) =>
     request(`/materials/performance/categories/${categoryId}/items/${itemId}`, { method: 'PATCH', body: data }),
+  createItem: (categoryId, data) =>
+    request(`/materials/performance/categories/${categoryId}/items`, { method: 'POST', body: data }),
+  deleteItem: (categoryId, itemId) =>
+    request(`/materials/performance/categories/${categoryId}/items/${itemId}`, { method: 'DELETE' }),
   uploadCategoryAttachment: (id, data) =>
     request(`/materials/performance/categories/${id}/attachments`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
   previewCategoryAttachment: (categoryId, attachmentId) =>

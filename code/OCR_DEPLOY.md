@@ -12,6 +12,8 @@
 - NVIDIA GPU 主机带 OCR 启动：`./start-ocr.sh`
 - 离线带 OCR 启动：`ENABLE_OCR=true ./up-airgap.sh ./.env`
 
+以上是通用环境入口。5090 生产环境必须使用 [`DEPLOY_5090.md`](DEPLOY_5090.md) 和 `up-5090.sh`：默认允许在线拉取 OCR 镜像并在首次启动时下载权重；`build-5090-bundle.sh` 只用于额外制作离线回滚包。不得用通用 `start-ocr.sh` 代替 5090 流程。
+
 ## 当前 Mac 设备怎么启动
 
 当前 Apple Silicon Mac 可以一键启动产品本体，但不能本机启动 `vLLM + baidu/Unlimited-OCR` 真推理服务，因为 Docker Desktop for Mac 没有 NVIDIA CUDA runtime。
@@ -103,7 +105,16 @@ command:
   - --no-enable-prefix-caching
   - --mm-processor-cache-gb
   - "0"
-gpus: all
+environment:
+  NVIDIA_VISIBLE_DEVICES: "0"
+  CUDA_VISIBLE_DEVICES: "0"
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ["0"]
+          capabilities: [gpu]
 ```
 
 这样可以把 GPU runtime、模型服务、业务服务的升级风险隔离开。
@@ -171,11 +182,12 @@ macOS 也可以在 Finder 中双击 `start-ocr.command`。
 OCR_IMAGE=vllm/vllm-openai:unlimited-ocr
 OCR_HOST_PORT=8000
 OCR_MODEL=baidu/Unlimited-OCR
+OCR_GPU_DEVICE_ID=0
 OCR_HF_CACHE_DIR=./.localdata/ocr/huggingface
 OCR_SHM_SIZE=8g
 OCR_HEALTHCHECK_START_PERIOD=20m
 HUGGING_FACE_HUB_TOKEN=
-HF_ENDPOINT=
+HF_ENDPOINT=https://huggingface.co
 VLLM_USE_MODELSCOPE=false
 ```
 
@@ -205,6 +217,20 @@ DEFAULT_OCR_MODEL=baidu/Unlimited-OCR
 ```bash
 INCLUDE_OCR=true ./scripts/build-airgap-bundle.sh
 ```
+
+RTX 5090 默认在线部署入口：
+
+```bash
+./scripts/up-5090.sh ./.env
+```
+
+需要额外制作离线回滚包时再运行：
+
+```bash
+./scripts/build-5090-bundle.sh ./offline-dist/5090 <release-tag>
+```
+
+5090 的 Docling 也使用 GPU 0，具体版本、分支职责和现场启动流程见 [`DEPLOY_5090.md`](DEPLOY_5090.md)。
 
 Windows：
 
@@ -248,6 +274,12 @@ docker compose -f docker-compose.yml -f docker-compose.ocr.yml config
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ocr.yml ps ocr
 curl http://127.0.0.1:8000/health
+```
+
+这里的 `8000/health` 是 OCR 服务，不是 FastAPI。主系统 API 通过 web 代理验证：
+
+```bash
+curl --fail http://127.0.0.1:80/api/healthz
 ```
 
 后端单测：

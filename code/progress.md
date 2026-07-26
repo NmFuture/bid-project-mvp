@@ -1,15 +1,14 @@
 # progress.md
 
-> 当前用途：记录当前状态、验证基线和下一步。历史 MVP 联调流水和旧接口记录不再放在当前正文；需要追溯时查 git 历史或 `doc/archive/2026-05-26-old-docs/`。
-> 更新日期：2026-05-27
+> 状态：2026-05-27 历史快照。本文不再作为当前状态、验证基线或 5090 部署依据；当前入口见 [`../README.md`](../README.md)，生产发布见 [`DEPLOY_5090.md`](DEPLOY_5090.md)。
 
 ## 1. 当前状态
 
-文档已经收口为 3 份：
+当时的 3 份文档现已归档：
 
-- `doc/代码结构梳理.md`
-- `doc/需求梳理.md`
-- `doc/研发计划.md`
+- [`../docs/archive/20260617-old-docs/代码结构梳理.md`](../docs/archive/20260617-old-docs/代码结构梳理.md)
+- [`../docs/archive/20260617-old-docs/需求梳理.md`](../docs/archive/20260617-old-docs/需求梳理.md)
+- [`../docs/archive/20260617-old-docs/研发计划.md`](../docs/archive/20260617-old-docs/研发计划.md)
 
 代码主线已经形成技术标和商务标双轨：
 
@@ -31,9 +30,9 @@
 
 ## 2. 本轮文档和命名收口
 
-- 旧文档已归档到 `doc/archive/2026-05-26-old-docs/`。
-- 根 `README.md` 已改为 3 份当前文档入口。
-- `doc/代码结构梳理.md` 已梳理页面、API、services、OpenCode/Skill、素材库/模板/Wiki 存储范围。
+- 旧文档后续已迁入 `docs/archive/`。
+- 当时根 `README.md` 曾使用 3 份文档作为入口。
+- 当时的《代码结构梳理》覆盖页面、API、services、OpenCode/Skill、素材库/模板/Wiki 存储范围。
 - 技术标解析 Skill 已统一为 `bid-tech-tender-structured-parser`。
 - 商务目录 Skill 已统一为 `bid-business-outline-generator`。
 - 素材清洗通用 Skill 已统一为 `bid-material-format-cleaner`。

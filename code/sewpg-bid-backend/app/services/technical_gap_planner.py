@@ -401,6 +401,33 @@ def _normalize_literal_matches(plan: dict[str, Any], material_index: list[dict[s
     return changed
 
 
+def _stamp_missing_match_scores(plan: dict[str, Any]) -> int:
+    """给缺展示分的已匹配素材补盖 matchScore（0.99 文件名精确命中 / 启发式封顶 0.98）。
+
+    前端「已就绪」只认 matchScore，缺分会一路回落到 confidence（素材索引里普遍是
+    0.74），把文件名精确命中的整章素材显示成低分「已匹配-待确认」。整章素材
+    （chapter_master）不走片段召回，是唯一从不盖分的通道，故在此统一兜底。
+    只补空缺，不覆盖已有分。
+    """
+    helpers = _load_planner_segment_helpers()
+    score = getattr(helpers, "display_match_score", None) if helpers is not None else None
+    if score is None:
+        return 0
+    scored = 0
+    for item in _object_items(plan.get("items")):
+        title = str(item.get("title") or "")
+        if not title:
+            continue
+        for material in _object_items(item.get("matchedMaterials")):
+            if material.get("matchScore") is not None:
+                continue
+            material["matchScore"] = score(material, title)
+            scored += 1
+    if scored:
+        logger.info("技术标缺口识别：%d 份已匹配素材补盖展示分", scored)
+    return scored
+
+
 def _safe_filename(value: str, fallback: str) -> str:
     text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
     text = re.sub(r"\s+", " ", text).strip(" .")
@@ -884,6 +911,8 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     _attach_topic_recall_to_plan(plan, material_index)
     # 固定素材通道收紧：自动定案只信文件名命中；目录名撞章节名转人工选用拼装。
     _normalize_literal_matches(plan, material_index)
+    # 已匹配素材补盖展示分（整章素材不走片段召回，缺分会被前端回落成 confidence 低分）。
+    _stamp_missing_match_scores(plan)
     # 正文 AI 填写项候选并入弱召回素材（参考素材盲区）。
     _augment_fill_candidates(plan, material_index)
     # 同名目录项互链：同一张表在目录两处出现时，空的一侧指向有解决路径的一侧。

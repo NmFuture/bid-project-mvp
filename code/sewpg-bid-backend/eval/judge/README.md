@@ -2,7 +2,7 @@
 
 This directory will hold paragraph judge prompts and calibration data.
 
-Rules from `doc/17`:
+Rules inherited from the evaluation boundary in [`../README.md`](../README.md):
 
 - Use a model and prompt chain independent from the filling skills.
 - Use the judge only for `paragraph` fields.

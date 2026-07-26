@@ -150,6 +150,19 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
     return () => clearTimeout(timer)
   }, [loadAll])
 
+  const refreshHealth = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      const healthRes = await settingsAPI.health()
+      setHealth(Array.isArray(healthRes) ? healthRes : [])
+    } catch (e) {
+      console.error(e)
+      showToast(safeMessage(e, '健康状态刷新失败'), 'error')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [showToast])
+
   const sections = [
     { id: 'defaultTemplates', icon: 'description', label: '默认 Word 模板', group: '系统核心' },
     { id: 'gateway', icon: 'hub', label: 'LLM 模型', group: '系统核心' },
@@ -750,7 +763,7 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
                   <p className="text-sm text-on-surface-variant mt-1">实时查看核心服务状态与延迟。</p>
                 </div>
                 <button
-                  onClick={() => loadAll({ silent: true })}
+                  onClick={refreshHealth}
                   className="px-3 py-2 text-xs rounded-lg bg-surface-container-high hover:bg-surface-dim text-on-surface-variant"
                 >
                   刷新状态
@@ -775,6 +788,9 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
                       <p className="text-xs text-outline mt-2">可用性：{item.uptime || '-'}</p>
                       <p className="text-xs text-outline mt-1">延迟：{item.latency || '-'}</p>
                       <p className="text-xs text-on-surface-variant mt-2">{item.detail || '暂无详情'}</p>
+                      {item.warning && (
+                        <p className="text-xs text-amber-700 mt-1">{item.warning}</p>
+                      )}
                     </div>
                   ))}
                 </div>
