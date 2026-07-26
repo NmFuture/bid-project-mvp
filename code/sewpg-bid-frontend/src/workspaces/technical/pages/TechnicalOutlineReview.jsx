@@ -689,7 +689,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div data-outline-scroll className="min-h-0 flex-1 overflow-y-auto p-5">
               {nodes.length ? (
                 renderRows(nodes)
               ) : (

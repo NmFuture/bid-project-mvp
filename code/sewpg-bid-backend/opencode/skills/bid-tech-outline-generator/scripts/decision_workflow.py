@@ -472,7 +472,7 @@ def merge_chapter_decisions(
         raise SystemExit("chapter decision workspaces must exactly match template chapters")
 
     merged = _new_state(fingerprint, workflow_binding)
-    addition_ids: set[str] = set()
+    used_node_ids = {str(item["template_id"]) for item in items}
     for chapter_id, target_ids in groups.items():
         chapter_state = _load_state(
             Path(chapter_work_dirs[chapter_id]),
@@ -485,13 +485,44 @@ def merge_chapter_decisions(
         if (chapter_state.get("active_batch") or {}).get("target_ids"):
             raise SystemExit(f"chapter decision still has an active batch: {chapter_id}")
         merged["template_decisions"].update(deepcopy(decisions))
-        for addition in chapter_state.get("additions") or []:
+        chapter_additions = list(chapter_state.get("additions") or [])
+        local_id_order: list[str] = []
+        local_ids: set[str] = set()
+        for addition in chapter_additions:
             node_id = str(addition.get("node_id") or "")
-            if not node_id or node_id in addition_ids:
+            if not node_id or node_id in local_ids:
                 raise SystemExit(f"chapter addition node_id is missing or duplicate: {node_id}")
-            addition_ids.add(node_id)
-            merged["additions"].append(deepcopy(addition))
-            merged["addition_chapters"][node_id] = chapter_id
+            local_id_order.append(node_id)
+            local_ids.add(node_id)
+        allowed_parent_ids = set(target_ids) | local_ids
+        for addition in chapter_additions:
+            node_id = str(addition.get("node_id") or "")
+            parent_id = str(addition.get("parent_id") or "")
+            if not parent_id or parent_id == node_id or parent_id not in allowed_parent_ids:
+                raise SystemExit(f"chapter addition parent_id is outside the active chapter: {node_id}")
+
+        id_map: dict[str, str] = {}
+        for node_id in local_id_order:
+            candidate = node_id
+            if candidate in used_node_ids:
+                base = f"{node_id}-{chapter_id}"
+                candidate = base
+                suffix = 2
+                while candidate in used_node_ids:
+                    candidate = f"{base}-{suffix}"
+                    suffix += 1
+            id_map[node_id] = candidate
+            used_node_ids.add(candidate)
+
+        for addition in chapter_additions:
+            normalized = deepcopy(addition)
+            original_id = str(normalized.get("node_id") or "")
+            parent_id = str(normalized.get("parent_id") or "")
+            normalized["node_id"] = id_map[original_id]
+            if parent_id in id_map:
+                normalized["parent_id"] = id_map[parent_id]
+            merged["additions"].append(normalized)
+            merged["addition_chapters"][normalized["node_id"]] = chapter_id
 
     _write_json(_state_path(work_dir), merged)
     return {
@@ -509,6 +540,7 @@ def submit_decision_batch(
     payload: dict[str, Any],
     *,
     appendix_items: list[dict[str, Any]] | None = None,
+    chapter_id: str = "",
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     annotated, items = _annotated_items(structure)
@@ -519,6 +551,8 @@ def submit_decision_batch(
     token = str(payload.get("batch_token") or "")
     if not expected_ids or token != str(active.get("token") or ""):
         raise SystemExit("decision-batch must use the current decision-next batch_token")
+    if chapter_id and chapter_id != str(active.get("chapter_id") or ""):
+        raise SystemExit("decision-batch chapter_id must match the active chapter")
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         raise SystemExit("decision-batch items must be a list")
@@ -590,13 +624,35 @@ def submit_decision_batch(
     existing_ids = {
         str(item.get("node_id") or "") for item in state.get("additions") or []
     }
+    template_ids = {str(item["template_id"]) for item in items}
+    batch_addition_ids: set[str] = set()
     for index, addition in enumerate(additions):
         node_id = str(addition.get("node_id") or "").strip()
-        reason = str(addition.get("reason") or "").strip()
-        if not node_id or node_id in existing_ids:
+        if (
+            not node_id
+            or node_id in existing_ids
+            or node_id in template_ids
+            or node_id in batch_addition_ids
+        ):
             raise SystemExit(
                 f"decision-batch additions[{index}].node_id is missing or duplicate"
             )
+        batch_addition_ids.add(node_id)
+    if chapter_id:
+        chapter_target_ids = set(dict(_chapter_groups(items)).get(chapter_id) or [])
+        if not chapter_target_ids:
+            raise SystemExit("decision-batch chapter_id must reference a root template chapter")
+        allowed_parent_ids = chapter_target_ids | existing_ids | batch_addition_ids
+        for index, addition in enumerate(additions):
+            node_id = str(addition.get("node_id") or "").strip()
+            parent_id = str(addition.get("parent_id") or "").strip()
+            if not parent_id or parent_id == node_id or parent_id not in allowed_parent_ids:
+                raise SystemExit(
+                    f"decision-batch additions[{index}].parent_id is outside the active chapter"
+                )
+    for index, addition in enumerate(additions):
+        node_id = str(addition.get("node_id") or "").strip()
+        reason = str(addition.get("reason") or "").strip()
         if not reason:
             raise SystemExit(f"decision-batch additions[{index}].reason is required")
         if (

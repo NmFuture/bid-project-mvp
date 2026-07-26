@@ -531,6 +531,7 @@ def dispatch_command(
             structure,
             normalized_batch,
             appendix_items=appendix_items,
+            chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
             workflow_binding=workflow_binding,
         )
     if command == "compose":

@@ -1041,9 +1041,9 @@ class TocSkillScriptTests(unittest.TestCase):
             "完整掌握模板结构",
             "先识别响应单元，再比较目录节点",
             "语义等价且粒度相当",
-            "能从目录直接定位",
+            "单独表达能够让评审人更清楚地看到",
             "父章节能够容纳内容，不等于目录已经覆盖",
-            "提供、提交、编制、出具",
+            "招标明确要求提供成果",
             "仅有营销属性不是删除理由",
             "招标目录只用于定位，不能据标题判定覆盖",
             "每个二、三级招标章节",
@@ -3192,6 +3192,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 for item in chapter_catalog["chapters"]
             }
             chapter_titles = {}
+            chapter_parent_ids = {}
             for chapter_id, chapter_dir in chapter_dirs.items():
                 chapter_dir.mkdir()
                 while True:
@@ -3203,6 +3204,40 @@ class TocSkillScriptTests(unittest.TestCase):
                     if batch["complete"]:
                         break
                     chapter_titles[chapter_id] = tuple(item["title"] for item in batch["items"])
+                    chapter_parent_ids[chapter_id] = batch["items"][0]["target_id"]
+                    other_parent_id = next(
+                        item["template_id"]
+                        for item in decision_workflow._annotated_items(structure)[1]
+                        if item["template_id"] not in {
+                            batch_item["target_id"] for batch_item in batch["items"]
+                        }
+                    )
+                    with self.assertRaisesRegex(SystemExit, "outside the active chapter"):
+                        decision_workflow.submit_decision_batch(
+                            chapter_dir,
+                            structure,
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": item["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板专家经验仍适用。",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                                "additions": [
+                                    {
+                                        "node_id": "ADD-0001",
+                                        "parent_id": other_parent_id,
+                                        "number": "1.9",
+                                        "title": "跨章新增",
+                                        "reason": "不允许跨章挂载。",
+                                    }
+                                ],
+                            },
+                            chapter_id=chapter_id,
+                        )
                     decision_workflow.submit_decision_batch(
                         chapter_dir,
                         structure,
@@ -3216,8 +3251,17 @@ class TocSkillScriptTests(unittest.TestCase):
                                 }
                                 for item in batch["items"]
                             ],
-                            "additions": [],
+                            "additions": [
+                                {
+                                    "node_id": "ADD-0001",
+                                    "parent_id": batch["items"][0]["target_id"],
+                                    "number": "1.9",
+                                    "title": "本章专项响应",
+                                    "reason": "本章需要独立表达。",
+                                }
+                            ],
                         },
+                        chapter_id=chapter_id,
                     )
 
             merged = decision_workflow.merge_chapter_decisions(
@@ -3234,7 +3278,12 @@ class TocSkillScriptTests(unittest.TestCase):
         })
         self.assertTrue(merged["complete"])
         self.assertEqual(merged["decided_count"], 4)
+        self.assertEqual(merged["addition_count"], 2)
         self.assertEqual(len(state["template_decisions"]), 4)
+        self.assertEqual(len({item["node_id"] for item in state["additions"]}), 2)
+        for addition in state["additions"]:
+            owner = state["addition_chapters"][addition["node_id"]]
+            self.assertEqual(addition["parent_id"], chapter_parent_ids[owner])
 
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
         decision_workflow = load_outline_script("run_from_manifest").decision_workflow
@@ -3265,6 +3314,32 @@ class TocSkillScriptTests(unittest.TestCase):
             template = decision_workflow.next_decision_batch(
                 root, structure
             )
+            initial_state = json_load(root / "outline_decision_state.json")
+            with self.assertRaisesRegex(SystemExit, "node_id is missing or duplicate"):
+                decision_workflow.submit_decision_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": template["batch_token"],
+                        "items": [
+                            {
+                                "target_id": template["items"][0]["target_id"],
+                                "decision": "retain",
+                            }
+                        ],
+                        "additions": [
+                            {
+                                "node_id": "TPL-0001",
+                                "parent_id": None,
+                                "number": "2",
+                                "title": "技术附表",
+                                "reason": "Conflicts with the template node ID.",
+                            }
+                        ],
+                    },
+                )
+            self.assertEqual(json_load(root / "outline_decision_state.json"), initial_state)
+
             decision_workflow.submit_decision_batch(
                 root,
                 structure,
@@ -4304,11 +4379,11 @@ class TocSkillScriptTests(unittest.TestCase):
                     ],
                     "additions": [
                         {
-                            "node_id": "TPL-0001",
+                            "node_id": "ADD-TECH-APPENDIX",
                             "parent_id": None,
                             "number": "2",
                             "title": "技术附表",
-                            "reason": "Conflicts with the template node ID.",
+                            "reason": "Controlled appendix root.",
                         },
                         {
                             "node_id": "ADD-INVALID-EXISTING",
@@ -4336,20 +4411,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     ],
                 }
 
-            conflicting_state = json_load(root / "outline_decision_state.json")
-            with self.assertRaisesRegex(SystemExit, "duplicate decision node_id: TPL-0001"):
-                decision_workflow.submit_appendix_batch(
-                    root, structure, include_payload("TPL-0001"), inventory
-                )
-            self.assertEqual(
-                json_load(root / "outline_decision_state.json"), conflicting_state
-            )
-
-            corrected_parent_state = json.loads(json.dumps(conflicting_state))
-            corrected_parent_state["additions"][0]["node_id"] = "ADD-TECH-APPENDIX"
-            (root / "outline_decision_state.json").write_text(
-                json.dumps(corrected_parent_state, ensure_ascii=False), encoding="utf-8"
-            )
+            corrected_parent_state = json_load(root / "outline_decision_state.json")
             with self.assertRaisesRegex(SystemExit, "changes\\[1\\]\\.number"):
                 decision_workflow.submit_appendix_batch(
                     root,

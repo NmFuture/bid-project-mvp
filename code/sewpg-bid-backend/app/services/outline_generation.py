@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
 TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 TECH_OUTLINE_HANDOFF_DECISION_UNITS = 1
 TECH_OUTLINE_CHAPTER_WORKERS = 6
+_TECH_OUTLINE_REQUEST_SLOTS = threading.BoundedSemaphore(TECH_OUTLINE_CHAPTER_WORKERS)
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 
 
@@ -268,6 +270,7 @@ def _run_parallel_outline_chapters(
             base_url=chapter_base_urls[chapter_indexes[chapter_id] % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
             model_config=model_config,
+            request_slots=_TECH_OUTLINE_REQUEST_SLOTS,
         ).run_outline_decision_session(
             _build_outline_chapter_prompt(chapter_manifest_path, chapter),
             session_title=f"S2 目录决策·{chapter.get('number') or chapter_id}",
@@ -285,7 +288,6 @@ def _run_parallel_outline_chapters(
         with ThreadPoolExecutor(
             max_workers=min(
                 TECH_OUTLINE_CHAPTER_WORKERS,
-                len(chapter_base_urls),
                 max(1, len(chapters)),
             )
         ) as executor:
@@ -530,7 +532,6 @@ def _run_outline_skill(
             output_trace["chapterSessionCount"] = len(chapter_session_ids)
             output_trace["parallelChapterWorkers"] = min(
                 TECH_OUTLINE_CHAPTER_WORKERS,
-                len(_outline_chapter_base_urls()),
                 len(chapter_session_ids),
             )
         return loaded

@@ -1122,7 +1122,10 @@ class DirectoryGenerationTests(unittest.TestCase):
 
     def test_parallel_outline_chapters_load_model_config_once_before_workers(self) -> None:
         self.parallel_outline_patcher.stop()
-        from app.services.outline_generation import _run_parallel_outline_chapters
+        from app.services.outline_generation import (
+            _TECH_OUTLINE_REQUEST_SLOTS,
+            _run_parallel_outline_chapters,
+        )
 
         root = Path(self.temp_dir.name) / "parallel-model-config"
         root.mkdir(parents=True)
@@ -1181,6 +1184,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(client_class.call_count, 2)
         for call in client_class.call_args_list:
             self.assertIs(call.kwargs["model_config"], model_config)
+            self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
 
     def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
         from app.services.outline_generation import (

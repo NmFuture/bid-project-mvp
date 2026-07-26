@@ -35,6 +35,7 @@ class OpencodeClient:
         model_id: str | None = None,
         timeout_ms: int | float | None = None,
         model_config: dict[str, Any] | None = None,
+        request_slots: Any | None = None,
     ) -> None:
         config = (
             model_config
@@ -47,11 +48,14 @@ class OpencodeClient:
         raw_timeout_ms = timeout_ms if timeout_ms is not None else config.get("timeoutMs")
         timeout_sec = max(1.0, float(raw_timeout_ms or settings.opencode_timeout_sec * 1000) / 1000)
         self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
+        self._request_slots = (
+            request_slots if request_slots is not None else _OPENCODE_REQUEST_SLOTS
+        )
 
     def create_session(self, title: str) -> dict[str, Any]:
         for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
             try:
-                with _OPENCODE_REQUEST_SLOTS:
+                with self._request_slots:
                     with httpx.Client(timeout=self.timeout) as client:
                         response = client.post(
                             f"{self.base_url}/session",
@@ -115,7 +119,7 @@ class OpencodeClient:
         }
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
-            with _OPENCODE_REQUEST_SLOTS:
+            with self._request_slots:
                 with httpx.Client(timeout=self.timeout) as client:
                     response = client.post(
                         f"{self.base_url}/session/{session_id}/message",
