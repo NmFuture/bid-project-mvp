@@ -861,6 +861,7 @@ class FillGenerationTests(unittest.TestCase):
         self.assertFalse((Path(result["assembly"]["workDir"]) / "assembly_report.md").exists())
         self.assertFalse((Path(result["assembly"]["workDir"]) / "needs_review.md").exists())
         self.assertEqual(result["assembly"]["formatClean"]["status"], "completed")
+        self.assertEqual(result["assembly"]["execution"]["status"], "completed")
         self.assertTrue(Path(result["assembly"]["formatClean"]["outputFile"]).exists())
         self.assertEqual(result["assembly"]["formatClean"]["reportFile"], "")
         self.assertIsInstance(result["assembly"]["formatClean"]["warnings"], list)
@@ -893,6 +894,7 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual(fallback_result["assembly"]["summary"]["warningCount"], 1)
         self.assertEqual(fallback_result["assembly"]["warnings"][0]["code"], "FORMAT_RISK")
         self.assertEqual(fallback_result["assembly"]["formatClean"]["status"], "failed")
+        self.assertEqual(fallback_result["assembly"]["execution"]["status"], "completed_with_fallback")
         self.assertEqual(fallback_result["assembly"]["formatClean"]["error"], cleaner_error)
 
     def test_s7_gap_plan_recovers_s3_ai_fill_outputs_without_review_confirmation(self) -> None:

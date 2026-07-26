@@ -185,7 +185,7 @@ def assemble_tech_bid_for_project_with_progress(
     filled_at = now_iso()
     format_warnings = _normalize_warnings(format_clean.get("warnings"))
     execution_warnings = [*assembly_warnings, *format_warnings]
-    execution_status = "completed_with_fallback" if format_clean.get("status") == "degraded" else "completed"
+    execution_status = "completed" if format_clean.get("status") == "completed" else "completed_with_fallback"
     execution = {
         "engine": "python",
         "pipeline": "technical-document-assembly-cleaning",
@@ -1213,7 +1213,7 @@ def _run_tech_format_cleaner_step(
         )
 
     try:
-        result = run_format_manifest(manifest_path)
+        result = _run_local_tech_format_cleaner(manifest_path)
         formatted_path = Path(str(result.get("outputFile") or output_path)).expanduser()
         if not formatted_path.exists():
             raise RuntimeError(f"技术标格式清洗未生成输出文件：{formatted_path}")
@@ -1239,7 +1239,7 @@ def _run_tech_format_cleaner_step(
     except Exception as exc:
         fallback_scan = finalize_merged_output(assembled_path, output_path, project_params)
         clean = {
-            "status": "degraded",
+            "status": "failed",
             "engine": "python",
             "manifestPath": str(manifest_path),
             "inputFile": str(assembled_path),
