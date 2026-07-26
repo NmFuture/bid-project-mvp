@@ -1192,12 +1192,13 @@ class DirectoryGenerationTests(unittest.TestCase):
             _technical_outline_handoff_state,
         )
 
-        prompt = _build_outline_handoff_prompt(Path("C:/workspace/s2_input.json"), 1)
+        manifest_path = Path("C:/workspace/s2_input.json")
+        prompt = _build_outline_handoff_prompt(manifest_path, 1)
         self.assertIn("最多完成 1 个", prompt)
-        resumed_prompt = _build_outline_handoff_prompt(Path("C:/workspace/s2_input.json"), 2)
+        resumed_prompt = _build_outline_handoff_prompt(manifest_path, 2)
         self.assertIn("第一条非 Skill 工具调用必须是 Bash", resumed_prompt)
         self.assertIn(
-            "s2outline decision-next C:\\workspace\\s2_input.json",
+            f"s2outline decision-next {manifest_path}",
             resumed_prompt,
         )
         self.assertIn("禁止调用 Read、Glob、Grep", resumed_prompt)
