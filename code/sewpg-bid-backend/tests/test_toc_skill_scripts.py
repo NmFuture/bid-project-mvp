@@ -1,13 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,6 +113,84 @@ def json_load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def complete_outline_review(outline_runner, manifest: dict, manifest_path: Path) -> dict:
+    return outline_runner.dispatch_command(
+        "review-complete",
+        manifest,
+        manifest_path,
+        [json.dumps({"review_summary": "已完成全局复核。", "issues": []}, ensure_ascii=False)],
+    )
+
+
+def write_decision_context_fixture(
+    root: Path,
+    *,
+    heading_count: int = 80,
+    heading_text: str | None = None,
+    template_count: int = 1,
+    template_title: str = "技术方案",
+) -> tuple[dict, Path]:
+    manifest_path = root / "s2_input.json"
+    manifest = {"workDir": str(root), "outputFile": str(root / "toc.json")}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "template_structure.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "template-structure.v1",
+                "items": [
+                    {
+                        "number": f"第{index}章",
+                        "title": f"{template_title}{index}",
+                        "level": 1,
+                    }
+                    for index in range(1, template_count + 1)
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    blocks = [
+        {
+            "type": "paragraph",
+            "evidence_id": f"TEN-1:B{index:06d}",
+            "body_index": index,
+            "text": heading_text or f"{index} 招标技术要求 " + ("详细条款" * 70),
+            "toc_level": 1,
+            "heading_level": 0,
+            "structural_title_level": 1,
+        }
+        for index in range(1, heading_count + 1)
+    ]
+    (root / "tender_review_chunks.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "tender-review-chunks.v1",
+                "chunks": [
+                    {
+                        "file_id": "TEN-1",
+                        "file_name": "招标文件.docx",
+                        "blocks": blocks,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (root / "tender_headings_state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "tender-headings-state.v1",
+                "next_cursor": 0,
+                "complete": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest, manifest_path
+
+
 def submit_outline_changes(outline_runner, manifest: dict, manifest_path: Path, changes: list[dict]):
     structure = json_load(Path(manifest["workDir"]) / "template_structure.json")
     annotated = outline_runner.outline_composer.annotate_template_structure(structure)
@@ -150,6 +230,130 @@ def submit_outline_changes(outline_runner, manifest: dict, manifest_path: Path, 
 
 
 class TocSkillScriptTests(unittest.TestCase):
+    def _prepare_finalized_appendix_outline(
+        self,
+        root: Path,
+        decisions: list[str],
+        *,
+        mutate_state=None,
+    ) -> tuple[object, dict, Path]:
+        outline_runner = load_outline_script("run_from_manifest")
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        output = root / "toc.json"
+        manifest_path = root / "s2_input.json"
+
+        template_doc = Document()
+        template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+        template_doc.save(template)
+        tender_doc = Document()
+        for number, title in (("附表A.1", "技术参数表"), ("附表A.2", "供货范围表")):
+            tender_doc.add_paragraph(f"{number} {title}")
+            table = tender_doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "参数"
+            table.cell(0, 1).text = "要求"
+            table.cell(1, 0).text = "示例"
+            table.cell(1, 1).text = "投标人填写"
+        tender_doc.save(tender)
+        manifest = {
+            "workDir": str(root),
+            "templateFile": str(template),
+            "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+            "outputFile": str(output),
+            "requireComposedOutline": True,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        outline_runner.write_template_structure(manifest, manifest_path)
+        outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+        batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+        appendix_heading = outline_runner.dispatch_command(
+            "search", manifest, manifest_path, ["附表A.1"]
+        )
+        outline_runner.dispatch_command(
+            "read",
+            manifest,
+            manifest_path,
+            [appendix_heading["results"][0]["evidence_id"]],
+        )
+        outline_runner.dispatch_command(
+            "decision-batch",
+            manifest,
+            manifest_path,
+            [
+                json.dumps(
+                    {
+                        "batch_token": batch["batch_token"],
+                        "items": [
+                            {
+                                "target_id": item["target_id"],
+                                "decision": "retain",
+                                "reason": "历史模板专家经验保留。",
+                            }
+                            for item in batch["items"]
+                        ],
+                        "additions": [],
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+        )
+        appendix_batch = outline_runner.dispatch_command(
+            "appendix-next", manifest, manifest_path, []
+        )
+        self.assertEqual(len(appendix_batch["items"]), len(decisions))
+        appendix_payload = []
+        for index, (item, decision) in enumerate(zip(appendix_batch["items"], decisions)):
+            payload = {
+                "appendix_id": item["appendix_id"],
+                "decision": decision,
+                "reason": "逐项核验招标附表。",
+            }
+            if decision == "include":
+                payload.update(
+                    {
+                        "node_id": f"ADD-APPENDIX-{index + 1}",
+                        "parent_id": "ADD-APPENDIX",
+                    }
+                )
+            appendix_payload.append(payload)
+        appendix_request = {
+            "batch_token": appendix_batch["batch_token"],
+            "items": appendix_payload,
+        }
+        if "include" in decisions:
+            appendix_request["root_addition"] = {
+                "node_id": "ADD-APPENDIX",
+                "parent_id": None,
+                "number": "第2章",
+                "title": "技术附表",
+                "reason": "招标文件包含独立附表。",
+            }
+        outline_runner.dispatch_command(
+            "appendix-decision-batch",
+            manifest,
+            manifest_path,
+            [
+                json.dumps(
+                    appendix_request,
+                    ensure_ascii=False,
+                )
+            ],
+        )
+        evidence_id = str(appendix_batch["items"][0].get("evidence_id") or "")
+        if evidence_id:
+            outline_runner.dispatch_command(
+                "read", manifest, manifest_path, [evidence_id]
+            )
+        if mutate_state is not None:
+            state_path = root / "outline_decision_state.json"
+            state = json_load(state_path)
+            mutate_state(state, appendix_batch["items"])
+            state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        complete_outline_review(outline_runner, manifest, manifest_path)
+        outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+        outline_runner.compose_manifest(manifest, manifest_path)
+        return outline_runner, manifest, manifest_path
+
     def test_bid_gap_planner_routes_fill_template_material_to_ai_fill(self) -> None:
         gap_runner = load_gap_planner_script("run_from_manifest")
 
@@ -766,70 +970,84 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertNotIn(case_specific_text, content)
 
         for principle in (
-            "历史投标模板目录",
-            "最多三级",
-            "模板存在三级目录时",
-            "必须学习到第三级",
-            "完整学习模板一至三级目录",
-            "模板已有第三级目录统一进入结果供用户确认",
-            "逐项判断",
-            "案例、具体项目、产品或系统说明",
-            "第四级及更深层级",
-            "只作为对应第三级节点的内容参考",
-            "再结合招标文件",
-            "自动目录",
-            "目录页",
-            "正文标题结构",
-            "同批对照",
-            "建议增加",
-            "建议删除",
-            "技术附表",
-            "表内栏目",
-            "分组标题本身不输出",
-            "所有实际表单扁平放入",
-            "独立表号",
-            "独立填写区域",
-            "tender_appendix_inventory.json",
-            "following_table_count",
-            "appendix_id",
-            "父子标题不得同时输出",
-            "掌握全部附表标题",
-            "technical-outline.v1",
-            "suggestion_action",
-            "suggestion_reason",
-            "tender_basis",
-            "file_id",
-            "search_text",
-            "children",
-            "固定程序只提取结构事实",
+            "历史模板提供成熟投标经验",
+            "当前招标文件决定本项目约束",
+            "一至三级目录",
             "s2outline prepare",
+            "s2outline template-headings",
             "s2outline headings",
+            "s2outline search",
+            "s2outline section",
+            "next_cursor",
+            "requires_full_review=true",
             "s2outline next-batch",
             "s2outline read",
             "s2outline window",
             "s2outline table",
-            "s2outline tables",
             "s2outline review-batch",
-            "s2outline status",
             "s2outline decision-next",
             "s2outline decision-batch",
+            "一个完整决策单元",
+            "超过 50 个节点的超大章",
+            "每个完整二级小节子树",
+            "不做章节复核",
+            "retain",
+            "suggest_delete",
+            "招标目录没有同名标题，不等于该节点应删除",
+            "独立编制、提交、评审或评分",
+            "`additions` 即使为空也必须写 `[]`",
+            "s2outline appendix-next",
+            "s2outline appendix-decision-batch",
+            "--max-items 40",
+            "严格保持返回顺序",
+            "`source_status=missing` 必须 `exclude`",
+            "root_addition",
+            "`present`",
+            "`missing`",
+            "只选 `include` 或 `exclude`",
+            "只做一次全局复核",
+            "s2outline review-corrections",
+            "s2outline review-complete",
             "s2outline decisions",
             "s2outline compose",
-            "自主选择",
-            "按需详读",
-            "不得把“未判断”自动当成“必要”",
-            "不得直接写入 `outputFile`",
-            "不得现场编写临时 Python",
-            "三级对照",
-            "requirement_ledger.json",
-            "retain",
-            "suggest_add",
-            "suggest_delete",
-            "不得编写批处理脚本",
-            "自动生成或提交",
-            "不得直接读取 `tender_review_chunks.json`",
-            "items` 必须与最近一次 `decision-next`",
+            "不要自行写 `manifest.outputFile`",
             "s2outline finalize",
+            "timeout=300000",
+            "不要检查脚本或包装器",
+            "不要执行同功能的 `template`",
+            "不要直接读取 `template_structure.json`",
+            "普通一级章整章返回",
+            "先做招标到模板的比较",
+            "再做模板到招标的比较",
+            "对剩余节点再判断保留",
+            "内容有投标表达价值，不等于必须独立成章",
+            "宽泛父节点不当然覆盖",
+            "企业通用能力介绍与本项目专项响应",
+            "不得改用 `reason` 规避校验",
+            "从招标侧检查遗漏",
+            "从模板侧检查不适用、重复或可合并节点",
+            "两个差异清单",
+            "保留是处理完差异后的剩余分类",
+            "有投标表达价值可以保留",
+            "不能因此跳过不适用、重复、可合并检查",
+            "一个短关键词或短语",
+            "不能把多个无关关键词拼成一次查询",
+            "不得为了通过门禁任意补读后原样提交原结论",
+            "遍历完整招标目录中与本章主题相关的所有标题",
+            "疑似独立成果必须逐项读原文",
+            "附表只覆盖表格填写",
+            "不当然覆盖正文方案、说明、报告或承诺",
+            "逐项重扫完整招标目录",
+            "完整掌握模板结构",
+            "先识别响应单元，再比较目录节点",
+            "语义等价且粒度相当",
+            "单独表达能够让评审人更清楚地看到",
+            "父章节能够容纳内容，不等于目录已经覆盖",
+            "招标明确要求提供成果",
+            "仅有营销属性不是删除理由",
+            "招标目录只用于定位，不能据标题判定覆盖",
+            "每个二、三级招标章节",
+            "未读正文的相关章节不能判定已覆盖",
         ):
             self.assertIn(principle, content)
 
@@ -914,12 +1132,363 @@ class TocSkillScriptTests(unittest.TestCase):
         dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")
 
         commands = (
-            "prepare|template|headings|next-batch|read|window|table|tables|"
-            "review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize"
+            "prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|"
+            "review-batch|decision-next|decision-batch|decision-reopen|review-corrections|"
+            "appendix-next|appendix-decision-batch|review-complete|decisions|compose|"
+            "validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
         self.assertIn(f"usage: s2outline [{commands}] <manifest> [...]", dockerfile)
         self.assertIn('run_from_manifest.py --require-compose "$@"', dockerfile)
+
+    def test_bid_outline_template_headings_pages_complete_template_structure(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                template_count=50,
+                heading_count=0,
+            )
+
+            first = outline_runner.dispatch_command(
+                "template-headings", manifest, manifest_path, ["--cursor", "0", "--page-size", "20"]
+            )
+            second = outline_runner.dispatch_command(
+                "template-headings",
+                manifest,
+                manifest_path,
+                ["--cursor", first["next_cursor"], "--page-size", "20"],
+            )
+            third = outline_runner.dispatch_command(
+                "template-headings",
+                manifest,
+                manifest_path,
+                ["--cursor", second["next_cursor"], "--page-size", "20"],
+            )
+
+        self.assertEqual(len(first["items"]), 20)
+        self.assertEqual(len(second["items"]), 20)
+        self.assertEqual(len(third["items"]), 10)
+        self.assertEqual(first["item_count"], 50)
+        self.assertFalse(first["complete"])
+        self.assertTrue(third["complete"])
+        self.assertEqual(third["next_cursor"], "")
+        self.assertEqual(
+            [item["target_id"] for page in (first, second, third) for item in page["items"]],
+            [f"TPL-{index:04d}" for index in range(1, 51)],
+        )
+
+    def test_bid_outline_agent_navigation_outputs_stay_below_hard_limit(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=300,
+                heading_text="招标技术要求",
+            )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "number": f"附表A.{index}",
+                                "title": f"技术响应表{index}",
+                                "following_table_count": 1,
+                            }
+                            for index in range(1, 65)
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            chunks = json_load(root / "tender_review_chunks.json")
+            chunks["input_fingerprint"] = "test-navigation-input"
+            (root / "tender_review_chunks.json").write_text(
+                json.dumps(chunks, ensure_ascii=False), encoding="utf-8"
+            )
+            files_by_id, _ = outline_runner.review_workflow._collect_heading_files(chunks)
+            inventory = json_load(root / "tender_appendix_inventory.json")
+            headings_state = json_load(root / "tender_headings_state.json")
+            headings_state["input_fingerprint"] = "test-navigation-input"
+            headings_state["headings_catalog_digest"] = (
+                outline_runner.review_workflow._heading_catalog_digest(
+                    files_by_id, inventory["items"]
+                )
+            )
+            (root / "tender_headings_state.json").write_text(
+                json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
+            )
+
+            stdout_sizes: dict[str, int] = {}
+
+            def invoke(command: str, *args: str) -> dict:
+                stdout = io.StringIO()
+                with patch.object(
+                    sys,
+                    "argv",
+                    ["run_from_manifest.py", command, str(manifest_path), *args],
+                ), redirect_stdout(stdout):
+                    outline_runner.main()
+                output = stdout.getvalue()
+                stdout_sizes[command] = len(output.encode("utf-8"))
+                self.assertLess(stdout_sizes[command], 24000, stdout_sizes)
+                self.assertNotIn("output truncated", output.lower())
+                return json.loads(output)
+
+            invoke("headings", "--page-size", "80")
+            decision_batch = invoke("decision-next", "--max-items", "1")
+            self.assertNotIn("comparison_context", decision_batch)
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": decision_batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": decision_batch["items"][0]["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板专家经验保留。",
+                                }
+                            ],
+                            "additions": [],
+                        }
+                    )
+                ],
+            )
+            appendix_batch = invoke("appendix-next", "--max-items", "20")
+
+        self.assertEqual(len(appendix_batch["items"]), 20)
+        self.assertEqual(
+            set(stdout_sizes),
+            {"headings", "decision-next", "appendix-next"},
+        )
+
+    def test_bid_outline_headings_output_limit_rolls_back_state_and_can_retry(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=2,
+                heading_text="超长目录标题" * 800,
+            )
+            chunks = json_load(root / "tender_review_chunks.json")
+            chunks["input_fingerprint"] = "headings-rollback-input"
+            (root / "tender_review_chunks.json").write_text(
+                json.dumps(chunks, ensure_ascii=False), encoding="utf-8"
+            )
+            files_by_id, _ = outline_runner.review_workflow._collect_heading_files(chunks)
+            state_path = root / "tender_headings_state.json"
+            headings_state = json_load(state_path)
+            headings_state["input_fingerprint"] = "headings-rollback-input"
+            headings_state["headings_catalog_digest"] = (
+                outline_runner.review_workflow._heading_catalog_digest(files_by_id, [])
+            )
+            state_path.write_text(
+                json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
+            )
+            state_before = state_path.read_bytes()
+
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "headings",
+                    str(manifest_path),
+                    "--page-size",
+                    "2",
+                ],
+            ), redirect_stdout(stdout), self.assertRaisesRegex(
+                SystemExit, r"command=headings, actual_bytes=\d+"
+            ) as raised:
+                outline_runner.main()
+
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertRegex(str(raised.exception), r"--page-size.*--cursor")
+
+            retry_stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "headings",
+                    str(manifest_path),
+                    "--cursor",
+                    "0",
+                    "--page-size",
+                    "1",
+                ],
+            ), redirect_stdout(retry_stdout):
+                outline_runner.main()
+            retry = json.loads(retry_stdout.getvalue())
+
+        self.assertEqual(retry["cursor"], "0")
+        self.assertEqual(retry["next_cursor"], "1")
+        self.assertEqual(retry["returned_heading_count"], 1)
+
+    def test_bid_outline_appendix_output_limit_rolls_back_state_and_can_retry(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path = write_decision_context_fixture(root, heading_count=0)
+
+            decision_stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "decision-next",
+                    str(manifest_path),
+                    "--max-items",
+                    "1",
+                ],
+            ), redirect_stdout(decision_stdout):
+                outline_runner.main()
+            decision_batch = json.loads(decision_stdout.getvalue())
+
+            decision_payload = json.dumps(
+                {
+                    "batch_token": decision_batch["batch_token"],
+                    "items": [
+                        {
+                            "target_id": decision_batch["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [],
+                }
+            )
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "decision-batch",
+                    str(manifest_path),
+                    decision_payload,
+                ],
+            ), redirect_stdout(io.StringIO()):
+                outline_runner.main()
+
+            long_title = "超长技术响应附表" * 500
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "number": f"附表A.{index}",
+                                "title": long_title,
+                                "following_table_count": 1,
+                            }
+                            for index in range(1, 3)
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            state_path = root / outline_runner.decision_workflow.STATE_FILE_NAME
+            state_before = state_path.read_bytes()
+
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "appendix-next",
+                    str(manifest_path),
+                    "--max-items",
+                    "2",
+                ],
+            ), redirect_stdout(stdout), self.assertRaisesRegex(
+                SystemExit, r"command=appendix-next, actual_bytes=\d+"
+            ) as raised:
+                outline_runner.main()
+
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertIn("--max-items", str(raised.exception))
+
+            retry_stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "run_from_manifest.py",
+                    "appendix-next",
+                    str(manifest_path),
+                    "--max-items",
+                    "1",
+                ],
+            ), redirect_stdout(retry_stdout):
+                outline_runner.main()
+            retry = json.loads(retry_stdout.getvalue())
+
+        self.assertEqual(len(retry["items"]), 1)
+        self.assertEqual(retry["remaining_count"], 2)
+
+    def test_bid_outline_navigation_output_limit_counts_linux_lf_boundary(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "s2_input.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+
+            below_limit = {"payload": "x" * 23984}
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                ["run_from_manifest.py", "headings", str(manifest_path)],
+            ), patch.object(
+                outline_runner, "dispatch_command", return_value=below_limit
+            ), redirect_stdout(stdout):
+                outline_runner.main()
+            self.assertEqual(len(stdout.getvalue().encode("utf-8")), 23999)
+            self.assertTrue(stdout.getvalue().endswith("\n"))
+            self.assertFalse(stdout.getvalue().endswith("\r\n"))
+
+            at_limit = {"payload": "x" * 23985}
+            decision_state_path = (
+                manifest_path.parent / outline_runner.decision_workflow.STATE_FILE_NAME
+            )
+
+            def write_new_state(*_args, **_kwargs):
+                decision_state_path.write_bytes(b"new navigation state")
+                return at_limit
+
+            for command in ("decision-next",):
+                with self.subTest(command=command), patch.object(
+                    sys,
+                    "argv",
+                    ["run_from_manifest.py", command, str(manifest_path)],
+                ), patch.object(
+                    outline_runner, "dispatch_command", side_effect=write_new_state
+                ), redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                    SystemExit, rf"command={command}, actual_bytes=24000"
+                ):
+                    outline_runner.main()
+                self.assertFalse(decision_state_path.exists())
 
     def test_bid_outline_cli_runtime_compose_gate_cannot_be_disabled_by_manifest(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1637,6 +2206,591 @@ class TocSkillScriptTests(unittest.TestCase):
             "建议删除",
         )
 
+    def test_bid_outline_decision_next_returns_only_current_template_chapter(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                template_count=50,
+                template_title="超长中文技术方案章节" * 30,
+            )
+
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        self.assertLess(len(compact), 24000)
+        self.assertEqual(len(batch["items"]), 1)
+        self.assertEqual(batch["remaining_count"], 50)
+        self.assertNotIn("comparison_context", batch)
+        self.assertEqual(
+            batch["decision_steps"],
+            [
+                "定位本章相关的全部招标二、三级章节，即使与模板同名也逐个用 section 连续读到 complete=true；同名父节点或标题相似不等于响应粒度相当，search 只用于跨章节定位，关键词抽查不算完成",
+                "逐项提取正文中“提供、提交、编制、出具”指向的方案、报告、承诺、计算书、清单和交付物；只有完整模板存在语义等价且粒度相当的节点才算覆盖，未覆盖且值得独立表达的形成 additions",
+                "再从模板侧找出不适用、重复、可合并或没有独立成章价值的节点，形成 suggest_delete",
+                "最后把剩余节点 retain；不得用 reason 把招标直接要求伪装成历史模板经验",
+            ],
+        )
+        self.assertEqual(
+            batch["submission_contract"],
+            {
+                "required_fields": ["batch_token", "items", "additions"],
+                "items_must_match_batch": True,
+                "additions_must_be_explicit": True,
+                "new_controlled_read_required": True,
+            },
+        )
+
+    def test_bid_outline_decision_next_uses_one_complete_root_chapter(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(root, heading_count=0)
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "template-structure.v1",
+                        "items": [
+                            {"number": "第1章", "title": "总体方案", "level": 1},
+                            {"number": "1.1", "title": "设计依据", "level": 2},
+                            {"number": "1.1.1", "title": "采用标准", "level": 3},
+                            {"number": "第2章", "title": "供货方案", "level": 1},
+                            {"number": "2.1", "title": "供货范围", "level": 2},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            first = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, ["--max-items", "1"]
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": first["batch_token"],
+                            "items": [
+                                {"target_id": item["target_id"], "decision": "retain"}
+                                for item in first["items"]
+                            ],
+                            "additions": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            second = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+        self.assertEqual(first["chapter_id"], "TPL-0001")
+        self.assertEqual([item["target_id"] for item in first["items"]], ["TPL-0001", "TPL-0002", "TPL-0003"])
+        self.assertEqual(second["chapter_id"], "TPL-0004")
+        self.assertEqual([item["target_id"] for item in second["items"]], ["TPL-0004", "TPL-0005"])
+
+    def test_bid_outline_decision_next_splits_oversized_chapter_by_complete_level_two_sections(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(root, heading_count=0)
+            items = [{"number": "第1章", "title": "专题方案", "level": 1}]
+            for section in range(1, 4):
+                items.append(
+                    {"number": f"1.{section}", "title": f"专题{section}", "level": 2}
+                )
+                items.extend(
+                    {
+                        "number": f"1.{section}.{child}",
+                        "title": f"专题{section}响应内容{child}",
+                        "level": 3,
+                    }
+                    for child in range(1, 21)
+                )
+            (root / "template_structure.json").write_text(
+                json.dumps(
+                    {"schema_version": "template-structure.v1", "items": items},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            chapter_root = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": chapter_root["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": chapter_root["items"][0]["target_id"],
+                                    "decision": "retain",
+                                    "reason": "保留完整专题方案根章节。",
+                                }
+                            ],
+                            "additions": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            first_section = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+        self.assertEqual(chapter_root["chapter_id"], "TPL-0001")
+        self.assertEqual(chapter_root["decision_unit_id"], "TPL-0001")
+        self.assertEqual(
+            [item["target_id"] for item in chapter_root["items"]], ["TPL-0001"]
+        )
+        self.assertEqual(first_section["chapter_id"], "TPL-0001")
+        self.assertEqual(first_section["decision_unit_id"], "TPL-0002")
+        self.assertEqual(len(first_section["items"]), 21)
+        self.assertEqual(first_section["items"][0]["number"], "1.1")
+        self.assertEqual(first_section["items"][-1]["number"], "1.1.20")
+
+    def test_bid_outline_decision_next_uses_actual_first_page_size_for_large_chapter(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root,
+                heading_count=160,
+                heading_text="招标技术要求与独立响应事项" * 4,
+            )
+            items = [{"number": "1", "title": "总体技术方案", "level": 1}]
+            items.extend(
+                {
+                    "number": f"1.{index}",
+                    "title": "需要结合招标目录逐项判断的专业技术专题" * 6,
+                    "level": 2,
+                }
+                for index in range(1, 30)
+            )
+            (root / "template_structure.json").write_text(
+                json.dumps({"schema_version": "template-structure.v1", "items": items}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+
+        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(len(batch["items"]), 30)
+        self.assertNotIn("comparison_context", batch)
+        self.assertLess(len(compact), 24000)
+
+    def test_bid_outline_decision_batch_requires_explicit_additions(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(root, heading_count=0)
+            batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+
+            with self.assertRaisesRegex(SystemExit, "additions.*required"):
+                outline_runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {"target_id": item["target_id"], "decision": "retain"}
+                                    for item in batch["items"]
+                                ],
+                            }
+                        )
+                    ],
+                )
+
+    def test_bid_outline_decision_batch_requires_expert_reason_or_read_tender_evidence(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 专项方案", style="Heading 1")
+            tender_doc.add_paragraph("投标人必须提交海上运输安全专项方案。")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+
+            self.assertNotIn("comparison_context", batch)
+            with self.assertRaisesRegex(SystemExit, "evidence_id.*reason"):
+                outline_runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {"target_id": batch["items"][0]["target_id"], "decision": "retain"}
+                                ],
+                                "additions": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
+
+            search = outline_runner.dispatch_command(
+                "search", manifest, manifest_path, ["运输安全"]
+            )
+            evidence_id = search["results"][0]["evidence_id"]
+            with self.assertRaisesRegex(SystemExit, "新的受控正文阅读"):
+                outline_runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": batch["items"][0]["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板中的成熟技术方案章节。",
+                                    }
+                                ],
+                                "additions": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
+            payload = {
+                "batch_token": batch["batch_token"],
+                "items": [
+                    {
+                        "target_id": batch["items"][0]["target_id"],
+                        "decision": "retain",
+                        "evidence_id": evidence_id,
+                    }
+                ],
+                "additions": [
+                    {
+                        "node_id": "AI-0001",
+                        "parent_id": batch["items"][0]["target_id"],
+                        "number": "1.1",
+                        "title": "海上运输安全专项方案",
+                        "reason": "招标文件明确要求独立提交。",
+                        "evidence_id": evidence_id,
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(SystemExit, "尚未通过受控阅读"):
+                outline_runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [json.dumps(payload, ensure_ascii=False)],
+                )
+            outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            result = outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [json.dumps(payload, ensure_ascii=False)],
+            )
+            state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(result["decided_count"], 1)
+        self.assertEqual(
+            state["template_decisions"][batch["items"][0]["target_id"]]["tender_basis"]["evidence_id"],
+            evidence_id,
+        )
+        self.assertEqual(state["additions"][0]["tender_basis"]["evidence_id"], evidence_id)
+
+    def test_bid_outline_appendix_candidates_keep_missing_source_status(self) -> None:
+        review_workflow = load_outline_script("review_workflow")
+
+        items = review_workflow.decision_appendix_items_from_inventory(
+            {
+                "schema_version": "tender-appendix-inventory.v1",
+                "items": [
+                    {"file_id": "TEN-1", "number": "技术附表E", "title": "技术要求", "following_table_count": 0},
+                    {"file_id": "TEN-1", "number": "E.3", "title": "偏差表", "following_table_count": 1},
+                    {"file_id": "TEN-1", "number": "E.4", "title": "承诺表", "following_table_count": 0},
+                ],
+            }
+        )
+
+        self.assertEqual([item["number"] for item in items], ["E.3", "E.4"])
+        self.assertEqual([item["source_status"] for item in items], ["present", "missing"])
+
+    def test_bid_outline_global_review_is_required_and_invalidated_by_reopen(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(root, heading_count=0)
+            batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [{"target_id": batch["items"][0]["target_id"], "decision": "retain"}],
+                            "additions": [],
+                        }
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(SystemExit, "全局复核"):
+                outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+            reviewed = outline_runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "已对照招标目录完成全局复核。", "issues": []}, ensure_ascii=False)],
+            )
+            outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+            outline_runner.dispatch_command(
+                "decision-reopen", manifest, manifest_path, [batch["chapter_id"]]
+            )
+            reopened = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": reopened["batch_token"],
+                            "items": [{"target_id": reopened["items"][0]["target_id"], "decision": "retain"}],
+                            "additions": [],
+                        }
+                    )
+                ],
+            )
+            with self.assertRaisesRegex(SystemExit, "全局复核"):
+                outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+
+        self.assertTrue(reviewed["review_digest"])
+
+    def test_bid_outline_global_review_requires_new_controlled_read_after_all_decisions(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 技术要求", style="Heading 1")
+            tender_doc.add_paragraph("投标人应提交完整技术方案。")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            section_id = headings["files"][0]["items"][0]["section_id"]
+            section = outline_runner.dispatch_command(
+                "section", manifest, manifest_path, [section_id]
+            )
+            evidence_id = section["records"][1]["evidence_id"]
+            batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            outline_runner.dispatch_command(
+                "read", manifest, manifest_path, [evidence_id]
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": batch["items"][0]["target_id"],
+                                    "decision": "retain",
+                                    "evidence_id": evidence_id,
+                                }
+                            ],
+                            "additions": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            payload = json.dumps(
+                {"review_summary": "已从招标侧完成全局查漏。", "issues": []},
+                ensure_ascii=False,
+            )
+            with self.assertRaisesRegex(SystemExit, "新的正文阅读"):
+                outline_runner.dispatch_command(
+                    "review-complete", manifest, manifest_path, [payload]
+                )
+            outline_runner.dispatch_command("section", manifest, manifest_path, [section_id])
+            completed = outline_runner.dispatch_command(
+                "review-complete", manifest, manifest_path, [payload]
+            )
+
+        self.assertTrue(completed["review_complete"])
+
+    def test_bid_outline_global_review_corrections_apply_omissions_without_reopening_chapter(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 专项要求", style="Heading 1")
+            tender_doc.add_paragraph("投标人应独立提交项目专项承诺。")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            section = outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            evidence_id = section["records"][1]["evidence_id"]
+            batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            target_id = batch["items"][0]["target_id"]
+            outline_runner.dispatch_command("read", manifest, manifest_path, [evidence_id])
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": target_id,
+                                    "decision": "retain",
+                                    "evidence_id": evidence_id,
+                                }
+                            ],
+                            "additions": [],
+                        }
+                    )
+                ],
+            )
+            outline_runner.dispatch_command("read", manifest, manifest_path, [evidence_id])
+
+            corrected = outline_runner.dispatch_command(
+                "review-corrections",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "items": [
+                                {
+                                    "target_id": target_id,
+                                    "decision": "suggest_delete",
+                                    "reason": "全局复核发现该节点与新增专项重复。",
+                                }
+                            ],
+                            "additions": [
+                                {
+                                    "node_id": "ADD-REVIEW-1",
+                                    "parent_id": target_id,
+                                    "number": "1.1",
+                                    "title": "项目专项承诺",
+                                    "reason": "全局复核发现招标要求独立提交。",
+                                    "evidence_id": evidence_id,
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            with self.assertRaisesRegex(SystemExit, "全局复核"):
+                outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+            outline_runner.dispatch_command("read", manifest, manifest_path, [evidence_id])
+            complete_outline_review(outline_runner, manifest, manifest_path)
+            decisions = outline_runner.dispatch_command(
+                "decisions", manifest, manifest_path, []
+            )
+            decision_payload = json_load(Path(decisions["decisionsFile"]))
+
+        self.assertEqual(corrected["corrected_item_count"], 1)
+        self.assertEqual(corrected["added_count"], 1)
+        self.assertEqual(decision_payload["changes"][0]["node_id"], "ADD-REVIEW-1")
+        self.assertEqual(
+            decision_payload["template_decisions"][0],
+            {
+                "target_id": target_id,
+                "decision": "suggest_delete",
+                "reason": "全局复核发现该节点与新增专项重复。",
+            },
+        )
+
     def test_bid_outline_controlled_decision_batches_build_final_decisions(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
@@ -1659,9 +2813,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            first = outline_runner.dispatch_command(
-                "decision-next", manifest, manifest_path, ["--max-items", "2"]
-            )
+            first = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
             first_result = outline_runner.dispatch_command(
                 "decision-batch",
                 manifest,
@@ -1674,175 +2826,21 @@ class TocSkillScriptTests(unittest.TestCase):
                                 {"target_id": item["target_id"], "decision": "retain"}
                                 for item in first["items"]
                             ],
+                            "additions": [],
                         }
                     )
                 ],
             )
-            second = outline_runner.dispatch_command(
-                "decision-next", manifest, manifest_path, ["--max-items", "2"]
-            )
-            outline_runner.dispatch_command(
-                "decision-batch",
-                manifest,
-                manifest_path,
-                [
-                    json.dumps(
-                        {
-                            "batch_token": second["batch_token"],
-                            "items": [
-                                {
-                                    "target_id": second["items"][0]["target_id"],
-                                    "decision": "suggest_delete",
-                                    "reason": "The tender excludes project cases.",
-                                }
-                            ],
-                        }
-                    )
-                ],
-            )
+            complete_outline_review(outline_runner, manifest, manifest_path)
             finalized = outline_runner.dispatch_command(
                 "decisions", manifest, manifest_path, []
             )
 
-        self.assertEqual(first_result["decided_count"], 2)
+        self.assertEqual(first_result["decided_count"], 3)
         self.assertEqual(finalized["templateDecisionCount"], 3)
         self.assertEqual(finalized["remainingTemplateDecisionCount"], 0)
 
-    def test_bid_outline_decision_batch_includes_compact_tender_outline_for_comparison(self) -> None:
-        outline_runner = load_outline_script("run_from_manifest")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            manifest_path = root / "s2_input.json"
-            manifest = {
-                "workDir": str(root),
-                "outputFile": str(root / "toc.json"),
-                "tenderFiles": [{"id": "TEN-1", "path": str(root / "tender.docx")}],
-            }
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            (root / "template_structure.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": "template-structure.v1",
-                        "items": [
-                            {"number": "第1章", "title": "历史项目方案", "level": 1},
-                            {"number": "1.1", "title": "海上专项", "level": 2},
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            (root / "tender_review_chunks.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": "tender-review-chunks.v1",
-                        "chunks": [
-                            {
-                                "file_id": "TEN-1",
-                                "file_name": "当前项目招标文件.docx",
-                                "blocks": [
-                                    {
-                                        "type": "paragraph",
-                                        "evidence_id": "TEN-1:B000001",
-                                        "body_index": 1,
-                                        "text": "1 陆上风电项目技术要求",
-                                        "toc_level": 1,
-                                        "heading_level": 0,
-                                        "structural_title_level": 1,
-                                    },
-                                    {
-                                        "type": "paragraph",
-                                        "evidence_id": "TEN-1:B000002",
-                                        "body_index": 2,
-                                        "text": "1.1 正文标题不应覆盖可靠目录",
-                                        "toc_level": 0,
-                                        "heading_level": 2,
-                                        "structural_title_level": 2,
-                                    },
-                                ],
-                            }
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            (root / "tender_headings_state.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": "tender-headings-state.v1",
-                        "next_cursor": 0,
-                        "complete": True,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (root / "tender_appendix_inventory.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": "tender-appendix-inventory.v1",
-                        "items": [
-                            {
-                                "file_id": "TEN-1",
-                                "file_name": "当前项目招标文件.docx",
-                                "number": "技术附表A",
-                                "title": "技术附表A",
-                                "raw_text": "技术附表A",
-                                "following_table_count": 0,
-                            },
-                            {
-                                "file_id": "TEN-1",
-                                "file_name": "当前项目招标文件.docx",
-                                "number": "附表A.1",
-                                "title": "投标机型总方案信息表",
-                                "raw_text": "附表A.1 投标机型总方案信息表",
-                                "following_table_count": 1,
-                            },
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            batch = outline_runner.dispatch_command(
-                "decision-next", manifest, manifest_path, []
-            )
-
-        self.assertEqual(len(batch["items"]), 2)
-        self.assertEqual(batch["comparison_context"]["heading_count"], 1)
-        self.assertEqual(
-            batch["comparison_context"]["files"],
-            [
-                {
-                    "file_id": "TEN-1",
-                    "file_name": "当前项目招标文件.docx",
-                    "source": "toc",
-                    "items": [
-                        {
-                            "evidence_id": "TEN-1:B000001",
-                            "level": 1,
-                            "text": "1 陆上风电项目技术要求",
-                        }
-                    ],
-                }
-            ],
-        )
-        self.assertEqual(
-            batch["comparison_context"]["appendices"],
-            [
-                {
-                    "appendix_id": "APP-0001",
-                    "file_id": "TEN-1",
-                    "number": "附表A.1",
-                    "title": "投标机型总方案信息表",
-                    "following_table_count": 1,
-                }
-            ],
-        )
-
-    def test_bid_outline_appendix_addition_copies_number_and_title_from_inventory(self) -> None:
+    def test_bid_outline_decision_batch_rejects_appendix_additions_outside_queue(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1883,6 +2881,60 @@ class TocSkillScriptTests(unittest.TestCase):
             batch = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
             )
+            with self.assertRaisesRegex(
+                SystemExit, "技术附表必须通过 appendix-decision-batch 决策"
+            ):
+                outline_runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": batch["items"][0]["target_id"],
+                                        "decision": "retain",
+                                    }
+                                ],
+                                "additions": [
+                                    {
+                                        "node_id": "ADD-TECH-APPENDIX",
+                                        "parent_id": None,
+                                        "number": "第2章",
+                                        "title": "技术附表",
+                                        "reason": "招标包含实际技术附表。",
+                                    },
+                                    {
+                                        "node_id": "ADD-APPENDIX-A1",
+                                        "parent_id": "ADD-TECH-APPENDIX",
+                                        "appendix_id": "APP-0001",
+                                        "reason": "招标结构化清单中的实际表单。",
+                                    },
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
+            state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(state["additions"], [])
+        self.assertEqual(state["appendix_decisions"], {})
+        self.assertEqual(state["active_batch"]["target_ids"], ["TPL-0001"])
+
+    def test_bid_outline_appendix_batches_require_explicit_include_or_exclude(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(root, heading_count=0)
+            template_batch = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            with self.assertRaisesRegex(SystemExit, "先完成模板"):
+                outline_runner.dispatch_command("appendix-next", manifest, manifest_path, [])
             outline_runner.dispatch_command(
                 "decision-batch",
                 manifest,
@@ -1890,35 +2942,1504 @@ class TocSkillScriptTests(unittest.TestCase):
                 [
                     json.dumps(
                         {
-                            "batch_token": batch["batch_token"],
+                            "batch_token": template_batch["batch_token"],
                             "items": [
-                                {"target_id": batch["items"][0]["target_id"], "decision": "retain"}
-                            ],
-                            "additions": [
                                 {
-                                    "node_id": "ADD-TECH-APPENDIX",
-                                    "parent_id": None,
-                                    "number": "第2章",
-                                    "title": "技术附表",
-                                    "reason": "招标包含实际技术附表。",
-                                },
-                                {
-                                    "node_id": "ADD-APPENDIX-A1",
-                                    "parent_id": "ADD-TECH-APPENDIX",
-                                    "appendix_id": "APP-0001",
-                                    "reason": "招标结构化清单中的实际表单。",
-                                },
+                                    "target_id": template_batch["items"][0]["target_id"],
+                                    "decision": "retain",
+                                }
                             ],
-                        },
-                        ensure_ascii=False,
+                            "additions": [],
+                        }
                     )
                 ],
             )
+            inventory_path = root / "tender_appendix_inventory.json"
+            inventory_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "file_id": "TEN-1",
+                                "number": f"Appendix A.{index}",
+                                "title": f"Controlled form {index}",
+                                "following_table_count": 0 if index == 2 else 1,
+                            }
+                            for index in range(1, 4)
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            for invalid_max_items in (0, 41):
+                with self.subTest(max_items=invalid_max_items):
+                    with self.assertRaisesRegex(SystemExit, "between 1 and 40"):
+                        outline_runner.dispatch_command(
+                            "appendix-next",
+                            manifest,
+                            manifest_path,
+                            ["--max-items", str(invalid_max_items)],
+                        )
+
+            for invalid_args in (
+                ["--unknown"],
+                ["--max-items"],
+                ["--max-items", "2", "extra"],
+            ):
+                with self.subTest(invalid_args=invalid_args):
+                    with self.assertRaisesRegex(SystemExit, "appendix-next usage"):
+                        outline_runner.dispatch_command(
+                            "appendix-next", manifest, manifest_path, invalid_args
+                        )
+
+            batch = outline_runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, ["--max-items", "2"]
+            )
+            self.assertEqual(
+                [item["appendix_id"] for item in batch["items"]],
+                ["APP-0001", "APP-0002"],
+            )
+            self.assertEqual(batch["decided_count"], 0)
+            self.assertEqual(batch["remaining_count"], 3)
+            self.assertFalse(batch["complete"])
+            self.assertEqual(
+                batch["submission_contract"],
+                {
+                    "items_must_match_batch": True,
+                    "items_must_keep_returned_order": True,
+                    "exclude_fields": ["appendix_id", "decision", "reason"],
+                    "include_fields": [
+                        "appendix_id",
+                        "decision",
+                        "node_id",
+                        "parent_id",
+                        "reason",
+                    ],
+                    "include_parent_id": "必须引用本批 root_addition.node_id 或已有唯一技术附表根节点",
+                    "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
+                    "root_addition": {
+                        "required_when": "首次 include 且尚无唯一的技术附表根节点",
+                        "fields": ["node_id", "reason"],
+                        "generated_fields": {
+                            "parent_id": None,
+                            "number": "附录",
+                            "title": "技术附表",
+                        },
+                    },
+                },
+            )
+
+            with self.assertRaisesRegex(
+                SystemExit, "appendix-decision-batch requires exactly one JSON payload"
+            ):
+                outline_runner.dispatch_command(
+                    "appendix-decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "appendix_id": item["appendix_id"],
+                                        "decision": "exclude",
+                                        "reason": "Not required.",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                            }
+                        ),
+                        "extra",
+                    ],
+                )
+
+            invalid_item_lists = [
+                [
+                    {"appendix_id": "APP-0001", "decision": "exclude", "reason": "no"},
+                    {"appendix_id": "APP-0001", "decision": "exclude", "reason": "no"},
+                ],
+                [
+                    {"appendix_id": "APP-0001", "decision": "exclude", "reason": "no"},
+                    {"appendix_id": "APP-9999", "decision": "exclude", "reason": "no"},
+                ],
+                [
+                    {"appendix_id": "APP-0002", "decision": "exclude", "reason": "no"},
+                    {"appendix_id": "APP-0001", "decision": "exclude", "reason": "no"},
+                ],
+                [
+                    {"appendix_id": "APP-0001", "decision": "exclude", "reason": "no"},
+                ],
+            ]
+            for invalid_items in invalid_item_lists:
+                with self.subTest(invalid_items=invalid_items):
+                    with self.assertRaisesRegex(SystemExit, "exactly match"):
+                        outline_runner.dispatch_command(
+                            "appendix-decision-batch",
+                            manifest,
+                            manifest_path,
+                            [json.dumps({"batch_token": batch["batch_token"], "items": invalid_items})],
+                        )
+
+            with self.assertRaisesRegex(SystemExit, "source_status=missing.*must be exclude"):
+                outline_runner.dispatch_command(
+                    "appendix-decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "appendix_id": "APP-0001",
+                                        "decision": "exclude",
+                                        "reason": "Not required.",
+                                    },
+                                    {
+                                        "appendix_id": "APP-0002",
+                                        "decision": "include",
+                                        "node_id": "ADD-APP-2",
+                                        "parent_id": "ADD-APP-ROOT",
+                                        "reason": "Include it.",
+                                    },
+                                ],
+                            }
+                        )
+                    ],
+                )
+            state_after_missing = json_load(root / "outline_decision_state.json")
+            self.assertEqual(state_after_missing["appendix_decisions"], {})
+            self.assertEqual(
+                state_after_missing["active_appendix_batch"]["appendix_ids"],
+                ["APP-0001", "APP-0002"],
+            )
+
+            outline_runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "appendix_id": item["appendix_id"],
+                                    "decision": "exclude",
+                                    "reason": "Not required by this tender.",
+                                }
+                                for item in batch["items"]
+                            ],
+                        }
+                    )
+                ],
+            )
+            second = outline_runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, ["--max-items", "2"]
+            )
+            self.assertEqual(
+                [item["appendix_id"] for item in second["items"]], ["APP-0003"]
+            )
+
+            inventory = json_load(inventory_path)
+            inventory["items"][2]["title"] = "Changed after token issuance"
+            inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "inventory.*changed"):
+                outline_runner.dispatch_command("appendix-next", manifest, manifest_path, [])
+            with self.assertRaisesRegex(SystemExit, "inventory.*changed"):
+                outline_runner.dispatch_command(
+                    "appendix-decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": second["batch_token"],
+                                "items": [
+                                    {
+                                        "appendix_id": "APP-0003",
+                                        "decision": "exclude",
+                                        "reason": "Not required.",
+                                    }
+                                ],
+                            }
+                        )
+                    ],
+                )
+            with self.assertRaisesRegex(SystemExit, "inventory.*changed"):
+                outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
+
+    def test_bid_outline_chapter_decisions_are_isolated_and_merge_completely(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [
+                {"number": "1", "title": "总体方案", "level": 1},
+                {"number": "1.1", "title": "实施组织", "level": 2},
+                {"number": "2", "title": "质量安全", "level": 1},
+                {"number": "2.1", "title": "质量保证", "level": 2},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chapter_catalog = decision_workflow.decision_chapters(structure)
+            chapter_dirs = {
+                item["chapter_id"]: root / item["chapter_id"]
+                for item in chapter_catalog["chapters"]
+            }
+            chapter_titles = {}
+            chapter_parent_ids = {}
+            for chapter_id, chapter_dir in chapter_dirs.items():
+                chapter_dir.mkdir()
+                while True:
+                    batch = decision_workflow.next_decision_batch(
+                        chapter_dir,
+                        structure,
+                        chapter_id=chapter_id,
+                    )
+                    if batch["complete"]:
+                        break
+                    chapter_titles[chapter_id] = tuple(item["title"] for item in batch["items"])
+                    chapter_parent_ids[chapter_id] = batch["items"][0]["target_id"]
+                    other_parent_id = next(
+                        item["template_id"]
+                        for item in decision_workflow._annotated_items(structure)[1]
+                        if item["template_id"] not in {
+                            batch_item["target_id"] for batch_item in batch["items"]
+                        }
+                    )
+                    with self.assertRaisesRegex(SystemExit, "outside the active chapter"):
+                        decision_workflow.submit_decision_batch(
+                            chapter_dir,
+                            structure,
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": item["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板专家经验仍适用。",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                                "additions": [
+                                    {
+                                        "node_id": "ADD-0001",
+                                        "parent_id": other_parent_id,
+                                        "number": "1.9",
+                                        "title": "跨章新增",
+                                        "reason": "不允许跨章挂载。",
+                                    }
+                                ],
+                            },
+                            chapter_id=chapter_id,
+                        )
+                    decision_workflow.submit_decision_batch(
+                        chapter_dir,
+                        structure,
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板专家经验仍适用。",
+                                }
+                                for item in batch["items"]
+                            ],
+                            "additions": [
+                                {
+                                    "node_id": "ADD-0001",
+                                    "parent_id": batch["items"][0]["target_id"],
+                                    "number": "1.9",
+                                    "title": "本章专项响应",
+                                    "reason": "本章需要独立表达。",
+                                }
+                            ],
+                        },
+                        chapter_id=chapter_id,
+                    )
+
+            merged = decision_workflow.merge_chapter_decisions(
+                root,
+                structure,
+                chapter_dirs,
+            )
             state = json_load(root / "outline_decision_state.json")
 
-        appendix_change = state["additions"][1]
-        self.assertEqual(appendix_change["number"], "附表A.1")
-        self.assertEqual(appendix_change["title"], "投标机型总方案信息表")
+        self.assertEqual(chapter_catalog["chapter_count"], 2)
+        self.assertEqual(set(chapter_titles.values()), {
+            ("总体方案", "实施组织"),
+            ("质量安全", "质量保证"),
+        })
+        self.assertTrue(merged["complete"])
+        self.assertEqual(merged["decided_count"], 4)
+        self.assertEqual(merged["addition_count"], 2)
+        self.assertEqual(len(state["template_decisions"]), 4)
+        self.assertEqual(len({item["node_id"] for item in state["additions"]}), 2)
+        for addition in state["additions"]:
+            owner = state["addition_chapters"][addition["node_id"]]
+            self.assertEqual(addition["parent_id"], chapter_parent_ids[owner])
+
+    def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix B.1",
+                "title": "Guaranteed data sheet",
+                "raw_text": "Appendix B.1Guaranteed data sheet",
+                "following_table_count": 1,
+            },
+            {
+                "appendix_id": "APP-0002",
+                "file_id": "TEN-1",
+                "number": "Appendix B.2",
+                "title": "Reference only",
+                "following_table_count": 0,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            initial_state = json_load(root / "outline_decision_state.json")
+            with self.assertRaisesRegex(SystemExit, "node_id is missing or duplicate"):
+                decision_workflow.submit_decision_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": template["batch_token"],
+                        "items": [
+                            {
+                                "target_id": template["items"][0]["target_id"],
+                                "decision": "retain",
+                            }
+                        ],
+                        "additions": [
+                            {
+                                "node_id": "TPL-0001",
+                                "parent_id": None,
+                                "number": "2",
+                                "title": "技术附表",
+                                "reason": "Conflicts with the template node ID.",
+                            }
+                        ],
+                    },
+                )
+            self.assertEqual(json_load(root / "outline_decision_state.json"), initial_state)
+
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-TECH-APPENDIX",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "技术附表",
+                            "reason": "Tender contains controlled appendices.",
+                        }
+                    ],
+                },
+            )
+            with self.assertRaisesRegex(SystemExit, "duplicate"):
+                decision_workflow.next_appendix_batch(
+                    root, structure, [inventory[0], inventory[0]]
+                )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+
+            invalid_payloads = [
+                [
+                    {"appendix_id": "APP-0001", "decision": "include", "parent_id": "ROOT", "reason": "Required."},
+                    {"appendix_id": "APP-0002", "decision": "exclude", "reason": "No."},
+                ],
+                [
+                    {"appendix_id": "APP-0001", "decision": "include", "node_id": "ADD-B1", "reason": "Required."},
+                    {"appendix_id": "APP-0002", "decision": "exclude", "reason": "No."},
+                ],
+                [
+                    {"appendix_id": "APP-0001", "decision": "include", "node_id": "ADD-B1", "parent_id": "ROOT"},
+                    {"appendix_id": "APP-0002", "decision": "exclude", "reason": "No."},
+                ],
+                [
+                    {"appendix_id": "APP-0001", "decision": "include", "node_id": "ADD-B1", "parent_id": "ADD-TECH-APPENDIX", "reason": "Required."},
+                    {"appendix_id": "APP-0002", "decision": "exclude"},
+                ],
+            ]
+            for invalid_items in invalid_payloads:
+                with self.subTest(invalid_items=invalid_items):
+                    with self.assertRaisesRegex(SystemExit, "required"):
+                        decision_workflow.submit_appendix_batch(
+                            root,
+                            structure,
+                            {"batch_token": batch["batch_token"], "items": invalid_items},
+                            inventory,
+                        )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "node_id": "ADD-B1",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Tender requires the completed form.",
+                        },
+                        {
+                            "appendix_id": "APP-0002",
+                            "decision": "exclude",
+                            "reason": "Heading only; no independent form.",
+                        },
+                    ],
+                },
+                inventory,
+            )
+            state = json_load(root / "outline_decision_state.json")
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+
+        self.assertEqual(state["schema_version"], "technical-outline-decision-state.v6")
+        self.assertEqual(state["appendix_decisions"]["APP-0001"]["decision"], "include")
+        self.assertEqual(state["appendix_decisions"]["APP-0001"]["reason"], "Tender requires the completed form.")
+        self.assertEqual(state["appendix_decisions"]["APP-0002"]["decision"], "exclude")
+        self.assertEqual(len(state["additions"]), 2)
+        self.assertEqual(state["additions"][1]["number"], "Appendix B.1")
+        self.assertEqual(state["additions"][1]["title"], "Guaranteed data sheet")
+        self.assertEqual(
+            state["additions"][1]["tender_basis"]["search_text"],
+            "Appendix B.1Guaranteed data sheet",
+        )
+        self.assertTrue(finalized["decisionsFile"])
+
+    def test_bid_outline_appendix_include_requires_unique_valid_root_parent_atomically(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix D.{index}",
+                "title": f"Controlled form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-TECH-APPENDIX",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "技术附表",
+                            "reason": "Valid root.",
+                        },
+                        {
+                            "node_id": "ADD-NESTED-APPENDIX",
+                            "parent_id": "TPL-0001",
+                            "number": "1.1",
+                            "title": "技术附表",
+                            "reason": "Nested candidate.",
+                        },
+                        {
+                            "node_id": "ADD-WRONG-TITLE",
+                            "parent_id": None,
+                            "number": "3",
+                            "title": "技术附件",
+                            "reason": "Wrong title candidate.",
+                        },
+                    ],
+                },
+            )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+            original_state = json_load(root / "outline_decision_state.json")
+
+            def include_payload(node_ids: list[str], parent_id: str) -> dict:
+                return {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": item["appendix_id"],
+                            "decision": "include",
+                            "node_id": node_ids[index],
+                            "parent_id": parent_id,
+                            "reason": "Required controlled form.",
+                        }
+                        for index, item in enumerate(batch["items"])
+                    ],
+                }
+
+            invalid_root_states = []
+            deleted_root_state = json.loads(json.dumps(original_state))
+            deleted_root_state["additions"].append(
+                {
+                    "operation": "suggest_delete",
+                    "target_id": "ADD-TECH-APPENDIX",
+                }
+            )
+            invalid_root_states.append(("deleted root", deleted_root_state))
+            duplicate_root_state = json.loads(json.dumps(original_state))
+            duplicate_root_state["additions"].append(
+                {
+                    "operation": "add",
+                    "node_id": "ADD-SECOND-TECH-APPENDIX",
+                    "parent_id": None,
+                    "number": "4",
+                    "title": "技术附表",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "Ambiguous root.",
+                }
+            )
+            invalid_root_states.append(("duplicate roots", duplicate_root_state))
+            for label, invalid_state in invalid_root_states:
+                with self.subTest(label=label):
+                    (root / "outline_decision_state.json").write_text(
+                        json.dumps(invalid_state, ensure_ascii=False), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(SystemExit, "parent_id|root_addition"):
+                        decision_workflow.submit_appendix_batch(
+                            root,
+                            structure,
+                            include_payload(
+                                ["ADD-VALID-1", "ADD-VALID-2"],
+                                "ADD-TECH-APPENDIX",
+                            ),
+                            inventory,
+                        )
+                    self.assertEqual(
+                        json_load(root / "outline_decision_state.json"), invalid_state
+                    )
+            (root / "outline_decision_state.json").write_text(
+                json.dumps(original_state, ensure_ascii=False), encoding="utf-8"
+            )
+
+            invalid_cases = [
+                ("template node", ["TPL-0001", "ADD-VALID-2"], "ADD-TECH-APPENDIX"),
+                ("existing addition", ["ADD-TECH-APPENDIX", "ADD-VALID-2"], "ADD-TECH-APPENDIX"),
+                ("same batch", ["ADD-DUPLICATE", "ADD-DUPLICATE"], "ADD-TECH-APPENDIX"),
+                ("missing parent", ["ADD-VALID-1", "ADD-VALID-2"], "ADD-MISSING"),
+                ("nested parent", ["ADD-VALID-1", "ADD-VALID-2"], "ADD-NESTED-APPENDIX"),
+                ("wrong title", ["ADD-VALID-1", "ADD-VALID-2"], "ADD-WRONG-TITLE"),
+            ]
+            for label, node_ids, parent_id in invalid_cases:
+                with self.subTest(label=label):
+                    with self.assertRaisesRegex(SystemExit, "node_id|parent_id"):
+                        decision_workflow.submit_appendix_batch(
+                            root,
+                            structure,
+                            include_payload(node_ids, parent_id),
+                            inventory,
+                        )
+                    self.assertEqual(
+                        json_load(root / "outline_decision_state.json"), original_state
+                    )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": item["appendix_id"],
+                            "decision": "include",
+                            "node_id": f"ADD-VALID-{index}",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Required controlled form.",
+                        }
+                        for index, item in enumerate(batch["items"], start=1)
+                    ],
+                },
+                inventory,
+            )
+            final_state = json_load(root / "outline_decision_state.json")
+            decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+
+        self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
+        self.assertEqual(set(final_state["appendix_decisions"]), {"APP-0001", "APP-0002"})
+
+    def test_bid_outline_appendix_first_include_creates_root_and_later_batch_reuses_it(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix R.{index}",
+                "title": f"Controlled form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                },
+            )
+
+            first = decision_workflow.next_appendix_batch(
+                root, structure, inventory, max_items=1
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": first["batch_token"],
+                    "root_addition": {
+                        "node_id": "ADD-TECH-APPENDIX",
+                        "parent_id": None,
+                        "number": "第7章",
+                        "title": "技术附表",
+                        "reason": "Tender contains controlled appendices.",
+                    },
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "node_id": "ADD-APP-0001",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Include first form.",
+                        }
+                    ],
+                },
+                inventory,
+            )
+            first_state = json_load(root / "outline_decision_state.json")
+            second = decision_workflow.next_appendix_batch(
+                root, structure, inventory, max_items=1
+            )
+            second_state = json_load(root / "outline_decision_state.json")
+
+            with self.assertRaisesRegex(SystemExit, "root_addition"):
+                decision_workflow.submit_appendix_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": second["batch_token"],
+                        "root_addition": {
+                            "node_id": "ADD-SECOND-ROOT",
+                            "parent_id": None,
+                            "number": "第8章",
+                            "title": "技术附表",
+                            "reason": "Duplicate root.",
+                        },
+                        "items": [
+                            {
+                                "appendix_id": "APP-0002",
+                                "decision": "include",
+                                "node_id": "ADD-APP-0002",
+                                "parent_id": "ADD-SECOND-ROOT",
+                                "reason": "Include second form.",
+                            }
+                        ],
+                    },
+                    inventory,
+                )
+            self.assertEqual(
+                json_load(root / "outline_decision_state.json"), second_state
+            )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": second["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0002",
+                            "decision": "include",
+                            "node_id": "ADD-APP-0002",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Include second form.",
+                        }
+                    ],
+                },
+                inventory,
+            )
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            decisions = json_load(Path(finalized["decisionsFile"]))
+            outline, _ = decision_workflow.outline_composer.build_composition(
+                structure, decisions
+            )
+            validation = decision_workflow.validate_finalized_decisions(
+                root,
+                structure,
+                decisions,
+                workflow_binding={},
+                appendix_items=inventory,
+                include_appendix_decisions=True,
+            )
+
+        self.assertEqual(
+            first_state["additions"][0],
+            {
+                "operation": "add",
+                "node_id": "ADD-TECH-APPENDIX",
+                "parent_id": None,
+                "number": "附录",
+                "title": "技术附表",
+                "suggestion_action": "建议增加",
+                "suggestion_reason": "Tender contains controlled appendices.",
+            },
+        )
+        self.assertEqual(
+            outline["nodes"][-1],
+            {
+                "number": "附录",
+                "title": "技术附表",
+                "suggestion_action": "建议增加",
+                "suggestion_reason": "Tender contains controlled appendices.",
+                "children": [
+                    {
+                        "number": "Appendix R.1",
+                        "title": "Controlled form 1",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "Include first form.",
+                        "tender_basis": {
+                            "file_id": "TEN-1",
+                            "search_text": "Appendix R.1 Controlled form 1",
+                        },
+                        "children": [],
+                    },
+                    {
+                        "number": "Appendix R.2",
+                        "title": "Controlled form 2",
+                        "suggestion_action": "建议增加",
+                        "suggestion_reason": "Include second form.",
+                        "tender_basis": {
+                            "file_id": "TEN-1",
+                            "search_text": "Appendix R.2 Controlled form 2",
+                        },
+                        "children": [],
+                    },
+                ],
+            },
+        )
+        self.assertEqual(
+            [item["decision"] for item in validation["appendixDecisions"]],
+            ["include", "include"],
+        )
+
+    def test_bid_outline_appendix_root_addition_validation_is_atomic(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix V.1",
+                "title": "Validated form",
+                "following_table_count": 1,
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-EXISTING",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "Other section",
+                            "reason": "Existing non-appendix addition.",
+                        }
+                    ],
+                },
+            )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+            original_state = json_load(root / "outline_decision_state.json")
+
+            include_item = {
+                "appendix_id": "APP-0001",
+                "decision": "include",
+                "node_id": "ADD-APP-0001",
+                "parent_id": "ADD-TECH-APPENDIX",
+                "reason": "Required form.",
+            }
+            valid_root = {
+                "node_id": "ADD-TECH-APPENDIX",
+                "parent_id": None,
+                "number": "第7章",
+                "title": "技术附表",
+                "reason": "Required appendix root.",
+            }
+            invalid_payloads = [
+                ("root_addition", {"batch_token": batch["batch_token"], "items": [include_item]}),
+                (
+                    "reason",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {key: value for key, value in valid_root.items() if key != "reason"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "template node",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "node_id": "TPL-0001"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "existing addition",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "node_id": "ADD-EXISTING"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "parent_id",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "parent_id": "TPL-0001"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "number",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "number": ""},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "title",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "title": "技术附件"},
+                        "items": [include_item],
+                    },
+                ),
+                (
+                    "parent_id",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": valid_root,
+                        "items": [{**include_item, "parent_id": "ADD-WRONG-ROOT"}],
+                    },
+                ),
+                (
+                    "node_id",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": valid_root,
+                        "items": [{**include_item, "node_id": "ADD-TECH-APPENDIX"}],
+                    },
+                ),
+                (
+                    "root_addition",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": valid_root,
+                        "items": [
+                            {
+                                "appendix_id": "APP-0001",
+                                "decision": "exclude",
+                                "reason": "Not required.",
+                            }
+                        ],
+                    },
+                ),
+            ]
+            for message, payload in invalid_payloads:
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(SystemExit, message):
+                        decision_workflow.submit_appendix_batch(
+                            root, structure, payload, inventory
+                        )
+                    self.assertEqual(
+                        json_load(root / "outline_decision_state.json"), original_state
+                    )
+
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "root_addition": {
+                        "node_id": "ADD-TECH-APPENDIX",
+                        "reason": "Required appendix root.",
+                    },
+                    "items": [include_item],
+                },
+                inventory,
+            )
+            final_state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
+        self.assertEqual(len(final_state["additions"]), 3)
+        appendix_root = next(
+            item for item in final_state["additions"] if item.get("node_id") == "ADD-TECH-APPENDIX"
+        )
+        self.assertEqual(appendix_root["parent_id"], None)
+        self.assertEqual(appendix_root["number"], "附录")
+        self.assertEqual(appendix_root["title"], "技术附表")
+
+    def test_bid_outline_appendix_cli_rejects_non_string_json_fields_atomically(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest, manifest_path = write_decision_context_fixture(
+                root, heading_count=0
+            )
+            (root / "tender_appendix_inventory.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "tender-appendix-inventory.v1",
+                        "items": [
+                            {
+                                "appendix_id": "7",
+                                "file_id": "TEN-1",
+                                "number": "Appendix T.1",
+                                "title": "Typed form",
+                                "following_table_count": 1,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            template = outline_runner.dispatch_command(
+                "decision-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": template["batch_token"],
+                            "items": [
+                                {
+                                    "target_id": template["items"][0]["target_id"],
+                                    "decision": "retain",
+                                }
+                            ],
+                            "additions": [],
+                        }
+                    )
+                ],
+            )
+            batch = outline_runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            state_path = root / "outline_decision_state.json"
+            original_state = state_path.read_text(encoding="utf-8")
+            valid_root = {
+                "node_id": "ADD-TECH-APPENDIX",
+                "parent_id": None,
+                "number": "第7章",
+                "title": "技术附表",
+                "reason": "Required root.",
+            }
+            valid_include = {
+                "appendix_id": batch["items"][0]["appendix_id"],
+                "decision": "include",
+                "node_id": "ADD-APP-0001",
+                "parent_id": "ADD-TECH-APPENDIX",
+                "reason": "Required form.",
+            }
+
+            invalid_payloads: list[tuple[str, dict]] = []
+            for field in ("node_id", "number", "title", "reason"):
+                for value in ([], {"unexpected": True}, 7):
+                    root_addition = {**valid_root, field: value}
+                    item = dict(valid_include)
+                    if field == "node_id":
+                        item["parent_id"] = str(value)
+                    invalid_payloads.append(
+                        (
+                            rf"root_addition\.{field} must be a string",
+                            {
+                                "batch_token": batch["batch_token"],
+                                "root_addition": root_addition,
+                                "items": [item],
+                            },
+                        )
+                    )
+            for value in ("TPL-0001", {"unexpected": True}):
+                invalid_payloads.append(
+                    (
+                        r"root_addition\.parent_id must be null",
+                        {
+                            "batch_token": batch["batch_token"],
+                            "root_addition": {**valid_root, "parent_id": value},
+                            "items": [valid_include],
+                        },
+                    )
+                )
+
+            invalid_item_cases = [
+                ("appendix_id", 7, r"items\[0\]\.appendix_id must be a string"),
+                ("decision", ["include"], r"items\[0\]\.decision must be a string"),
+                ("node_id", {"unexpected": True}, r"items\[0\]\.node_id must be a string"),
+                ("reason", [], r"items\[0\]\.reason must be a string"),
+            ]
+            for field, value, message in invalid_item_cases:
+                invalid_payloads.append(
+                    (
+                        message,
+                        {
+                            "batch_token": batch["batch_token"],
+                            "root_addition": valid_root,
+                            "items": [{**valid_include, field: value}],
+                        },
+                    )
+                )
+            invalid_payloads.append(
+                (
+                    r"items\[0\]\.parent_id must be a string",
+                    {
+                        "batch_token": batch["batch_token"],
+                        "root_addition": {**valid_root, "node_id": "7"},
+                        "items": [{**valid_include, "parent_id": 7}],
+                    },
+                )
+            )
+            for field, value, message in (
+                ("appendix_id", 7, r"items\[0\]\.appendix_id must be a string"),
+                ("decision", ["exclude"], r"items\[0\]\.decision must be a string"),
+                ("reason", {"unexpected": True}, r"items\[0\]\.reason must be a string"),
+            ):
+                invalid_payloads.append(
+                    (
+                        message,
+                        {
+                            "batch_token": batch["batch_token"],
+                            "items": [
+                                {
+                                    "appendix_id": batch["items"][0]["appendix_id"],
+                                    "decision": "exclude",
+                                    "reason": "Not required.",
+                                    field: value,
+                                }
+                            ],
+                        },
+                    )
+                )
+
+            for message, payload in invalid_payloads:
+                with self.subTest(message=message, payload=payload):
+                    state_path.write_text(original_state, encoding="utf-8")
+                    with self.assertRaisesRegex(SystemExit, message):
+                        outline_runner.dispatch_command(
+                            "appendix-decision-batch",
+                            manifest,
+                            manifest_path,
+                            [json.dumps(payload, ensure_ascii=False)],
+                        )
+                    self.assertEqual(
+                        state_path.read_text(encoding="utf-8"), original_state
+                    )
+
+    def test_bid_outline_appendix_later_first_include_creates_root(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix L.{index}",
+                "title": f"Later form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                },
+            )
+            first = decision_workflow.next_appendix_batch(
+                root, structure, inventory, max_items=1
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": first["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "exclude",
+                            "reason": "Not required.",
+                        }
+                    ],
+                },
+                inventory,
+            )
+            self.assertEqual(
+                json_load(root / "outline_decision_state.json")["additions"], []
+            )
+
+            second = decision_workflow.next_appendix_batch(
+                root, structure, inventory, max_items=1
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": second["batch_token"],
+                    "root_addition": {
+                        "node_id": "ADD-TECH-APPENDIX",
+                        "parent_id": None,
+                        "number": "第7章",
+                        "title": "技术附表",
+                        "reason": "Later batch first include.",
+                    },
+                    "items": [
+                        {
+                            "appendix_id": "APP-0002",
+                            "decision": "include",
+                            "node_id": "ADD-APP-0002",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Required later form.",
+                        }
+                    ],
+                },
+                inventory,
+            )
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            decisions = json_load(Path(finalized["decisionsFile"]))
+            outline, _ = decision_workflow.outline_composer.build_composition(
+                structure, decisions
+            )
+
+        self.assertEqual(outline["nodes"][-1]["title"], "技术附表")
+        self.assertEqual(
+            [item["title"] for item in outline["nodes"][-1]["children"]],
+            ["Later form 2"],
+        )
+
+    def test_bid_outline_appendix_all_exclude_finishes_without_root(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix X.{index}",
+                "title": f"Excluded form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 65)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                },
+            )
+
+            while True:
+                batch = decision_workflow.next_appendix_batch(
+                    root, structure, inventory
+                )
+                if batch["complete"]:
+                    break
+                decision_workflow.submit_appendix_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": batch["batch_token"],
+                        "items": [
+                            {
+                                "appendix_id": item["appendix_id"],
+                                "decision": "exclude",
+                                "reason": "Not required by this tender.",
+                            }
+                            for item in batch["items"]
+                        ],
+                    },
+                    inventory,
+                )
+
+            state = json_load(root / "outline_decision_state.json")
+            finalized = decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            decisions = json_load(Path(finalized["decisionsFile"]))
+            outline, _ = decision_workflow.outline_composer.build_composition(
+                structure, decisions
+            )
+            validation = decision_workflow.validate_finalized_decisions(
+                root,
+                structure,
+                decisions,
+                workflow_binding={},
+                appendix_items=inventory,
+                include_appendix_decisions=True,
+            )
+
+        self.assertEqual(state["additions"], [])
+        self.assertEqual(decisions["changes"], [])
+        self.assertNotIn("技术附表", json.dumps(outline, ensure_ascii=False))
+        self.assertEqual(len(validation["appendixDecisions"]), 64)
+        self.assertTrue(
+            all(item["decision"] == "exclude" for item in validation["appendixDecisions"])
+        )
+
+    def test_bid_outline_decisions_reject_unjudged_appendix_candidates(self) -> None:
+        decision_workflow = load_outline_script("decision_workflow")
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": f"APP-{index:04d}",
+                "file_id": "TEN-1",
+                "number": f"Appendix C.{index}",
+                "title": f"Form {index}",
+                "following_table_count": 1,
+            }
+            for index in range(1, 22)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                },
+            )
+            with self.assertRaises(SystemExit) as raised:
+                decision_workflow.finalize_decisions(
+                    root, structure, appendix_items=inventory
+                )
+
+        message = str(raised.exception)
+        self.assertIn("APP-0001", message)
+        self.assertIn("APP-0020", message)
+        self.assertNotIn("APP-0021", message)
+
+    def test_bid_outline_appendix_submit_validates_complete_composition_atomically(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix E.1",
+                "title": "Validated form",
+                "following_table_count": 1,
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(
+                root, structure
+            )
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                        }
+                    ],
+                    "additions": [
+                        {
+                            "node_id": "ADD-TECH-APPENDIX",
+                            "parent_id": None,
+                            "number": "2",
+                            "title": "技术附表",
+                            "reason": "Controlled appendix root.",
+                        },
+                        {
+                            "node_id": "ADD-INVALID-EXISTING",
+                            "parent_id": None,
+                            "number": "",
+                            "title": "Invalid existing change",
+                            "reason": "Empty number must be rejected by the builder.",
+                        },
+                    ],
+                },
+            )
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+
+            def include_payload(parent_id: str) -> dict:
+                return {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "node_id": "ADD-APPENDIX-E1",
+                            "parent_id": parent_id,
+                            "reason": "Required controlled form.",
+                        }
+                    ],
+                }
+
+            corrected_parent_state = json_load(root / "outline_decision_state.json")
+            with self.assertRaisesRegex(SystemExit, "changes\\[1\\]\\.number"):
+                decision_workflow.submit_appendix_batch(
+                    root,
+                    structure,
+                    include_payload("ADD-TECH-APPENDIX"),
+                    inventory,
+                )
+            self.assertEqual(
+                json_load(root / "outline_decision_state.json"), corrected_parent_state
+            )
+
+            corrected_parent_state["additions"][1]["number"] = "3"
+            (root / "outline_decision_state.json").write_text(
+                json.dumps(corrected_parent_state, ensure_ascii=False), encoding="utf-8"
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                include_payload("ADD-TECH-APPENDIX"),
+                inventory,
+            )
+            decision_workflow.finalize_decisions(
+                root, structure, appendix_items=inventory
+            )
+            final_state = json_load(root / "outline_decision_state.json")
+
+        self.assertEqual(final_state["active_appendix_batch"]["appendix_ids"], [])
+        self.assertEqual(final_state["appendix_decisions"]["APP-0001"]["decision"], "include")
 
     def test_bid_outline_decisions_reject_add_or_move_under_collapsed_parent(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -2259,6 +4780,7 @@ class TocSkillScriptTests(unittest.TestCase):
             table = tender_doc.add_table(rows=2, cols=2)
             table.cell(0, 0).text = "项目"
             table.cell(0, 1).text = "要求"
+            table.cell(0, 0).merge(table.cell(0, 1))
             table.cell(1, 0).text = "机型"
             table.cell(1, 1).text = "投标人填写"
             tender_doc.add_paragraph("2. 专题方案", style="Heading 1")
@@ -2285,9 +4807,19 @@ class TocSkillScriptTests(unittest.TestCase):
             [block["type"] for chunk in chunks["chunks"] for block in chunk["blocks"]],
             ["paragraph", "paragraph", "table", "paragraph", "paragraph"],
         )
+        table_block = next(
+            block for chunk in chunks["chunks"] for block in chunk["blocks"] if block["type"] == "table"
+        )
+        self.assertEqual(table_block["rows"][0]["cells"], ["项目 要求", "项目 要求"])
         self.assertEqual(state["schema_version"], "tender-review-state.v1")
         self.assertEqual(state["reviewed_chunk_count"], 0)
         self.assertEqual(state["pending_chunk_count"], len(chunks["chunks"]))
+
+    def test_bid_outline_review_workspace_uses_lightweight_docx_xml_parser(self) -> None:
+        source = (OUTLINE_SCRIPT_DIR / "review_workflow.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("from docx", source)
+        self.assertNotIn("Document(str(path))", source)
 
     def test_bid_outline_headings_prefers_toc_and_skips_body_titles_without_marking_reviewed(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -2328,6 +4860,12 @@ class TocSkillScriptTests(unittest.TestCase):
             outline_runner.write_template_structure(manifest, manifest_path)
 
             result = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            mapped_section = outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [result["files"][0]["items"][0]["section_id"]],
+            )
             status = review_workflow.review_status(root)
 
         self.assertEqual(result["schema_version"], "tender-headings.v1")
@@ -2338,12 +4876,14 @@ class TocSkillScriptTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["files"][0]["source"], "toc")
-        self.assertTrue(result["complete"])
-        self.assertEqual(
-            [(item["number"], item["title"]) for item in result["appendices"]],
-            [("附表A.1", "技术参数表")],
+        self.assertEqual(result["files"][0]["items"][0]["section_id"], "TEN-1:S0001")
+        self.assertIn(
+            "投标人应提供总体技术方案。",
+            [item["text"] for item in mapped_section["records"]],
         )
-        self.assertTrue(result["appendices"][0]["evidence_id"].startswith("TEN-1:B"))
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["appendix_count"], 1)
+        self.assertNotIn("appendices", result)
         self.assertEqual(status["reviewed_chunk_count"], 0)
         self.assertEqual(status["pending_chunk_count"], status["chunk_count"])
 
@@ -2398,6 +4938,233 @@ class TocSkillScriptTests(unittest.TestCase):
         )
         self.assertTrue(second["complete"])
         self.assertEqual(second["next_cursor"], "")
+
+    def test_bid_outline_headings_exposes_stable_sections_and_section_reads_continuous_body(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 总体技术要求", style="Heading 1")
+            tender_doc.add_paragraph("投标人应提交总体技术方案和项目组织方案。")
+            tender_doc.add_paragraph("1.1 专题报告", style="Heading 2")
+            tender_doc.add_paragraph("投标人应提交场址安全适应性专题报告。")
+            tender_doc.add_paragraph("2 供货范围", style="Heading 1")
+            tender_doc.add_paragraph("投标人应提供完整供货清单。")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            section_id = headings["files"][0]["items"][0]["section_id"]
+            first_page = outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [section_id, "--cursor", "0", "--max-chars", "20"],
+            )
+            second_page = outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [section_id, "--cursor", first_page["next_cursor"], "--max-chars", "200"],
+            )
+            review_headings = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--review", "--cursor", "0", "--page-size", "1"],
+            )
+
+        self.assertEqual(section_id, "TEN-1:S0001")
+        self.assertEqual(first_page["section"]["title"], "1 总体技术要求")
+        combined = first_page["records"] + second_page["records"]
+        self.assertIn("投标人应提交场址安全适应性专题报告。", [item["text"] for item in combined])
+        self.assertNotIn("2 供货范围", [item["text"] for item in combined])
+        self.assertTrue(second_page["complete"])
+        self.assertTrue(review_headings["review"])
+        self.assertGreater(review_headings["returned_heading_count"], 0)
+
+    def test_bid_outline_search_locates_full_text_without_marking_evidence_as_read(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+        review_workflow = load_outline_script("review_workflow")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 安全要求", style="Heading 1")
+            tender_doc.add_paragraph("投标人必须提交海上运输安全专项方案。")
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+
+            result = outline_runner.dispatch_command(
+                "search", manifest, manifest_path, ["运输安全", "--max-results", "10"]
+            )
+            evidence_id = result["results"][0]["evidence_id"]
+            with self.assertRaisesRegex(SystemExit, "尚未通过受控阅读"):
+                review_workflow.resolve_tender_basis(root, evidence_id)
+            outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            basis = review_workflow.resolve_tender_basis(root, evidence_id)
+
+        self.assertEqual(result["results"][0]["section_id"], "TEN-1:S0001")
+        self.assertEqual(basis["evidence_id"], evidence_id)
+        self.assertEqual(basis["file_id"], "TEN-1")
+        self.assertEqual(basis["search_text"], "投标人必须提交海上运输安全专项方案。")
+
+    def test_bid_outline_table_evidence_uses_meaningful_cell_text_for_location(self) -> None:
+        review_workflow = load_outline_script("review_workflow")
+
+        self.assertEqual(
+            review_workflow.evidence_search_text(
+                {"cells": ["2", "抗低温", "√"], "text": "2 | 抗低温 | √"}
+            ),
+            "抗低温",
+        )
+        self.assertEqual(
+            review_workflow.evidence_search_text(
+                {
+                    "type": "table",
+                    "rows": [
+                        {"cells": ["序号", "货物名称", "品牌或制造商名称"]},
+                        {"cells": ["1", "主控系统", "自主可控品牌"]},
+                    ],
+                    "text": "序号 | 货物名称 | 品牌或制造商名称 | 1 | 主控系统 | 自主可控品牌",
+                }
+            ),
+            "自主可控品牌",
+        )
+
+    def test_bid_outline_tender_search_validation_uses_controlled_table_evidence(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+        review_workflow = load_outline_script("review_workflow")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 环境适应性", style="Heading 1")
+            table = tender_doc.add_table(rows=2, cols=3)
+            for column, value in enumerate(["序号", "要求", "响应"]):
+                table.cell(0, column).text = value
+            for column, value in enumerate(["2", "抗低温", "√"]):
+                table.cell(1, column).text = value
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+            table_result = review_workflow.read_table(root, "TEN-1:T0001", start=1, end=2)
+            evidence_id = table_result["rows"][1]["evidence_id"]
+            basis = review_workflow.resolve_tender_basis(root, evidence_id)
+            nodes = [{"tender_basis": basis, "children": []}]
+
+            access_path = root / "tender_evidence_access.json"
+            access = json_load(access_path)
+            access["evidence_ids"] = []
+            access["events"] = []
+            access_path.write_text(json.dumps(access, ensure_ascii=False), encoding="utf-8")
+
+            outline_runner.validate_tender_search_texts(nodes, manifest, work_dir=root)
+            nodes[0]["tender_basis"] = {**basis, "search_text": "被篡改的定位文本"}
+            with self.assertRaisesRegex(SystemExit, "受控证据不一致"):
+                outline_runner.validate_tender_search_texts(nodes, manifest, work_dir=root)
+
+    def test_bid_outline_headings_pages_toc_items_with_same_cursor_contract(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+
+            template_doc = Document()
+            template_doc.add_paragraph("Template", style="Heading 1")
+            template_doc.save(template)
+
+            tender_doc = Document()
+            if "TOC 1" not in [style.name for style in tender_doc.styles]:
+                tender_doc.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+            for index in range(1, 6):
+                tender_doc.add_paragraph(f"Section {index} ........ {index}", style="TOC 1")
+            tender_doc.save(tender)
+
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": "tender.docx", "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            first = outline_runner.dispatch_command(
+                "headings", manifest, manifest_path, ["--page-size", "2"]
+            )
+            self.assertEqual(first["returned_heading_count"], 2)
+            self.assertEqual(first["next_cursor"], "2")
+            self.assertFalse(first["complete"])
+
+            second = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--cursor", first["next_cursor"], "--page-size", "2"],
+            )
+            self.assertEqual(second["returned_heading_count"], 2)
+            self.assertEqual(second["next_cursor"], "4")
+            self.assertFalse(second["complete"])
+
+            third = outline_runner.dispatch_command(
+                "headings",
+                manifest,
+                manifest_path,
+                ["--cursor", second["next_cursor"], "--page-size", "2"],
+            )
+            self.assertEqual(third["returned_heading_count"], 1)
+            self.assertEqual(third["next_cursor"], "")
+            self.assertTrue(third["complete"])
 
     def test_bid_outline_headings_requires_full_review_when_no_structure_exists(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -2478,7 +5245,14 @@ class TocSkillScriptTests(unittest.TestCase):
             outline_runner.write_template_structure(manifest, manifest_path)
             with self.assertRaisesRegex(SystemExit, "完整读取招标目录"):
                 outline_runner.compose_manifest(manifest, manifest_path)
-            outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            section = outline_runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            evidence_id = section["records"][0]["evidence_id"]
             structure = json_load(root / "template_structure.json")
             outline_runner.submit_outline_decisions(
                 manifest,
@@ -2499,6 +5273,9 @@ class TocSkillScriptTests(unittest.TestCase):
                 "decision-next", manifest, manifest_path, []
             )
             outline_runner.dispatch_command(
+                "read", manifest, manifest_path, [evidence_id]
+            )
+            outline_runner.dispatch_command(
                 "decision-batch",
                 manifest,
                 manifest_path,
@@ -2507,7 +5284,11 @@ class TocSkillScriptTests(unittest.TestCase):
                         {
                             "batch_token": decision_batch["batch_token"],
                             "items": [
-                                {"target_id": "TPL-0001", "decision": "retain"}
+                                {
+                                    "target_id": "TPL-0001",
+                                    "decision": "retain",
+                                    "evidence_id": evidence_id,
+                                }
                             ],
                             "additions": [],
                         },
@@ -2515,6 +5296,10 @@ class TocSkillScriptTests(unittest.TestCase):
                     )
                 ],
             )
+            outline_runner.dispatch_command(
+                "read", manifest, manifest_path, [evidence_id]
+            )
+            complete_outline_review(outline_runner, manifest, manifest_path)
             outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
             outline_runner.compose_manifest(manifest, manifest_path)
             report = json_load(root / "outline_compose_report.json")
@@ -2821,6 +5606,15 @@ class TocSkillScriptTests(unittest.TestCase):
             headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
             self.assertTrue(headings["complete"])
             batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            appendix_heading = outline_runner.dispatch_command(
+                "search", manifest, manifest_path, ["附表A.1"]
+            )
+            outline_runner.dispatch_command(
+                "read",
+                manifest,
+                manifest_path,
+                [appendix_heading["results"][0]["evidence_id"]],
+            )
             outline_runner.dispatch_command(
                 "decision-batch",
                 manifest,
@@ -2830,29 +5624,58 @@ class TocSkillScriptTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板专家经验保留。",
+                                }
                                 for item in batch["items"]
                             ],
-                            "additions": [
-                                {
-                                    "node_id": "ADD-APPENDIX",
-                                    "parent_id": None,
-                                    "number": "第2章",
-                                    "title": "技术附表",
-                                    "reason": "招标文件包含独立附表。",
-                                },
-                                {
-                                    "node_id": "ADD-APPENDIX-A1",
-                                    "parent_id": "ADD-APPENDIX",
-                                    "appendix_id": "APP-0001",
-                                    "reason": "招标文件包含独立填写表格。",
-                                },
-                            ],
+                            "additions": [],
                         },
                         ensure_ascii=False,
                     )
                 ],
             )
+            appendix_batch = outline_runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            outline_runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": appendix_batch["batch_token"],
+                            "items": [
+                                {
+                                    "appendix_id": "APP-0001",
+                                    "decision": "include",
+                                    "node_id": "ADD-APPENDIX-A1",
+                                    "parent_id": "ADD-APPENDIX",
+                                    "reason": "招标文件包含独立填写表格。",
+                                }
+                            ],
+                            "root_addition": {
+                                "node_id": "ADD-APPENDIX",
+                                "parent_id": None,
+                                "number": "第2章",
+                                "title": "技术附表",
+                                "reason": "招标文件包含独立附表。",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            outline_runner.dispatch_command(
+                "read",
+                manifest,
+                manifest_path,
+                [appendix_batch["items"][0]["evidence_id"]],
+            )
+            complete_outline_review(outline_runner, manifest, manifest_path)
             outline_runner.dispatch_command("decisions", manifest, manifest_path, [])
             outline_runner.compose_manifest(manifest, manifest_path)
 
@@ -2861,6 +5684,96 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(result["summary"]["workflowStage"], "finalized")
         self.assertEqual(result["summary"]["reviewCoverage"], 0.0)
         self.assertEqual(result["summary"]["unfinishedTableCount"], 1)
+
+    def test_bid_outline_finalize_rejects_nested_technical_appendix(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "toc.json"
+            manifest_path = root / "s2_input.json"
+            manifest = {"workDir": str(root), "outputFile": str(output)}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            output.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "technical-outline.v1",
+                        "nodes": [
+                            {
+                                "number": "第6章",
+                                "title": "技术方案",
+                                "suggestion_action": "必要",
+                                "suggestion_reason": "",
+                                "children": [
+                                    {
+                                        "number": "6.6",
+                                        "title": "技术附表",
+                                        "suggestion_action": "建议增加",
+                                        "suggestion_reason": "招标包含技术附表。",
+                                        "children": [],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "技术附表必须是唯一的最后一个根节点"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_finalize_rejects_missing_included_appendix(self) -> None:
+        def remove_included_addition(state: dict, _items: list[dict]) -> None:
+            state["additions"] = [
+                addition
+                for addition in state["additions"]
+                if addition.get("node_id") != "ADD-APPENDIX-1"
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outline_runner, manifest, manifest_path = self._prepare_finalized_appendix_outline(
+                root,
+                ["include", "exclude"],
+                mutate_state=remove_included_addition,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "APP-0001"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_finalize_rejects_excluded_appendix_in_output(self) -> None:
+        def exclude_included_addition(state: dict, items: list[dict]) -> None:
+            appendix_id = items[0]["appendix_id"]
+            state["appendix_decisions"][appendix_id] = {
+                "appendix_id": appendix_id,
+                "decision": "exclude",
+                "reason": "逐项核验后排除。",
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outline_runner, manifest, manifest_path = self._prepare_finalized_appendix_outline(
+                root,
+                ["include", "exclude"],
+                mutate_state=exclude_included_addition,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "APP-0001"):
+                outline_runner.finalize_manifest(manifest, manifest_path)
+
+    def test_bid_outline_finalize_accepts_exact_ai_appendix_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outline_runner, manifest, manifest_path = self._prepare_finalized_appendix_outline(
+                root,
+                ["include", "exclude"],
+            )
+
+            result = outline_runner.finalize_manifest(manifest, manifest_path)
+
+        self.assertEqual(result["summary"]["workflowStage"], "finalized")
 
     def test_bid_outline_finalize_allows_missing_appendices_and_free_number_title_split(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

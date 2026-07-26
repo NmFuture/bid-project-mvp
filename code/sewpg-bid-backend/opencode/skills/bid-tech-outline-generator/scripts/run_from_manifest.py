@@ -6,6 +6,7 @@ import re
 import sys
 import zipfile
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -23,7 +24,10 @@ import decision_workflow
 AGENTIC_COMMANDS = {
     "prepare",
     "template",
+    "template-headings",
     "headings",
+    "search",
+    "section",
     "next",
     "next-batch",
     "read",
@@ -34,11 +38,28 @@ AGENTIC_COMMANDS = {
     "review-batch",
     "decision-next",
     "decision-batch",
+    "decision-reopen",
+    "review-corrections",
+    "appendix-next",
+    "appendix-decision-batch",
+    "review-complete",
     "decisions",
     "compose",
     "validate",
     "status",
     "finalize",
+}
+NAVIGATION_COMMANDS = frozenset(
+    {"template-headings", "headings", "search", "section", "decision-next", "appendix-next"}
+)
+NAVIGATION_OUTPUT_HARD_LIMIT_BYTES = 24000
+NAVIGATION_RETRY_HINTS = {
+    "template-headings": "请减小 --page-size，并使用同一 --cursor 重试",
+    "headings": "请减小 --page-size，并使用同一 --cursor 重试",
+    "search": "请减小 --max-results 或 --max-chars，并使用同一 --cursor 重试",
+    "section": "请减小 --max-chars，并使用同一 --cursor 重试",
+    "decision-next": "请减小 --max-items 或 --max-chars 后重试",
+    "appendix-next": "请减小 --max-items 后重试",
 }
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 NODE_KEYS = {
@@ -70,6 +91,51 @@ APPENDIX_HEADING_PATTERN = re.compile(
 )
 
 
+class NavigationOutputBudgetError(SystemExit):
+    pass
+
+
+def _navigation_state_paths(command: str, work_dir: Path) -> tuple[Path, ...]:
+    if command == "headings":
+        return (work_dir / "tender_headings_state.json",)
+    if command in {"decision-next", "appendix-next"}:
+        return (work_dir / decision_workflow.STATE_FILE_NAME,)
+    return ()
+
+
+def _snapshot_navigation_state(command: str, work_dir: Path) -> dict[Path, bytes | None]:
+    return {
+        path: path.read_bytes() if path.is_file() else None
+        for path in _navigation_state_paths(command, work_dir)
+    }
+
+
+def _restore_navigation_state(snapshot: dict[Path, bytes | None]) -> None:
+    for path, original_bytes in snapshot.items():
+        if original_bytes is None:
+            path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rollback_path = path.with_suffix(path.suffix + ".rollback")
+        rollback_path.write_bytes(original_bytes)
+        rollback_path.replace(path)
+
+
+def _serialize_command_output(command: str, result: dict[str, Any]) -> str:
+    if command not in NAVIGATION_COMMANDS:
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    output = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    output_bytes = len(f"{output}\n".encode("utf-8"))
+    if output_bytes >= NAVIGATION_OUTPUT_HARD_LIMIT_BYTES:
+        raise NavigationOutputBudgetError(
+            "导航输出内部协议错误: "
+            f"command={command}, actual_bytes={output_bytes}, "
+            f"required_bytes<{NAVIGATION_OUTPUT_HARD_LIMIT_BYTES}; "
+            f"retry_hint={NAVIGATION_RETRY_HINTS[command]}"
+        )
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect and validate S2 technical outline artifacts.")
     parser.add_argument("args", nargs="*")
@@ -89,8 +155,15 @@ def main() -> int:
     if parsed_args.require_compose:
         manifest["_runtimeRequireComposedOutline"] = True
 
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    state_snapshot = _snapshot_navigation_state(command, work_dir)
     result = dispatch_command(command, manifest, manifest_path, command_args)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    try:
+        output = _serialize_command_output(command, result)
+    except NavigationOutputBudgetError:
+        _restore_navigation_state(state_snapshot)
+        raise
+    print(output)
     return 0
 
 
@@ -101,7 +174,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template|headings|next|next-batch|read|window|table|tables|review-chunk|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|review-complete|decisions|compose|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -141,6 +214,58 @@ def _strict_workflow_binding(
     return review_workflow.require_headings_complete(work_dir, tender_inputs(manifest))
 
 
+def _resolve_decision_evidence(
+    work_dir: Path, payload: dict[str, Any]
+) -> dict[str, Any]:
+    normalized = deepcopy(payload)
+    raw_items = normalized.get("items")
+    if not isinstance(raw_items, list):
+        raise SystemExit("decision-batch items must be a list")
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            raise SystemExit(f"decision-batch items[{index}] must be an object")
+        decision = str(item.get("decision") or "").strip()
+        if decision == "retain":
+            has_evidence = bool(str(item.get("evidence_id") or "").strip())
+            has_reason = bool(str(item.get("reason") or "").strip())
+            if has_evidence == has_reason:
+                if not has_evidence and not (work_dir / "tender_evidence_access.json").is_file():
+                    item["reason"] = "历史兼容：保留模板节点。"
+                    continue
+                raise SystemExit(
+                    f"decision-batch items[{index}] retain requires exactly one of evidence_id or reason"
+                )
+            allowed = {"target_id", "decision", "evidence_id", "reason"}
+            if set(item) - allowed:
+                raise SystemExit(f"decision-batch items[{index}] retain has unsupported fields")
+            if has_evidence:
+                item["tender_basis"] = review_workflow.resolve_tender_basis(
+                    work_dir, str(item.pop("evidence_id"))
+                )
+            continue
+        if decision == "suggest_delete":
+            if set(item) != {"target_id", "decision", "reason"}:
+                raise SystemExit(
+                    f"decision-batch items[{index}] suggest_delete accepts only reason"
+                )
+            continue
+    additions = normalized.get("additions")
+    if not isinstance(additions, list):
+        raise SystemExit("decision-batch additions must be a list")
+    if any(isinstance(item, dict) and "appendix_id" in item for item in additions):
+        raise SystemExit("技术附表必须通过 appendix-decision-batch 决策")
+    for index, addition in enumerate(additions):
+        if not isinstance(addition, dict):
+            raise SystemExit(f"decision-batch additions[{index}] must be an object")
+        evidence_id = str(addition.pop("evidence_id", "") or "").strip()
+        if not evidence_id:
+            raise SystemExit(f"decision-batch additions[{index}].evidence_id is required")
+        addition["tender_basis"] = review_workflow.resolve_tender_basis(
+            work_dir, evidence_id
+        )
+    return normalized
+
+
 def dispatch_command(
     command: str,
     manifest: dict[str, Any],
@@ -150,6 +275,18 @@ def dispatch_command(
     work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
     if command in {"prepare", "template"}:
         return write_template_structure(manifest, manifest_path)
+    if command == "template-headings":
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        page_size = int(_option_value(command_args, "--page-size", "40"))
+        structure = load_json_dict(
+            work_dir / "template_structure.json",
+            "templateStructureFile",
+        )
+        return decision_workflow.template_headings(
+            structure,
+            cursor=cursor,
+            page_size=page_size,
+        )
     if command == "headings":
         cursor = int(_option_value(command_args, "--cursor", "0"))
         page_size = int(_option_value(command_args, "--page-size", "200"))
@@ -157,6 +294,29 @@ def dispatch_command(
             work_dir,
             cursor=cursor,
             page_size=page_size,
+            review="--review" in command_args,
+        )
+    if command == "search":
+        query = _required_arg(command_args, 0, "search query")
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        max_results = int(_option_value(command_args, "--max-results", "20"))
+        max_chars = int(_option_value(command_args, "--max-chars", "8000"))
+        return review_workflow.search_tender(
+            work_dir,
+            query,
+            cursor=cursor,
+            max_results=max_results,
+            max_chars=max_chars,
+        )
+    if command == "section":
+        section_id = _required_arg(command_args, 0, "sectionId")
+        cursor = int(_option_value(command_args, "--cursor", "0"))
+        max_chars = int(_option_value(command_args, "--max-chars", "12000"))
+        return review_workflow.read_section(
+            work_dir,
+            section_id,
+            cursor=cursor,
+            max_chars=max_chars,
         )
     if command == "next":
         return review_workflow.next_review_chunk(work_dir)
@@ -231,7 +391,16 @@ def dispatch_command(
         if not isinstance(chunk_ids, list):
             raise SystemExit("review JSON chunk_ids must be a list")
         return review_workflow.submit_batch_review(work_dir, chunk_ids, review)
-    if command in {"decision-next", "decision-batch", "decisions"}:
+    if command in {
+        "decision-next",
+        "decision-batch",
+        "decision-reopen",
+        "review-corrections",
+        "appendix-next",
+        "appendix-decision-batch",
+        "review-complete",
+        "decisions",
+    }:
         workflow_binding = _strict_workflow_binding(manifest, work_dir)
         if (
             workflow_binding is None
@@ -243,13 +412,96 @@ def dispatch_command(
             work_dir / "template_structure.json",
             "templateStructureFile",
         )
+        appendix_items = review_workflow.decision_appendix_items(work_dir)
+        if command == "appendix-next":
+            if command_args and (
+                len(command_args) != 2 or command_args[0] != "--max-items"
+            ):
+                raise SystemExit(
+                    "appendix-next usage: appendix-next <manifest> [--max-items 40]"
+                )
+            try:
+                max_items = int(_option_value(command_args, "--max-items", "40"))
+            except ValueError as exc:
+                raise SystemExit("appendix-next --max-items must be an integer") from exc
+            return decision_workflow.next_appendix_batch(
+                work_dir,
+                structure,
+                appendix_items,
+                max_items=max_items,
+                workflow_binding=workflow_binding,
+            )
+        if command == "appendix-decision-batch":
+            if len(command_args) != 1:
+                raise SystemExit(
+                    "appendix-decision-batch requires exactly one JSON payload"
+                )
+            batch_text = _required_arg(command_args, 0, "appendix decision batch JSON")
+            try:
+                appendix_batch = json.loads(batch_text)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"appendix decision batch JSON is invalid: {exc}") from exc
+            if not isinstance(appendix_batch, dict):
+                raise SystemExit("appendix decision batch JSON must be an object")
+            return decision_workflow.submit_appendix_batch(
+                work_dir,
+                structure,
+                appendix_batch,
+                appendix_items,
+                workflow_binding=workflow_binding,
+            )
         if command == "decision-next":
-            max_items = int(_option_value(command_args, "--max-items", "50"))
+            try:
+                max_items = int(_option_value(command_args, "--max-items", "50"))
+            except ValueError as exc:
+                raise SystemExit("decision-next --max-items must be an integer") from exc
             return decision_workflow.next_decision_batch(
                 work_dir,
                 structure,
                 max_items=max_items,
-                comparison_context=review_workflow.decision_comparison_context(work_dir),
+                chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
+                workflow_binding=workflow_binding,
+            )
+        if command == "decision-reopen":
+            if len(command_args) != 1:
+                raise SystemExit("decision-reopen requires exactly one chapter_id")
+            return decision_workflow.reopen_decision_chapter(
+                work_dir,
+                structure,
+                _required_arg(command_args, 0, "decision-reopen chapter_id"),
+                workflow_binding=workflow_binding,
+            )
+        if command == "review-corrections":
+            if len(command_args) != 1:
+                raise SystemExit("review-corrections requires exactly one JSON payload")
+            try:
+                correction_payload = json.loads(command_args[0])
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"review-corrections JSON is invalid: {exc}") from exc
+            if not isinstance(correction_payload, dict):
+                raise SystemExit("review-corrections JSON must be an object")
+            normalized_payload = _resolve_decision_evidence(work_dir, correction_payload)
+            return decision_workflow.apply_global_review_corrections(
+                work_dir,
+                structure,
+                normalized_payload,
+                appendix_items=appendix_items,
+                workflow_binding=workflow_binding,
+            )
+        if command == "review-complete":
+            if len(command_args) != 1:
+                raise SystemExit("review-complete requires exactly one JSON payload")
+            try:
+                review_payload = json.loads(command_args[0])
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"review-complete JSON is invalid: {exc}") from exc
+            if not isinstance(review_payload, dict):
+                raise SystemExit("review-complete JSON must be an object")
+            return decision_workflow.complete_global_review(
+                work_dir,
+                structure,
+                review_payload,
+                appendix_items=appendix_items,
                 workflow_binding=workflow_binding,
             )
         if command == "decisions":
@@ -258,7 +510,9 @@ def dispatch_command(
             return decision_workflow.finalize_decisions(
                 work_dir,
                 structure,
+                appendix_items=appendix_items,
                 workflow_binding=workflow_binding,
+                require_global_review=True,
             )
         decisions_text = _required_arg(command_args, 0, "decision batch JSON")
         try:
@@ -267,11 +521,17 @@ def dispatch_command(
             raise SystemExit(f"decision batch JSON is invalid: {exc}") from exc
         if not isinstance(decision_batch, dict):
             raise SystemExit("decision batch JSON must be an object")
+        if "additions" not in decision_batch:
+            raise SystemExit(
+                "decision-batch additions is required; use [] when there is no addition"
+            )
+        normalized_batch = _resolve_decision_evidence(work_dir, decision_batch)
         return decision_workflow.submit_decision_batch(
             work_dir,
             structure,
-            decision_batch,
-            appendix_items=review_workflow.decision_appendix_items(work_dir),
+            normalized_batch,
+            appendix_items=appendix_items,
+            chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
             workflow_binding=workflow_binding,
         )
     if command == "compose":
@@ -802,6 +1062,7 @@ def compose_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str,
                     structure,
                     decisions,
                     workflow_binding=workflow_proof,
+                    appendix_items=review_workflow.decision_appendix_items(work_dir),
                 )
             )
         outline, _ = outline_composer.build_composition(structure, decisions)
@@ -852,6 +1113,7 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
         else None
     )
     decisions: dict[str, Any] | None = None
+    appendix_decisions: list[dict[str, Any]] | None = None
     if structure is not None:
         try:
             require_composed = _requires_composed_outline(manifest)
@@ -863,14 +1125,16 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
             if require_composed:
                 workflow_proof = _strict_workflow_binding(manifest, work_dir) or {}
                 if workflow_proof:
-                    workflow_proof.update(
-                        decision_workflow.validate_finalized_decisions(
-                            work_dir,
-                            structure,
-                            decisions,
-                            workflow_binding=workflow_proof,
-                        )
+                    decision_validation = decision_workflow.validate_finalized_decisions(
+                        work_dir,
+                        structure,
+                        decisions,
+                        workflow_binding=workflow_proof,
+                        appendix_items=review_workflow.decision_appendix_items(work_dir),
+                        include_appendix_decisions=True,
                     )
+                    appendix_decisions = decision_validation.pop("appendixDecisions")
+                    workflow_proof.update(decision_validation)
                 outline_composer.validate_compose_report(
                     work_dir=work_dir,
                     output_file=output_file,
@@ -891,8 +1155,12 @@ def finalize_manifest(manifest: dict[str, Any], manifest_path: Path) -> dict[str
 
     action_counts: Counter[str] = Counter()
     total_nodes = validate_nodes(nodes, action_counts=action_counts)
-    validate_tender_search_texts(nodes, manifest)
-    validate_technical_appendix(nodes, work_dir=work_dir)
+    validate_tender_search_texts(nodes, manifest, work_dir=work_dir)
+    validate_technical_appendix(
+        nodes,
+        work_dir=work_dir,
+        appendix_decisions=appendix_decisions,
+    )
     review_summary = (
         review_workflow.validate_review_completion(work_dir, nodes)
         if manifest.get("tenderFiles")
@@ -971,26 +1239,37 @@ def validate_nodes(
 def validate_tender_basis(value: Any, node_path: str) -> None:
     if value is None:
         return
-    if not isinstance(value, dict) or set(value) != {"file_id", "search_text"}:
-        raise SystemExit(f"{node_path}.tender_basis must contain only file_id and search_text")
+    allowed_key_sets = (
+        {"file_id", "search_text"},
+        {"evidence_id", "file_id", "search_text"},
+    )
+    if not isinstance(value, dict) or set(value) not in allowed_key_sets:
+        raise SystemExit(
+            f"{node_path}.tender_basis must contain file_id/search_text and optional evidence_id"
+        )
+    if "evidence_id" in value and not str(value.get("evidence_id") or "").strip():
+        raise SystemExit(f"{node_path}.tender_basis.evidence_id must be non-empty")
     if not str(value.get("file_id") or "").strip():
         raise SystemExit(f"{node_path}.tender_basis.file_id must be non-empty")
     if not str(value.get("search_text") or "").strip():
         raise SystemExit(f"{node_path}.tender_basis.search_text must be non-empty")
 
 
-def validate_tender_search_texts(nodes: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+def validate_tender_search_texts(
+    nodes: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    *,
+    work_dir: Path | None = None,
+) -> None:
     if not manifest.get("tenderFiles"):
         return
+    sources_by_id = {
+        str(source.get("id") or "").strip(): source
+        for source in tender_inputs(manifest)
+        if str(source.get("id") or "").strip()
+    }
+    controlled_work_dir = work_dir or Path(str(manifest.get("workDir") or ""))
     text_by_file_id: dict[str, list[str]] = {}
-    for source in tender_inputs(manifest):
-        file_id = str(source.get("id") or "").strip()
-        if not file_id:
-            continue
-        text_by_file_id[file_id] = [
-            normalize_space(paragraph.get("text"))
-            for paragraph in read_docx_paragraphs(Path(str(source.get("path") or "")))
-        ]
 
     def validate(items: list[dict[str, Any]], path: str) -> None:
         for index, node in enumerate(items):
@@ -999,9 +1278,27 @@ def validate_tender_search_texts(nodes: list[dict[str, Any]], manifest: dict[str
             if isinstance(basis, dict):
                 file_id = str(basis.get("file_id") or "").strip()
                 search_text = normalize_space(basis.get("search_text"))
-                paragraphs = text_by_file_id.get(file_id)
-                if paragraphs is None:
+                evidence_id = str(basis.get("evidence_id") or "").strip()
+                if file_id not in sources_by_id:
                     raise SystemExit(f"{node_path}.tender_basis.file_id 未对应 manifest tenderFile: {file_id}")
+                if evidence_id:
+                    expected = review_workflow.controlled_tender_basis(controlled_work_dir, evidence_id)
+                    if (
+                        file_id != expected["file_id"]
+                        or search_text != normalize_space(expected["search_text"])
+                    ):
+                        raise SystemExit(
+                            f"{node_path}.tender_basis 与受控证据不一致: {evidence_id}"
+                        )
+                    validate(node.get("children") or [], f"{node_path}.children")
+                    continue
+                if file_id not in text_by_file_id:
+                    source = sources_by_id[file_id]
+                    text_by_file_id[file_id] = [
+                        normalize_space(paragraph.get("text"))
+                        for paragraph in read_docx_paragraphs(Path(str(source.get("path") or "")))
+                    ]
+                paragraphs = text_by_file_id[file_id]
                 if not any(search_text in paragraph for paragraph in paragraphs):
                     raise SystemExit(f"{node_path}.tender_basis.search_text 无法在 tenderFile 定位: {search_text}")
             validate(node.get("children") or [], f"{node_path}.children")
@@ -1009,8 +1306,133 @@ def validate_tender_search_texts(nodes: list[dict[str, Any]], manifest: dict[str
     validate(nodes, "nodes")
 
 
-def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) -> None:
-    indexes = [index for index, node in enumerate(nodes) if str(node.get("title") or "").strip() == "技术附表"]
+def validate_technical_appendix(
+    nodes: list[dict[str, Any]],
+    *,
+    work_dir: Path,
+    appendix_decisions: list[dict[str, Any]] | None = None,
+) -> None:
+    appendix_paths: list[tuple[tuple[int, ...], dict[str, Any]]] = []
+
+    def collect_appendix_paths(items: list[dict[str, Any]], path: tuple[int, ...] = ()) -> None:
+        for index, node in enumerate(items):
+            node_path = (*path, index)
+            if str(node.get("title") or "").strip() == "技术附表":
+                appendix_paths.append((node_path, node))
+            collect_appendix_paths(node.get("children") or [], node_path)
+
+    collect_appendix_paths(nodes)
+    if appendix_paths and (
+        len(appendix_paths) != 1 or appendix_paths[0][0] != (len(nodes) - 1,)
+    ):
+        raise SystemExit("技术附表必须是唯一的最后一个根节点")
+    if appendix_decisions is None:
+        if not appendix_paths:
+            appendix_inventory_path = work_dir / "tender_appendix_inventory.json"
+            if appendix_inventory_path.exists():
+                appendix_inventory = load_json_dict(
+                    appendix_inventory_path, "tenderAppendixInventoryFile"
+                )
+                if not isinstance(appendix_inventory.get("items"), list):
+                    raise SystemExit("tenderAppendixInventoryFile.items must be a list")
+            return
+        included: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
+        appendix = appendix_paths[0][1]
+    else:
+        included = [
+            item for item in appendix_decisions if item.get("decision") == "include"
+        ]
+        excluded = [
+            item for item in appendix_decisions if item.get("decision") == "exclude"
+        ]
+        if not included:
+            if appendix_paths:
+                if excluded:
+                    raise SystemExit(
+                        "技术附表包含已排除 appendix_id: "
+                        + ", ".join(str(item["appendix_id"]) for item in excluded)
+                    )
+                raise SystemExit("技术附表必须是唯一的最后一个根节点")
+            return
+        if not appendix_paths:
+            raise SystemExit(
+                "技术附表与最终附表决策不一致；缺失或顺序错误 appendix_id: "
+                + ", ".join(str(item["appendix_id"]) for item in included)
+            )
+        appendix = appendix_paths[0][1]
+    children = appendix.get("children") or []
+    for index, child in enumerate(children):
+        if child.get("children"):
+            raise SystemExit(f"技术附表.children[{index}] must not contain table-field descendants")
+
+    expected_identities = [
+        (
+            str(item["appendix_id"]),
+            normalize_outline_identity(item.get("number")),
+            normalize_outline_identity(item.get("title")),
+        )
+        for item in included
+    ]
+    actual_identities = [
+        (
+            normalize_outline_identity(child.get("number")),
+            normalize_outline_identity(child.get("title")),
+        )
+        for child in children
+    ]
+    mismatched_ids = [
+        appendix_id
+        for index, (appendix_id, number, title) in enumerate(expected_identities)
+        if index >= len(actual_identities) or actual_identities[index] != (number, title)
+    ]
+    expected_counts = Counter(
+        (number, title) for _, number, title in expected_identities
+    )
+    actual_counts = Counter(actual_identities)
+    excluded_ids: list[str] = []
+    extra_ids: list[str] = []
+    for identity, actual_count in actual_counts.items():
+        surplus_count = actual_count - expected_counts[identity]
+        if surplus_count <= 0:
+            continue
+        matching_excluded_ids = [
+            str(item["appendix_id"])
+            for item in excluded
+            if (
+                normalize_outline_identity(item.get("number")),
+                normalize_outline_identity(item.get("title")),
+            )
+            == identity
+        ]
+        excluded_ids.extend(matching_excluded_ids[:surplus_count])
+        surplus_count -= len(matching_excluded_ids[:surplus_count])
+        if surplus_count <= 0:
+            continue
+        matching_included_ids = [
+            str(item["appendix_id"])
+            for item in included
+            if (
+                normalize_outline_identity(item.get("number")),
+                normalize_outline_identity(item.get("title")),
+            )
+            == identity
+        ]
+        extra_ids.extend(
+            (matching_included_ids or ["未知"] * surplus_count)[:surplus_count]
+        )
+    if appendix_decisions is not None and (
+        excluded_ids or mismatched_ids or extra_ids
+    ):
+        details: list[str] = []
+        if mismatched_ids:
+            details.append("缺失或顺序错误 appendix_id: " + ", ".join(mismatched_ids))
+        if excluded_ids:
+            details.append("已排除但仍输出 appendix_id: " + ", ".join(excluded_ids))
+        if extra_ids:
+            details.append("重复或多余 appendix_id: " + ", ".join(extra_ids))
+        raise SystemExit("技术附表与最终附表决策不一致；" + "；".join(details))
+
     appendix_inventory_path = work_dir / "tender_appendix_inventory.json"
     inventory_items: list[dict[str, Any]] = []
     if appendix_inventory_path.exists():
@@ -1022,15 +1444,6 @@ def validate_technical_appendix(nodes: list[dict[str, Any]], *, work_dir: Path) 
     positive_inventory_items = [
         item for item in inventory_items if int(item.get("following_table_count") or 0) > 0
     ]
-    if not indexes:
-        return
-    if indexes != [len(nodes) - 1]:
-        raise SystemExit("技术附表 must be the single last root node")
-    appendix = nodes[indexes[0]]
-    for index, child in enumerate(appendix.get("children") or []):
-        if child.get("children"):
-            raise SystemExit(f"技术附表.children[{index}] must not contain table-field descendants")
-
     template_structure_path = work_dir / "template_structure.json"
     if not template_structure_path.exists():
         return

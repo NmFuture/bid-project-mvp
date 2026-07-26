@@ -3,23 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import zipfile
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Iterator
-
-from docx import Document
-from docx.document import Document as DocxDocument
-from docx.oxml.table import CT_Tbl
-from docx.oxml.text.paragraph import CT_P
-from docx.table import Table
-from docx.text.paragraph import Paragraph
+from typing import Any
+from xml.etree import ElementTree as ET
 
 
 CHUNKS_SCHEMA_VERSION = "tender-review-chunks.v1"
 STATE_SCHEMA_VERSION = "tender-review-state.v1"
 LEDGER_SCHEMA_VERSION = "tender-requirement-ledger.v1"
 HEADINGS_STATE_SCHEMA_VERSION = "tender-headings-state.v1"
+EVIDENCE_ACCESS_SCHEMA_VERSION = "tender-evidence-access.v1"
 DEFAULT_CHUNK_CHAR_LIMIT = 12_000
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W = f"{{{WORD_NS}}}"
 STRUCTURAL_TITLE_PATTERN = re.compile(
     r"^(?:第\s*[一二三四五六七八九十百千万零〇两0-9]+\s*[章节篇卷]|\d+(?:\.\d+)*[.、]?\s+)\S+"
 )
@@ -35,6 +33,27 @@ ALLOWED_DISPOSITIONS = {
 
 def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").replace("\u3000", " ")).strip()
+
+
+def evidence_search_text(record: dict[str, Any]) -> str:
+    rows = [row for row in record.get("rows") or [] if isinstance(row, dict)]
+    if rows:
+        candidate_rows = rows[1:] if len(rows) > 1 else rows
+        cells = [cell for row in candidate_rows for cell in row.get("cells") or []]
+    else:
+        cells = list(record.get("cells") or [])
+
+    meaningful = [
+        clean_text(cell)
+        for cell in cells
+        if re.search(r"[A-Za-z\u4e00-\u9fff]", clean_text(cell))
+    ]
+    preferred = [value for value in meaningful if 2 <= len(value) <= 80]
+    if preferred:
+        return max(preferred, key=len)
+    if meaningful:
+        return min(meaningful, key=len)
+    return clean_text(record.get("text"))
 
 
 def _payload_digest(payload: Any) -> str:
@@ -73,25 +92,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _iter_docx_body(document: DocxDocument) -> Iterator[Paragraph | Table]:
-    table_iter = iter(document.tables)
-    for child in document.element.body.iterchildren():
-        if isinstance(child, CT_P):
-            yield Paragraph(child, document)
-        elif isinstance(child, CT_Tbl):
-            table = next(table_iter, None)
-            if table is not None:
-                yield table
-
-
-def _heading_level(paragraph: Paragraph) -> int:
-    style_name = str(getattr(paragraph.style, "name", "") or "")
+def _heading_level(style_name: str) -> int:
     match = re.search(r"(?:Heading|标题)\s*(\d+)", style_name, re.IGNORECASE)
     return max(1, min(9, int(match.group(1)))) if match else 0
 
 
-def _toc_level(paragraph: Paragraph) -> int:
-    style_name = str(getattr(paragraph.style, "name", "") or "")
+def _toc_level(style_name: str) -> int:
     match = re.search(r"(?:TOC|目录)\s*(\d+)", style_name, re.IGNORECASE)
     return max(1, min(9, int(match.group(1)))) if match else 0
 
@@ -104,10 +110,65 @@ def _structural_title_level(text: str) -> int:
     return min(9, decimal.group(1).count(".") + 1) if decimal else 1
 
 
-def _table_rows(table: Table, *, file_id: str, table_id: str) -> list[dict[str, Any]]:
+def _docx_styles(archive: zipfile.ZipFile) -> dict[str, str]:
+    try:
+        root = ET.fromstring(archive.read("word/styles.xml"))
+    except KeyError:
+        return {}
+    styles: dict[str, str] = {}
+    for style in root.findall(f".//{W}style"):
+        style_id = str(style.attrib.get(f"{W}styleId") or "")
+        name = style.find(f"{W}name")
+        if style_id:
+            styles[style_id] = str(name.attrib.get(f"{W}val") or style_id) if name is not None else style_id
+    return styles
+
+
+def _paragraph_text(paragraph: ET.Element) -> str:
+    parts: list[str] = []
+    runs = list(paragraph.findall(f"./{W}r"))
+    for hyperlink in paragraph.findall(f"./{W}hyperlink"):
+        runs.extend(hyperlink.findall(f"./{W}r"))
+    for run in runs:
+        for child in run:
+            if child.tag == f"{W}t":
+                parts.append(child.text or "")
+            elif child.tag == f"{W}tab":
+                parts.append("\t")
+            elif child.tag in {f"{W}br", f"{W}cr"}:
+                parts.append("\n")
+    return "".join(parts)
+
+
+def _paragraph_style_name(paragraph: ET.Element, styles: dict[str, str]) -> str:
+    style = paragraph.find(f"./{W}pPr/{W}pStyle")
+    style_id = str(style.attrib.get(f"{W}val") or "") if style is not None else ""
+    return styles.get(style_id, style_id)
+
+
+def _table_rows(table: ET.Element, *, file_id: str, table_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row_index, row in enumerate(table.rows, start=1):
-        cells = [clean_text(cell.text) for cell in row.cells]
+    vertical_cells: dict[int, str] = {}
+    for row_index, row in enumerate(table.findall(f"./{W}tr"), start=1):
+        cells: list[str] = []
+        grid_before = row.find(f"./{W}trPr/{W}gridBefore")
+        column_index = int(grid_before.attrib.get(f"{W}val") or 0) if grid_before is not None else 0
+        for cell in row.findall(f"./{W}tc"):
+            cell_properties = cell.find(f"./{W}tcPr")
+            grid_span = cell_properties.find(f"./{W}gridSpan") if cell_properties is not None else None
+            span = max(1, int(grid_span.attrib.get(f"{W}val") or 1)) if grid_span is not None else 1
+            vertical_merge = cell_properties.find(f"./{W}vMerge") if cell_properties is not None else None
+            merge_value = str(vertical_merge.attrib.get(f"{W}val") or "continue") if vertical_merge is not None else ""
+            if merge_value == "continue":
+                cell_text = vertical_cells.get(column_index, "")
+            else:
+                cell_text = clean_text(
+                    "\n".join(_paragraph_text(paragraph) for paragraph in cell.findall(f"./{W}p"))
+                )
+            cells.extend([cell_text] * span)
+            for offset in range(span):
+                vertical_cells[column_index + offset] = cell_text
+            column_index += span
         rows.append(
             {
                 "evidence_id": f"{table_id}:R{row_index:04d}",
@@ -126,43 +187,58 @@ def _source_blocks(source: dict[str, Any]) -> list[dict[str, Any]]:
     if not file_id or not path.is_file() or path.suffix.lower() != ".docx":
         raise SystemExit(f"tenderFile must be a readable DOCX with id: {path}")
 
-    document = Document(str(path))
     blocks: list[dict[str, Any]] = []
     table_no = 0
-    for body_index, item in enumerate(_iter_docx_body(document), start=1):
-        if isinstance(item, Paragraph):
-            text = clean_text(item.text)
-            if not text:
-                continue
-            blocks.append(
-                {
-                    "evidence_id": f"{file_id}:B{body_index:06d}",
-                    "file_id": file_id,
-                    "body_index": body_index,
-                    "type": "paragraph",
-                    "text": text,
-                    "heading_level": _heading_level(item),
-                    "toc_level": _toc_level(item),
-                    "structural_title_level": _structural_title_level(text),
-                }
-            )
-            continue
-
-        table_no += 1
-        table_id = f"{file_id}:T{table_no:04d}"
-        rows = _table_rows(item, file_id=file_id, table_id=table_id)
-        blocks.append(
-            {
-                "evidence_id": table_id,
-                "file_id": file_id,
-                "body_index": body_index,
-                "type": "table",
-                "table_id": table_id,
-                "row_count": len(rows),
-                "text": " || ".join(row["text"] for row in rows[:4]),
-                "rows": rows,
-            }
-        )
+    body_index = 0
+    with zipfile.ZipFile(path) as archive:
+        styles = _docx_styles(archive)
+        try:
+            document_xml = archive.open("word/document.xml")
+        except KeyError as exc:
+            raise SystemExit(f"tenderFile has no word/document.xml: {path}") from exc
+        stack: list[ET.Element] = []
+        with document_xml:
+            for event, item in ET.iterparse(document_xml, events=("start", "end")):
+                if event == "start":
+                    stack.append(item)
+                    continue
+                parent = stack[-2] if len(stack) > 1 else None
+                if parent is not None and parent.tag == f"{W}body" and item.tag in {f"{W}p", f"{W}tbl"}:
+                    body_index += 1
+                    if item.tag == f"{W}p":
+                        text = clean_text(_paragraph_text(item))
+                        if text:
+                            style_name = _paragraph_style_name(item, styles)
+                            blocks.append(
+                                {
+                                    "evidence_id": f"{file_id}:B{body_index:06d}",
+                                    "file_id": file_id,
+                                    "body_index": body_index,
+                                    "type": "paragraph",
+                                    "text": text,
+                                    "heading_level": _heading_level(style_name),
+                                    "toc_level": _toc_level(style_name),
+                                    "structural_title_level": _structural_title_level(text),
+                                }
+                            )
+                    else:
+                        table_no += 1
+                        table_id = f"{file_id}:T{table_no:04d}"
+                        rows = _table_rows(item, file_id=file_id, table_id=table_id)
+                        blocks.append(
+                            {
+                                "evidence_id": table_id,
+                                "file_id": file_id,
+                                "body_index": body_index,
+                                "type": "table",
+                                "table_id": table_id,
+                                "row_count": len(rows),
+                                "text": " || ".join(row["text"] for row in rows[:4]),
+                                "rows": rows,
+                            }
+                        )
+                    item.clear()
+                stack.pop()
     return blocks
 
 
@@ -233,6 +309,7 @@ def build_review_workspace(
     state_path = work_dir / "tender_review_state.json"
     ledger_path = work_dir / "requirement_ledger.json"
     headings_state_path = work_dir / "tender_headings_state.json"
+    evidence_access_path = work_dir / "tender_evidence_access.json"
     chunks_payload = {
         "schema_version": CHUNKS_SCHEMA_VERSION,
         "input_fingerprint": input_fingerprint,
@@ -295,6 +372,16 @@ def build_review_workspace(
             "requires_full_review": False,
             "full_review_file_ids": [],
             "complete": False,
+        },
+    )
+    write_json(
+        evidence_access_path,
+        {
+            "schema_version": EVIDENCE_ACCESS_SCHEMA_VERSION,
+            "input_fingerprint": input_fingerprint,
+            "read_event_count": 0,
+            "evidence_ids": [],
+            "events": [],
         },
     )
     return {
@@ -381,6 +468,174 @@ def _collect_heading_files(
     return files_by_id, paragraph_locations
 
 
+def _all_blocks_by_file(chunks: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for chunk in chunks.get("chunks") or []:
+        if not isinstance(chunk, dict):
+            continue
+        file_id = clean_text(chunk.get("file_id"))
+        if not file_id:
+            continue
+        result.setdefault(file_id, []).extend(
+            block for block in chunk.get("blocks") or [] if isinstance(block, dict)
+        )
+    for blocks in result.values():
+        blocks.sort(key=lambda item: int(item.get("body_index") or 0))
+    return result
+
+
+def _section_catalog(
+    chunks: dict[str, Any],
+    files_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    files_by_id = files_by_id or _collect_heading_files(chunks)[0]
+    blocks_by_file = _all_blocks_by_file(chunks)
+    sections: list[dict[str, Any]] = []
+    for file_id, file_entry in files_by_id.items():
+        headings = sorted(
+            file_entry.get("body_items") or [],
+            key=lambda item: int(item.get("body_index") or 0),
+        )
+        file_blocks = blocks_by_file.get(file_id) or []
+        last_body_index = max(
+            (int(item.get("body_index") or 0) for item in file_blocks),
+            default=0,
+        )
+        for index, heading in enumerate(headings):
+            level = int(heading.get("level") or 1)
+            start = int(heading.get("body_index") or 0)
+            next_boundary = next(
+                (
+                    int(candidate.get("body_index") or 0)
+                    for candidate in headings[index + 1 :]
+                    if int(candidate.get("level") or 1) <= level
+                ),
+                last_body_index + 1,
+            )
+            sections.append(
+                {
+                    "section_id": f"{file_id}:S{index + 1:04d}",
+                    "file_id": file_id,
+                    "file_name": clean_text(file_entry.get("file_name")) or file_id,
+                    "title": clean_text(heading.get("text")),
+                    "level": level,
+                    "heading_evidence_id": clean_text(heading.get("evidence_id")),
+                    "start_body_index": start,
+                    "end_body_index": max(start, next_boundary - 1),
+                }
+            )
+    return sections
+
+
+def _attach_section_ids(
+    files_by_id: dict[str, dict[str, Any]],
+    sections: list[dict[str, Any]],
+) -> None:
+    by_heading_evidence = {
+        clean_text(section.get("heading_evidence_id")): section["section_id"]
+        for section in sections
+        if clean_text(section.get("heading_evidence_id"))
+    }
+    for file_entry in files_by_id.values():
+        for item in file_entry.get("body_items") or []:
+            item["section_id"] = by_heading_evidence.get(
+                clean_text(item.get("evidence_id")), ""
+            )
+        body_items = file_entry.get("body_items") or []
+        for item in file_entry.get("toc_items") or []:
+            identity = _heading_identity(item.get("text"))
+            candidates = [
+                candidate
+                for candidate in body_items
+                if _heading_identity(candidate.get("text")) == identity
+                and int(candidate.get("level") or 0) == int(item.get("level") or 0)
+            ]
+            if len(candidates) == 1:
+                item["section_id"] = clean_text(candidates[0].get("section_id"))
+                continue
+            item["section_id"] = ""
+            item["section_mapping_error"] = "无法唯一映射正文；请用 search 后详读原文"
+
+
+def _heading_identity(value: Any) -> str:
+    text = clean_text(value)
+    text = re.sub(r"(?:\.{2,}|…+|\t+)\s*\d+\s*$", "", text).strip()
+    return re.sub(r"[\s:：.。．、]", "", text).casefold()
+
+
+def _section_for_body_index(
+    sections: list[dict[str, Any]], file_id: str, body_index: int
+) -> dict[str, Any] | None:
+    candidates = [
+        section
+        for section in sections
+        if section["file_id"] == file_id
+        and int(section["start_body_index"]) <= body_index <= int(section["end_body_index"])
+    ]
+    return max(candidates, key=lambda item: int(item.get("level") or 0), default=None)
+
+
+def _load_evidence_access(work_dir: Path, chunks: dict[str, Any]) -> dict[str, Any]:
+    path = work_dir / "tender_evidence_access.json"
+    access = _load_payload(path, EVIDENCE_ACCESS_SCHEMA_VERSION)
+    if clean_text(access.get("input_fingerprint")) != clean_text(chunks.get("input_fingerprint")):
+        raise SystemExit("evidence access state does not match the prepared tender inputs")
+    return access
+
+
+def _record_evidence_access(
+    work_dir: Path,
+    chunks: dict[str, Any],
+    evidence_ids: list[str],
+    *,
+    command: str,
+) -> None:
+    normalized = list(dict.fromkeys(clean_text(value) for value in evidence_ids if clean_text(value)))
+    if not normalized:
+        return
+    access = _load_evidence_access(work_dir, chunks)
+    known = list(dict.fromkeys([*(access.get("evidence_ids") or []), *normalized]))
+    access["evidence_ids"] = known
+    access["read_event_count"] = int(access.get("read_event_count") or 0) + 1
+    access.setdefault("events", []).append(
+        {
+            "sequence": access["read_event_count"],
+            "command": command,
+            "evidence_ids": normalized,
+        }
+    )
+    write_json(work_dir / "tender_evidence_access.json", access)
+
+
+def _paged_heading_files(
+    files_by_id: dict[str, dict[str, Any]],
+    *,
+    cursor: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int, bool, int]:
+    flattened: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+    for file_entry in files_by_id.values():
+        selected = file_entry["toc_items"] or file_entry["body_items"]
+        source = "toc" if file_entry["toc_items"] else "body_headings"
+        flattened.extend((file_entry, source, item) for item in selected)
+
+    page = flattened[cursor : cursor + page_size]
+    next_cursor = cursor + len(page)
+    complete = next_cursor >= len(flattened)
+    paged_files_by_id: dict[str, dict[str, Any]] = {}
+    for file_entry, source, item in page:
+        paged_files_by_id.setdefault(
+            file_entry["file_id"],
+            {
+                "file_id": file_entry["file_id"],
+                "file_name": file_entry["file_name"],
+                "source": source,
+                "items": [],
+            },
+        )["items"].append(item)
+    return list(paged_files_by_id.values()), next_cursor, complete, len(flattened)
+
+
 def _appendix_catalog_items(work_dir: Path) -> list[dict[str, Any]]:
     inventory_path = work_dir / "tender_appendix_inventory.json"
     if not inventory_path.is_file():
@@ -427,45 +682,6 @@ def _heading_catalog_digest(
     return _payload_digest({"files": files, "appendices": appendix_catalog})
 
 
-def decision_comparison_context(work_dir: Path) -> dict[str, Any]:
-    appendices = decision_appendix_items(work_dir)
-    chunks_path = work_dir / "tender_review_chunks.json"
-    if not chunks_path.is_file():
-        return {
-            "schema_version": "outline-comparison-context.v1",
-            "heading_count": 0,
-            "files": [],
-            "appendices": appendices,
-        }
-    chunks = _load_payload(chunks_path, CHUNKS_SCHEMA_VERSION)
-    files_by_id, _ = _collect_heading_files(chunks)
-    files: list[dict[str, Any]] = []
-    for file_entry in files_by_id.values():
-        source = "toc" if file_entry["toc_items"] else "body_headings"
-        selected = file_entry["toc_items"] or file_entry["body_items"]
-        files.append(
-            {
-                "file_id": file_entry["file_id"],
-                "file_name": file_entry["file_name"],
-                "source": source,
-                "items": [
-                    {
-                        "evidence_id": item["evidence_id"],
-                        "level": item["level"],
-                        "text": item["text"],
-                    }
-                    for item in selected
-                ],
-            }
-        )
-    return {
-        "schema_version": "outline-comparison-context.v1",
-        "heading_count": sum(len(item["items"]) for item in files),
-        "files": files,
-        "appendices": appendices,
-    }
-
-
 def decision_appendix_items(work_dir: Path) -> list[dict[str, Any]]:
     inventory_path = work_dir / "tender_appendix_inventory.json"
     if not inventory_path.is_file():
@@ -479,17 +695,53 @@ def decision_appendix_items(work_dir: Path) -> list[dict[str, Any]]:
         or inventory.get("schema_version") != "tender-appendix-inventory.v1"
     ):
         raise SystemExit(f"tender appendix inventory schema is invalid: {inventory_path}")
+    result = decision_appendix_items_from_inventory(inventory)
+    chunks_path = work_dir / "tender_review_chunks.json"
+    if not chunks_path.is_file():
+        return result
+    chunks = _load_payload(chunks_path, CHUNKS_SCHEMA_VERSION)
+    evidence_by_text = {
+        (clean_text(block.get("file_id")), clean_text(block.get("text"))): clean_text(
+            block.get("evidence_id")
+        )
+        for blocks in _all_blocks_by_file(chunks).values()
+        for block in blocks
+        if block.get("type") == "paragraph" and clean_text(block.get("evidence_id"))
+    }
+    for item in result:
+        item["evidence_id"] = evidence_by_text.get(
+            (clean_text(item.get("file_id")), clean_text(item.get("raw_text"))),
+            "",
+        )
+    return result
+
+
+def decision_appendix_items_from_inventory(
+    inventory: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if (
+        not isinstance(inventory, dict)
+        or inventory.get("schema_version") != "tender-appendix-inventory.v1"
+    ):
+        raise SystemExit("tender appendix inventory schema is invalid")
     result: list[dict[str, Any]] = []
     for item in inventory.get("items") or []:
-        if not isinstance(item, dict) or int(item.get("following_table_count") or 0) < 1:
+        if not isinstance(item, dict):
+            continue
+        table_count = int(item.get("following_table_count") or 0)
+        number = clean_text(item.get("number"))
+        is_numbered_leaf = bool(re.search(r"[.．-]\s*\d+\s*$", number))
+        if table_count < 1 and not is_numbered_leaf:
             continue
         result.append(
             {
                 "appendix_id": f"APP-{len(result) + 1:04d}",
                 "file_id": clean_text(item.get("file_id")),
-                "number": clean_text(item.get("number")),
+                "number": number,
                 "title": clean_text(item.get("title")),
-                "following_table_count": int(item.get("following_table_count") or 0),
+                "raw_text": clean_text(item.get("raw_text")),
+                "following_table_count": table_count,
+                "source_status": "present" if table_count > 0 else "missing",
             }
         )
     return result
@@ -500,6 +752,7 @@ def tender_headings(
     *,
     cursor: int = 0,
     page_size: int = 200,
+    review: bool = False,
 ) -> dict[str, Any]:
     if cursor < 0:
         raise SystemExit("headings cursor must be zero or greater")
@@ -507,6 +760,8 @@ def tender_headings(
         raise SystemExit("headings page_size must be between 1 and 500")
     chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
     files_by_id, paragraph_locations = _collect_heading_files(chunks)
+    sections = _section_catalog(chunks, files_by_id)
+    _attach_section_ids(files_by_id, sections)
 
     appendices: list[dict[str, Any]] = []
     inventory_path = work_dir / "tender_appendix_inventory.json"
@@ -536,24 +791,10 @@ def tender_headings(
     headings_catalog_digest = _heading_catalog_digest(files_by_id, appendices)
     if clean_text(state.get("headings_catalog_digest")) != headings_catalog_digest:
         raise SystemExit("headings catalog does not match the prepared tender inputs")
-    fallback_items: list[tuple[str, dict[str, Any]]] = []
-    toc_files: list[dict[str, Any]] = []
-    body_file_names: dict[str, str] = {}
-    for file_entry in files_by_id.values():
-        if file_entry["toc_items"]:
-            toc_files.append(
-                {
-                    "file_id": file_entry["file_id"],
-                    "file_name": file_entry["file_name"],
-                    "source": "toc",
-                    "items": file_entry["toc_items"],
-                }
-            )
-            continue
-        body_file_names[file_entry["file_id"]] = file_entry["file_name"]
-        fallback_items.extend(
-            (file_entry["file_id"], item) for item in file_entry["body_items"]
-        )
+    source_heading_count = sum(
+        len(item["toc_items"] or item["body_items"])
+        for item in files_by_id.values()
+    )
 
     appendix_file_ids = {
         clean_text(item.get("file_id"))
@@ -570,19 +811,23 @@ def tender_headings(
         and file_id not in appendix_file_ids
     )
     headings_exhausted = bool(state.get("headings_exhausted"))
-    if headings_exhausted:
+    if review:
+        files, next_cursor_value, pagination_complete, source_heading_count = (
+            _paged_heading_files(files_by_id, cursor=cursor, page_size=page_size)
+        )
+    elif headings_exhausted:
         if cursor != 0:
             raise SystemExit("headings cursor must be 0 after headings are exhausted")
-        page: list[tuple[str, dict[str, Any]]] = []
+        files: list[dict[str, Any]] = []
         next_cursor_value = 0
         pagination_complete = True
     else:
         expected_cursor = int(state.get("next_cursor") or 0)
-        if fallback_items and cursor != expected_cursor:
+        if source_heading_count and cursor != expected_cursor:
             raise SystemExit(f"headings cursor must be {expected_cursor}")
-        page = fallback_items[cursor : cursor + page_size]
-        next_cursor_value = cursor + len(page)
-        pagination_complete = next_cursor_value >= len(fallback_items)
+        files, next_cursor_value, pagination_complete, source_heading_count = (
+            _paged_heading_files(files_by_id, cursor=cursor, page_size=page_size)
+        )
 
     full_review_complete, full_review_pending_count, _ = _full_review_progress(
         work_dir,
@@ -590,17 +835,6 @@ def tender_headings(
         full_review_file_ids,
     )
     complete = pagination_complete and full_review_complete
-    body_files_by_id: dict[str, dict[str, Any]] = {}
-    for file_id, item in page:
-        body_files_by_id.setdefault(
-            file_id,
-            {
-                "file_id": file_id,
-                "file_name": body_file_names[file_id],
-                "source": "body_headings",
-                "items": [],
-            },
-        )["items"].append(item)
     full_review_files = [
         {
             "file_id": file_id,
@@ -610,26 +844,23 @@ def tender_headings(
         }
         for file_id in full_review_file_ids
     ]
-    files = [*toc_files, *body_files_by_id.values(), *full_review_files]
-    source_heading_count = sum(
-        len(item["toc_items"] or item["body_items"])
-        for item in files_by_id.values()
-    )
-    write_json(
-        state_path,
-        {
-            "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
-            "input_fingerprint": chunks_fingerprint,
-            "next_cursor": next_cursor_value if not pagination_complete else 0,
-            "headings_exhausted": pagination_complete,
-            "headings_catalog_digest": headings_catalog_digest,
-            "source_heading_count": source_heading_count,
-            "appendix_count": len(appendices),
-            "requires_full_review": bool(full_review_file_ids),
-            "full_review_file_ids": full_review_file_ids,
-            "complete": complete,
-        },
-    )
+    files.extend(full_review_files)
+    if not review:
+        write_json(
+            state_path,
+            {
+                "schema_version": HEADINGS_STATE_SCHEMA_VERSION,
+                "input_fingerprint": chunks_fingerprint,
+                "next_cursor": next_cursor_value if not pagination_complete else 0,
+                "headings_exhausted": pagination_complete,
+                "headings_catalog_digest": headings_catalog_digest,
+                "source_heading_count": source_heading_count,
+                "appendix_count": len(appendices),
+                "requires_full_review": bool(full_review_file_ids),
+                "full_review_file_ids": full_review_file_ids,
+                "complete": complete,
+            },
+        )
     return {
         "schema_version": "tender-headings.v1",
         "file_count": len(files_by_id),
@@ -641,8 +872,8 @@ def tender_headings(
         "requires_full_review": bool(full_review_file_ids),
         "full_review_pending_chunk_count": full_review_pending_count,
         "complete": complete,
+        "review": review,
         "files": files,
-        "appendices": appendices,
     }
 
 
@@ -952,6 +1183,7 @@ def read_evidence(work_dir: Path, evidence_id: str, *, max_chars: int = 4_000) -
     result = deepcopy(record)
     result.pop("rows", None)
     result["text"], truncated = _limit_text(result.get("text"), max_chars)
+    _record_evidence_access(work_dir, chunks, [evidence_id], command="read")
     return {
         "schema_version": "tender-review-read.v1",
         "chunk_id": chunk.get("chunk_id") or "",
@@ -986,6 +1218,12 @@ def read_window(
                 item.pop("rows", None)
                 blocks.append(item)
     blocks.sort(key=lambda item: int(item.get("body_index") or 0))
+    _record_evidence_access(
+        work_dir,
+        chunks,
+        [clean_text(item.get("evidence_id")) for item in blocks],
+        command="window",
+    )
     return {
         "schema_version": "tender-review-window.v1",
         "center": evidence_id,
@@ -1039,6 +1277,12 @@ def read_table(
     state_entry["table_truncated_rows"] = sorted(value for value in previous_truncated if value > 0)
     _refresh_state_counts(state)
     write_json(work_dir / "tender_review_state.json", state)
+    _record_evidence_access(
+        work_dir,
+        chunks,
+        [clean_text(table.get("evidence_id")), *[clean_text(row.get("evidence_id")) for row in rows]],
+        command="table",
+    )
 
     returned_end = int(output_rows[-1]["row_index"]) if output_rows else end
     has_more = returned_end < row_count
@@ -1076,6 +1320,143 @@ def read_tables(
         "table_count": len(tables),
         "tables": tables,
     }
+
+
+def read_section(
+    work_dir: Path,
+    section_id: str,
+    *,
+    cursor: int = 0,
+    max_chars: int = 12_000,
+) -> dict[str, Any]:
+    if cursor < 0:
+        raise SystemExit("section cursor must be zero or greater")
+    if max_chars < 1:
+        raise SystemExit("section max_chars must be greater than zero")
+    chunks, _, _ = _review_artifacts(work_dir)
+    files_by_id, _ = _collect_heading_files(chunks)
+    sections = _section_catalog(chunks, files_by_id)
+    section = next(
+        (item for item in sections if clean_text(item.get("section_id")) == clean_text(section_id)),
+        None,
+    )
+    if section is None:
+        raise SystemExit(f"section id not found or not mapped to body: {section_id}")
+    all_records = [
+        deepcopy(block)
+        for block in _all_blocks_by_file(chunks).get(section["file_id"], [])
+        if int(section["start_body_index"])
+        <= int(block.get("body_index") or 0)
+        <= int(section["end_body_index"])
+    ]
+    if cursor > len(all_records):
+        raise SystemExit(f"section cursor must be between 0 and {len(all_records)}")
+    records: list[dict[str, Any]] = []
+    used_chars = 0
+    index = cursor
+    while index < len(all_records):
+        record = all_records[index]
+        text = clean_text(record.get("text"))
+        if records and used_chars + len(text) > max_chars:
+            break
+        public_record = deepcopy(record)
+        public_record.pop("rows", None)
+        records.append(public_record)
+        used_chars += len(text)
+        index += 1
+    evidence_ids = [clean_text(item.get("evidence_id")) for item in records]
+    _record_evidence_access(work_dir, chunks, evidence_ids, command="section")
+    complete = index >= len(all_records)
+    return {
+        "schema_version": "tender-section.v1",
+        "section": deepcopy(section),
+        "cursor": str(cursor),
+        "next_cursor": "" if complete else str(index),
+        "complete": complete,
+        "records": records,
+    }
+
+
+def search_tender(
+    work_dir: Path,
+    query: str,
+    *,
+    cursor: int = 0,
+    max_results: int = 20,
+    max_chars: int = 8_000,
+) -> dict[str, Any]:
+    query = clean_text(query)
+    if not query:
+        raise SystemExit("search query is required")
+    if cursor < 0 or max_results < 1 or max_chars < 1:
+        raise SystemExit("search cursor, max_results and max_chars are invalid")
+    chunks, _, _ = _review_artifacts(work_dir)
+    files_by_id, _ = _collect_heading_files(chunks)
+    sections = _section_catalog(chunks, files_by_id)
+    matches: list[dict[str, Any]] = []
+    folded_query = query.casefold()
+    for file_id, blocks in _all_blocks_by_file(chunks).items():
+        for block in blocks:
+            candidates = [block]
+            if block.get("type") == "table":
+                candidates.extend(row for row in block.get("rows") or [] if isinstance(row, dict))
+            for candidate in candidates:
+                text = clean_text(candidate.get("text"))
+                if folded_query not in text.casefold():
+                    continue
+                body_index = int(block.get("body_index") or 0)
+                section = _section_for_body_index(sections, file_id, body_index)
+                matches.append(
+                    {
+                        "evidence_id": clean_text(candidate.get("evidence_id")),
+                        "file_id": file_id,
+                        "body_index": body_index,
+                        "section_id": clean_text((section or {}).get("section_id")),
+                        "section_title": clean_text((section or {}).get("title")),
+                        "snippet": text,
+                    }
+                )
+    page: list[dict[str, Any]] = []
+    used_chars = 0
+    index = cursor
+    while index < len(matches) and len(page) < max_results:
+        item = matches[index]
+        item_chars = len(item["snippet"])
+        if page and used_chars + item_chars > max_chars:
+            break
+        page.append(item)
+        used_chars += item_chars
+        index += 1
+    complete = index >= len(matches)
+    return {
+        "schema_version": "tender-search.v1",
+        "query": query,
+        "match_count": len(matches),
+        "cursor": str(cursor),
+        "next_cursor": "" if complete else str(index),
+        "complete": complete,
+        "results": page,
+    }
+
+
+def controlled_tender_basis(work_dir: Path, evidence_id: str) -> dict[str, str]:
+    evidence_id = clean_text(evidence_id)
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    _, record = _find_evidence(chunks, evidence_id)
+    return {
+        "evidence_id": evidence_id,
+        "file_id": clean_text(record.get("file_id")),
+        "search_text": evidence_search_text(record),
+    }
+
+
+def resolve_tender_basis(work_dir: Path, evidence_id: str) -> dict[str, str]:
+    chunks = _load_payload(work_dir / "tender_review_chunks.json", CHUNKS_SCHEMA_VERSION)
+    access = _load_evidence_access(work_dir, chunks)
+    evidence_id = clean_text(evidence_id)
+    if evidence_id not in set(access.get("evidence_ids") or []):
+        raise SystemExit(f"evidenceId 尚未通过受控阅读返回: {evidence_id}")
+    return controlled_tender_basis(work_dir, evidence_id)
 
 
 def _table_is_fully_read(chunk: dict[str, Any], state_entry: dict[str, Any]) -> bool:

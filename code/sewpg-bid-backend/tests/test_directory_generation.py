@@ -5,11 +5,12 @@ import hashlib
 import importlib.util
 import json
 import re
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -66,8 +67,14 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
+        self.parallel_outline_patcher = patch(
+            "app.services.outline_generation._run_parallel_outline_chapters",
+            return_value=[],
+        )
+        self.parallel_outline_patcher.start()
 
     def tearDown(self) -> None:
+        self.parallel_outline_patcher.stop()
         self.client.close()
         self.temp_dir.cleanup()
 
@@ -224,34 +231,22 @@ class DirectoryGenerationTests(unittest.TestCase):
 
     def _technical_manifest_from_prompt(self, prompt: str, kwargs: dict) -> Path:
         self.assertIn("Use the bid-tech-outline-generator skill", prompt)
-        self.assertIn("s2outline prepare", prompt)
+        self.assertIn("s2outline appendix-next", prompt)
+        self.assertIn("--max-items 40", prompt)
         self.assertIn("s2outline headings", prompt)
-        self.assertIn("s2outline next-batch", prompt)
-        self.assertIn("s2outline tables", prompt)
-        self.assertIn("s2outline review-batch", prompt)
-        self.assertIn("s2outline status", prompt)
-        self.assertIn("s2outline decision-next", prompt)
-        self.assertIn("s2outline decision-batch", prompt)
-        self.assertIn("s2outline decisions", prompt)
-        self.assertIn("s2outline compose", prompt)
-        self.assertIn("自主选择", prompt)
-        self.assertIn("完整学习模板一至三级目录", prompt)
-        self.assertIn("模板已有第三级目录统一进入结果供用户确认", prompt)
-        self.assertIn("不得进行粒度收敛", prompt)
-        self.assertIn("最终目录最多三级", prompt)
-        self.assertIn("第四级及更深层级只作为对应第三级节点的内容参考", prompt)
-        self.assertIn("再结合招标文件", prompt)
-        self.assertIn("模板目录与招标目录在同一批输入中", prompt)
-        self.assertIn("不作为完成门禁", prompt)
-        self.assertIn("不得把未判断节点自动当成必要", prompt)
-        self.assertIn("remaining_count=0", prompt)
+        self.assertIn("s2outline section", prompt)
+        self.assertIn("review-corrections", prompt)
+        self.assertIn("review-complete", prompt)
+        self.assertIn("decisions", prompt)
+        self.assertIn("compose", prompt)
+        self.assertIn("不要执行 `s2outline prepare`", prompt)
+        self.assertIn("模板正文目录的三类判断已经由前序接力会话全部完成", prompt)
         self.assertIn("s2outline finalize", prompt)
         self.assertNotIn("s2toc ", prompt)
-        self.assertNotIn("粒度收敛和增删建议必须由 Opencode", prompt)
-        self.assertNotIn("required_status", prompt)
-        self.assertNotIn("source_refs", prompt)
         self.assertEqual(kwargs.get("early_tool_command"), "s2outline-finalize")
         self.assertTrue(callable(kwargs.get("terminal_validator")))
+        self.assertIsNone(kwargs.get("handoff_prompt_factory"))
+        self.assertIsNone(kwargs.get("handoff_state_callback"))
         match = re.search(r"manifest[：:]\s*(?P<path>.+)", prompt)
         self.assertIsNotNone(match)
         manifest_path = Path(str(match.group("path")).strip())
@@ -275,6 +270,23 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(len(roots), 2)
         headings = runner.dispatch_command("headings", manifest, manifest_path, [])
         self.assertTrue(headings["complete"])
+        section_id = next(
+            item["section_id"]
+            for file_item in headings["files"]
+            for item in file_item["items"]
+            if item.get("section_id")
+        )
+        section = runner.dispatch_command(
+            "section", manifest, manifest_path, [section_id]
+        )
+        evidence_id = next(
+            record["evidence_id"]
+            for record in section["records"]
+            if record.get("evidence_id")
+        )
+        appendix_candidates = runner.review_workflow.decision_appendix_items(
+            manifest_path.parent
+        )
 
         additions = []
         if first_root_title != "投标响应概述":
@@ -307,18 +319,21 @@ class DirectoryGenerationTests(unittest.TestCase):
         }
         if appendix_basis:
             appendix_addition["tender_basis"] = appendix_basis
-        additions.extend(
-            [
-                {
-                    "node_id": "ADD-MOCK-APPENDIX",
-                    "parent_id": None,
-                    "number": appendix_number,
-                    "title": "技术附表",
-                    "reason": "招标文件包含需单独确认的技术附表。",
-                },
-                appendix_addition,
-            ]
-        )
+        if not appendix_candidates:
+            additions.extend(
+                [
+                    {
+                        "node_id": "ADD-MOCK-APPENDIX",
+                        "parent_id": None,
+                        "number": appendix_number,
+                        "title": "技术附表",
+                        "reason": "招标文件包含需单独确认的技术附表。",
+                    },
+                    appendix_addition,
+                ]
+            )
+        for addition in additions:
+            addition["evidence_id"] = evidence_id
         pending_additions = additions
         while True:
             batch = runner.dispatch_command(
@@ -330,6 +345,12 @@ class DirectoryGenerationTests(unittest.TestCase):
             if batch["complete"]:
                 break
             runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [section_id],
+            )
+            runner.dispatch_command(
                 "decision-batch",
                 manifest,
                 manifest_path,
@@ -338,7 +359,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板中的专业目录仍适用于本项目",
+                                }
                                 for item in batch["items"]
                             ],
                             "additions": pending_additions,
@@ -348,6 +373,49 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ],
             )
             pending_additions = []
+        if appendix_candidates:
+            appendix_batch = runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": appendix_batch["batch_token"],
+                            "root_addition": {
+                                "node_id": "ADD-MOCK-APPENDIX",
+                                "parent_id": None,
+                                "number": appendix_number,
+                                "title": "技术附表",
+                                "reason": "招标文件包含需单独确认的技术附表。",
+                            },
+                            "items": [
+                                {
+                                    "appendix_id": item["appendix_id"],
+                                    "decision": "include",
+                                    "node_id": f"ADD-MOCK-APPENDIX-{index}",
+                                    "parent_id": "ADD-MOCK-APPENDIX",
+                                    "reason": "招标文件要求独立填写。",
+                                }
+                                for index, item in enumerate(
+                                    appendix_batch["items"], start=1
+                                )
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+        runner.dispatch_command("section", manifest, manifest_path, [section_id])
+        runner.dispatch_command(
+            "review-complete",
+            manifest,
+            manifest_path,
+            [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
+        )
         runner.dispatch_command("decisions", manifest, manifest_path, [])
         return runner.compose_manifest(manifest, manifest_path)
 
@@ -907,29 +975,26 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         prompt = _build_outline_prompt(Path("C:/workspace/s2_input.json"), "技术标")
 
-        self.assertIn("s2outline prepare", prompt)
-        self.assertIn("s2outline headings", prompt)
-        self.assertIn("s2outline next-batch", prompt)
-        self.assertIn("s2outline tables", prompt)
-        self.assertIn("s2outline review-batch", prompt)
-        self.assertIn("s2outline status", prompt)
-        self.assertIn("s2outline decision-next", prompt)
-        self.assertIn("s2outline decision-batch", prompt)
-        self.assertIn("s2outline decisions", prompt)
-        self.assertIn("s2outline compose", prompt)
-        self.assertIn("自主选择", prompt)
+        self.assertIn("Use the bid-tech-outline-generator skill", prompt)
+        self.assertIn("next_cursor", prompt)
+        self.assertIn("decision-next", prompt)
+        self.assertIn("review-corrections", prompt)
+        self.assertIn("review-complete", prompt)
+        self.assertIn("decisions", prompt)
+        self.assertIn("compose", prompt)
+        self.assertIn("自主判断", prompt)
         self.assertIn("完整学习模板一至三级目录", prompt)
         self.assertIn("模板已有第三级目录统一进入结果供用户确认", prompt)
-        self.assertIn("不得进行粒度收敛", prompt)
         self.assertIn("最终目录最多三级", prompt)
         self.assertIn("第四级及更深层级只作为对应第三级节点的内容参考", prompt)
         self.assertIn("再结合招标文件", prompt)
-        self.assertIn("不作为完成门禁", prompt)
         self.assertIn("不得把未判断节点自动当成必要", prompt)
-        self.assertIn("remaining_count=0", prompt)
         self.assertIn("不得自行写入", prompt)
         self.assertIn("s2outline finalize", prompt)
-        self.assertIn("technical-outline.v1", prompt)
+        self.assertIn("timeout=300000", prompt)
+        self.assertIn("不要检查脚本或包装器", prompt)
+        self.assertNotIn("--max-items 50", prompt)
+        self.assertNotIn("decision-context", prompt)
         self.assertNotIn("历史投标模板是主骨架", prompt)
         self.assertNotIn("仅因招标未提及", prompt)
         self.assertNotIn("没有不适用证据", prompt)
@@ -937,6 +1002,230 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("粒度收敛和增删建议必须由 Opencode", prompt)
         self.assertNotIn("source_refs", prompt)
         self.assertLess(len(prompt), 1800)
+
+    def test_technical_outline_finalize_prompt_resumes_after_template_decisions(self) -> None:
+        from app.services.outline_generation import _build_outline_finalize_prompt
+
+        prompt = _build_outline_finalize_prompt(Path("C:/workspace/s2_input.json"))
+
+        self.assertIn("Use the bid-tech-outline-generator skill", prompt)
+        self.assertIn("appendix-next", prompt)
+        self.assertIn("s2outline headings", prompt)
+        self.assertIn("s2outline section", prompt)
+        self.assertIn("review-corrections", prompt)
+        self.assertIn("review-complete", prompt)
+        self.assertIn("s2outline decisions", prompt)
+        self.assertIn("s2outline compose", prompt)
+        self.assertIn("s2outline finalize", prompt)
+        self.assertIn("不要执行 `s2outline prepare`", prompt)
+        self.assertIn("`template-headings`", prompt)
+        self.assertIn("`decision-next`", prompt)
+        self.assertIn("outline_decision_state.json", prompt)
+        self.assertIn("outline_authoring_decisions.json", prompt)
+        self.assertIn("toc.json", prompt)
+        self.assertIn("不要直接读取或修改", prompt)
+        self.assertIn("只使用 `s2outline` 受控命令", prompt)
+        self.assertNotIn("首次执行", prompt)
+        self.assertLess(len(prompt), 1000)
+
+    def test_technical_outline_prepares_isolated_workspaces_per_root_chapter(self) -> None:
+        from app.services.outline_generation import (
+            _capture_trusted_technical_outline_input,
+            _prepare_outline_chapter_workspaces,
+        )
+
+        root = Path(self.temp_dir.name) / "parallel-chapters"
+        root.mkdir(parents=True)
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        manifest_path = root / "s2_input.json"
+        self._write_docx(
+            template,
+            [
+                ("第一章 总体方案", "Heading 1"),
+                ("1.1 实施组织", "Heading 2"),
+                ("第二章 质量安全", "Heading 1"),
+                ("2.1 质量保证", "Heading 2"),
+            ],
+        )
+        self._write_docx(
+            tender,
+            [
+                ("1 技术要求", "Heading 1"),
+                ("投标人应提交总体方案。", None),
+            ],
+        )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "workDir": str(root),
+                    "templateFile": str(template),
+                    "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                    "outputFile": str(root / "toc.json"),
+                    "requireComposedOutline": True,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        trusted = _capture_trusted_technical_outline_input(manifest_path)
+        chapters, chapter_manifests, chapter_root, binding = (
+            _prepare_outline_chapter_workspaces(
+                manifest_path,
+                trusted["templateStructure"],
+            )
+        )
+        try:
+            child_payloads = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in chapter_manifests.values()
+            ]
+            self.assertEqual(len(chapters), 2)
+            self.assertEqual(len({item["workDir"] for item in child_payloads}), 2)
+            self.assertEqual(
+                {item["_runtimeDecisionChapterId"] for item in child_payloads},
+                set(chapter_manifests),
+            )
+            self.assertTrue(binding["headingsStateDigest"])
+        finally:
+            shutil.rmtree(chapter_root, ignore_errors=True)
+
+    def test_technical_outline_uses_configured_opencode_instances_for_chapters(self) -> None:
+        from app.services.outline_generation import (
+            TECH_OUTLINE_CHAPTER_WORKERS,
+            _outline_chapter_base_urls,
+        )
+
+        self.assertEqual(TECH_OUTLINE_CHAPTER_WORKERS, 6)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENCODE_CHAPTER_BASE_URLS": (
+                    "http://opencode:4096, http://opencode-2:4096,"
+                    "http://opencode-3:4096,http://opencode-4:4096,"
+                    "http://opencode-5:4096,http://opencode-6:4096"
+                )
+            },
+        ):
+            self.assertEqual(
+                _outline_chapter_base_urls(),
+                [
+                    "http://opencode:4096",
+                    "http://opencode-2:4096",
+                    "http://opencode-3:4096",
+                    "http://opencode-4:4096",
+                    "http://opencode-5:4096",
+                    "http://opencode-6:4096",
+                ],
+            )
+
+    def test_parallel_outline_chapters_load_model_config_once_before_workers(self) -> None:
+        self.parallel_outline_patcher.stop()
+        from app.services.outline_generation import (
+            _TECH_OUTLINE_REQUEST_SLOTS,
+            _run_parallel_outline_chapters,
+        )
+
+        root = Path(self.temp_dir.name) / "parallel-model-config"
+        root.mkdir(parents=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text("{}", encoding="utf-8")
+        chapter_root = root / "chapters"
+        chapter_root.mkdir()
+        chapters = [
+            {"chapter_id": "TPL-0001", "number": "第1章", "title": "第一章"},
+            {"chapter_id": "TPL-0002", "number": "第2章", "title": "第二章"},
+        ]
+        chapter_manifests: dict[str, Path] = {}
+        for chapter in chapters:
+            chapter_dir = chapter_root / str(chapter["chapter_id"])
+            chapter_dir.mkdir()
+            path = chapter_dir / "s2_input.json"
+            path.write_text(
+                json.dumps({"workDir": str(chapter_dir)}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            chapter_manifests[str(chapter["chapter_id"])] = path
+
+        model_config = {
+            "providerId": "configured-provider",
+            "modelId": "configured-model",
+            "timeoutMs": 45000,
+        }
+        runner = MagicMock()
+        runner.decision_workflow.chapter_decision_progress.return_value = {
+            "complete": True
+        }
+
+        with (
+            patch(
+                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                return_value=(chapters, chapter_manifests, chapter_root, {}),
+            ),
+            patch(
+                "app.services.outline_generation._load_technical_outline_runner",
+                return_value=runner,
+            ),
+            patch(
+                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                return_value=model_config,
+            ) as load_config,
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.run_outline_decision_session.side_effect = [
+                {"sessionId": "ses-1"},
+                {"sessionId": "ses-2"},
+            ]
+            session_ids = _run_parallel_outline_chapters(manifest_path, {})
+
+        load_config.assert_called_once_with()
+        self.assertEqual(set(session_ids), {"ses-1", "ses-2"})
+        self.assertEqual(client_class.call_count, 2)
+        for call in client_class.call_args_list:
+            self.assertIs(call.kwargs["model_config"], model_config)
+            self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
+
+    def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
+        from app.services.outline_generation import (
+            _build_outline_handoff_prompt,
+            _technical_outline_handoff_state,
+        )
+
+        manifest_path = Path("C:/workspace/s2_input.json")
+        prompt = _build_outline_handoff_prompt(manifest_path, 1)
+        self.assertIn("最多完成 1 个", prompt)
+        resumed_prompt = _build_outline_handoff_prompt(manifest_path, 2)
+        self.assertIn("第一条非 Skill 工具调用必须是 Bash", resumed_prompt)
+        self.assertIn(
+            f"s2outline decision-next {manifest_path}",
+            resumed_prompt,
+        )
+        self.assertIn("禁止调用 Read、Glob、Grep", resumed_prompt)
+
+        root = Path(self.temp_dir.name) / "handoff-no-progress"
+        root.mkdir(parents=True, exist_ok=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text(
+            json.dumps({"workDir": str(root)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        runner = MagicMock()
+        runner.dispatch_command.return_value = {
+            "complete": False,
+            "decided_count": 12,
+            "remaining_count": 20,
+        }
+
+        with patch(
+            "app.services.outline_generation._load_technical_outline_runner",
+            return_value=runner,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "没有提交新的目录判断"):
+                _technical_outline_handoff_state(
+                    manifest_path,
+                    previous_decided_count=12,
+                )
 
     def test_technical_outline_loader_does_not_trust_agent_modified_manifest_gate(self) -> None:
         from app.services.outline_generation import _load_outline_result
@@ -1030,6 +1319,12 @@ class DirectoryGenerationTests(unittest.TestCase):
             self.assertTrue(headings["complete"])
             batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
             runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            runner.dispatch_command(
                 "decision-batch",
                 manifest,
                 manifest_path,
@@ -1038,7 +1333,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板中的专业目录仍适用于本项目",
+                                }
                                 for item in batch["items"]
                             ],
                             "additions": [],
@@ -1046,6 +1345,18 @@ class DirectoryGenerationTests(unittest.TestCase):
                         ensure_ascii=False,
                     )
                 ],
+            )
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
             )
             runner.dispatch_command("decisions", manifest, manifest_path, [])
             return runner.compose_manifest(manifest, manifest_path)
@@ -1082,8 +1393,14 @@ class DirectoryGenerationTests(unittest.TestCase):
         def write_rebased_artifacts(_prompt: str, *args, **kwargs) -> dict:
             self._write_docx(tender, [("第一章 被篡改的招标要求", "Heading 1")])
             runner.write_template_structure(manifest, manifest_path)
-            runner.dispatch_command("headings", manifest, manifest_path, [])
+            headings = runner.dispatch_command("headings", manifest, manifest_path, [])
             batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
             runner.dispatch_command(
                 "decision-batch",
                 manifest,
@@ -1093,7 +1410,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                         {
                             "batch_token": batch["batch_token"],
                             "items": [
-                                {"target_id": item["target_id"], "decision": "retain"}
+                                {
+                                    "target_id": item["target_id"],
+                                    "decision": "retain",
+                                    "reason": "历史模板中的专业目录仍适用于本项目",
+                                }
                                 for item in batch["items"]
                             ],
                             "additions": [],
@@ -1101,6 +1422,18 @@ class DirectoryGenerationTests(unittest.TestCase):
                         ensure_ascii=False,
                     )
                 ],
+            )
+            runner.dispatch_command(
+                "section",
+                manifest,
+                manifest_path,
+                [headings["files"][0]["items"][0]["section_id"]],
+            )
+            runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
             )
             runner.dispatch_command("decisions", manifest, manifest_path, [])
             return runner.compose_manifest(manifest, manifest_path)
@@ -1111,6 +1444,208 @@ class DirectoryGenerationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "招标文件.*修改"):
                 _run_outline_skill(manifest_path, bid_type="技术标")
+
+    def test_technical_compose_trusted_validation_reuses_appendix_inventory(self) -> None:
+        from app.services.outline_generation import (
+            _capture_trusted_technical_outline_input,
+            _run_outline_skill,
+            _validate_technical_compose_report,
+        )
+
+        root = Path(self.temp_dir.name) / "compose-controlled-appendix"
+        root.mkdir(parents=True, exist_ok=True)
+        template = root / "template.docx"
+        tender = root / "tender.docx"
+        output = root / "toc.json"
+        manifest_path = root / "s2_input.json"
+        self._write_docx(template, [("第1章 技术方案", "Heading 1")])
+        tender_doc = Document()
+        tender_doc.add_paragraph("附表A.1 技术参数表")
+        table = tender_doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "参数"
+        table.cell(0, 1).text = "要求"
+        table.cell(1, 0).text = "示例"
+        table.cell(1, 1).text = "投标人填写"
+        tender_doc.add_paragraph("附表A.2 供货范围表")
+        table = tender_doc.add_table(rows=2, cols=2)
+        table.cell(0, 0).text = "设备"
+        table.cell(0, 1).text = "数量"
+        table.cell(1, 0).text = "示例"
+        table.cell(1, 1).text = "投标人填写"
+        tender_doc.save(tender)
+        manifest = {
+            "bidType": "技术标",
+            "workDir": str(root),
+            "templateFile": str(template),
+            "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+            "outputFile": str(output),
+            "requireComposedOutline": True,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        runner = load_technical_outline_runner()
+        trusted_input = _capture_trusted_technical_outline_input(manifest_path)
+
+        def write_controlled_appendix_artifacts(_prompt: str, *args, **kwargs) -> dict:
+            runner.write_template_structure(manifest, manifest_path)
+            cursor = 0
+            while True:
+                headings = runner.dispatch_command(
+                    "headings", manifest, manifest_path, ["--cursor", str(cursor)]
+                )
+                if headings["complete"]:
+                    break
+                cursor = int(headings["next_cursor"])
+
+            while True:
+                batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
+                if batch["complete"]:
+                    break
+                appendix_evidence_id = runner.review_workflow.decision_appendix_items(root)[0][
+                    "evidence_id"
+                ]
+                runner.dispatch_command(
+                    "read",
+                    manifest,
+                    manifest_path,
+                    [appendix_evidence_id],
+                )
+                runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": item["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板中的专业目录仍适用于本项目",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                                "additions": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
+
+            appendix_batch = runner.dispatch_command(
+                "appendix-next", manifest, manifest_path, []
+            )
+            self.assertEqual(len(appendix_batch["items"]), 2)
+            runner.dispatch_command(
+                "appendix-decision-batch",
+                manifest,
+                manifest_path,
+                [
+                    json.dumps(
+                        {
+                            "batch_token": appendix_batch["batch_token"],
+                            "root_addition": {
+                                "node_id": "ADD-TECH-APPENDIX",
+                                "parent_id": None,
+                                "number": "第2章",
+                                "title": "技术附表",
+                                "reason": "招标文件包含受控附表。",
+                            },
+                            "items": [
+                                {
+                                    "appendix_id": item["appendix_id"],
+                                    "decision": "include",
+                                    "reason": "招标文件要求投标人填写。",
+                                    "node_id": f"ADD-APPENDIX-{index}",
+                                    "parent_id": "ADD-TECH-APPENDIX",
+                                }
+                                for index, item in enumerate(
+                                    appendix_batch["items"], start=1
+                                )
+                            ],
+                        },
+                        ensure_ascii=False,
+                    )
+                ],
+            )
+            runner.dispatch_command(
+                "read",
+                manifest,
+                manifest_path,
+                [appendix_batch["items"][0]["evidence_id"]],
+            )
+            runner.dispatch_command(
+                "review-complete",
+                manifest,
+                manifest_path,
+                [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
+            )
+            runner.dispatch_command("decisions", manifest, manifest_path, [])
+            return runner.compose_manifest(manifest, manifest_path)
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=write_controlled_appendix_artifacts,
+        ):
+            result = _run_outline_skill(manifest_path, bid_type="技术标")
+
+        self.assertEqual(result["nodes"][-1]["title"], "技术附表")
+        self.assertEqual(len(result["nodes"][-1]["children"]), 2)
+
+        inventory_path = root / "tender_appendix_inventory.json"
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory["items"] = inventory["items"][:1]
+        inventory_path.write_text(json.dumps(inventory, ensure_ascii=False), encoding="utf-8")
+        chunks = json.loads((root / "tender_review_chunks.json").read_text(encoding="utf-8"))
+        files_by_id, _ = runner.review_workflow._collect_heading_files(chunks)
+        headings_state_path = root / "tender_headings_state.json"
+        headings_state = json.loads(headings_state_path.read_text(encoding="utf-8"))
+        headings_state["headings_catalog_digest"] = runner.review_workflow._heading_catalog_digest(
+            files_by_id,
+            inventory["items"],
+        )
+        headings_state["appendix_count"] = 1
+        headings_state_path.write_text(
+            json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
+        )
+        workflow_binding = runner.review_workflow.require_headings_complete(
+            root,
+            runner.tender_inputs(manifest),
+        )
+        state_path = root / "outline_decision_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        current_appendix_items = runner.review_workflow.decision_appendix_items(root)
+        state["appendix_inventory_digest"] = runner.decision_workflow._normalized_appendix_inventory(
+            current_appendix_items
+        )[1]
+        state["appendix_decisions"] = {
+            appendix_id: decision
+            for appendix_id, decision in state["appendix_decisions"].items()
+            if appendix_id == current_appendix_items[0]["appendix_id"]
+        }
+        state["additions"] = [
+            addition
+            for addition in state["additions"]
+            if addition.get("node_id") in {"ADD-TECH-APPENDIX", "ADD-APPENDIX-1"}
+        ]
+        state["headings_state_digest"] = workflow_binding["headingsStateDigest"]
+        state["finalized_decisions_digest"] = ""
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        runner.dispatch_command(
+            "review-complete",
+            manifest,
+            manifest_path,
+            [json.dumps({"review_summary": "测试全局复核。", "issues": []}, ensure_ascii=False)],
+        )
+        runner.dispatch_command("decisions", manifest, manifest_path, [])
+        runner.compose_manifest(manifest, manifest_path)
+
+        with self.assertRaisesRegex(RuntimeError, "附表清单.*可信快照"):
+            _validate_technical_compose_report(
+                root,
+                output,
+                trusted_input=trusted_input,
+            )
 
     def test_generate_outline_rejects_agent_modified_manifest_before_publish(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
@@ -1179,7 +1714,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                     "title": "叶片专题",
                     "suggestion_action": "待确认",
                     "suggestion_reason": "确认专题归属。",
-                    "tender_basis": {"file_id": "TEN-1", "search_text": "投标人应编制叶片专题。"},
+                    "tender_basis": {
+                        "evidence_id": "TEN-1:B000123",
+                        "file_id": "TEN-1",
+                        "search_text": "投标人应编制叶片专题。",
+                    },
                     "children": [],
                 }
             ]
@@ -1195,7 +1734,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                     "title": "叶片专题",
                     "suggestionAction": "待确认",
                     "suggestionReason": "确认专题归属。",
-                    "tenderBasis": {"fileId": "TEN-1", "searchText": "投标人应编制叶片专题。"},
+                    "tenderBasis": {
+                        "evidenceId": "TEN-1:B000123",
+                        "fileId": "TEN-1",
+                        "searchText": "投标人应编制叶片专题。",
+                    },
                     "children": [],
                 }
             ],
@@ -1581,6 +2124,11 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ("附表D.7 性能及考核承诺保证表", None),
             ],
         )
+        tender_doc = Document(tender_path)
+        appendix_table = tender_doc.add_table(rows=2, cols=2)
+        appendix_table.cell(0, 0).text = "承诺事项"
+        appendix_table.cell(0, 1).text = "投标响应"
+        tender_doc.save(tender_path)
 
         with patch(
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
@@ -1598,7 +2146,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(appendix["children"][0]["number"], "附表D.7")
         self.assertEqual(
             appendix["children"][0]["tender_basis"],
-            {"file_id": "TEN-1", "search_text": "附表D.7 性能及考核承诺保证表"},
+            {
+                "evidence_id": "TEN-1:B000003",
+                "file_id": "TEN-1",
+                "search_text": "附表D.7 性能及考核承诺保证表",
+            },
         )
         self.assertEqual(appendix["children"][0]["children"], [])
 

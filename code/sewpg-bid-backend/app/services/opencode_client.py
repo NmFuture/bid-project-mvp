@@ -34,8 +34,14 @@ class OpencodeClient:
         provider_id: str | None = None,
         model_id: str | None = None,
         timeout_ms: int | float | None = None,
+        model_config: dict[str, Any] | None = None,
+        request_slots: Any | None = None,
     ) -> None:
-        config = system_settings_service.get_opencode_model_config_sync()
+        config = (
+            model_config
+            if model_config is not None
+            else system_settings_service.get_opencode_model_config_sync()
+        )
         # 自定义 LLM 未生效（禁用/未配置完整）时忽略 DB 的 provider/model/opencodeBaseUrl，
         # 回退到环境变量配置（与 opencode/docker-entrypoint.sh 的环境回退同源）
         db_active = opencode_llm_config_active(config)
@@ -45,11 +51,14 @@ class OpencodeClient:
         raw_timeout_ms = timeout_ms if timeout_ms is not None else config.get("timeoutMs")
         timeout_sec = max(1.0, float(raw_timeout_ms or settings.opencode_timeout_sec * 1000) / 1000)
         self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
+        self._request_slots = (
+            request_slots if request_slots is not None else _OPENCODE_REQUEST_SLOTS
+        )
 
     def create_session(self, title: str) -> dict[str, Any]:
         for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
             try:
-                with _OPENCODE_REQUEST_SLOTS:
+                with self._request_slots:
                     with httpx.Client(timeout=self.timeout) as client:
                         response = client.post(
                             f"{self.base_url}/session",
@@ -113,7 +122,7 @@ class OpencodeClient:
         }
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
-            with _OPENCODE_REQUEST_SLOTS:
+            with self._request_slots:
                 with httpx.Client(timeout=self.timeout) as client:
                     response = client.post(
                         f"{self.base_url}/session/{session_id}/message",
@@ -156,6 +165,48 @@ class OpencodeClient:
             "nodes": result.get("nodes"),
         }
 
+    def run_outline_decision_session(
+        self,
+        prompt_text: str,
+        *,
+        session_title: str,
+        completion_validator: Callable[[], dict[str, Any]],
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """运行一个独立章节决策会话，最终结果以持久化状态为准。"""
+        session = self.create_session(session_title)
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                    "sessionPhase": "chapter_decision",
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback or (lambda _details: None),
+            early_tool_command="",
+            assistant_stop_validator=completion_validator,
+        )
+        info = response.get("info") if isinstance(response.get("info"), dict) else {}
+        if info.get("error"):
+            raise RuntimeError(self._format_response_error(info["error"]))
+        state = response.get("_assistantStopValidation")
+        if not isinstance(state, dict):
+            state = completion_validator()
+        if not bool(state.get("complete")):
+            raise RuntimeError(f"S2 章节决策会话未完成：{session_title}")
+        return {
+            "sessionId": session_id,
+            "state": state,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def generate_outline_with_trace(
         self,
         prompt_text: str,
@@ -163,7 +214,56 @@ class OpencodeClient:
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
         terminal_validator: Callable[[], dict[str, Any]] | None = None,
+        handoff_prompt_factory: Callable[[int], str] | None = None,
+        handoff_state_callback: Callable[[int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        handoff_session_ids: list[str] = []
+        if handoff_prompt_factory is not None or handoff_state_callback is not None:
+            if handoff_prompt_factory is None or handoff_state_callback is None:
+                raise ValueError("handoff prompt factory and state callback must be provided together")
+            for handoff_index in range(1, 257):
+                session = self.create_session(f"S2 目录决策·接力 {handoff_index}")
+                handoff_session_id = str(session.get("id") or "")
+                handoff_session_ids.append(handoff_session_id)
+                if session_ready_callback:
+                    session_ready_callback(
+                        {
+                            "sessionId": handoff_session_id,
+                            "providerId": self.provider_id,
+                            "modelId": self.model_id,
+                            "sessionPhase": "decision_handoff",
+                            "sessionIndex": handoff_index,
+                        }
+                    )
+                validated_handoff_state: dict[str, Any] = {}
+
+                def validate_handoff_stop() -> dict[str, Any]:
+                    state = handoff_state_callback(handoff_index)
+                    validated_handoff_state.update(state)
+                    return state
+
+                handoff_response = self._send_prompt_with_session_polling(
+                    handoff_session_id,
+                    handoff_prompt_factory(handoff_index),
+                    stream_callback=stream_callback,
+                    early_tool_command="s2outline-decision-batch",
+                    assistant_stop_validator=validate_handoff_stop,
+                )
+                handoff_info = (
+                    handoff_response.get("info")
+                    if isinstance(handoff_response.get("info"), dict)
+                    else {}
+                )
+                if handoff_info.get("error"):
+                    raise RuntimeError(self._format_response_error(handoff_info["error"]))
+                handoff_state = validated_handoff_state or handoff_state_callback(handoff_index)
+                if not isinstance(handoff_state, dict) or "complete" not in handoff_state:
+                    raise RuntimeError("S2 目录接力状态回调未返回 complete。")
+                if bool(handoff_state["complete"]):
+                    break
+            else:
+                raise RuntimeError("S2 目录决策接力超过 256 个会话，已停止以避免无限循环。")
+
         session = self.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
@@ -172,6 +272,8 @@ class OpencodeClient:
                     "sessionId": session_id,
                     "providerId": self.provider_id,
                     "modelId": self.model_id,
+                    "sessionPhase": "finalize" if handoff_session_ids else "full",
+                    "sessionIndex": len(handoff_session_ids) + 1,
                 }
             )
         response = self._send_prompt_with_session_polling(
@@ -182,9 +284,13 @@ class OpencodeClient:
             terminal_validator=terminal_validator,
         )
         parsed = self._extract_outline_json(response)
+        output_trace = self._build_output_trace(session_id, response)
+        if handoff_session_ids:
+            output_trace["sessionIds"] = [*handoff_session_ids, session_id]
+            output_trace["handoffSessionCount"] = len(handoff_session_ids)
         return {
             **parsed,
-            "opencodeOutput": self._build_output_trace(session_id, response),
+            "opencodeOutput": output_trace,
         }
 
     def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
@@ -775,6 +881,7 @@ class OpencodeClient:
         early_tool_command: str = "",
         cancel_check: Callable[[], bool] | None = None,
         terminal_validator: Callable[[], dict[str, Any]] | None = None,
+        assistant_stop_validator: Callable[[], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if stream_callback is None and not early_tool_command:
             return self.send_prompt(session_id, prompt_text)
@@ -783,6 +890,7 @@ class OpencodeClient:
         error_holder: dict[str, Exception] = {}
         finished = threading.Event()
         abort_sent = False
+        validated_finalize_attempts: set[str] = set()
 
         def raise_if_cancelled() -> None:
             nonlocal abort_sent
@@ -874,10 +982,26 @@ class OpencodeClient:
                 messages = self.list_session_messages(session_id)
                 self._raise_session_error_if_present(session_id, messages)
                 tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+                if (
+                    tool_output
+                    and early_tool_command == "s2outline-finalize"
+                    and terminal_validator is not None
+                ):
+                    self._stop_s2_outline_session_after_finalize(
+                        session_id,
+                        finished=finished,
+                    )
+                    return self._s2_terminal_validator_response(
+                        session_id=session_id,
+                        messages=messages,
+                        terminal_validator=terminal_validator,
+                        stream_callback=stream_callback,
+                        elapsed_seconds=time.monotonic() - progress_started_at,
+                    )
                 if tool_output and not (
                     early_tool_command == "s2outline-finalize" and terminal_validator is not None
                 ):
-                    if early_tool_command == "s2outline-finalize":
+                    if early_tool_command in {"s2outline-finalize", "s2outline-decision-batch"}:
                         self._stop_s2_outline_session_after_finalize(
                             session_id,
                             finished=finished,
@@ -913,11 +1037,39 @@ class OpencodeClient:
                             }
                     )
                     return early_response
+
+                finalize_candidate = self._latest_completed_s2_outline_finalize_command(messages)
                 if (
                     early_tool_command == "s2outline-finalize"
                     and terminal_validator is not None
-                    and self._session_messages_show_assistant_stop(messages)
+                    and finalize_candidate
+                    and finalize_candidate not in validated_finalize_attempts
                 ):
+                    validated_finalize_attempts.add(finalize_candidate)
+                    try:
+                        validated_output = self._run_s2_terminal_validator(terminal_validator)
+                    except RuntimeError:
+                        pass
+                    else:
+                        self._stop_s2_outline_session_after_finalize(
+                            session_id,
+                            finished=finished,
+                        )
+                        return self._s2_terminal_validator_response(
+                            session_id=session_id,
+                            messages=messages,
+                            terminal_validator=terminal_validator,
+                            stream_callback=stream_callback,
+                            elapsed_seconds=time.monotonic() - progress_started_at,
+                            validated_output=validated_output,
+                        )
+
+            if (
+                early_tool_command == "s2outline-finalize"
+                and terminal_validator is not None
+            ):
+                messages = self.list_session_messages(session_id)
+                if self._session_messages_show_assistant_stop(messages):
                     self._stop_s2_outline_session_after_finalize(
                         session_id,
                         finished=finished,
@@ -951,6 +1103,36 @@ class OpencodeClient:
                                 "completionSource": completion_source,
                             }
                         )
+                    return early_response
+
+            if assistant_stop_validator is not None:
+                messages = self.list_session_messages(session_id)
+                self._raise_session_error_if_present(session_id, messages)
+                if self._session_messages_show_assistant_stop(messages):
+                    self.abort_session(session_id)
+                    if not finished.wait(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
+                        raise RuntimeError(
+                            "OpenCode assistant 已完成接力会话，但消息请求未在 abort 后停止。"
+                        )
+                    validated = assistant_stop_validator()
+                    snapshot = self._get_session_output_snapshot_from_messages(
+                        session_id,
+                        messages,
+                    )
+                    trace_parts = list(snapshot.get("parts") or [])
+                    trace_parts.append(
+                        {
+                            "type": "text",
+                            "text": "OpenCode 已完成本次决策单元，后端校验持久化进度后继续下一会话。",
+                        }
+                    )
+                    early_response = self._tool_output_response(
+                        session_id=session_id,
+                        output=json.dumps(validated, ensure_ascii=False),
+                        trace_parts=trace_parts,
+                    )
+                    early_response["_completionSource"] = "assistant-stop-validator"
+                    early_response["_assistantStopValidation"] = validated
                     return early_response
 
         if early_tool_command == "s1parse-finalize":
@@ -1344,6 +1526,7 @@ class OpencodeClient:
             last_activity = time.monotonic()
             last_heartbeat = last_activity
         heartbeat_index = 0
+        validated_finalize_attempts: set[str] = set()
 
         while time.monotonic() < deadline:
             if cancel_check is not None and cancel_check():
@@ -1352,6 +1535,15 @@ class OpencodeClient:
             messages = self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             tool_output = self._find_completed_bash_tool_output(messages, early_tool_command)
+            if tool_output and terminal_validator is not None:
+                self._stop_s2_outline_session_after_finalize(session_id)
+                return self._s2_terminal_validator_response(
+                    session_id=session_id,
+                    messages=messages,
+                    terminal_validator=terminal_validator,
+                    stream_callback=stream_callback,
+                    elapsed_seconds=time.monotonic() - progress_started_at,
+                )
             if tool_output and terminal_validator is None:
                 self._stop_s2_outline_session_after_finalize(session_id)
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -1383,6 +1575,27 @@ class OpencodeClient:
                         }
                     )
                 return early_response
+            finalize_candidate = self._latest_completed_s2_outline_finalize_command(messages)
+            if (
+                terminal_validator is not None
+                and finalize_candidate
+                and finalize_candidate not in validated_finalize_attempts
+            ):
+                validated_finalize_attempts.add(finalize_candidate)
+                try:
+                    validated_output = self._run_s2_terminal_validator(terminal_validator)
+                except RuntimeError:
+                    pass
+                else:
+                    self._stop_s2_outline_session_after_finalize(session_id)
+                    return self._s2_terminal_validator_response(
+                        session_id=session_id,
+                        messages=messages,
+                        terminal_validator=terminal_validator,
+                        stream_callback=stream_callback,
+                        elapsed_seconds=time.monotonic() - progress_started_at,
+                        validated_output=validated_output,
+                    )
             if terminal_validator is not None and self._session_messages_show_assistant_stop(messages):
                 validated_output = self._run_s2_terminal_validator(terminal_validator)
                 snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
@@ -1625,6 +1838,17 @@ class OpencodeClient:
         if not words:
             return False
         first_word = Path(words[0]).name
+        if expected == "s2outline-decision-batch":
+            if first_word == "s2outline":
+                return len(words) >= 3 and words[1] == "decision-batch"
+            if first_word == "run_from_manifest.py":
+                return len(words) >= 3 and words[1] == "decision-batch"
+            return (
+                first_word.startswith("python")
+                and len(words) >= 4
+                and Path(words[1]).name == "run_from_manifest.py"
+                and words[2] == "decision-batch"
+            )
         if expected == "s1parse-finalize":
             return first_word in {"s1parse", "s1parse_router.py"} and len(words) >= 3 and words[1] == "finalize"
         if expected == "btplnav-finalize":
@@ -1721,6 +1945,37 @@ class OpencodeClient:
         return ""
 
     @staticmethod
+    def _latest_completed_s2_outline_finalize_command(messages: list[dict[str, Any]]) -> str:
+        finalize_segment = re.compile(
+            r"(?:^|&&|\|\||;)\s*"
+            r"s2outline[ \t]+finalize[ \t]+/[A-Za-z0-9._/-]+"
+            r"\s*(?=$|&&|\|\||;)",
+        )
+        for message in reversed(messages):
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            for part in reversed(message.get("parts") or []):
+                if not isinstance(part, dict) or part.get("type") != "tool":
+                    continue
+                if str(part.get("tool") or "") != "bash":
+                    continue
+                state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                if state.get("status") != "completed":
+                    continue
+                metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+                exit_code = state.get("exit")
+                if exit_code is None:
+                    exit_code = metadata.get("exit")
+                if exit_code not in (None, 0):
+                    continue
+                raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+                command = str(raw_input.get("command") or "").strip()
+                if finalize_segment.search(command):
+                    message_id = str(info.get("id") or "")
+                    part_id = str(part.get("id") or "")
+                    return f"{message_id}:{part_id}:{command}"
+        return ""
+
+    @staticmethod
     def _last_tool_trace(messages: list[dict[str, Any]]) -> dict[str, Any]:
         for message in reversed(messages):
             message_info = message.get("info") if isinstance(message.get("info"), dict) else {}
@@ -1764,6 +2019,49 @@ class OpencodeClient:
         if not OpencodeClient._s2_outline_finalize_output_is_terminal(output):
             raise RuntimeError("Opencode 已停止，但技术标目录 finalize 校验未返回 finalized。")
         return output
+
+    def _s2_terminal_validator_response(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        terminal_validator: Callable[[], dict[str, Any]],
+        stream_callback: Callable[[dict[str, Any]], None] | None,
+        elapsed_seconds: float,
+        validated_output: str | None = None,
+    ) -> dict[str, Any]:
+        if validated_output is None:
+            validated_output = self._run_s2_terminal_validator(terminal_validator)
+        snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
+        trace_parts = list(snapshot.get("parts") or [])
+        trace_parts.append(
+            {
+                "type": "text",
+                "text": "s2outline finalize 已完成，后端已停止会话并通过终态校验。",
+            }
+        )
+        response = self._tool_output_response(
+            session_id=session_id,
+            output=validated_output,
+            trace_parts=trace_parts,
+        )
+        completion_source = "s2outline-terminal-validator"
+        response["_completionSource"] = completion_source
+        if stream_callback is not None:
+            stream_callback(
+                {
+                    "status": "received",
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                    "receivedAt": response["_traceReceivedAt"],
+                    "parts": self._normalize_output_parts(trace_parts),
+                    "earlyCompletion": True,
+                    "completionSource": completion_source,
+                    "elapsedSeconds": max(0, int(elapsed_seconds)),
+                }
+            )
+        return response
 
     @staticmethod
     def _session_polling_idle_timeout(early_tool_command: str = "") -> float:
