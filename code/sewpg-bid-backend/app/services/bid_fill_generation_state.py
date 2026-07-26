@@ -4,29 +4,33 @@ import copy
 from typing import Any
 
 from app.services.bid_fill_state import default_fill_state, fill_document_label, fill_task_label
+from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.bid_runtime_state import build_directory_event, build_directory_opencode_output, now_iso
 
 
 def start_fill_generation_state(project: dict[str, Any]) -> dict[str, Any]:
     document_label = fill_document_label(project)
+    technical = project.get("bidType") == TECHNICAL_BID_TYPE
+    input_label = "准备目录与已选素材" if technical else "准备 S2 目录、Wiki 与素材库"
+    preparing_summary = f"已开始拼装{document_label}，正在准备目录与已选素材。" if technical else f"已开始拼装{document_label}，正在准备 S2 目录、Wiki 与素材库。"
     payload = {
         "status": "running",
         "percentage": 5,
         "filledAt": "",
         "runDurationSec": 0,
         "runDuration": "",
-        "summary": f"已开始拼装{document_label}，正在准备 S2 目录、Wiki 与素材库。",
+        "summary": preparing_summary,
         "output": None,
         "sections": [],
         "opencodeOutput": build_directory_opencode_output(),
         "events": [
             build_directory_event(
-                f"已开始{document_label}拼装任务，正在准备 S2 目录、Wiki 与素材库。",
+                preparing_summary,
                 step="bootstrap",
             ),
         ],
         "tasks": [
-            {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "running"},
+            {"id": "task-1", "label": input_label, "status": "running"},
             {"id": "task-2", "label": fill_task_label(project), "status": "pending"},
             {"id": "task-3", "label": "写入并规范化 Word 正文", "status": "pending"},
         ],
@@ -127,6 +131,7 @@ def complete_fill_generation_state(project: dict[str, Any], data: dict[str, Any]
         },
     ]
     document_label = fill_document_label(project)
+    input_label = "准备目录与已选素材" if project.get("bidType") == TECHNICAL_BID_TYPE else "准备 S2 目录、Wiki 与素材库"
     project["fill_state"] = {
         "status": "completed",
         "percentage": 100,
@@ -146,7 +151,7 @@ def complete_fill_generation_state(project: dict[str, Any], data: dict[str, Any]
             build_directory_event(f"{document_label}拼装完成。", level="success", step="done", at=filled_at),
         ],
         "tasks": [
-            {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
+            {"id": "task-1", "label": input_label, "status": "done"},
             {"id": "task-2", "label": fill_task_label(project), "status": "done"},
             {"id": "task-3", "label": "写入并规范化 Word 正文", "status": "done"},
         ],
@@ -184,6 +189,7 @@ def save_fill_generation_result_state(
         current_output.update(copy.deepcopy(opencode_output))
     current_output["parts"] = copy.deepcopy(current_output.get("parts") or [])[-20:]
     document_label = fill_document_label(project)
+    input_label = "准备目录与已选素材" if project.get("bidType") == TECHNICAL_BID_TYPE else "准备 S2 目录、Wiki 与素材库"
     current_events.append(
         build_directory_event(
             f"{document_label}拼装完成，已输出 {len(sections)} 个目录章节。",
@@ -211,7 +217,7 @@ def save_fill_generation_result_state(
         "opencodeOutput": current_output,
         "events": current_events[-20:],
         "tasks": [
-            {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "done"},
+            {"id": "task-1", "label": input_label, "status": "done"},
             {"id": "task-2", "label": fill_task_label(project), "status": "done"},
             {"id": "task-3", "label": "写入并规范化 Word 正文", "status": "done"},
         ],
