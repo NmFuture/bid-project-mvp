@@ -868,7 +868,7 @@ class FillGenerationTests(unittest.TestCase):
         cleaner_error = "format cleaner exited 1"
         failed_clean = {
             "status": "failed",
-            "skill": tech_assembly.TECH_FORMAT_CLEANER_SKILL_NAME,
+            "engine": "python",
             "manifestPath": str(Path(result["assembly"]["workDir"]) / "tech_format_clean_input.json"),
             "inputFile": result["assembly"]["rawOutputFile"],
             "outlineFile": "",
