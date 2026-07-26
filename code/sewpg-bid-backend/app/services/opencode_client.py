@@ -13,7 +13,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.bid_parse_cancel import ParseCancelledError
-from app.services.system_settings import system_settings_service
+from app.services.system_settings import opencode_llm_config_active, system_settings_service
 
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,12 @@ class OpencodeClient:
         timeout_ms: int | float | None = None,
     ) -> None:
         config = system_settings_service.get_opencode_model_config_sync()
-        self.base_url = str(base_url or config.get("opencodeBaseUrl") or settings.opencode_base_url).rstrip("/")
-        self.provider_id = str(provider_id or config.get("providerId") or settings.opencode_provider_id)
-        self.model_id = str(model_id or config.get("modelId") or config.get("model") or settings.opencode_model_id)
+        # 自定义 LLM 未生效（禁用/未配置完整）时忽略 DB 的 provider/model/opencodeBaseUrl，
+        # 回退到环境变量配置（与 opencode/docker-entrypoint.sh 的环境回退同源）
+        db_active = opencode_llm_config_active(config)
+        self.base_url = str(base_url or (config.get("opencodeBaseUrl") if db_active else "") or settings.opencode_base_url).rstrip("/")
+        self.provider_id = str(provider_id or (config.get("providerId") if db_active else "") or settings.opencode_provider_id)
+        self.model_id = str(model_id or ((config.get("modelId") or config.get("model")) if db_active else "") or settings.opencode_model_id)
         raw_timeout_ms = timeout_ms if timeout_ms is not None else config.get("timeoutMs")
         timeout_sec = max(1.0, float(raw_timeout_ms or settings.opencode_timeout_sec * 1000) / 1000)
         self.timeout = httpx.Timeout(timeout_sec, connect=10.0)

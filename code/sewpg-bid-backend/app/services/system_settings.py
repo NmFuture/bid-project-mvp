@@ -94,6 +94,20 @@ def mask_secret(value: str) -> str:
     return f"{text[:4]}****{text[-4:]}"
 
 
+def opencode_llm_config_active(config: dict[str, Any]) -> bool:
+    """自定义 LLM 配置是否生效：已启用且 baseUrl 与模型齐全。
+
+    runtime 配置写入与 OpencodeClient 共用同一判定，避免两侧口径不一致。
+    注意：传入的通常是 _normalize_model_config 归一化后的配置，显式空串不会被回填，
+    因此 baseUrl 被清空时这里会判为未生效。
+    """
+    return (
+        bool(config.get("enabled"))
+        and bool(str(config.get("baseUrl") or "").strip())
+        and bool(str(config.get("modelId") or config.get("model") or "").strip())
+    )
+
+
 class SystemSettingsService:
     async def _ensure_tables(self) -> None:
         async with async_session() as session:
@@ -183,17 +197,26 @@ class SystemSettingsService:
     def _normalize_model_config(self, kind: str, raw: dict[str, Any]) -> dict[str, Any]:
         config = copy.deepcopy(raw or {})
         if kind == "llm":
-            provider_id, model_id = normalize_opencode_model_selection(
-                config.get("providerId")
-                or settings.default_llm_provider_id
-                or settings.opencode_provider_id,
-                config.get("modelId")
-                or config.get("model")
-                or settings.opencode_model_id,
+            # 显式空串视为用户主动清空，仅当 key 完全不存在时才回退 env 默认值
+            provider_value = (
+                config["providerId"]
+                if "providerId" in config
+                else (settings.default_llm_provider_id or settings.opencode_provider_id)
             )
+            if "modelId" in config or "model" in config:
+                model_value = config.get("modelId") or config.get("model")
+            else:
+                model_value = settings.opencode_model_id
+            provider_id, model_id = normalize_opencode_model_selection(provider_value, model_value)
             config["providerId"] = provider_id
-            config["opencodeBaseUrl"] = str(config.get("opencodeBaseUrl") or settings.opencode_base_url or "").strip()
-            config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or settings.default_llm_base_url or "").strip()
+            if "opencodeBaseUrl" in config:
+                config["opencodeBaseUrl"] = str(config.get("opencodeBaseUrl") or "").strip()
+            else:
+                config["opencodeBaseUrl"] = str(settings.opencode_base_url or "").strip()
+            if "baseUrl" in config or "endpoint" in config:
+                config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or "").strip()
+            else:
+                config["baseUrl"] = str(settings.default_llm_base_url or "").strip()
             config["model"] = model_id
             config["modelId"] = model_id
             config["modelOptions"] = self._model_options(config)
@@ -202,7 +225,10 @@ class SystemSettingsService:
             config["enabled"] = bool(config.get("enabled"))
             return config
         config["baseUrl"] = str(config.get("baseUrl") or config.get("endpoint") or "").strip()
-        config["model"] = str(config.get("model") or settings.default_ocr_model or "").strip()
+        if "model" in config:
+            config["model"] = str(config.get("model") or "").strip()
+        else:
+            config["model"] = str(settings.default_ocr_model or "").strip()
         config["timeoutMs"] = int(config.get("timeoutMs") or 60000)
         config["maxTokens"] = int(config.get("maxTokens") or 2048)
         config["enabled"] = bool(config.get("enabled"))
@@ -247,17 +273,17 @@ class SystemSettingsService:
 
     def _write_opencode_runtime_config(self, config: dict[str, Any]) -> str:
         normalized = self._normalize_model_config("llm", config)
-        active = (
-            bool(normalized.get("enabled"))
-            and bool(str(normalized.get("baseUrl") or "").strip())
-            and bool(str(normalized.get("modelId") or normalized.get("model") or "").strip())
-        )
-        if not active:
+        if not opencode_llm_config_active(normalized):
             # 禁用或未配置完整时清除旧 runtime 文件，避免重启后 opencode 仍加载与 DB 相反的旧配置
             try:
                 OPENCODE_RUNTIME_CONFIG_PATH.unlink(missing_ok=True)
-            except Exception:
+            except Exception as exc:
                 logger.warning("opencode runtime 配置文件删除失败：%s", OPENCODE_RUNTIME_CONFIG_PATH, exc_info=True)
+                raise PeripheralError(
+                    500,
+                    "opencode 运行配置文件清除失败，旧配置仍可能在重启后生效，请检查文件权限后重试",
+                    "OPENCODE_RUNTIME_CONFIG_CLEAR_FAILED",
+                ) from exc
             return ""
         OPENCODE_RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         runtime = self._opencode_runtime_config(normalized)
@@ -328,11 +354,19 @@ class SystemSettingsService:
         await self._ensure_tables()
         current = await self.get_model_secret_config(kind)
         before = self._public_model_config(current)
-        model_value = str(data.get("modelId") or data.get("model") or current.get("modelId") or current.get("model") or "").strip()
+        # 按键存在性合并：显式传空串表示清空，未传才保留当前值
+        if "modelId" in data or "model" in data:
+            model_value = str(data.get("modelId") or data.get("model") or "").strip()
+        else:
+            model_value = str(current.get("modelId") or current.get("model") or "").strip()
+        if "baseUrl" in data or "endpoint" in data:
+            base_url_value = str(data.get("baseUrl") or data.get("endpoint") or "").strip()
+        else:
+            base_url_value = str(current.get("baseUrl") or "").strip()
         next_config = {
             **current,
             "enabled": bool(data.get("enabled", current.get("enabled", False))),
-            "baseUrl": str(data.get("baseUrl") or data.get("endpoint") or current.get("baseUrl") or "").strip(),
+            "baseUrl": base_url_value,
             "model": model_value,
             "timeoutMs": int(data.get("timeoutMs") or current.get("timeoutMs") or (30000 if kind == "llm" else 60000)),
             "maxTokens": int(data.get("maxTokens") or current.get("maxTokens") or (32768 if kind == "llm" else 2048)),
@@ -340,16 +374,24 @@ class SystemSettingsService:
         if kind == "llm":
             next_config.update(
                 {
-                    "providerId": str(data.get("providerId") or current.get("providerId") or settings.default_llm_provider_id or settings.opencode_provider_id).strip(),
+                    "providerId": (
+                        str(data.get("providerId") or "").strip()
+                        if "providerId" in data
+                        else str(current.get("providerId") or "").strip()
+                    ),
                     "modelId": model_value,
-                    "opencodeBaseUrl": str(data.get("opencodeBaseUrl") or current.get("opencodeBaseUrl") or settings.opencode_base_url).strip(),
+                    "opencodeBaseUrl": (
+                        str(data.get("opencodeBaseUrl") or "").strip()
+                        if "opencodeBaseUrl" in data
+                        else str(current.get("opencodeBaseUrl") or "").strip()
+                    ),
                 }
             )
             if isinstance(data.get("modelOptions"), list):
                 next_config["modelOptions"] = data["modelOptions"]
             else:
                 next_config["modelOptions"] = self._model_options(next_config)
-        if "apiKey" in data and str(data.get("apiKey") or "").strip():
+        if "apiKey" in data:
             next_config["apiKey"] = str(data.get("apiKey") or "").strip()
         next_config = self._normalize_model_config(kind, next_config)
 
@@ -868,9 +910,18 @@ class SystemSettingsService:
             return {"id": item_id, "name": name, "status": "offline", "latency": "-", "uptime": "-", "detail": str(exc)}
 
     async def _check_opencode(self) -> dict[str, Any]:
-        item = await self._check_http("svc-opencode", "OpenCode 服务", settings.opencode_base_url)
+        llm_config: dict[str, Any] | None = None
         try:
-            warning = await self._opencode_config_warning()
+            llm_config = await self.get_model_secret_config("llm")
+        except Exception:
+            # 读取 DB 配置失败时回退到环境变量地址，不影响服务可用性判断
+            logger.warning("读取 LLM 配置失败，opencode 健康检查回退到环境变量地址", exc_info=True)
+        base_url = (
+            str((llm_config or {}).get("opencodeBaseUrl") or "").strip() or settings.opencode_base_url
+        )
+        item = await self._check_http("svc-opencode", "OpenCode 服务", base_url)
+        try:
+            warning = await self._opencode_config_warning(llm_config)
         except Exception:
             # 一致性检查失败不影响服务可用性判断
             logger.warning("opencode 配置一致性检查失败", exc_info=True)
@@ -879,9 +930,9 @@ class SystemSettingsService:
             item["warning"] = warning
         return item
 
-    async def _fetch_opencode_active_config(self) -> dict[str, Any] | None:
+    async def _fetch_opencode_active_config(self, base_url: str = "") -> dict[str, Any] | None:
         """读取 opencode 实际生效配置（GET /config）；接口不可用（旧版本/离线）时返回 None。"""
-        url = str(settings.opencode_base_url or "").rstrip("/")
+        url = str(base_url or settings.opencode_base_url or "").rstrip("/")
         if not url:
             return None
         try:
@@ -894,10 +945,11 @@ class SystemSettingsService:
             return None
         return payload if isinstance(payload, dict) else None
 
-    async def _opencode_config_warning(self) -> str:
+    async def _opencode_config_warning(self, config: dict[str, Any] | None = None) -> str:
         """比对 opencode 实际生效配置与 DB 配置，不一致时返回 warning 文案（不判 failed，避免误报）。"""
-        config = await self.get_model_secret_config("llm")
-        active = bool(config.get("enabled")) and bool(str(config.get("baseUrl") or "").strip())
+        if config is None:
+            config = await self.get_model_secret_config("llm")
+        active = opencode_llm_config_active(config)
         expected = self._opencode_runtime_config(config)
         provider_id = next(iter(expected.get("provider") or {}), "")
         expected_model = str(expected.get("model") or "")
@@ -905,7 +957,9 @@ class SystemSettingsService:
             (expected["provider"][provider_id].get("options") or {}).get("baseURL") or ""
         ).rstrip("/") if provider_id else ""
 
-        opencode_config = await self._fetch_opencode_active_config()
+        # 真实调用走 DB 的 opencodeBaseUrl，健康检查与一致性比对用同一目标地址
+        target_base_url = str(config.get("opencodeBaseUrl") or "").strip() or settings.opencode_base_url
+        opencode_config = await self._fetch_opencode_active_config(target_base_url)
         if opencode_config is not None:
             actual_model = str(opencode_config.get("model") or "")
             actual_base_url = str(
@@ -921,7 +975,8 @@ class SystemSettingsService:
                 return "opencode 当前生效的 Base URL 与系统设置不一致，请重启 opencode 容器。"
             return ""
 
-        # /config 不可用时退化为 runtime 文件与 DB 配置比对
+        # /config 不可用时退化为检查 runtime 文件本身是否就绪；
+        # runtime 文件是「待重启生效」的配置，不代表当前运行态，不用它判定当前生效配置是否一致
         path = OPENCODE_RUNTIME_CONFIG_PATH
         if not active:
             if path.exists():
@@ -930,16 +985,10 @@ class SystemSettingsService:
         if not path.exists():
             return "opencode runtime 配置文件缺失，opencode 未按系统设置的 LLM 配置运行。"
         try:
-            runtime = json.loads(path.read_text(encoding="utf-8"))
+            json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return "opencode runtime 配置文件无法解析，与系统设置可能不一致。"
-        runtime_model = str(runtime.get("model") or "")
-        runtime_base_url = str(
-            ((runtime.get("provider") or {}).get(provider_id) or {}).get("options", {}).get("baseURL") or ""
-        ).rstrip("/") if provider_id else ""
-        if runtime_model != expected_model or (expected_base_url and runtime_base_url != expected_base_url):
-            return "opencode runtime 配置与系统设置不一致，请重启 opencode 容器后生效。"
-        return ""
+        return "无法获取 opencode 当前生效配置（/config 接口不可用），系统设置将在重启 opencode 后生效。"
 
     async def _check_configured_gateway(self, item_id: str, name: str, kind: str) -> dict[str, Any]:
         config = await self.get_model_secret_config(kind)
