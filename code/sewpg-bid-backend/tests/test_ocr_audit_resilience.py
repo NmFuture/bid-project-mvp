@@ -152,9 +152,7 @@ class OcrAuditResilienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_enqueued_task_is_returned_when_submission_audit_fails(self) -> None:
         service = OcrService()
         session = _FakeSession()
-        expected = {"id": "OCR-created", "status": "pending"}
         audit_record = AsyncMock(side_effect=RuntimeError("audit unavailable"))
-        detail = AsyncMock(return_value=expected)
 
         with (
             patch.object(service, "_ensure_tables", new=AsyncMock()),
@@ -172,7 +170,6 @@ class OcrAuditResilienceTests(unittest.IsolatedAsyncioTestCase):
                 new=MagicMock(return_value=Path("/tmp/OCR-created/source.png")),
             ),
             patch.object(service, "start_worker", new=AsyncMock()),
-            patch.object(service, "detail", new=detail),
             patch("app.services.ocr_service.audit_service.record", new=audit_record),
             patch("app.services.ocr_service.uuid4", return_value=MagicMock(hex="created")),
             self.assertLogs("app.services.ocr_service", level="ERROR") as logs,
@@ -183,11 +180,12 @@ class OcrAuditResilienceTests(unittest.IsolatedAsyncioTestCase):
                 content=b"fake png",
             )
 
-        self.assertEqual(result, expected)
+        self.assertEqual(result["id"], "OCR-created")
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["candidates"], [])
         self.assertEqual(len(session.added), 1)
         self.assertEqual(session.added[0].status, "pending")
         audit_record.assert_awaited_once()
-        detail.assert_awaited_once_with("PRJ-001", "OCR-created")
         self.assertIn("OCR 审计记录失败：提交任务 OCR-created", "\n".join(logs.output))
 
 

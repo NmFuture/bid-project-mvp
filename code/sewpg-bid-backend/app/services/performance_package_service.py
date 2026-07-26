@@ -1150,6 +1150,163 @@ class PerformancePackageService:
             await session.commit()
         return {"message": "业绩明细已更新", "item": self._item_row_to_dict(row._mapping)}
 
+    async def create_item(self, category_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        numeric_category_id = self._numeric_category_id(category_id)
+        payload = data if isinstance(data, dict) else {}
+        editable_fields = set(PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS) | set(PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS)
+        unknown_fields = sorted(str(key) for key in payload if key not in editable_fields)
+        if unknown_fields:
+            raise PeripheralError(400, f"业绩明细不支持编辑字段：{'、'.join(unknown_fields)}。", "PERFORMANCE_ITEM_FIELDS_INVALID")
+        text_values: dict[str, str] = {}
+        for field in PERFORMANCE_ITEM_EDITABLE_TEXT_FIELDS:
+            if field not in payload:
+                continue
+            text_values[field] = str(payload.get(field) or "").strip()
+        year_values: dict[str, int | None] = {}
+        for field, (_column, label) in PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS.items():
+            if field not in payload:
+                continue
+            year_values[field] = _parse_item_year(payload.get(field), field_label=label)
+        if not any(text_values.values()) and not any(year is not None for year in year_values.values()):
+            raise PeripheralError(400, "业绩明细内容不能为空。", "PERFORMANCE_ITEM_CREATE_EMPTY")
+        row_values = _sync_performance_item_row_values(
+            None,
+            existing={},
+            text_updates=text_values,
+            changed_text_fields=set(text_values),
+            year_updates=year_values,
+        )
+        parsed_time_facts = _time_facts(row_values)
+        time_facts: dict[str, Any] = {}
+        for key in ("contractTimeRaw", "deliveryTimeRaw", "operationTimeRaw", "deliveryOrOperationTimeRaw"):
+            time_facts[key] = parsed_time_facts.get(key) or ""
+        effective_years: list[int | None] = []
+        for field, (_column, _label) in PERFORMANCE_ITEM_EDITABLE_YEAR_FIELDS.items():
+            year = year_values.get(field)
+            time_facts[field] = year
+            effective_years.append(year)
+        time_facts["years"] = _unique_ints(effective_years)
+        turbine_model = text_values.get("turbineModel", "")
+        params: dict[str, Any] = {
+            "category_id": numeric_category_id,
+            "project_name": text_values.get("projectName", ""),
+            "customer_name": text_values.get("customerName", ""),
+            "partner_name": text_values.get("partnerName", ""),
+            "turbine_model": turbine_model,
+            "turbine_models": _json(_split_turbine_models(turbine_model)),
+            "contract_quantity": text_values.get("contractQuantity", ""),
+            "trial_operation_quantity": text_values.get("trialOperationQuantity", ""),
+            "commissioned_capacity_mw": text_values.get("commissionedCapacityMw", ""),
+            "delivery_or_operation_time": text_values.get("deliveryOrOperationTime", ""),
+            "contract_year": year_values.get("contractYear"),
+            "delivery_year": year_values.get("deliveryYear"),
+            "operation_year": year_values.get("operationYear"),
+            "time_facts": _json(time_facts),
+            "contact_info": text_values.get("contactInfo", ""),
+            "row_values": _json(row_values),
+        }
+        async with async_session() as session:
+            await ensure_material_runtime_tables(session)
+            category_result = await session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM performance_categories
+                    WHERE id = :category_id
+                    """
+                ),
+                {"category_id": numeric_category_id},
+            )
+            if category_result.first() is None:
+                raise PeripheralError(404, "业绩类别不存在。", "PERFORMANCE_CATEGORY_NOT_FOUND")
+            row_index_result = await session.execute(
+                text(
+                    """
+                    SELECT COALESCE(MAX(row_index), 0) + 1
+                    FROM performance_items
+                    WHERE category_id = :category_id
+                    """
+                ),
+                {"category_id": numeric_category_id},
+            )
+            params["row_index"] = int(row_index_result.scalar_one() or 1)
+            result = await session.execute(
+                text(
+                    """
+                    INSERT INTO performance_items (
+                        category_id, row_index, project_name, customer_name, partner_name, turbine_model,
+                        turbine_models,
+                        contract_quantity, trial_operation_quantity, commissioned_capacity_mw,
+                        delivery_or_operation_time, contract_year, delivery_year, operation_year,
+                        time_facts, contact_info, row_values
+                    )
+                    VALUES (
+                        :category_id, :row_index, :project_name, :customer_name, :partner_name, :turbine_model,
+                        CAST(:turbine_models AS JSONB),
+                        :contract_quantity, :trial_operation_quantity, :commissioned_capacity_mw,
+                        :delivery_or_operation_time, :contract_year, :delivery_year, :operation_year,
+                        CAST(:time_facts AS JSONB), :contact_info, CAST(:row_values AS JSONB)
+                    )
+                    RETURNING *
+                    """
+                ),
+                params,
+            )
+            row = result.first()
+            if row is None:
+                raise PeripheralError(500, "业绩明细创建失败。", "PERFORMANCE_ITEM_CREATE_FAILED")
+            await session.execute(
+                text("UPDATE performance_categories SET updated_at = NOW() WHERE id = :category_id"),
+                {"category_id": numeric_category_id},
+            )
+            await session.commit()
+        return {"message": "业绩明细已新增", "item": self._item_row_to_dict(row._mapping)}
+
+    async def delete_item(self, category_id: str, item_id: str) -> dict[str, Any]:
+        numeric_category_id = self._numeric_category_id(category_id)
+        numeric_item_id = self._numeric_item_id(item_id)
+        async with async_session() as session:
+            await ensure_material_runtime_tables(session)
+            attachment_result = await session.execute(
+                text(
+                    """
+                    DELETE FROM performance_item_attachments
+                    WHERE item_id = :item_id AND category_id = :category_id
+                    RETURNING minio_bucket, minio_key
+                    """
+                ),
+                {"item_id": numeric_item_id, "category_id": numeric_category_id},
+            )
+            attachments = [dict(row._mapping) for row in attachment_result]
+            result = await session.execute(
+                text(
+                    """
+                    DELETE FROM performance_items
+                    WHERE id = :item_id AND category_id = :category_id
+                    RETURNING id
+                    """
+                ),
+                {"item_id": numeric_item_id, "category_id": numeric_category_id},
+            )
+            if result.first() is None:
+                raise PeripheralError(404, "业绩明细不存在。", "PERFORMANCE_ITEM_NOT_FOUND")
+            await session.execute(
+                text("UPDATE performance_categories SET updated_at = NOW() WHERE id = :category_id"),
+                {"category_id": numeric_category_id},
+            )
+            await session.commit()
+
+        for attachment in attachments:
+            bucket = attachment.get("minio_bucket") or settings.minio_buckets["materials"]
+            key = attachment.get("minio_key") or ""
+            if not key:
+                continue
+            try:
+                minio_client.remove_object(bucket, key)
+            except Exception as exc:  # pragma: no cover - object cleanup should not roll back DB delete
+                logger.warning("Failed to remove performance item attachment object %s/%s: %s", bucket, key, exc)
+        return {"message": "业绩明细已删除", "id": f"PERITEM-{numeric_item_id:04d}"}
+
     def _category_filters(
         self,
         *,

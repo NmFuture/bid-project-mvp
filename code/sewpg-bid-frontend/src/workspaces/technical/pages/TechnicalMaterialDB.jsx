@@ -1499,7 +1499,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   }
 
   const openTagImportModal = () => {
-    setTagImportTargetPath(selectedFolderPath || activeBidType)
+    // 跨机型「应用到同名文件」按目标目录匹配：选中标准文件子树时默认上溯到标准文件根，避免只覆盖单机型子目录
+    const defaultTargetPath =
+      selectedFolderPath && (selectedFolderPath === TECHNICAL_ROOT_PATH || selectedFolderPath.startsWith(`${TECHNICAL_ROOT_PATH}/`))
+        ? TECHNICAL_ROOT_PATH
+        : (selectedFolderPath || activeBidType)
+    setTagImportTargetPath(defaultTargetPath)
     setTagImportFile(null)
     setTagImportUseFuzzy(false)
     setTagImportMode('merge')
@@ -1551,6 +1556,16 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     } finally {
       setTagImportLoading(false)
     }
+  }
+
+  const toggleTagImportApplyAll = (checked) => {
+    setTagImportApplyAll((prev) => {
+      const next = { ...prev }
+      ;(tagImportPreview?.matched || []).forEach((row) => {
+        if (Number(row.matches) > 1) next[row.rowIndex] = checked
+      })
+      return next
+    })
   }
 
   const handleTagImportCommit = async () => {
@@ -2553,7 +2568,20 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                   {/* matched */}
                   {(tagImportPreview?.matched || []).length > 0 && (
                     <section className="space-y-2">
-                      <h3 className="text-sm font-semibold text-on-surface">✅ 将导入（{(tagImportPreview.matched || []).length}）</h3>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-on-surface">✅ 将导入（{(tagImportPreview.matched || []).length}）</h3>
+                        {(tagImportPreview.matched || []).some((row) => Number(row.matches) > 1) && (
+                          <label className="flex items-center gap-1.5 text-xs text-primary">
+                            <input
+                              type="checkbox"
+                              checked={(tagImportPreview.matched || []).filter((row) => Number(row.matches) > 1).every((row) => Boolean(tagImportApplyAll[row.rowIndex]))}
+                              onChange={(e) => toggleTagImportApplyAll(e.target.checked)}
+                              className="h-3.5 w-3.5 rounded border-outline-variant"
+                            />
+                            <span>全部应用到同名文件（跨机型）</span>
+                          </label>
+                        )}
+                      </div>
                       <div className="rounded-lg border border-outline-variant/40 divide-y divide-outline-variant/30">
                         {(tagImportPreview.matched || []).map((row) => (
                           <label key={`m-${row.rowIndex}`} className="flex items-start gap-2 px-3 py-2 text-xs">
