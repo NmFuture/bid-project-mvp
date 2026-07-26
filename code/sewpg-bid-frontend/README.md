@@ -1,7 +1,7 @@
 # SEWPG Bid Frontend
 
 > 当前口径：前端已经进入技术标/商务标双轨独立化阶段。
-> 更新日期：2026-05-27
+> 更新日期：2026-07-24
 
 ## 项目简介
 
@@ -92,8 +92,7 @@ npm run check
 
 ## 文档入口
 
-- `/Users/wlb/Agent/bid-project/doc/代码结构梳理.md`
-- `/Users/wlb/Agent/bid-project/doc/需求梳理.md`
-- `/Users/wlb/Agent/bid-project/doc/研发计划.md`
-- `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/docs/10-API接口总览与契约说明.md`
-- `/Users/wlb/Agent/bid-project/code/sewpg-bid-frontend/docs/11-API字段级契约明细.md`
+- 仓库入口：[`../../README.md`](../../README.md)
+- API 契约：[`../sewpg-bid-api/当前API接口核心版.md`](../sewpg-bid-api/当前API接口核心版.md)
+- 5090 发布：[`../DEPLOY_5090.md`](../DEPLOY_5090.md)
+- 前端 API 实现：[`src/api/index.js`](src/api/index.js)
