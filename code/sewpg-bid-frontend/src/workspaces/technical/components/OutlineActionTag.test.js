@@ -122,4 +122,12 @@ test('即时提示根据滚动区剩余空间选择上下方向并保持在目�
     ),
     { top: null, bottom: 154, right: 720, maxWidth: 320, maxHeight: 240 },
   )
+  assert.deepEqual(
+    getImmediateTooltipPosition(
+      { top: 140, right: 150, bottom: 166 },
+      { top: 100, right: 220, bottom: 600, left: 100, width: 120, height: 500 },
+      { width: 1280, height: 720 },
+    ),
+    { top: 170, bottom: null, right: 1068, maxWidth: 104, maxHeight: 240 },
+  )
 })

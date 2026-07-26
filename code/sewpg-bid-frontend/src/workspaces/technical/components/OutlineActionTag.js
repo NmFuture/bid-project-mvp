@@ -15,11 +15,14 @@ export const getImmediateTooltipPosition = (trigger, bounds, viewport) => {
   const spaceAbove = trigger.top - bounds.top
   const showAbove = spaceBelow < 80 && spaceAbove > spaceBelow
   const availableHeight = showAbove ? spaceAbove - gap : spaceBelow - gap
+  const maxWidth = Math.max(1, Math.min(320, bounds.width - 16, viewport.width - 16))
+  const rightEdge = Math.min(bounds.right - 8, viewport.width - 8)
+  const anchoredRight = Math.max(bounds.left + 8 + maxWidth, Math.min(trigger.right, rightEdge))
   return {
     top: showAbove ? null : Math.max(8, trigger.bottom + gap),
     bottom: showAbove ? Math.max(8, viewport.height - trigger.top + gap) : null,
-    right: Math.max(8, viewport.width - Math.min(trigger.right, bounds.right - 8)),
-    maxWidth: Math.max(120, Math.min(320, bounds.width - 16)),
+    right: Math.max(8, viewport.width - anchoredRight),
+    maxWidth,
     maxHeight: Math.max(40, Math.min(240, availableHeight)),
   }
 }
@@ -45,6 +48,7 @@ export default function OutlineActionTag({ action, basis, reason, onFocusBasis }
       }, action)
     : createElement('span', {
         className,
+        tabIndex: tooltip ? 0 : undefined,
         'aria-label': tooltip ? `${action}：${tooltip}` : undefined,
       }, action)
 
@@ -92,5 +96,7 @@ export default function OutlineActionTag({ action, basis, reason, onFocusBasis }
     'data-tooltip-text': tooltip,
     onMouseEnter: showTooltip,
     onMouseLeave: () => setTooltipPosition(null),
+    onFocus: showTooltip,
+    onBlur: () => setTooltipPosition(null),
   }, trigger, tooltipNode)
 }

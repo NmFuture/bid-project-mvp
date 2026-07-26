@@ -44,7 +44,7 @@ class OpencodeClient:
         )
         # 自定义 LLM 未生效（禁用/未配置完整）时忽略 DB 的 provider/model/opencodeBaseUrl，
         # 回退到环境变量配置（与 opencode/docker-entrypoint.sh 的环境回退同源）
-        db_active = model_config is not None or opencode_llm_config_active(config)
+        db_active = opencode_llm_config_active(config)
         self.base_url = str(base_url or (config.get("opencodeBaseUrl") if db_active else "") or settings.opencode_base_url).rstrip("/")
         self.provider_id = str(provider_id or (config.get("providerId") if db_active else "") or settings.opencode_provider_id)
         self.model_id = str(model_id or ((config.get("modelId") or config.get("model")) if db_active else "") or settings.opencode_model_id)

@@ -89,12 +89,12 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn("business_format_clean_report.md", business_prompt)
 
     def test_constructor_uses_supplied_model_config_without_loading_system_settings(self) -> None:
-        model_config = {
-            "opencodeBaseUrl": "http://configured-opencode:4096",
-            "providerId": "configured-provider",
-            "modelId": "configured-model",
-            "timeoutMs": 45000,
-        }
+        model_config = _db_llm_config(
+            opencodeBaseUrl="http://configured-opencode:4096",
+            providerId="configured-provider",
+            modelId="configured-model",
+            timeoutMs=45000,
+        )
 
         with patch(
             "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync"
@@ -106,6 +106,19 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(client.provider_id, "configured-provider")
         self.assertEqual(client.model_id, "configured-model")
         self.assertEqual(client.timeout.read, 45.0)
+
+    def test_constructor_falls_back_when_supplied_model_config_is_inactive(self) -> None:
+        model_config = _db_llm_config(enabled=False)
+
+        with patch(
+            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync"
+        ) as load_config:
+            client = OpencodeClient(model_config=model_config)
+
+        load_config.assert_not_called()
+        self.assertEqual(client.base_url, settings.opencode_base_url.rstrip("/"))
+        self.assertEqual(client.provider_id, settings.opencode_provider_id)
+        self.assertEqual(client.model_id, settings.opencode_model_id)
 
     def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
         client = OpencodeClient()
