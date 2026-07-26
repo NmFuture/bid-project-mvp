@@ -132,9 +132,69 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
 
         payload = out["RAW-0001"]
         self.assertEqual(payload["status"], "fallback")
-        self.assertEqual(payload["skipReason"], "LLM 批量回复缺该文件或无效")
+        # 批量丢份后还会单份补打，补打也无有效内容才降级。
+        self.assertIn("LLM 批量回复缺该文件或无效", payload["skipReason"])
+        self.assertIn("单份补打失败", payload["skipReason"])
         self.assertFalse(payload["retryable"])
         self.assertEqual(payload["llmFailures"], PREVIEW_LLM_MAX_FAILURES)
+
+    def test_batch_miss_recovered_by_single_retry(self) -> None:
+        batch_reply = json.dumps({"previews": {}}, ensure_ascii=False)
+        single_reply = json.dumps({"lead": "单份导读", "points": ["要点"]}, ensure_ascii=False)
+        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+            client_cls._parse_json_payload = staticmethod(json.loads)
+            client_cls.return_value.send_text_prompt.side_effect = [
+                {"reply": batch_reply, "modelId": "m"},
+                {"reply": single_reply, "modelId": "m-single"},
+            ]
+            out = _compute_batch_preview_payloads([_plan()])
+
+        payload = out["RAW-0001"]
+        self.assertEqual(payload["status"], "completed")
+        self.assertFalse(payload["retryable"])
+        self.assertEqual(payload["preview"]["lead"], "单份导读")
+        self.assertEqual(payload["metadata"]["llmScope"], "single")
+        self.assertNotIn("llmFailures", payload)
+
+    def test_batch_timeout_recovered_by_single_retry(self) -> None:
+        single_reply = json.dumps({"lead": "单份导读", "points": ["要点"]}, ensure_ascii=False)
+        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+            client_cls._parse_json_payload = staticmethod(json.loads)
+            client_cls.return_value.send_text_prompt.side_effect = [
+                RuntimeError("futurecode 生成超时，请缩短输入或稍后重试。"),
+                {"reply": single_reply, "modelId": "m-single"},
+            ]
+            out = _compute_batch_preview_payloads([_plan()])
+
+        payload = out["RAW-0001"]
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["metadata"]["llmScope"], "single")
+
+    def test_batch_hit_keeps_batch_scope_and_skips_retry(self) -> None:
+        batch_reply = json.dumps(
+            {"previews": {"RAW-0001": {"lead": "批量导读", "points": ["要点"]}}},
+            ensure_ascii=False,
+        )
+        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+            client_cls._parse_json_payload = staticmethod(json.loads)
+            client_cls.return_value.send_text_prompt.return_value = {"reply": batch_reply, "modelId": "m"}
+            out = _compute_batch_preview_payloads([_plan()])
+
+        payload = out["RAW-0001"]
+        self.assertEqual(payload["metadata"]["llmScope"], "batch")
+        # 批量已命中，不应再发单份补打请求。
+        self.assertEqual(client_cls.return_value.send_text_prompt.call_count, 1)
+
+    def test_client_construction_failure_skips_single_retry(self) -> None:
+        with patch(
+            "app.services.opencode_client.OpencodeClient",
+            side_effect=RuntimeError("LLM 不可用"),
+        ):
+            out = _compute_batch_preview_payloads([_plan(), _plan("RAW-0002")])
+
+        for file_id in ("RAW-0001", "RAW-0002"):
+            self.assertEqual(out[file_id]["status"], "fallback")
+            self.assertEqual(out[file_id]["skipReason"], "LLM 不可用")
 
     def test_llm_success_completes_without_failure_count(self) -> None:
         reply = json.dumps(
