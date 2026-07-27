@@ -21,6 +21,7 @@ from app.services.bid_runtime_state import now_iso
 from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
     TECHNICAL_WORD_FILL_SKILL_NAME,
+    apply_technical_gap_parent_coverage,
     build_technical_gap_plan_for_project,
     cleanup_prepared_technical_gap_material_files,
     prepare_technical_existing_gap_material_files,
@@ -399,6 +400,41 @@ class TechnicalGapService:
             return {
                 "message": "本章已人工确认就绪。" if confirmed else "已撤销本章的就绪确认。",
                 "item": copy.deepcopy(plan_item),
+                "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap not found")
+
+    def set_parent_coverage(
+        self,
+        project_id: str,
+        gap_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # 人工设「父章节覆盖」（产品需求 2026-07-27）：以本节点为覆盖源，把其后代目录项
+        # 统一标成 covered_by_parent；人工已单独选过素材的子节跳过，可撤销。
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别。")
+            result = apply_technical_gap_parent_coverage(project, gap_id, data or {})
+            self._refresh_gap_integrity(project, gap_state)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(gap_state.get("plan") or {})
+            persist_technical_gap_project(project)
+            covered = (data or {}).get("covered", True) is not False
+            applied = result.get("applied") or []
+            skipped = result.get("skipped") or []
+            action = "已设为父章节覆盖" if covered else "已撤销父章节覆盖"
+            message = f"{action}：{len(applied)} 个下级目录项"
+            if skipped:
+                reason = "已自行选用素材" if covered else "非人工设置"
+                message += f"，跳过 {len(skipped)} 个（{reason}）"
+            return {
+                "message": f"{message}。",
+                "item": copy.deepcopy(result.get("item") or {}),
+                "applied": applied,
+                "skipped": skipped,
                 "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
             }
         except Exception as exc:

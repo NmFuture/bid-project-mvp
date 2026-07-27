@@ -177,6 +177,57 @@ export const technicalGapTagOf = (item, allItems = []) => {
   return ownTechnicalGapTag(item)
 }
 
+// —— 人工「父章节覆盖」（产品需求 2026-07-27）——
+// 一、二级目录选定素材后，下级小节常常就是跟着这份素材一起写。这里判断某个目录项
+// 能不能一键把下级设为父章节覆盖：口径与后端 technical_gap_number_key 保持一致。
+const CHINESE_DIGITS = { 零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
+
+export const technicalGapNumberKey = (number) => {
+  const text = String(number || '').trim()
+  const match = /^第\s*([一二三四五六七八九十百千万0-9]+)\s*章$/.exec(text)
+  if (!match) return text
+  const raw = match[1]
+  if (/^\d+$/.test(raw)) return raw
+  if (raw in CHINESE_DIGITS) return String(CHINESE_DIGITS[raw])
+  if (raw === '十') return '10'
+  if (raw.includes('十')) {
+    const [left, right] = raw.split('十')
+    const tens = left ? (CHINESE_DIGITS[left] ?? 1) : 1
+    const ones = right ? (CHINESE_DIGITS[right] ?? 0) : 0
+    return String(tens * 10 + ones)
+  }
+  return text
+}
+
+export const technicalGapDescendants = (item, allItems = []) => {
+  const parentKey = technicalGapNumberKey(item?.number)
+  if (!parentKey) return []
+  const prefix = `${parentKey}.`
+  return asObjectArray(allItems).filter(
+    (entry) => entry !== item && technicalGapNumberKey(entry?.number).startsWith(prefix),
+  )
+}
+
+export const technicalGapParentCoverageState = (item, allItems = []) => {
+  const descendants = technicalGapDescendants(item, allItems)
+  const gapId = String(item?.id || '')
+  // 已按本节点人工设置覆盖的下级；planner 自动判定的覆盖不计入（不由这个按钮撤销）。
+  const manualCovered = descendants.filter(
+    (entry) => String(entry?.coveredByParent || '') === gapId
+      && String(entry?.parentCoverageSource || '') === 'manual',
+  )
+  const hasMaterial = asObjectArray(item?.matchedMaterials).length > 0
+    || asObjectArray(item?.resolvedArtifacts).length > 0
+  return {
+    descendantCount: descendants.length,
+    coveredCount: manualCovered.length,
+    applied: manualCovered.length > 0,
+    hasMaterial,
+    // 有下级 + 本节点自己有素材，才谈得上让下级跟着它写。
+    canApply: descendants.length > 0 && hasMaterial,
+  }
+}
+
 export const appendixTaskForFillTask = (selected, task) => {
   const appendixTasks = asObjectArray(selected?.appendixTasks)
   const blankId = String(task?.blankSource?.id || '').trim()
