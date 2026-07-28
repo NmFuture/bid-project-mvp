@@ -311,7 +311,6 @@ def _run_parallel_outline_chapters(
         with ThreadPoolExecutor(
             max_workers=min(
                 TECH_OUTLINE_CHAPTER_WORKERS,
-                len(chapter_base_urls),
                 max(1, len(chapters)),
             )
         ) as executor:
