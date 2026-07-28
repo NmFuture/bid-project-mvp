@@ -380,9 +380,25 @@ async def get_technical_gap_project_facts(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.facts(project_id)
 
 
+@router.get("/api/technical/projects/{project_id}/gaps/facts/material-check")
+async def technical_gap_fact_material_check(project_id: str) -> dict[str, Any]:
+    return await technical_gap_service.material_check(project_id)
+
+
 @router.post("/api/technical/projects/{project_id}/gaps/facts/build")
 async def build_technical_gap_project_facts(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.build_facts(project_id)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/facts/specs-upload")
+async def upload_technical_gap_fact_specs(
+    project_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """上传本项目实时表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
+    return await technical_gap_service.upload_fact_specs(
+        project_id, str(file.filename or ""), await file.read()
+    )
 
 
 @router.put("/api/technical/projects/{project_id}/gaps/facts")
@@ -400,6 +416,14 @@ async def save_technical_gap_project_fact_field(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     return await technical_gap_service.save_fact_field(project_id, field_id, data)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/facts/curate")
+async def curate_technical_gap_project_facts(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return await technical_gap_service.curate_facts(project_id, data)
 
 
 @router.put("/api/technical/projects/{project_id}/gaps/{gap_id}")

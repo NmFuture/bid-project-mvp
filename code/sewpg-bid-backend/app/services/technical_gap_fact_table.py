@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ from app.services.technical_fact_field_specs import (
 )
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
+
+logger = logging.getLogger(__name__)
 
 
 PROJECT_FACT_TABLE_SCHEMA_VERSION = "bid-project-fact-table-v2"
@@ -153,7 +156,7 @@ def empty_project_fact_table(project_id: str) -> dict[str, Any]:
     }
 
 
-def summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int]:
+def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int | None = None) -> dict[str, int]:
     def count(status: str) -> int:
         return sum(1 for field in fields if str(field.get("status") or "") == status)
 
@@ -169,7 +172,7 @@ def summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int
             "missingSourceCount": count(FACT_STATUS_MISSING_SOURCE),
             "conflictCount": count(FACT_STATUS_CONFLICT),
             "notApplicableCount": count(FACT_STATUS_NOT_APPLICABLE),
-            "specTotal": len(fillable_specs()),
+            "specTotal": len(fillable_specs()) if spec_total is None else spec_total,
             "specMatched": sum(1 for field in fields if field.get("specSeq") and str(field.get("value") or "").strip()),
         }
     )
@@ -369,17 +372,20 @@ def _spec_match_keys(spec: dict[str, Any]) -> list[str]:
 def reconcile_fact_fields_with_specs(
     fields_by_key: dict[str, dict[str, Any]],
     existing_by_key: dict[str, dict[str, Any]] | None = None,
+    specs: list[dict[str, Any]] | None = None,
 ) -> None:
-    """以 128 条填值 spec 为骨架对齐抽取结果。
+    """以填值 spec 为骨架对齐抽取结果。
 
     - 匹配到的字段打上 spec 元数据；needsConfirmation 且已自动提取的转"待人工确认"。
-    - 未匹配到的 spec 生成"未提取"骨架字段，保证 128 条字段在事实表中齐全。
+    - 未匹配到的 spec 生成"未提取"骨架字段，保证清单字段在事实表中齐全。
     - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
     - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
+    - specs 为 None 时回退全局 fillable_specs()；项目构建链路显式传项目级清单
+      （用户上传的实时表 Excel 解析结果）。
     """
     existing_by_key = existing_by_key or {}
     matched_field_keys: set[str] = set()
-    for spec in fillable_specs():
+    for spec in (specs if specs is not None else fillable_specs()):
         match_keys = _spec_match_keys(spec)
         field: dict[str, Any] | None = None
         for key in match_keys:
@@ -719,7 +725,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             )
 
     preserve_manual_fields()
-    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key)
+    # 字段骨架来自本项目上传的实时表 Excel（gap_state["factSpecs"]），不再用全局默认清单
+    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
+    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
 
     fields = list(fields_by_key.values())
     for field in fields:
@@ -766,7 +775,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "confirmedAt": "",
         "confirmedBy": "",
         "fields": fields,
-        "summary": summarize_project_fact_fields(fields),
+        "summary": summarize_project_fact_fields(fields, spec_total=len(project_specs)),
     }
 
 
@@ -1116,6 +1125,10 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
             for scope in material_scope.get("readableScopes") or []:
                 if not isinstance(scope, dict):
                     continue
+                # 事实表匹配只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
+                # 相关项目素材由用户归置到该目录下），不扫标准文件/客户定制目录
+                if str(scope.get("materialTier") or "") != "project":
+                    continue
                 folder_path = str(scope.get("path") or "").strip()
                 if not folder_path:
                     continue
@@ -1148,6 +1161,7 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                         }
                     )
         except Exception:
+            logger.exception("项目事实素材索引回退查询失败，按无素材继续构建")
             materials = []
     return [item for item in materials if material_is_fact_relevant(item)]
 

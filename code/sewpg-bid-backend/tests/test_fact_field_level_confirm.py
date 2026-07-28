@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,16 @@ from app.main import app
 from app.core.config import settings
 from app.services import technical_fact_special_extractors as special_extractors
 from app.services.store import store
+from app.services.technical_fact_field_specs import fillable_specs
+
+
+def _test_fact_specs() -> dict:
+    """build_facts 门控 seed：测试绕过实时表上传，直接注入全局字段清单作为项目 specs。"""
+    return {
+        "fileName": "测试实时表.xlsx",
+        "uploadedAt": "2026-07-27T00:00:00",
+        "specs": copy.deepcopy(fillable_specs()),
+    }
 
 
 class FactFieldLevelConfirmTests(unittest.TestCase):
@@ -54,6 +65,7 @@ class FactFieldLevelConfirmTests(unittest.TestCase):
             "planFile": "",
             "integrity": {},
             "projectFactTable": {},
+            "factSpecs": _test_fact_specs(),
         }
         store._persist_project(project)
 
