@@ -24,10 +24,19 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-docling-lock.txt requirements-docling-worker.txt requirements-torch-cuda.txt ./
+# 预置 wheel 目录：通常为空，pip 照常从网络安装；网络不稳时可把体积大、
+# 反复下载失败的包（如 nvidia-cublas，423 MB）用 `wget -c` 断点续传取回后
+# 放入 wheels/。pip 本身不支持断点续传，中断即整包作废。
+# 注意必须先 `--no-deps` 安装本地 wheel，再执行后续安装：torch 在
+# download.pytorch.org 索引中把这些 CUDA 依赖声明为带 sha256 的直接 URL，
+# 此时 pip 只认该 URL、不参与 --find-links 的候选比较；先装上之后 pip 会
+# 判定 "Requirement already satisfied" 而跳过下载。
+COPY wheels/ /wheels/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow \
-    && pip install --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt \
-    && pip install --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt \
+    if ls /wheels/*.whl >/dev/null 2>&1; then pip install --no-deps /wheels/*.whl; fi \
+    && pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow --find-links /wheels \
+    && pip install --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt --find-links /wheels \
+    && pip install --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt --find-links /wheels \
     && pip check \
     && python -c "import torch; assert torch.version.cuda == '13.0', f'expected CUDA 13.0 torch, got {torch.version.cuda}'"
 

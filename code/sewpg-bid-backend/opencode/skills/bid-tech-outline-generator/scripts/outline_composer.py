@@ -423,7 +423,17 @@ def _validate_template_decisions(structure: dict[str, Any], raw_decisions: Any) 
         seen.add(target_id)
         decision = str(item.get("decision") or "").strip()
         if decision == "retain":
-            _assert_template_decision_keys(item, {"target_id", "decision"}, index)
+            _assert_template_decision_keys(
+                item,
+                {"target_id", "decision", "reason", "tender_basis"},
+                index,
+            )
+            has_reason = bool(str(item.get("reason") or "").strip())
+            has_basis = isinstance(item.get("tender_basis"), dict)
+            if has_reason and has_basis:
+                raise ValueError(
+                    f"template_decisions[{index}] retain cannot contain both reason and tender_basis"
+                )
         elif decision == "suggest_delete":
             _assert_template_decision_keys(
                 item,
@@ -509,7 +519,9 @@ def _apply_template_decisions(
         target = records[str(item["target_id"])]
         if item["decision"] == "retain":
             target["node"]["suggestion_action"] = "必要"
-            target["node"]["suggestion_reason"] = ""
+            target["node"]["suggestion_reason"] = str(item.get("reason") or "")
+            if "tender_basis" in item:
+                target["node"]["tender_basis"] = deepcopy(item["tender_basis"])
             continue
         target["node"]["suggestion_action"] = "建议删除"
         target["node"]["suggestion_reason"] = str(item["reason"])

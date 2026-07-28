@@ -444,6 +444,8 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
   confirmReady: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
+  setParentCoverage: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/parent-coverage`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),

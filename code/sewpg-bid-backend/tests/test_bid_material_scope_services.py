@@ -658,7 +658,7 @@ def test_bid_fill_state_labels_are_outside_store() -> None:
     runtime_source = Path("app/services/bid_runtime_state.py").read_text(encoding="utf-8")
 
     assert fill_document_label({"bidType": "商务标"}) == "商务标正文"
-    assert fill_task_label({"bidType": "技术标"}) == "调用技术标正文拼装 skill"
+    assert fill_task_label({"bidType": "技术标"}) == "组装技术标正文"
     for call in (fill_task_label, fill_document_label, default_fill_state):
         try:
             call({})
@@ -667,7 +667,7 @@ def test_bid_fill_state_labels_are_outside_store() -> None:
         else:
             raise AssertionError(f"{call.__name__} should require explicit bidType")
     assert business_state["tasks"][1]["label"] == "调用商务标正文拼装 skill"
-    assert technical_state["tasks"][1]["label"] == "调用技术标正文拼装 skill"
+    assert technical_state["tasks"][1]["label"] == "组装技术标正文"
     assert "def fill_task_label" not in store_source
     assert "def fill_document_label" not in store_source
     assert "def default_fill_tasks" not in store_source
@@ -706,7 +706,7 @@ def test_bid_fill_generation_state_rules_are_outside_store() -> None:
     assert business_running["summary"].startswith("已开始拼装商务标正文")
     assert business_running["tasks"][1]["label"] == "调用商务标正文拼装 skill"
     assert technical_running["summary"].startswith("已开始拼装技术标正文")
-    assert technical_running["tasks"][1]["label"] == "调用技术标正文拼装 skill"
+    assert technical_running["tasks"][1]["label"] == "组装技术标正文"
     assert business_saved["runDuration"] == "1分15秒"
     assert business_saved["output"]["size"] == "1.5 KB"
     assert business_saved["events"][-1]["message"] == "商务标正文拼装完成，已输出 1 个目录章节。"

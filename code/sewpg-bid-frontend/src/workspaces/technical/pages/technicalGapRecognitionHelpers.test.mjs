@@ -316,3 +316,50 @@ test('目录标签：结构项无标签，被父章覆盖的子节跟随父章',
   const confirmedChild = { id: 'C3', decision: 'fill_required', coveredByParent: 'P2', humanConfirmed: true }
   assert.equal(technicalGapTagOf(confirmedChild, [fillParent, confirmedChild]), 'ready')
 })
+
+test('父章节覆盖：目录号归一化与后代识别', () => {
+  assert.equal(technicalHelpers.technicalGapNumberKey('第3章'), '3')
+  assert.equal(technicalHelpers.technicalGapNumberKey('第十二章'), '12')
+  assert.equal(technicalHelpers.technicalGapNumberKey('5.8.2'), '5.8.2')
+
+  const chapter = { id: 'P1', number: '第3章' }
+  const items = [
+    chapter,
+    { id: 'C1', number: '3.1' },
+    { id: 'C2', number: '3.1.1' },
+    { id: 'X1', number: '4.1' },
+    // 前缀相同但不是下级：30.1 不能被「3.」误吞。
+    { id: 'X2', number: '30.1' },
+  ]
+  const descendants = technicalHelpers.technicalGapDescendants(chapter, items)
+  assert.deepEqual(descendants.map((item) => item.id), ['C1', 'C2'])
+})
+
+test('父章节覆盖：本节点没素材时不可设置，设置后可撤销', () => {
+  const items = [
+    { id: 'P1', number: '第3章' },
+    { id: 'C1', number: '3.1' },
+  ]
+  const empty = technicalHelpers.technicalGapParentCoverageState(items[0], items)
+  assert.equal(empty.descendantCount, 1)
+  assert.equal(empty.hasMaterial, false)
+  assert.equal(empty.canApply, false)
+
+  const withMaterial = [
+    { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1' }] },
+    { id: 'C1', number: '3.1' },
+  ]
+  const ready = technicalHelpers.technicalGapParentCoverageState(withMaterial[0], withMaterial)
+  assert.equal(ready.canApply, true)
+  assert.equal(ready.applied, false)
+
+  const applied = [
+    { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1' }] },
+    { id: 'C1', number: '3.1', coveredByParent: 'P1', parentCoverageSource: 'manual' },
+    // planner 自动判定的覆盖不计入人工态，不由这个按钮撤销。
+    { id: 'C2', number: '3.2', coveredByParent: 'P1' },
+  ]
+  const state = technicalHelpers.technicalGapParentCoverageState(applied[0], applied)
+  assert.equal(state.applied, true)
+  assert.equal(state.coveredCount, 1)
+})

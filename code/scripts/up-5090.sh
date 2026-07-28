@@ -170,7 +170,16 @@ fi
 if [[ "${DEPLOY_MODE}" == "online" ]]; then
   echo "Deploying Git SHA: ${CURRENT_SHA} (${RELEASE_TAG})"
   docker compose "${compose_args[@]}" pull onlyoffice postgres redis minio ocr
-  docker compose "${compose_args[@]}" build --pull web fastapi docling-worker opencode
+  build_args=()
+  if [[ "${REFRESH_BASE_IMAGES:-0}" == "1" ]]; then
+    # --pull 会重新拉取基础镜像；基础镜像一旦更新，其后所有层的缓存链整体作废，
+    # 且不可逆（本地基础镜像已被替换，事后去掉 --pull 也无法复用旧缓存）。
+    # 代理带宽劣化时这会把每次部署变成全量重建，因此默认关闭，仅在需要更新
+    # 基础镜像时显式开启，并选择网络良好的时段执行。
+    echo "REFRESH_BASE_IMAGES=1: pulling base images, expect a full rebuild."
+    build_args+=(--pull)
+  fi
+  docker compose "${compose_args[@]}" build "${build_args[@]}" web fastapi docling-worker opencode
 fi
 
 docker compose "${compose_args[@]}" up -d --no-build

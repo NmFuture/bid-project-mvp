@@ -25,6 +25,7 @@ import {
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
   technicalGenerationPresentation,
+  technicalGapParentCoverageState,
   technicalGapTagOf,
   technicalMatchScore,
   uniqueStrings,
@@ -146,6 +147,33 @@ function TechnicalGapReadyControl({ item, items, busy, onConfirmReady }) {
       variant={confirmed ? 'secondary' : 'primary'}
     >
       {confirmed ? '已就绪' : '确认'}
+    </Button>
+  )
+}
+
+// 「父章节覆盖」控件（产品需求 2026-07-27）：放在「确认」左边，只对有下级目录的节点渲染。
+// 作用是把本节点选定的素材铺给它下面的所有小节——评审时人一眼能看出「这一章就是这份
+// 素材写的」，不用逐个小节再选一遍。本节点自己没选素材时禁用（覆盖源不能是空的）。
+// 已设置后按钮切成撤销态，与「确认/已就绪」的交互一致。
+function TechnicalGapParentCoverageControl({ item, items, busy, onSetParentCoverage }) {
+  const state = technicalGapParentCoverageState(item, items)
+  if (!state.descendantCount) return null
+  const disabled = busy || (!state.applied && !state.canApply)
+  const title = state.applied
+    ? `已把 ${state.coveredCount} 个下级目录设为父章节覆盖，点击撤销`
+    : state.hasMaterial
+      ? `把下面 ${state.descendantCount} 个目录项设为由本章素材覆盖`
+      : '本章还没有选用素材，选好素材后才能设置父章节覆盖'
+  return (
+    <Button
+      type="button"
+      onClick={() => onSetParentCoverage(item, !state.applied)}
+      disabled={disabled}
+      title={title}
+      size="sm"
+      variant="secondary"
+    >
+      {state.applied ? `已覆盖下级 ${state.coveredCount}` : '父章节覆盖'}
     </Button>
   )
 }
@@ -1384,6 +1412,14 @@ export default function TechnicalGapRecognition({ showToast }) {
     (result) => result?.message || (confirmed ? '本章已确认就绪' : '已撤销就绪确认'),
   )
 
+  // 人工设「父章节覆盖」：把本节点的素材铺给全部下级目录项，可撤销。
+  // 已自行选过素材的下级由后端跳过，跳过数量在返回消息里说明。
+  const handleSetParentCoverage = (item, covered) => runAction(
+    `parent-coverage:${item.id}`,
+    () => technicalGapsAPI.setParentCoverage(id, item.id, { covered, operator: '当前用户' }),
+    (result) => result?.message || (covered ? '已设为父章节覆盖' : '已撤销父章节覆盖'),
+  )
+
   const handleSelectMaterial = async (material) => {
     const materialId = String(material?.id || material?.materialId || '').trim()
     if (!selected || !materialId) return null
@@ -1756,12 +1792,20 @@ export default function TechnicalGapRecognition({ showToast }) {
                       <div className="text-xs font-medium text-outline">{selected.number || selected.section || '-'}</div>
                       <div className="mt-1 flex items-center justify-between gap-3">
                         <h3 className="min-w-0 truncate text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
-                        <TechnicalGapReadyControl
-                          item={selected}
-                          items={items}
-                          busy={Boolean(busyAction)}
-                          onConfirmReady={handleConfirmGapReady}
-                        />
+                        <div className="flex shrink-0 items-center gap-2">
+                          <TechnicalGapParentCoverageControl
+                            item={selected}
+                            items={items}
+                            busy={Boolean(busyAction)}
+                            onSetParentCoverage={handleSetParentCoverage}
+                          />
+                          <TechnicalGapReadyControl
+                            item={selected}
+                            items={items}
+                            busy={Boolean(busyAction)}
+                            onConfirmReady={handleConfirmGapReady}
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import re
 import shutil
 from uuid import uuid4
@@ -365,3 +366,149 @@ def register_technical_existing_gap_material(
     gap_state["reviewConfirmed"] = False
     gap_state["reviewedAt"] = ""
     return {"item": item, "artifact": artifacts[0], "artifacts": artifacts, "gapPlan": plan}
+
+
+# ---------------------------------------------------------------------------
+# 人工设置「父章节覆盖」（产品需求 2026-07-27）
+#
+# planner 只在拿得出证据时才自动设整章覆盖；实际评审里人看一眼就知道「这一章选了
+# 这份素材，下面的小节都跟着它写」。这里把这个判断开放给人工：以本节点为覆盖源，
+# 把其后代目录项统一标成 covered_by_parent，可撤销。
+# ---------------------------------------------------------------------------
+
+_CHAPTER_NUMBER_RE = re.compile(r"^第\s*([一二三四五六七八九十百千万0-9]+)\s*章$")
+_CHINESE_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+# 撤销时需要还原的字段；与下方写入的字段一一对应。
+_PARENT_COVERAGE_FIELDS = (
+    "status",
+    "decision",
+    "usage",
+    "coverageRole",
+    "coveredByParent",
+    "matchedMaterials",
+    "gapReason",
+    "nextActions",
+)
+
+
+def _chinese_number_to_int(value: str) -> int | None:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    if text in _CHINESE_DIGITS:
+        return _CHINESE_DIGITS[text]
+    if text == "十":
+        return 10
+    if "十" in text:
+        left, _, right = text.partition("十")
+        tens = _CHINESE_DIGITS.get(left, 1) if left else 1
+        ones = _CHINESE_DIGITS.get(right, 0) if right else 0
+        return tens * 10 + ones
+    return None
+
+
+def technical_gap_number_key(number: Any) -> str:
+    """目录号归一化：「第3章」→「3」，其余原样；与 planner 的 toc_number_key 同口径。"""
+    text = str(number or "").strip()
+    match = _CHAPTER_NUMBER_RE.fullmatch(text)
+    if match:
+        value = _chinese_number_to_int(match.group(1))
+        return str(value) if value is not None else text
+    return text
+
+
+def technical_gap_descendant_items(items: list[dict[str, Any]], parent: dict[str, Any]) -> list[dict[str, Any]]:
+    """本节点的全部后代目录项（按目录号前缀，第3章 → 3.1 / 3.1.2 …）。"""
+    parent_key = technical_gap_number_key(parent.get("number"))
+    if not parent_key:
+        return []
+    prefix = f"{parent_key}."
+    return [
+        item
+        for item in items
+        if item is not parent and technical_gap_number_key(item.get("number")).startswith(prefix)
+    ]
+
+
+def apply_technical_gap_parent_coverage(
+    project: dict[str, Any],
+    gap_id: str,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = data or {}
+    covered = payload.get("covered", True) is not False
+    operator = str(payload.get("operator") or "当前用户")
+
+    gap_state = project.get("gap_state") or {}
+    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    parent = next((entry for entry in items if str(entry.get("id") or "") == gap_id), None)
+    if parent is None:
+        raise KeyError(gap_id)
+
+    descendants = technical_gap_descendant_items(items, parent)
+    if not descendants:
+        raise ValueError("本目录项没有下级目录，无法设置父章节覆盖。")
+
+    parent_title = str(parent.get("title") or "")
+    applied: list[str] = []
+    skipped: list[str] = []
+
+    if covered:
+        # 覆盖源必须自己先有素材，否则子节会指向一个空的父节点。
+        has_material = bool(parent.get("matchedMaterials")) or bool(parent.get("resolvedArtifacts"))
+        if not has_material:
+            raise ValueError("本章还没有选用素材，请先选好素材再设置父章节覆盖。")
+        parent_decision = str(parent.get("decision") or "ready")
+        for child in descendants:
+            # 人工已经单独选过素材的子节不动，避免一键覆盖抹掉别人的选择。
+            if child.get("resolvedArtifacts"):
+                skipped.append(str(child.get("number") or child.get("id") or ""))
+                continue
+            if not isinstance(child.get("parentCoverageBackup"), dict):
+                child["parentCoverageBackup"] = {
+                    field: copy.deepcopy(child.get(field)) for field in _PARENT_COVERAGE_FIELDS
+                }
+            child["status"] = "needs_input" if parent_decision == "fill_required" else "matched"
+            child["decision"] = parent_decision
+            child["usage"] = "covered_by_parent"
+            child["coverageRole"] = "covered_by_parent"
+            child["coveredByParent"] = gap_id
+            child["matchedMaterials"] = []
+            child["gapReason"] = f"已由父章节“{parent_title}”整章素材覆盖。"
+            child["nextActions"] = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
+            child["parentCoverageSource"] = "manual"
+            child.setdefault("reviewNotes", []).append(f"人工设为父章节覆盖（{parent_title}）：{operator}")
+            applied.append(str(child.get("number") or child.get("id") or ""))
+    else:
+        for child in descendants:
+            if str(child.get("coveredByParent") or "") != gap_id:
+                continue
+            if str(child.get("parentCoverageSource") or "") != "manual":
+                # planner 自动判定的覆盖不由这个按钮撤销，避免和识别结果打架。
+                skipped.append(str(child.get("number") or child.get("id") or ""))
+                continue
+            backup = child.get("parentCoverageBackup")
+            if isinstance(backup, dict):
+                for field in _PARENT_COVERAGE_FIELDS:
+                    child[field] = copy.deepcopy(backup.get(field))
+            child.pop("parentCoverageBackup", None)
+            child.pop("parentCoverageSource", None)
+            child.setdefault("reviewNotes", []).append(f"撤销父章节覆盖（{parent_title}）：{operator}")
+            applied.append(str(child.get("number") or child.get("id") or ""))
+
+    parent["parentCoverageApplied"] = covered and bool(applied)
+    updated_at = now_iso()
+    plan["updatedAt"] = updated_at
+    plan["summary"] = summarize_technical_gap_plan(plan)
+    gap_state["plan"] = plan
+    gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
+    gap_state["submittedForReview"] = False
+    gap_state["reviewConfirmed"] = False
+    gap_state["reviewedAt"] = ""
+    return {
+        "item": parent,
+        "applied": applied,
+        "skipped": skipped,
+        "gapPlan": plan,
+    }

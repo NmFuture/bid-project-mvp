@@ -88,6 +88,38 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertNotIn("needs_review.md", technical_prompt)
         self.assertIn("business_format_clean_report.md", business_prompt)
 
+    def test_constructor_uses_supplied_model_config_without_loading_system_settings(self) -> None:
+        model_config = _db_llm_config(
+            opencodeBaseUrl="http://configured-opencode:4096",
+            providerId="configured-provider",
+            modelId="configured-model",
+            timeoutMs=45000,
+        )
+
+        with patch(
+            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync"
+        ) as load_config:
+            client = OpencodeClient(model_config=model_config)
+
+        load_config.assert_not_called()
+        self.assertEqual(client.base_url, "http://configured-opencode:4096")
+        self.assertEqual(client.provider_id, "configured-provider")
+        self.assertEqual(client.model_id, "configured-model")
+        self.assertEqual(client.timeout.read, 45.0)
+
+    def test_constructor_falls_back_when_supplied_model_config_is_inactive(self) -> None:
+        model_config = _db_llm_config(enabled=False)
+
+        with patch(
+            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync"
+        ) as load_config:
+            client = OpencodeClient(model_config=model_config)
+
+        load_config.assert_not_called()
+        self.assertEqual(client.base_url, settings.opencode_base_url.rstrip("/"))
+        self.assertEqual(client.provider_id, settings.opencode_provider_id)
+        self.assertEqual(client.model_id, settings.opencode_model_id)
+
     def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
         client = OpencodeClient()
         request = httpx.Request("POST", "http://opencode:4096/session")
@@ -344,6 +376,192 @@ class OpencodeClientTests(unittest.TestCase):
         send_prompt.assert_called_once()
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "")
         self.assertEqual(result["schema_version"], "bid-toc-json-v1")
+
+    def test_run_outline_decision_session_uses_persisted_chapter_completion(self) -> None:
+        client = OpencodeClient()
+        validator = MagicMock(return_value={"complete": True, "decidedCount": 18})
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-chapter-1"}),
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={"parts": [{"type": "text", "text": "done"}]},
+            ) as send_prompt,
+            patch.object(
+                client,
+                "_build_output_trace",
+                return_value={"status": "received", "sessionId": "ses-chapter-1"},
+            ),
+        ):
+            result = client.run_outline_decision_session(
+                "chapter prompt",
+                session_title="S2 目录决策·第一章",
+                completion_validator=validator,
+            )
+
+        self.assertEqual(result["sessionId"], "ses-chapter-1")
+        self.assertTrue(result["state"]["complete"])
+        self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "")
+        self.assertTrue(callable(send_prompt.call_args.kwargs["assistant_stop_validator"]))
+
+    def test_generate_outline_with_trace_uses_fresh_sessions_for_bounded_handoffs(self) -> None:
+        client = OpencodeClient()
+        final_response = {
+            "parts": [
+                {
+                    "type": "text",
+                    "text": (
+                        '{"schema_version":"bid-toc-json-v1",'
+                        '"summary":{"total_items":1},'
+                        '"items":[{"title":"技术方案"}]}'
+                    ),
+                }
+            ]
+        }
+
+        with (
+            patch.object(
+                client,
+                "create_session",
+                side_effect=[
+                    {"id": "ses-checkpoint-1"},
+                    {"id": "ses-checkpoint-2"},
+                    {"id": "ses-final"},
+                ],
+            ) as create_session,
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                side_effect=[
+                    {"parts": [{"type": "text", "text": '{"checkpoint":1}'}]},
+                    {"parts": [{"type": "text", "text": '{"checkpoint":2}'}]},
+                    final_response,
+                ],
+            ) as send_prompt,
+            patch.object(
+                client,
+                "_build_output_trace",
+                return_value={"status": "received", "sessionId": "ses-final"},
+            ),
+        ):
+            result = client.generate_outline_with_trace(
+                "final prompt",
+                early_tool_command="s2outline-finalize",
+                handoff_prompt_factory=lambda index: f"checkpoint prompt {index}",
+                handoff_state_callback=MagicMock(
+                    side_effect=[
+                        {"complete": False, "decidedCount": 6},
+                        {"complete": True, "decidedCount": 10},
+                    ]
+                ),
+            )
+
+        self.assertEqual(create_session.call_count, 3)
+        self.assertEqual(
+            [call.args[1] for call in send_prompt.call_args_list],
+            ["checkpoint prompt 1", "checkpoint prompt 2", "final prompt"],
+        )
+        self.assertEqual(
+            [call.kwargs["early_tool_command"] for call in send_prompt.call_args_list],
+            ["s2outline-decision-batch", "s2outline-decision-batch", "s2outline-finalize"],
+        )
+        self.assertEqual(
+            result["opencodeOutput"]["sessionIds"],
+            ["ses-checkpoint-1", "ses-checkpoint-2", "ses-final"],
+        )
+        self.assertEqual(result["opencodeOutput"]["handoffSessionCount"], 2)
+
+    def test_assistant_stop_validator_releases_a_completed_handoff_request(self) -> None:
+        client = OpencodeClient()
+        release_worker = threading.Event()
+        stopped_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-checkpoint", "finish": "stop"},
+                "parts": [
+                    {
+                        "type": "text",
+                        "text": '{"workflowStage":"decision_checkpoint"}',
+                    }
+                ],
+            }
+        ]
+
+        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+            release_worker.wait(timeout=5)
+            return {"parts": []}
+
+        def abort_session(_session_id: str) -> bool:
+            release_worker.set()
+            return True
+
+        validator = MagicMock(return_value={"complete": False, "decidedCount": 57})
+        with (
+            patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+            patch.object(client, "list_session_messages", return_value=stopped_messages),
+            patch.object(client, "abort_session", side_effect=abort_session) as abort,
+        ):
+            response = client._send_prompt_with_session_polling(
+                "ses-checkpoint",
+                "prompt",
+                stream_callback=MagicMock(),
+                assistant_stop_validator=validator,
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "assistant-stop-validator")
+        self.assertEqual(response["_assistantStopValidation"]["decidedCount"], 57)
+        validator.assert_called_once_with()
+        abort.assert_called_once_with("ses-checkpoint")
+
+    def test_handoff_stops_after_first_completed_decision_batch(self) -> None:
+        client = OpencodeClient()
+        release_worker = threading.Event()
+        decision_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-decision"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": (
+                                    "s2outline decision-batch /data/documents/PRJ/s2_input.json "
+                                    "'{\"batch_token\":\"batch-1\",\"items\":[]}'"
+                                )
+                            },
+                            "exit": 0,
+                            "output": '{"complete":false,"decided_count":29}',
+                        },
+                    }
+                ],
+            }
+        ]
+
+        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+            release_worker.wait(timeout=5)
+            return {"parts": []}
+
+        def abort_session(_session_id: str) -> bool:
+            release_worker.set()
+            return True
+
+        with (
+            patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+            patch.object(client, "list_session_messages", return_value=decision_messages),
+            patch.object(client, "abort_session", side_effect=abort_session) as abort,
+        ):
+            response = client._send_prompt_with_session_polling(
+                "ses-checkpoint",
+                "prompt",
+                stream_callback=MagicMock(),
+                early_tool_command="s2outline-decision-batch",
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s2outline-decision-batch")
+        abort.assert_called_once_with("ses-checkpoint")
 
     def test_s2_outline_finalize_tool_output_is_terminal(self) -> None:
         final_output = (
@@ -1444,6 +1662,137 @@ class OpencodeClientTests(unittest.TestCase):
                 self.assertEqual(response["_completionSource"], "s2outline-terminal-validator")
                 self.assertIn('"workflowStage": "finalized"', response["parts"][0]["text"])
                 abort_session_mock.assert_called_once_with("ses-s2-stopped")
+
+    def test_s2_outline_finalize_tool_stops_before_assistant_finishes(self) -> None:
+        client = OpencodeClient()
+        finalized_payload = {
+            "schema_version": "technical-outline.v1",
+            "outputFile": "/data/documents/PRJ/toc.json",
+            "summary": {"total_nodes": 64, "workflowStage": "finalized"},
+        }
+        finalized_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-finalize", "finish": "tool-calls"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": "s2outline finalize /data/documents/PRJ/s2_input.json"
+                            },
+                            "exit": 0,
+                            "output": json.dumps(finalized_payload),
+                        },
+                    }
+                ],
+            }
+        ]
+
+        with (
+            patch.object(client, "list_session_messages", return_value=finalized_messages),
+            patch.object(client, "_stop_s2_outline_session_after_finalize") as stop_session,
+        ):
+            response = client._wait_for_s2_outline_finalize_after_prompt_return(
+                session_id="ses-s2-finalized",
+                idle_timeout=0.01,
+                stream_callback=None,
+                terminal_validator=lambda: finalized_payload,
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s2outline-terminal-validator")
+        stop_session.assert_called_once_with("ses-s2-finalized")
+
+    def test_s2_outline_combined_finalize_tool_stops_before_assistant_finishes(self) -> None:
+        client = OpencodeClient()
+        finalized_payload = {
+            "schema_version": "technical-outline.v1",
+            "outputFile": "/data/documents/PRJ/toc.json",
+            "summary": {"total_nodes": 270, "workflowStage": "finalized"},
+        }
+        finalized_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-finalize", "finish": "tool-calls"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": (
+                                    "s2outline section /data/documents/PRJ/s2_input.json TEN-2:S0279 "
+                                    "--max-chars 30000 && "
+                                    "s2outline finalize /data/documents/PRJ/s2_input.json"
+                                )
+                            },
+                            "exit": 0,
+                            "output": "...output truncated...",
+                        },
+                    }
+                ],
+            }
+        ]
+
+        with (
+            patch.object(client, "list_session_messages", return_value=finalized_messages),
+            patch.object(client, "_stop_s2_outline_session_after_finalize") as stop_session,
+        ):
+            response = client._wait_for_s2_outline_finalize_after_prompt_return(
+                session_id="ses-s2-combined-finalize",
+                idle_timeout=0.01,
+                stream_callback=None,
+                terminal_validator=lambda: finalized_payload,
+            )
+
+        self.assertTrue(response["_earlyCompletion"])
+        self.assertEqual(response["_completionSource"], "s2outline-terminal-validator")
+        stop_session.assert_called_once_with("ses-s2-combined-finalize")
+
+    def test_s2_outline_terminal_validator_runs_once_per_finalize_tool_call(self) -> None:
+        client = OpencodeClient()
+        failed_finalize_messages = [
+            {
+                "info": {"role": "assistant", "id": "msg-failed-finalize", "finish": "tool-calls"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "command": "s2outline finalize /data/documents/PRJ/s2_input.json"
+                            },
+                            "exit": 0,
+                            "output": "evidenceId not authorized",
+                        },
+                    }
+                ],
+            }
+        ]
+        validator_calls = 0
+
+        def invalid_terminal_output() -> dict:
+            nonlocal validator_calls
+            validator_calls += 1
+            raise RuntimeError("not finalized")
+
+        with (
+            patch.object(client, "list_session_messages", return_value=failed_finalize_messages),
+            patch.object(client, "_raise_s2_outline_finalize_opencode_stalled", return_value=None),
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            response = client._wait_for_s2_outline_finalize_after_prompt_return(
+                session_id="ses-s2-failed-finalize",
+                idle_timeout=0.01,
+                stream_callback=None,
+                terminal_validator=invalid_terminal_output,
+            )
+
+        self.assertIsNone(response)
+        self.assertEqual(validator_calls, 1)
 
     def test_s2_outline_stopped_session_releases_prompt_when_terminal_validation_fails(self) -> None:
         client = OpencodeClient()

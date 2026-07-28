@@ -47,8 +47,8 @@ def _generation_context(bid_type: str) -> dict[str, str]:
         }
     return {
         "bidType": TECHNICAL_BID_TYPE,
-        "skill": "bid-tech-assembler",
-        "taskLabel": "调用技术标正文拼装 skill",
+        "skill": "",
+        "taskLabel": "组装技术标正文",
         "documentLabel": "技术标正文",
         "actionLabel": "技术标正文拼装",
     }
@@ -126,8 +126,9 @@ def _fail_fill_generation(project_id: str, message: str, tasks: list[dict[str, A
 
 def _fill_tasks(step1: str, step2: str, step3: str, bid_type: str = "") -> list[dict[str, Any]]:
     ctx = _generation_context(bid_type) if bid_type else {"taskLabel": "调用正文拼装 skill"}
+    input_label = "准备目录与已选素材" if bid_type == TECHNICAL_BID_TYPE else "准备 S2 目录、Wiki 与素材库"
     return [
-        {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": step1},
+        {"id": "task-1", "label": input_label, "status": step1},
         {"id": "task-2", "label": ctx["taskLabel"], "status": step2},
         {"id": "task-3", "label": "写入并规范化 Word 正文", "status": step3},
     ]
@@ -251,6 +252,18 @@ def _handle_fill_progress(
     meta = details or {}
     ctx = _generation_context(bid_type)
     if stage == "inputs_ready":
+        if bid_type == TECHNICAL_BID_TYPE:
+            selected_material_count = int(meta.get("selectedMaterialCount") or 0)
+            available_material_count = int(meta.get("exportedMaterialCount") or 0)
+            _update_fill_generation(
+                project_id,
+                percentage=30,
+                summary=f"已准备目录与已选素材（已选 {selected_material_count} 份，可装配 {available_material_count} 份），正在组装技术标正文。",
+                tasks=_fill_tasks("done", "running", "pending", bid_type),
+                event_message=f"输入准备完成：已选素材 {selected_material_count} 份，可装配素材 {available_material_count} 份。",
+                event_step="inputs_ready",
+            )
+            return
         wiki_card_count = int(meta.get("wikiCardCount") or 0)
         exported_material_count = int(meta.get("exportedMaterialCount") or 0)
         synthesized_material_card_count = int(meta.get("synthesizedMaterialCardCount") or 0)
@@ -267,6 +280,25 @@ def _handle_fill_progress(
     if stage == "calling_assembler":
         manifest_path = str(meta.get("manifestPath") or "")
         work_dir = str(meta.get("workDir") or "")
+        if bid_type == TECHNICAL_BID_TYPE:
+            _update_fill_generation(
+                project_id,
+                percentage=60,
+                summary="正在按已确认目录和素材组装技术标正文，请稍候。",
+                tasks=_fill_tasks("done", "running", "pending", bid_type),
+                event_message="已进入技术标正文组装阶段，正在匹配素材并写入 Word。",
+                event_step="assembly_waiting",
+                opencode_output={
+                    "execution": {
+                        "engine": "python",
+                        "pipeline": "technical-document-assembly-cleaning",
+                        "stage": "assembly",
+                        "status": "running",
+                        "artifacts": {"manifestPath": manifest_path, "workDir": work_dir},
+                    }
+                },
+            )
+            return
         _update_fill_generation(
             project_id,
             percentage=60,
@@ -357,6 +389,25 @@ def _handle_fill_progress(
             meta.get("skill")
             or ("bid-business-format-cleaner" if ctx["bidType"] == BUSINESS_BID_TYPE else "bid-tech-format-cleaner")
         )
+        if bid_type == TECHNICAL_BID_TYPE:
+            _update_fill_generation(
+                project_id,
+                percentage=90,
+                summary="技术标正文已组装完成，正在规范化 Word 格式。",
+                tasks=_fill_tasks("done", "done", "running", bid_type),
+                event_message="已进入技术标正文格式规范化阶段，正在统一标题、目录、页眉和分页。",
+                event_step="format_cleaning",
+                opencode_output={
+                    "execution": {
+                        "engine": "python",
+                        "pipeline": "technical-document-assembly-cleaning",
+                        "stage": "formatting",
+                        "status": "running",
+                        "artifacts": {"manifestPath": manifest_path},
+                    }
+                },
+            )
+            return
         _update_fill_generation(
             project_id,
             percentage=90,
@@ -433,9 +484,9 @@ def _handle_fill_progress(
         _update_fill_generation(
             project_id,
             percentage=94,
-            summary=f"{ctx['documentLabel']}格式规范化失败，系统将保留正文拼装原稿继续输出。",
+            summary=f"{ctx['documentLabel']}格式规范化失败，系统正在生成可交付降级稿。" if bid_type == TECHNICAL_BID_TYPE else f"{ctx['documentLabel']}格式规范化失败，系统将保留正文拼装原稿继续输出。",
             tasks=_fill_tasks("done", "done", "running", bid_type),
-            event_message=f"{ctx['documentLabel']}格式规范化失败，已降级使用未格式化正文：{meta.get('error') or '未知错误'}",
+            event_message=f"{ctx['documentLabel']}格式规范化失败，已生成降级稿：{meta.get('error') or '未知错误'}" if bid_type == TECHNICAL_BID_TYPE else f"{ctx['documentLabel']}格式规范化失败，已降级使用未格式化正文：{meta.get('error') or '未知错误'}",
             event_level="warning",
             event_step="format_failed",
         )

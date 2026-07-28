@@ -8,6 +8,8 @@ from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 
 def fill_task_label(project: dict[str, Any]) -> str:
     bid_type = _project_bid_type(project)
+    if bid_type == TECHNICAL_BID_TYPE:
+        return "组装技术标正文"
     return f"调用{bid_type}正文拼装 skill"
 
 
@@ -17,8 +19,9 @@ def fill_document_label(project: dict[str, Any]) -> str:
 
 
 def default_fill_tasks(project: dict[str, Any]) -> list[dict[str, Any]]:
+    input_label = "准备目录与已选素材" if _project_bid_type(project) == TECHNICAL_BID_TYPE else "准备 S2 目录、Wiki 与素材库"
     return [
-        {"id": "task-1", "label": "准备 S2 目录、Wiki 与素材库", "status": "pending"},
+        {"id": "task-1", "label": input_label, "status": "pending"},
         {"id": "task-2", "label": fill_task_label(project), "status": "pending"},
         {"id": "task-3", "label": "写入 Word 正文", "status": "pending"},
     ]
