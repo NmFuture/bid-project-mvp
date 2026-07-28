@@ -25,12 +25,12 @@ from app.services.technical_wiki_preview_prompt import (
     parse_batch_preview_reply,
     parse_preview_reply,
 )
-from app.services.wiki_blueprint_common import MAX_CARD_HEADINGS, MAX_SYNC_DOCX_BYTES, extract_docx_profile
+from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx_profile
 
 logger = logging.getLogger(__name__)
 
 PREVIEW_EXT_FIELD = "techWikiPreview"
-PREVIEW_CONCURRENCY = 4
+PREVIEW_CONCURRENCY = 8
 LOCAL_FALLBACK_POINT_LIMIT = 5
 # 同一文件 LLM 预览连续失败达到上限后，fallback 置为终态（retryable=False），
 # 避免 LLM 持续不可用时每次刷新都对同一批节点重打 LLM、标签永远卡在「待重试」。
@@ -53,7 +53,7 @@ def _preview_signature(name: str, profile: dict[str, Any], folder_path: str = ""
         "schema": PREVIEW_SCHEMA_VERSION,
         "name": str(name or ""),
         "folderPath": str(folder_path or ""),
-        "headings": [str(h.get("title") or "") for h in (profile.get("headings") or [])[:MAX_CARD_HEADINGS]],
+        "headings": [str(h.get("title") or "") for h in (profile.get("headings") or [])],
         "paragraphs": list(profile.get("paragraphs") or []),
         "tableCount": int(profile.get("tableCount") or 0),
     }

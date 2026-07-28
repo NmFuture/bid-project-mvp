@@ -46,7 +46,6 @@ from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 from app.services.wiki_blueprint_common import (
-    MAX_CARD_EXCERPT_PARAGRAPHS,
     MAX_SYNC_DOCX_BYTES,
     extract_docx_profile as _extract_docx_profile,
     format_heading_tree as _format_heading_tree,
@@ -60,10 +59,10 @@ from app.services.wiki_blueprint_common import (
 DEFAULT_REFERENCE_WIKI_PATH = Path(
     "/Users/anbocheng/Desktop/20260412_技术标/20260413_技术标_组织优化/素材库-20260413-wlb-clean-wiki/wiki"
 )
-MAX_EXCERPT_CHARS = 5000
 BUSINESS_WIKI_OCR_VERSION = 1
-BUSINESS_WIKI_OCR_TEXT_LIMIT = 12000
-BUSINESS_WIKI_DOCX_IMAGE_LIMIT = 12
+# 商务标 Wiki 素材 OCR 并发度：单素材失败已在 _ensure_business_wiki_ocr_cache 内部隔离，
+# 这里只控制同时进行 OCR 的素材数量，风格对齐技术标 PREVIEW_CONCURRENCY。
+BUSINESS_WIKI_OCR_CONCURRENCY = 8
 OCR_IMAGE_EXTS = {item.lstrip(".") for item in IMAGE_SUFFIXES}
 OCR_SOURCE_EXTS = OCR_IMAGE_EXTS | {"pdf"}
 
@@ -74,13 +73,11 @@ BUSINESS_WIKI_RUNNER = (
 BUSINESS_WIKI_ROOT_TITLE = f"{BUSINESS_BID_TYPE}Wiki（自动生成）"
 
 
-def _read_excerpt(path: Path, limit: int = MAX_EXCERPT_CHARS) -> str:
+def _read_excerpt(path: Path) -> str:
     if not path.exists():
         return ""
-    text = path.read_text(encoding="utf-8").strip()
-    if len(text) <= limit:
-        return text
-    return f"{text[: limit - 3]}\n..."
+    # 全量读取：index/rules/synonyms/skeleton 是 Wiki 蓝图生成的核心参考，不再截断。
+    return path.read_text(encoding="utf-8").strip()
 
 
 def _summarize_reference_wiki(reference_root: Path) -> dict[str, Any]:
@@ -153,7 +150,6 @@ def _classify_business_group(folder_path: str, file_name: str) -> str:
     return "商务通用"
 
 
-MAX_INDEX_ITEMS = 260
 TECH_CARD_GROUP_ORDER = [
     "标前概述",
     "投标函件",
@@ -215,7 +211,7 @@ def _material_bid_type(folder_path: str, file_name: str, folder_bid_type: str = 
     return GENERAL_BID_TYPE
 
 
-def _docx_embedded_images(data: bytes, limit: int = BUSINESS_WIKI_DOCX_IMAGE_LIMIT) -> list[dict[str, Any]]:
+def _docx_embedded_images(data: bytes) -> list[dict[str, Any]]:
     images: list[dict[str, Any]] = []
     try:
         with zipfile.ZipFile(BytesIO(data)) as archive:
@@ -225,6 +221,7 @@ def _docx_embedded_images(data: bytes, limit: int = BUSINESS_WIKI_DOCX_IMAGE_LIM
                 suffix = Path(name).suffix.lower()
                 if suffix.lstrip(".") not in OCR_IMAGE_EXTS:
                     continue
+                # 内嵌图片全量 OCR，不再只取前 N 张。
                 images.append(
                     {
                         "name": name,
@@ -233,8 +230,6 @@ def _docx_embedded_images(data: bytes, limit: int = BUSINESS_WIKI_DOCX_IMAGE_LIM
                         "content": archive.read(name),
                     }
                 )
-                if len(images) >= limit:
-                    break
     except Exception:
         return []
     return images
@@ -260,11 +255,10 @@ def _ocr_cache_is_fresh(payload: dict[str, Any], signature: dict[str, Any]) -> b
     )
 
 
-def _truncate_ocr_text(text: str, limit: int = BUSINESS_WIKI_OCR_TEXT_LIMIT) -> str:
-    value = str(text or "").strip()
-    if len(value) <= limit:
-        return value
-    return f"{value[:limit]}\n...[OCR文本已截断]"
+def _truncate_ocr_text(text: str) -> str:
+    # OCR 文本全量入库（ext_fields.businessWikiOcr / profile.ocrText），不再截断；
+    # 保留函数入口统一做空值归一化，避免调用方散落 str() 处理。
+    return str(text or "").strip()
 
 
 def _candidate_ocr_fields(text: str) -> dict[str, Any]:
@@ -430,9 +424,10 @@ def _apply_business_wiki_ocr_to_profile(profile: dict[str, Any], ocr_payload: di
         profile["ocrText"] = text
         profile.setdefault("paragraphs", [])
         existing = {str(item) for item in profile["paragraphs"]}
-        for line in [line.strip() for line in text.splitlines() if line.strip()][:MAX_CARD_EXCERPT_PARAGRAPHS]:
+        for line in [line.strip() for line in text.splitlines() if line.strip()]:
             if line not in existing:
-                profile["paragraphs"].append(line[:260])
+                # OCR 行全量并入段落，不截断单行长度。
+                profile["paragraphs"].append(line)
                 existing.add(line)
         profile["parseError"] = "" if profile.get("sourceExt") in OCR_SOURCE_EXTS else str(profile.get("parseError") or "")
     profile["ocrStatus"] = str(ocr_payload.get("status") or "")
@@ -476,7 +471,7 @@ def _infer_skeleton_section(material: dict[str, Any]) -> str:
 
 def _keyword_candidates(material: dict[str, Any]) -> list[str]:
     title = str(material.get("title") or "")
-    text = f"{title} " + " ".join(str(item.get("title") or "") for item in material.get("headings") or [])[:800]
+    text = f"{title} " + " ".join(str(item.get("title") or "") for item in material.get("headings") or [])
     keywords: list[str] = []
     domain_terms = [
         "风资源",
@@ -697,19 +692,29 @@ async def _summarize_material_inventory() -> dict[str, Any]:
             .options(selectinload(RawFile.folder))
         )
         files = result.scalars().all()
-        ocr_dirty = False
+        business_materials: list[tuple[RawFile, dict[str, Any]]] = []
         for item in files:
             material = _profile_raw_file(item)
             if material.get("bidType") == BUSINESS_BID_TYPE:
-                ocr_payload = await _ensure_business_wiki_ocr_cache(item, material)
-                _apply_business_wiki_ocr_to_profile(material, ocr_payload)
-                ocr_dirty = True
+                business_materials.append((item, material))
             items.append(material)
             groups.setdefault(f"{material['bidType']}/{material['scope']}/{material['group']}", []).append(material["name"])
             if material["scope"] == "定制":
                 custom_items.append(material["name"])
             if material["ext"] == "docx" and not material.get("parseError"):
                 parsed_count += 1
+        ocr_dirty = bool(business_materials)
+        if business_materials:
+            # 并发执行 OCR；单素材失败已在 _ensure_business_wiki_ocr_cache 内部转成
+            # failed 缓存并继续，不阻断其他素材。
+            semaphore = asyncio.Semaphore(BUSINESS_WIKI_OCR_CONCURRENCY)
+
+            async def _apply_ocr(item: RawFile, material: dict[str, Any]) -> None:
+                async with semaphore:
+                    ocr_payload = await _ensure_business_wiki_ocr_cache(item, material)
+                _apply_business_wiki_ocr_to_profile(material, ocr_payload)
+
+            await asyncio.gather(*[_apply_ocr(item, material) for item, material in business_materials])
         # 仅在确有 OCR 缓存写回时提交，避免无谓写库。
         if ocr_dirty:
             await session.commit()
@@ -719,8 +724,8 @@ async def _summarize_material_inventory() -> dict[str, Any]:
         "docxTotal": sum(1 for item in items if item["ext"] == "docx"),
         "parsedDocxTotal": parsed_count,
         "groups": {key: sorted(value) for key, value in sorted(groups.items())},
-        "items": sorted(items, key=lambda item: (item["scope"], item["group"], item["name"]))[:MAX_INDEX_ITEMS],
-        "customItems": sorted(custom_items)[:120],
+        "items": sorted(items, key=lambda item: (item["scope"], item["group"], item["name"])),
+        "customItems": sorted(custom_items),
     }
 
 
@@ -745,7 +750,7 @@ def _filter_inventory_for_bid_type(inventory: dict[str, Any], bid_type: str) -> 
         "parsedDocxTotal": parsed_count,
         "groups": {key: sorted(value) for key, value in sorted(groups.items())},
         "items": sorted(materials, key=lambda item: (str(item.get("scope")), str(item.get("group")), str(item.get("name")))),
-        "customItems": sorted(custom_items)[:120],
+        "customItems": sorted(custom_items),
         "sourceInventoryTotal": inventory.get("total", 0),
         "bidType": bid_type,
     }
@@ -799,9 +804,10 @@ def _compact_material_for_manifest(material: dict[str, Any]) -> dict[str, Any]:
         "components",
     ]
     compact = {key: material.get(key) for key in keys if key in material}
-    compact["headings"] = list(material.get("headings") or [])[:12]
-    compact["paragraphs"] = list(material.get("paragraphs") or [])[:4]
-    compact["tables"] = list(material.get("tables") or [])[:2]
+    # manifest 压缩层已放开：headings/paragraphs/tables 全量喂给 Wiki 构建 skill。
+    compact["headings"] = list(material.get("headings") or [])
+    compact["paragraphs"] = list(material.get("paragraphs") or [])
+    compact["tables"] = list(material.get("tables") or [])
     return compact
 
 
@@ -923,7 +929,7 @@ def _render_material_card(material: dict[str, Any]) -> str:
         f"- identity_display: {material.get('identityDisplay') or ''}",
         "",
         "## 该填进什么章节",
-        f"- 主关键词：{'、'.join(str(item) for item in keywords[:6])}",
+        f"- 主关键词：{'、'.join(str(item) for item in keywords)}",
         f"- 典型父章节：{skeleton_section}",
         f"- 推荐用途：作为“{skeleton_section}”章节的正文素材、表格依据或技术附件说明。",
         "",
@@ -939,7 +945,8 @@ def _render_material_card(material: dict[str, Any]) -> str:
     ]
 
     if paragraphs:
-        for item in paragraphs[:MAX_CARD_EXCERPT_PARAGRAPHS]:
+        # 段落已全量读取，卡片正文同样全量写入，不再只取前 N 段。
+        for item in paragraphs:
             lines.append(f"- {item}")
     elif parse_error:
         lines.append(f"- {parse_error}")
@@ -948,14 +955,15 @@ def _render_material_card(material: dict[str, Any]) -> str:
 
     if tables:
         lines.extend(["", "## 表格预览（来自原始 docx）"])
-        for item in tables[:4]:
+        # 表格全量写入卡片正文，不再只取前 N 张。
+        for item in tables:
             lines.append(f"- {item}")
 
     lines.extend(
         [
             "",
             "## 适用条件",
-            f"- 触发条件：目录或评分点命中“{' / '.join(str(item) for item in keywords[:4])}”时优先引用。",
+            f"- 触发条件：目录或评分点命中“{' / '.join(str(item) for item in keywords)}”时优先引用。",
             "- 项目素材优先级高于通用素材；同章节同时命中时采用 override / append / reference 规则裁决。",
             "- 若招标文件要求明确技术响应、计算依据或附件证明，应保留原始 docx 作为证据来源。",
             "",

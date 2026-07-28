@@ -639,17 +639,23 @@ def _progress_callback(service: "BidParseService", project_id: str):
             phase_percent = _progress_ratio(current, total)
             is_pdf = document_kind == "pdf"
             phase_label = "PDF 处理中" if is_pdf else "Word 处理中"
-            summary = (
-                f"PDF 页面与表格解析完成，已提取约 {payload.get('textLength', 0)} 字。"
-                if is_pdf
-                else f"Word 正文读取完成，已提取约 {payload.get('textLength', 0)} 字。"
-            )
+            file_failed = bool(payload.get("failed"))
+            if file_failed:
+                # 单文件失败隔离：失败在进度里显式可见，整批解析继续。
+                summary = f"{payload.get('fileName', '招标文件')} 解析失败：{payload.get('error') or '未知错误'}，已跳过并继续解析其余文件。"
+            else:
+                summary = (
+                    f"PDF 页面与表格解析完成，已提取约 {payload.get('textLength', 0)} 字。"
+                    if is_pdf
+                    else f"Word 正文读取完成，已提取约 {payload.get('textLength', 0)} 字。"
+                )
             service.update_parse_progress(
                 project_id,
                 percentage=_technical_phase_progress(document_kind, "extract", phase_percent),
                 summary=summary,
                 event_step="extract",
-                event_message=f"{payload.get('fileName', '招标文件')} 已提取 {payload.get('textLength', 0)} 字。",
+                event_level="warning" if file_failed else "info",
+                event_message=summary,
                 phase_key="extract",
                 phase_label=phase_label,
                 phase_percent=phase_percent,
@@ -2072,21 +2078,30 @@ class BidParseService:
         summary: dict[str, Any] | None = None,
     ) -> None:
         extracted_count = 0
+        failed_names: list[str] = []
         if isinstance(summary, dict):
             extracted_count = int(summary.get("extractedCount") or 0)
+            failed_names = [
+                str(item.get("name") or "")
+                for item in summary.get("failedDocuments") or []
+                if isinstance(item, dict) and str(item.get("name") or "")
+            ]
         if not extracted_count and isinstance(parse_result.get("items"), list):
             extracted_count = len(parse_result.get("items") or [])
+        # 部分文件解析失败时，完成提示中显式列出，避免用户误以为全部成功。
+        failed_suffix = f"；{len(failed_names)} 个文件解析失败（{'、'.join(failed_names[:3])}{' 等' if len(failed_names) > 3 else ''}），结果仅基于成功文件" if failed_names else ""
+        finish_message = f"解析完成，提取 {extracted_count} 条结构化要求{failed_suffix}。"
         current_progress = self.parse_progress(project_id)
         current_trace = current_progress.get("opencodeOutput") if isinstance(current_progress, dict) else {}
         self.update_parse_progress(
             project_id,
             status="completed",
             percentage=100,
-            summary=f"解析完成，提取 {extracted_count} 条结构化要求。",
+            summary=finish_message,
             opencode_output=_completed_opencode_output(_parse_result_opencode_output(parse_result) or current_trace),
             event_step="complete",
-            event_level="success",
-            event_message=f"解析完成，提取 {extracted_count} 条结构化要求。",
+            event_level="warning" if failed_names else "success",
+            event_message=finish_message,
             phase_key="complete",
             phase_label="解析完成",
             phase_percent=100,
@@ -2294,8 +2309,9 @@ class BidParseService:
                         phase_label="等待自动重试",
                         stale_after_seconds=int(delay) + 300,
                     )
-                    # 重试等待会阻塞当前 worker/本地线程；现有执行模型按 opencode 并发=1
-                    # 本来就是全局串行，短暂阻塞可接受。
+                    # 重试等待会阻塞当前 worker/本地线程；opencode 请求并发默认 8
+                    # （settings.opencode_max_concurrency），单项目的解析任务本身串行执行，
+                    # 短暂阻塞只影响本项目，可接受。
                     time.sleep(delay)
                     continue
                 self._fail_parse_progress(project_id, exc)

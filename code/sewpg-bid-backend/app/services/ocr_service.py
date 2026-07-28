@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 UNLIMITED_OCR_MODEL_MARKER = "unlimited-ocr"
 
-_OCR_MAX_CONCURRENT = 3
+_OCR_MAX_CONCURRENT = 8
 _OCR_MAX_RETRIES = 2
 _OCR_WORKER_IDLE_SLEEP = 1.0
 _OCR_WAIT_POLL_INTERVAL = 0.5
