@@ -45,3 +45,6 @@ code/测试文档/
 
 qa/logs/
 code/qa/logs/
+
+# 预置 wheel（体积大，只在目标主机本地存放）
+code/sewpg-bid-backend/wheels/*.whl

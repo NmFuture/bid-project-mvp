@@ -36,7 +36,7 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
-      OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096,http://opencode-2:4096,http://opencode-3:4096,http://opencode-4:4096,http://opencode-5:4096,http://opencode-6:4096}
+      OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
       OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
@@ -120,7 +120,7 @@ services:
       OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-http://opencode:4096}
       OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-deepseek}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
-      OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096,http://opencode-2:4096,http://opencode-3:4096,http://opencode-4:4096,http://opencode-5:4096,http://opencode-6:4096}
+      OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
       OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
@@ -305,6 +305,7 @@ services:
   opencode-2:
     <<: *opencode-service
     container_name: sewpg_bid_opencode_2
+    profiles: ["opencode-multi"]
     ports: []
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
@@ -317,6 +318,7 @@ services:
   opencode-3:
     <<: *opencode-service
     container_name: sewpg_bid_opencode_3
+    profiles: ["opencode-multi"]
     ports: []
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
@@ -329,6 +331,7 @@ services:
   opencode-4:
     <<: *opencode-service
     container_name: sewpg_bid_opencode_4
+    profiles: ["opencode-multi"]
     ports: []
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
@@ -341,6 +344,7 @@ services:
   opencode-5:
     <<: *opencode-service
     container_name: sewpg_bid_opencode_5
+    profiles: ["opencode-multi"]
     ports: []
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
@@ -353,6 +357,7 @@ services:
   opencode-6:
     <<: *opencode-service
     container_name: sewpg_bid_opencode_6
+    profiles: ["opencode-multi"]
     ports: []
     volumes:
       - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
