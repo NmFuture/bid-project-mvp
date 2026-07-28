@@ -402,6 +402,15 @@ async def save_technical_gap_project_facts(
     return await technical_gap_service.save_facts(project_id, data)
 
 
+@router.patch("/api/technical/projects/{project_id}/gaps/facts/{field_id}")
+async def save_technical_gap_project_fact_field(
+    project_id: str,
+    field_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return await technical_gap_service.save_fact_field(project_id, field_id, data)
+
+
 @router.put("/api/technical/projects/{project_id}/gaps/{gap_id}")
 async def update_technical_gap(
     project_id: str,

@@ -1505,7 +1505,9 @@ def extract_project_fact_table_facts(manifest: dict[str, Any]) -> list[dict[str,
     table_status = clean(table.get("status"))
     for field in object_items(table.get("fields")):
         status = clean(field.get("status")) or ("confirmed" if table_status == "confirmed" else "")
-        if status not in {"confirmed", "candidate"}:
+        # 事实表 v2 七态：confirmed/extracted/pending_confirmation 参与填表；
+        # candidate 为 v1 遗留状态，按 extracted 对待
+        if status not in {"confirmed", "extracted", "pending_confirmation", "candidate"}:
             continue
         add_fact(
             facts,

@@ -776,15 +776,18 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertIn("未知保证值", labels)
         owner = next(field for field in payload["fields"] if field["label"] == "招标方")
         self.assertEqual(owner["value"], "华能集团")
-        self.assertEqual(owner["status"], "candidate")
+        self.assertEqual(owner["status"], "extracted")
         self.assertTrue(owner["sourceRefs"])
         unknown = next(field for field in payload["fields"] if field["label"] == "未知保证值")
-        self.assertEqual(unknown["status"], "missing")
+        self.assertEqual(unknown["status"], "missing_source")
         self.assertEqual(payload["summary"]["missingCount"], 1)
 
         confirmed = self._confirm_project_fact_table(project_id, {"未知保证值": "按招标文件要求执行"})
 
-        self.assertEqual(confirmed["summary"]["confirmedCount"], confirmed["summary"]["totalCount"])
+        self.assertEqual(
+            confirmed["summary"]["confirmedCount"],
+            sum(1 for field in confirmed["fields"] if str(field.get("value") or "").strip()),
+        )
         self.assertTrue(confirmed["confirmedAt"])
         confirmed_unknown = next(field for field in confirmed["fields"] if field["label"] == "未知保证值")
         self.assertEqual(confirmed_unknown["status"], "confirmed")
@@ -1051,7 +1054,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["空气密度"]["unit"], "kg/m3")
         self.assertEqual(by_label["湍流强度"]["value"], "0.10")
         self.assertEqual(by_label["极端风速"]["value"], "52.5m/s")
-        self.assertEqual(by_label["总装机容量"]["status"], "candidate")
+        self.assertEqual(by_label["总装机容量"]["status"], "extracted")
         self.assertEqual(by_label["总装机容量"]["sourceRefs"][0]["materialTier"], "project")
         self.assertEqual(by_label["设计寿命"]["sourceRefs"][0]["materialTier"], "project")
 
@@ -1116,9 +1119,9 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["轮毂高度"]["value"], "125")
         self.assertEqual(by_label["年平均风速"]["value"], "7.20m/s")
         self.assertEqual(by_label["空气密度"]["value"], "1.16")
-        self.assertEqual(by_label["轮毂高度"]["status"], "candidate")
-        self.assertEqual(by_label["年平均风速"]["status"], "candidate")
-        self.assertEqual(by_label["空气密度"]["status"], "candidate")
+        self.assertEqual(by_label["轮毂高度"]["status"], "extracted")
+        self.assertEqual(by_label["年平均风速"]["status"], "extracted")
+        self.assertEqual(by_label["空气密度"]["status"], "extracted")
 
     def test_project_fact_table_derives_guarantee_values_from_wind_speed_matrix(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
