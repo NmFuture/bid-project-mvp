@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -712,11 +713,17 @@ class TechnicalMaterialStore:
             scopes=data.get("scopes") or [],
         )
 
-    async def run_certificate_time_incremental(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def run_certificate_time_incremental(
+        self,
+        data: dict[str, Any],
+        *,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         return await run_certificate_time_incremental(
             bid_type=TECHNICAL_BID_TYPE,
-            limit=int(data.get("limit") or 50),
+            limit=int(data.get("limit") or 0),
             include_failed=bool(data.get("includeFailed", True)),
+            on_progress=on_progress,
         )
 
     async def recognize_certificate_time(self, file_id: str) -> dict[str, Any]:

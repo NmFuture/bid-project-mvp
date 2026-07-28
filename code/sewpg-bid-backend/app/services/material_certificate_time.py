@@ -6,6 +6,7 @@ import logging
 import re
 import tempfile
 from calendar import monthrange
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -860,7 +861,13 @@ async def delete_certificate_time_records(*, bid_type: str, file_ids: Any) -> di
     }
 
 
-async def run_certificate_time_incremental(*, bid_type: str, limit: int = 50, include_failed: bool = True) -> dict[str, Any]:
+async def run_certificate_time_incremental(
+    *,
+    bid_type: str,
+    limit: int = 0,
+    include_failed: bool = True,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     scope_paths = _configured_scope_paths(bid_type=bid_type)
     if not scope_paths:
         raise PeripheralError(400, "请先确认需要识别的证书目录。", "CERTIFICATE_SCOPE_REQUIRED")
@@ -902,6 +909,7 @@ async def run_certificate_time_incremental(*, bid_type: str, limit: int = 50, in
         bid_type=bid_type,
         file_ids=selected_ids,
         limit=limit,
+        on_progress=on_progress,
     )
 
 
@@ -1114,11 +1122,13 @@ async def run_certificate_time_batch(
     bid_type: str,
     folder_path: str = "",
     file_ids: list[str] | None = None,
-    limit: int = 50,
+    limit: int = 0,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     items = await _load_raw_files(bid_type=bid_type, folder_path=folder_path, file_ids=file_ids)
-    limit = max(1, min(int(limit or 50), 200))
-    selected = items[:limit]
+    # limit <= 0 表示处理全部待识别文件；limit > 0 时按顺序截取（如单文件重识别传 1）
+    limit = int(limit or 0)
+    selected = items if limit <= 0 else items[:limit]
     rows: list[dict[str, Any]] = []
 
     for item in selected:
@@ -1191,6 +1201,13 @@ async def run_certificate_time_batch(
             "folderPath": item.folder.path if item.folder else "",
             **meta,
         })
+        if on_progress is not None:
+            on_progress({
+                "processed": len(rows),
+                "total": len(selected),
+                "failed": sum(1 for row in rows if row.get("status") in {"failed", "unsupported"}),
+                "currentFile": item.name,
+            })
 
     failed = [row for row in rows if row.get("status") in {"failed", "unsupported"}]
     extracted_count = sum(1 for row in rows if row.get("status") == "extracted")
