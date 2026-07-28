@@ -29,9 +29,9 @@ COPY requirements-docling-lock.txt requirements-docling-worker.txt requirements-
 # 放入 wheels/，pip 将优先使用本地文件。pip 本身不支持断点续传，中断即整包作废。
 COPY wheels/ /wheels/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --find-links /wheels --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow \
-    && pip install --find-links /wheels --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt \
-    && pip install --find-links /wheels --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt \
+    pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow --find-links /wheels \
+    && pip install --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt --find-links /wheels \
+    && pip install --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt --find-links /wheels \
     && pip check \
     && python -c "import torch; assert torch.version.cuda == '13.0', f'expected CUDA 13.0 torch, got {torch.version.cuda}'"
 
