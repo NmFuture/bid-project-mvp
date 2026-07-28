@@ -451,6 +451,8 @@ export const technicalGapsAPI = {
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
   buildFacts: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
+  uploadFactSpecs: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>
