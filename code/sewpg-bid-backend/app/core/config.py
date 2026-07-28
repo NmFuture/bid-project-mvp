@@ -221,7 +221,7 @@ settings = Settings(
     opencode_provider_id=_configured_opencode_provider_id,
     opencode_model_id=_configured_opencode_model_id,
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
-    opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 1),
+    opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 8),
     s1_parse_opencode_enabled=_bool_env(
         "S1_PARSE_OPENCODE_ENABLED",
         os.getenv("APP_ENV", "development") == "production",
