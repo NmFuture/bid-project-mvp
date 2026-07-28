@@ -561,6 +561,7 @@ export const technicalMaterialsAPI = {
     },
     bootstrap: (data = {}) =>
       request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    bootstrapStatus: () => request('/technical/materials/wiki/bootstrap/status'),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
