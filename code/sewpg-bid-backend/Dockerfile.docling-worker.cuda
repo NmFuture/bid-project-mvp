@@ -24,10 +24,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-docling-lock.txt requirements-docling-worker.txt requirements-torch-cuda.txt ./
+# wheels/ 用于放置本地预置的 wheel：网络不稳时先用 wget -c 断点续传下好超大包，
+# pip 会优先命中本地文件，缺失时自动回退到网络索引。目录在版本控制中保持为空。
+COPY wheels/ /wheels/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow \
-    && pip install --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt \
-    && pip install --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt \
+    && pip install --find-links /wheels --index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-torch-cuda.txt \
+    && pip install --find-links /wheels --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" -r requirements-docling-worker.txt \
     && pip check \
     && python -c "import torch; assert torch.version.cuda == '13.0', f'expected CUDA 13.0 torch, got {torch.version.cuda}'"
 

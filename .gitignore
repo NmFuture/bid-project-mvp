@@ -45,3 +45,6 @@ code/测试文档/
 
 qa/logs/
 code/qa/logs/
+
+# 本地预置 wheel（仅在受限网络环境下临时放置，不进版本控制）
+code/sewpg-bid-backend/wheels/*.whl
