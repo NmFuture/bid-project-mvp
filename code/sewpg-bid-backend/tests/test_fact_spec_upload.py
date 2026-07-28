@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
 from app.services import technical_fact_field_specs as specs_module
+from app.services.minio_client import minio_client
 from app.services.store import store
 from app.services.technical_fact_spec_import import EXPECTED_HEADER, FactSpecImportError, import_specs
 
@@ -28,7 +29,8 @@ def override_path(tmp_path, monkeypatch) -> Path:
 
 
 @pytest.fixture()
-def client(override_path):
+def client(override_path, monkeypatch):
+    monkeypatch.setattr(minio_client, "ensure_bucket", lambda _bucket: None)
     store.reset_for_tests()
     with TestClient(app, base_url="http://127.0.0.1:8000") as test_client:
         login = test_client.post(
