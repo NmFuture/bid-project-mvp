@@ -360,6 +360,15 @@ def confirm_technical_gap_ready(
     return technical_gap_service.confirm_ready(project_id, gap_id, data)
 
 
+@router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/parent-coverage")
+def set_technical_gap_parent_coverage(
+    project_id: str,
+    gap_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return technical_gap_service.set_parent_coverage(project_id, gap_id, data)
+
+
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/select-material")
 async def select_technical_gap_material(
     project_id: str,

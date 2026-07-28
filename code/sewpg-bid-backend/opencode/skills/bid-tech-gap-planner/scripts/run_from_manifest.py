@@ -2248,6 +2248,8 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         # 金标反评 R3b：覆盖是默认值不是锁——子节自身有剥修饰同名素材（正文或模板）时
         # 保留自主匹配（如整章模板覆盖第6章、但 6.3.3 单独用调试解决方案.docx）。
         source_anchor: dict[str, Any] = {}
+        # 同名夺回只解释本节自身，不自动接管子节（见下方 parent_coverages 注册处）。
+        coverage_overridden_by_name = False
         if parent_coverage:
             self_strong_hits = [
                 m
@@ -2256,6 +2258,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             ]
             if self_strong_hits:
                 parent_coverage = None
+                coverage_overridden_by_name = True
         if parent_coverage:
             parent_decision = str(parent_coverage.get("decision") or "ready")
             status = "needs_input" if parent_decision == "fill_required" else "matched"
@@ -2427,12 +2430,22 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     else:
                         gap_reason = "允许范围内已有整章 Word，可覆盖本章及其子节。"
                         next_actions = ["s4_merge_material"]
-                parent_coverages[number_key] = {
-                    "id": gap_id,
-                    "title": title,
-                    "material": matched_material,
-                    "decision": decision,
-                }
+                # 金标反评 R3c：靠「文件名与本节同名」从上级覆盖里夺回来的节点，
+                # 只证明该素材解释得了本节自身，不证明它装得下本节的每个子节
+                # （6.2 试验、检验和监造 / 6.5 项目验收 都是标准文件同名夺回后，
+                # 把本该由第6章客户模板覆盖的子节一起吞掉，子节实际零覆盖）。
+                # 要接管子节必须另有标题树证据；否则不注册覆盖，子节继续沿用
+                # 更上一级的覆盖源。整章素材本身的定案不受影响。
+                extends_to_children = True
+                if coverage_overridden_by_name:
+                    extends_to_children = outline_child_coverage(matched_material, child_titles) >= 0.5
+                if extends_to_children:
+                    parent_coverages[number_key] = {
+                        "id": gap_id,
+                        "title": title,
+                        "material": matched_material,
+                        "decision": decision,
+                    }
             else:
                 # 无子节的结构项（如附表1/2/3 成果表）正式标书里往往有实质内容：
                 # 也跑弱召回（金标反评 D5），命中给候选人工确认；全空才保持结构项。
