@@ -8,6 +8,7 @@ import { projectRoute } from '../../../utils/workspace'
 import { getBusinessCompactStageLabel, getBusinessStageRoute } from '../businessStageFlow'
 import { businessProjectParseResultMenuRoute } from '../businessProjectRoutes'
 import BusinessProjectWizardModal from './BusinessProjectWizardModal'
+import ProjectActionMenu from '../../shared/components/ProjectActionMenu'
 
 const BUSINESS_BID_TYPE = '商务标'
 const BUSINESS_WORKSPACE = 'business'
@@ -75,15 +76,6 @@ export default function BusinessProjectList({ showToast }) {
     }, 0)
     return () => clearTimeout(timer)
   }, [loadProjects])
-
-  useEffect(() => {
-    if (!activeMenuId) return undefined
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') setActiveMenuId('')
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [activeMenuId])
 
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
@@ -275,45 +267,16 @@ export default function BusinessProjectList({ showToast }) {
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.startDate || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{project.endDate || project.deadline || '-'}</td>
                       <td className="px-6 text-[14px] text-on-surface-variant">{formatDateTime(project.updatedAt)}</td>
-                      <td className="px-4 text-center relative">
-                        <button
-                          className="px-1 py-0 !border-0 !bg-transparent text-on-surface-variant hover:text-primary transition-colors"
-                          type="button"
-                          aria-label={`打开 ${project.name || project.id} 的操作菜单`}
-                          aria-haspopup="menu"
-                          aria-expanded={menuOpen}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setActiveMenuId(menuOpen ? '' : project.id)
-                          }}
-                        >
-                          <span className="material-symbols-outlined text-[20px]">more_vert</span>
-                        </button>
-                        {menuOpen && (
-                          <div
-                            className="absolute right-2 top-10 w-36 bg-surface-container-lowest border border-surface-container-high z-20 py-1 shadow-[0_1px_2px_rgba(11,27,44,0.08)]"
-                            role="menu"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="w-full text-left px-3 py-1.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
-                              onClick={(event) => openParseResult(project.id, event)}
-                            >
-                              查看解析结果
-                            </button>
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="w-full text-left px-3 py-1.5 text-sm text-error hover:bg-error-container/20 transition-colors disabled:opacity-50"
-                              disabled={isActionLoading}
-                              onClick={() => handleDelete(project.id)}
-                            >
-                              删除项目
-                            </button>
-                          </div>
-                        )}
+                      <td className="px-4 text-center">
+                        <ProjectActionMenu
+                          project={project}
+                          open={menuOpen}
+                          loading={isActionLoading}
+                          onToggle={() => setActiveMenuId(menuOpen ? '' : project.id)}
+                          onClose={() => setActiveMenuId('')}
+                          onViewParseResult={(event) => openParseResult(project.id, event)}
+                          onDelete={() => handleDelete(project.id)}
+                        />
                       </td>
                     </tr>
                   )

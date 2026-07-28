@@ -334,6 +334,11 @@ class MaterialRuntimeTables:
                     error_message TEXT,
                     page_count INT DEFAULT 0,
                     raw_response JSONB DEFAULT '{}'::jsonb,
+                    retry_count INT DEFAULT 0,
+                    max_retries INT DEFAULT 2,
+                    input_path VARCHAR(500),
+                    locked_at TIMESTAMPTZ,
+                    audit_meta JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     created_by VARCHAR(100),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -341,6 +346,15 @@ class MaterialRuntimeTables:
                 """
             )
         )
+        # 兼容旧表：补齐队列相关字段
+        for column_def in (
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 2",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS input_path VARCHAR(500)",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS audit_meta JSONB DEFAULT '{}'::jsonb",
+        ):
+            await session.execute(text(column_def))
         await session.execute(
             text(
                 """
@@ -361,6 +375,61 @@ class MaterialRuntimeTables:
                     ignored_reason TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+                """
+            )
+        )
+        await session.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    PERFORM pg_advisory_xact_lock(
+                        hashtext('material-runtime-tables:raw-folder-path')
+                    );
+
+                    WITH duplicate_folders AS (
+                        SELECT
+                            id,
+                            MIN(id) OVER (PARTITION BY path) AS canonical_id
+                        FROM raw_folders
+                    )
+                    UPDATE raw_files AS target
+                    SET folder_id = duplicate_folders.canonical_id
+                    FROM duplicate_folders
+                    WHERE target.folder_id = duplicate_folders.id
+                      AND duplicate_folders.id <> duplicate_folders.canonical_id;
+
+                    WITH duplicate_folders AS (
+                        SELECT
+                            id,
+                            MIN(id) OVER (PARTITION BY path) AS canonical_id
+                        FROM raw_folders
+                    )
+                    UPDATE raw_folders AS child
+                    SET parent_id = duplicate_folders.canonical_id
+                    FROM duplicate_folders
+                    WHERE child.parent_id = duplicate_folders.id
+                      AND duplicate_folders.id <> duplicate_folders.canonical_id;
+
+                    WITH duplicate_folders AS (
+                        SELECT
+                            id,
+                            MIN(id) OVER (PARTITION BY path) AS canonical_id
+                        FROM raw_folders
+                    )
+                    DELETE FROM raw_folders AS target
+                    USING duplicate_folders
+                    WHERE target.id = duplicate_folders.id
+                      AND duplicate_folders.id <> duplicate_folders.canonical_id;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_raw_folders_path' AND indexdef LIKE '%UNIQUE%'
+                    ) THEN
+                        DROP INDEX IF EXISTS idx_raw_folders_path;
+                        CREATE UNIQUE INDEX idx_raw_folders_path ON raw_folders(path);
+                    END IF;
+                END $$;
                 """
             )
         )

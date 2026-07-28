@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import tempfile
+import time
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -88,12 +89,13 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
         asyncio.run(self._snapshot_persistent_state())
         self._register_persistent_cleanups()
         asyncio.run(self._create_test_operator())
-        self.client = TestClient(
-            app,
-            base_url="http://127.0.0.1:8000",
-            headers={"user-agent": self.test_user_agent},
+        self.client = self.enterContext(
+            TestClient(
+                app,
+                base_url="http://127.0.0.1:8000",
+                headers={"user-agent": self.test_user_agent},
+            )
         )
-        self.addCleanup(self.client.close)
         login = self.client.post("/api/auth/login", json={"email": self.test_user_email, "password": "123456"})
         self.assertEqual(login.status_code, 200)
         self.token = login.json()["token"]
@@ -311,6 +313,28 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
             if user_id:
                 self.user_ids.add(user_id)
         return response
+
+    def _wait_for_ocr_task(
+        self,
+        project_id: str,
+        task_id: str,
+        *,
+        timeout: float = 15.0,
+    ) -> dict[str, Any]:
+        """通过公开接口等待 lifespan worker 将 OCR 任务处理到终态。"""
+        deadline = time.monotonic() + timeout
+        last_payload: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            response = self.client.get(
+                f"/api/technical/projects/{project_id}/ocr/tasks/{task_id}",
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            last_payload = response.json()
+            if last_payload.get("status") in ("completed", "failed"):
+                return last_payload
+            time.sleep(0.05)
+        self.fail(f"OCR task {task_id} did not reach terminal state: {last_payload}")
 
     def test_auth_rejects_wrong_password_and_accepts_real_session(self) -> None:
         wrong = self.client.post("/api/auth/login", json={"email": self.test_user_email, "password": "wrong"})
@@ -628,10 +652,17 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
                 headers=self.headers,
                 files={"file": ("ocr.png", b"\x89PNG\r\n\x1a\nfake", "image/png")},
             )
+            self.assertEqual(run.status_code, 200)
+            payload = run.json()
+            self.assertEqual(payload["status"], "pending")
+            task_id = payload["id"]
+            completed = self._wait_for_ocr_task(project_id, task_id)
 
-        self.assertEqual(run.status_code, 200)
-        payload = run.json()
-        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(completed["status"], "completed")
+
+        detail = self.client.get(f"/api/technical/projects/{project_id}/ocr/tasks/{task_id}", headers=self.headers)
+        self.assertEqual(detail.status_code, 200)
+        payload = detail.json()
         self.assertEqual(len(payload["candidates"]), 3)
         candidate_id = payload["candidates"][0]["id"]
 
@@ -713,15 +744,72 @@ class SecuritySettingsOcrRoutesTests(unittest.TestCase):
                 headers=self.headers,
                 files={"file": ("ocr.png", b"\x89PNG\r\n\x1a\nfake", "image/png")},
             )
+            self.assertEqual(run.status_code, 200)
+            self.assertEqual(run.json()["status"], "pending")
+            task_id = run.json()["id"]
+            self._wait_for_ocr_task(project_id, task_id)
 
-        self.assertEqual(run.status_code, 200)
         payload = captured["json"]
         self.assertEqual(payload["model"], "baidu/Unlimited-OCR")
         self.assertEqual(payload["messages"][0]["content"][0]["text"], "<image>document parsing.")
         self.assertFalse(payload["skip_special_tokens"])
         self.assertEqual(payload["vllm_xargs"], {"ngram_size": 35, "window_size": 128})
-        self.assertNotIn("<|det|>", run.text)
-        self.assertEqual(run.json()["candidates"][0]["fieldValue"], "Wind Farm")
+
+        detail = self.client.get(f"/api/technical/projects/{project_id}/ocr/tasks/{task_id}", headers=self.headers)
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn("<|det|>", json.dumps(detail.json()))
+        self.assertEqual(detail.json()["candidates"][0]["fieldValue"], "Wind Farm")
+
+    def test_ocr_task_retries_and_eventually_fails(self) -> None:
+        project = self._track_project(self.client.post(
+            "/api/technical/projects",
+            headers=self.headers,
+            json={"name": f"OCR 重试测试项目-{self.run_id}", "customerName": "测试业主"},
+        ))
+        self.assertEqual(project.status_code, 200)
+        project_id = project.json()["id"]
+        self.client.put(
+            "/api/settings/ocr",
+            headers=self.headers,
+            json={
+                "enabled": True,
+                "baseUrl": "https://ocr.example.com/v1",
+                "apiKey": "ocr-secret-key",
+                "model": "deepseek-ai/DeepSeek-OCR",
+            },
+        )
+
+        call_count = 0
+
+        async def fake_post(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+
+            class Response:
+                status_code = 500
+                text = "OCR service error"
+
+                @staticmethod
+                def json():
+                    return {}
+
+            return Response()
+
+        with patch("httpx.AsyncClient.post", side_effect=fake_post):
+            run = self.client.post(
+                f"/api/technical/projects/{project_id}/ocr/tasks",
+                headers=self.headers,
+                files={"file": ("ocr.png", b"\x89PNG\r\n\x1a\nfake", "image/png")},
+            )
+            self.assertEqual(run.status_code, 200)
+            self.assertEqual(run.json()["status"], "pending")
+            task_id = run.json()["id"]
+            completed = self._wait_for_ocr_task(project_id, task_id)
+
+        self.assertEqual(completed["status"], "failed")
+        self.assertEqual(completed["retryCount"], 2)
+        # 首次 + 2 次重试 = 3 次调用
+        self.assertEqual(call_count, 3)
 
 
 if __name__ == "__main__":

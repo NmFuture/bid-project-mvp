@@ -51,8 +51,8 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && printf '%s\n' \
       '#!/bin/sh' \
       'case "$1" in' \
-      '  prepare|template|headings|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize) ;;' \
-      '  *) echo "usage: s2outline [prepare|template|headings|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decisions|compose|validate|status|finalize] <manifest> [...]" >&2; exit 64 ;;' \
+      '  prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|review-complete|decisions|compose|validate|status|finalize) ;;' \
+      '  *) echo "usage: s2outline [prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|review-complete|decisions|compose|validate|status|finalize] <manifest> [...]" >&2; exit 64 ;;' \
       'esac' \
       'exec python3 /workspace/.opencode/skills/bid-tech-outline-generator/scripts/run_from_manifest.py --require-compose "$@"' \
       > /usr/local/bin/s2outline \
@@ -72,14 +72,6 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'esac' \
       'exec python3 /workspace/.opencode/skills/bid-business-template-extractor/scripts/run_from_manifest.py "$@"' \
       > /usr/local/bin/btplnav \
-    && printf '%s\n' \
-      '#!/bin/sh' \
-      'if [ "$#" -ne 1 ]; then' \
-      '  echo "usage: s7assemble <manifest>" >&2' \
-      '  exit 64' \
-      'fi' \
-      'exec python3 /workspace/.opencode/skills/bid-tech-assembler/scripts/run_from_manifest.py --manifest "$1" --response summary' \
-      > /usr/local/bin/s7assemble \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
@@ -144,7 +136,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s2outline /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/s7assemble /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s2outline /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/wikibuild
 
 EXPOSE 4096
 

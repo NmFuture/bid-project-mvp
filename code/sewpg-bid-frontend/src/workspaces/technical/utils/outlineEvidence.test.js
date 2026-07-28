@@ -10,6 +10,7 @@ import {
 
 test('读取最小招标依据并使用 OnlyOffice 搜索文本', () => {
   const basis = {
+    evidenceId: 'TEN-2:B000321',
     fileId: 'TEN-2',
     searchText: '投标人应编制叶片专题',
   }
@@ -18,6 +19,7 @@ test('读取最小招标依据并使用 OnlyOffice 搜索文本', () => {
   }
 
   assert.equal(pickTenderBasis(node), basis)
+  assert.equal(pickTenderBasis(node).evidenceId, 'TEN-2:B000321')
   assert.equal(tenderBasisSearchText(basis), '投标人应编制叶片专题')
 })
 

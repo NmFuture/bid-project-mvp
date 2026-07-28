@@ -149,6 +149,38 @@ def _write_scope_config(*, bid_type: str, scopes: list[dict[str, Any]]) -> dict[
     return payload
 
 
+def migrate_certificate_time_scopes_on_path_change(
+    *,
+    bid_type: str,
+    old_path: str,
+    new_path: str,
+) -> None:
+    """目录改名/迁移后，把证书识别范围配置里的旧路径前缀同步替换为新路径。
+
+    只处理以 old_path 为根的 scope；对于合并到已有目录的场景，old_path 下文件已迁入 new_path，
+    因此把 scope 指向 new_path 才能保证增量识别继续命中。
+    """
+    old_path = _normalize_path(old_path)
+    new_path = _normalize_path(new_path)
+    if not old_path or not new_path or old_path == new_path:
+        return
+
+    config = _read_scope_config(bid_type=bid_type)
+    scopes = config.get("scopes") or []
+    changed = False
+    migrated: list[dict[str, Any]] = []
+    for scope in scopes:
+        scope_path = _normalize_path(scope.get("path"))
+        if scope_path and (scope_path == old_path or scope_path.startswith(f"{old_path}/")):
+            scope = {**scope, "path": f"{new_path}{scope_path[len(old_path):]}", "updatedAt": now_iso()}
+            changed = True
+        migrated.append(scope)
+
+    if changed:
+        _write_scope_config(bid_type=bid_type, scopes=migrated)
+        logger.info("migrated certificate scopes: %s -> %s", old_path, new_path)
+
+
 def _configured_scope_paths(*, bid_type: str) -> list[str]:
     config = _read_scope_config(bid_type=bid_type)
     return [

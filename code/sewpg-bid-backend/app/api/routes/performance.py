@@ -185,6 +185,16 @@ async def update_performance_item(category_id: str, item_id: str, data: dict[str
     return await performance_package_service.update_item(category_id, item_id, data)
 
 
+@router.post("/api/materials/performance/categories/{category_id}/items")
+async def create_performance_item(category_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await performance_package_service.create_item(category_id, data)
+
+
+@router.delete("/api/materials/performance/categories/{category_id}/items/{item_id}")
+async def delete_performance_item(category_id: str, item_id: str) -> dict[str, Any]:
+    return await performance_package_service.delete_item(category_id, item_id)
+
+
 @router.get("/api/materials/performance/categories/{category_id}/items/{item_id}/attachments/{attachment_id}")
 async def download_performance_item_attachment(category_id: str, item_id: str, attachment_id: str) -> StreamingResponse:
     payload = await performance_package_service.download_item_attachment(category_id, item_id, attachment_id)

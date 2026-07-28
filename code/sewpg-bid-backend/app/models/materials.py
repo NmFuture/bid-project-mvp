@@ -429,6 +429,11 @@ class OcrTask(Base):
     error_message = Column(Text)
     page_count = Column(Integer, default=0)
     raw_response = Column(JSONB, default={})
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=2)
+    input_path = Column(VARCHAR(500))
+    locked_at = Column(DateTime(timezone=True))
+    audit_meta = Column(JSONB, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     created_by = Column(VARCHAR(100))
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -442,6 +447,9 @@ class OcrTask(Base):
             "status": self.status or "pending",
             "errorMessage": self.error_message or "",
             "pageCount": int(self.page_count or 0),
+            "retryCount": int(self.retry_count or 0),
+            "maxRetries": int(self.max_retries or 2),
+            "inputPath": self.input_path or "",
             "createdAt": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else "",
             "createdBy": self.created_by or "",
             "candidates": candidates or [],

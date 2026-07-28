@@ -18,7 +18,7 @@ from app.services.material_folder_scope import (
 from app.services.material_folder_maintenance import ensure_business_customized_children_for_created_folder
 from app.services.material_raw_file_filter import raw_file_matches_bid_type, raw_folder_matches_bid_type
 from app.services.material_raw_folder_lock import lock_raw_folder_path
-from app.services.material_taxonomy import is_raw_material_protected_folder_path
+from app.services.material_taxonomy import is_raw_material_protected_folder_path, normalize_material_tier
 from app.services.peripheral import PeripheralError
 
 
@@ -79,23 +79,16 @@ async def create_raw_folder(
             )
         if parent is None or not raw_folder_matches_bid_type(parent, bid_type):
             raise PeripheralError(400, "父级目录不属于当前素材库。", "RAW_FOLDER_SCOPE")
-        if parent_path_text == TECHNICAL_BID_TYPE:
-            parent = await ensure_folder_path(
-                session,
-                material_tier_folder_name_for_bid_type(TECHNICAL_BID_TYPE, "standard"),
-                parent.id,
-                "standard",
-                TECHNICAL_BID_TYPE,
-                None,
-                material_tier_folder_sort_order("standard"),
-                customer_name="平台标准",
-            )
-            parent_path_text = str(parent.path)
         parent_id = parent.id if parent else None
         full_path = "/".join([p for p in [parent_path_text.strip("/"), name] if p])
 
         result2 = await session.execute(select(RawFolder).where(RawFolder.path == full_path))
-        if result2.scalar_one_or_none():
+        existing = result2.scalar_one_or_none()
+        if existing is not None:
+            if parent_path_text == TECHNICAL_BID_TYPE:
+                # 技术标根级只允许建三个档位目录（store 层已校验），预置后重复创建按幂等返回
+                tree = await raw_tree()
+                return {"message": "文件夹已存在，沿用现有目录。", "folderPath": full_path, "tree": tree["tree"]}
             raise PeripheralError(409, "目录已存在。", "RAW_FOLDER_EXISTS")
 
         await lock_raw_folder_path(session, full_path)
@@ -107,7 +100,13 @@ async def create_raw_folder(
             parent_id=parent_id,
             name=name,
             path=full_path,
-            tier=parent.tier if parent else "project",
+            # 技术标根级只能建三个档位目录，tier 由目录名决定而不是继承根目录
+            tier=(
+                normalize_material_tier(name)
+                if parent_path_text == TECHNICAL_BID_TYPE
+                else ""
+            )
+            or (parent.tier if parent else "project"),
             bid_type=parent.bid_type if parent else None,
             customer_name=parent.customer_name if parent else None,
             project_id=parent.project_id if parent else None,

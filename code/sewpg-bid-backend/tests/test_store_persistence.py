@@ -34,7 +34,7 @@ class ProjectMaterialScopeTests(unittest.TestCase):
             [
                 "技术标/标准文件",
                 "技术标/客户定制/华能集团",
-                "技术标/项目定制/MAT-HN-001",
+                "技术标/项目定制/华能项目素材范围验证",
             ],
         )
         self.assertEqual(scope["identity"]["customerId"], "CUST-HUANENG")

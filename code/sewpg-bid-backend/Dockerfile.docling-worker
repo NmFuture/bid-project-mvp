@@ -24,7 +24,8 @@ RUN apt-get update \
 
 COPY requirements-docling-lock.txt requirements-docling-worker.txt requirements-torch-cpu.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url "${PYTORCH_CPU_INDEX_URL}" -r requirements-torch-cpu.txt \
+    pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow \
+    && pip install --index-url "${PYTORCH_CPU_INDEX_URL}" -r requirements-torch-cpu.txt \
     && pip install --extra-index-url "${PYTORCH_CPU_INDEX_URL}" -r requirements-docling-worker.txt \
     && pip check \
     && python -c "import torch; assert torch.version.cuda is None, f'expected CPU-only torch, got CUDA {torch.version.cuda}'"

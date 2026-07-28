@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.models import async_session
-from app.models.materials import WikiAttachment
+from app.models.materials import RawFolder, WikiAttachment
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.business_material_splitter import (
     confirm_business_material_split,
@@ -24,7 +24,7 @@ from app.services.material_certificate_time import (
     update_certificate_time_scopes,
     update_certificate_time_record,
 )
-from app.services.material_tag_import import build_preview, parse_tag_excel
+from app.services.material_tag_import import build_preview, parse_tag_excel, same_name_file_ids
 from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import rewrite_material_urls
@@ -154,6 +154,18 @@ class TechnicalMaterialStore:
     async def raw_tree(self) -> dict[str, Any]:
         return self._with_urls(_technical_tree(await material_store.raw_tree(bid_type=TECHNICAL_BID_TYPE)))
 
+    async def raw_project_folder_owner(self, path: str) -> str:
+        normalized = self.ensure_path(path, "项目素材目录")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) != 3 or parts[:2] != [TECHNICAL_BID_TYPE, "项目定制"]:
+            raise PeripheralError(400, "只能查询技术标项目定制目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
+        async with async_session() as session:
+            result = await session.execute(select(RawFolder.project_id).where(RawFolder.path == normalized))
+            project_id = result.scalar_one_or_none()
+        if project_id is None:
+            raise PeripheralError(404, "项目素材目录不存在。", "RAW_FOLDER_NOT_FOUND")
+        return str(project_id or "").strip()
+
     async def raw_files(
         self,
         *,
@@ -274,6 +286,27 @@ class TechnicalMaterialStore:
         payload = await material_store.raw_delete_folder(
             self.ensure_path(path, "目标目录"),
             bid_type=TECHNICAL_BID_TYPE,
+        )
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
+
+    async def raw_rename_folder(self, *, path: str, new_name: str) -> dict[str, Any]:
+        payload = await material_store.raw_rename_folder(
+            self.ensure_path(path, "目标目录"),
+            new_name,
+            bid_type=TECHNICAL_BID_TYPE,
+        )
+        return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
+
+    async def raw_migrate_project_folder(self, *, path: str, new_name: str) -> dict[str, Any]:
+        normalized = self.ensure_path(path, "旧项目素材目录")
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) != 3 or parts[:2] != [TECHNICAL_BID_TYPE, "项目定制"]:
+            raise PeripheralError(400, "只能迁移技术标项目定制目录。", "PROJECT_MATERIAL_PATH_REQUIRED")
+        payload = await material_store.raw_rename_folder(
+            normalized,
+            new_name,
+            bid_type=TECHNICAL_BID_TYPE,
+            allow_identity_folder=True,
         )
         return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
 
@@ -426,29 +459,51 @@ class TechnicalMaterialStore:
         preview["fuzzyAvailable"] = True
         return preview
 
-    async def raw_tag_import_commit(self, *, items: list[dict[str, Any]]) -> dict[str, Any]:
+    async def raw_tag_import_commit(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        target_path: str = "",
+        import_mode: str = "merge",
+    ) -> dict[str, Any]:
+        merge_tags = str(import_mode or "").strip().lower() != "overwrite"
         succeeded: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
+        # applyToAllMatches 行需要按目标子树解析同名文件；惰性加载，避免普通导入多扫一次库
+        subtree_files: list[dict[str, Any]] | None = None
         for item in items or []:
             file_id = str(item.get("fileId") or "")
             tags = item.get("tags")
-            if not file_id:
+            if item.get("applyToAllMatches"):
+                # 跨机型批量应用：该行标签写入目标子树内所有同名文件（含原选定文件）
+                file_name = str(item.get("fileName") or "")
+                if subtree_files is None:
+                    normalized_target = self.ensure_root_path(target_path, "目标目录")
+                    subtree_files = await self._raw_subtree_files(normalized_target)
+                target_ids = same_name_file_ids(subtree_files, file_name)
+                if not target_ids:
+                    failed.append({"fileId": file_id, "fileName": file_name, "message": "目标目录内未找到同名文件。"})
+                    continue
+            elif file_id:
+                target_ids = [file_id]
+            else:
                 failed.append({"fileId": file_id, "message": "缺少文件 ID。"})
                 continue
-            try:
-                # 锁内 read-merge-write，避免用 preview 快照覆盖丢失期间新增的标签（H4）
-                updated = await self.set_index_tags(file_id, tags, merge=True)
-                succeeded.append(
-                    {
-                        "fileId": file_id,
-                        "name": str(updated.get("name") or ""),
-                        "tags": updated.get("tags") or [],
-                    }
-                )
-            except PeripheralError as exc:
-                failed.append({"fileId": file_id, "message": exc.detail})
-            except Exception as exc:  # pragma: no cover - 兜底
-                failed.append({"fileId": file_id, "message": str(exc)})
+            for target_id in target_ids:
+                try:
+                    # overwrite 模式走 merge=False，用 preview 给出的 mergedTags 替换当前真值
+                    updated = await self.set_index_tags(target_id, tags, merge=merge_tags)
+                    succeeded.append(
+                        {
+                            "fileId": target_id,
+                            "name": str(updated.get("name") or ""),
+                            "tags": updated.get("tags") or [],
+                        }
+                    )
+                except PeripheralError as exc:
+                    failed.append({"fileId": target_id, "message": exc.detail})
+                except Exception as exc:  # pragma: no cover - 兜底
+                    failed.append({"fileId": target_id, "message": str(exc)})
         message = f"标签导入完成：成功 {len(succeeded)} 个" + (
             f"，失败 {len(failed)} 个" if failed else ""
         )
@@ -511,6 +566,32 @@ class TechnicalMaterialStore:
             bid_type=TECHNICAL_BID_TYPE,
             on_conflict=on_conflict,
         )))
+
+    async def raw_batch_move_files(
+        self,
+        *,
+        file_ids: list[str],
+        target_path: str,
+        on_conflict: str = "",
+    ) -> dict[str, Any]:
+        normalized_target = self.ensure_write_path(target_path, "目标目录")
+        succeeded: list[str] = []
+        failed: list[dict[str, str]] = []
+        for file_id in dict.fromkeys(str(item or "").strip() for item in file_ids):
+            if not file_id:
+                continue
+            try:
+                await material_store.raw_move_file(
+                    file_id=file_id,
+                    target_path=normalized_target,
+                    bid_type=TECHNICAL_BID_TYPE,
+                    on_conflict=on_conflict,
+                )
+                succeeded.append(file_id)
+            except PeripheralError as exc:
+                failed.append({"fileId": file_id, "message": exc.detail})
+        await self._refresh_index({})
+        return {"succeeded": succeeded, "failed": failed, "targetPath": normalized_target}
 
     async def raw_move_folder(self, *, source_path: str, target_parent_path: str) -> dict[str, Any]:
         normalized_source = self.ensure_path(source_path, "源目录")

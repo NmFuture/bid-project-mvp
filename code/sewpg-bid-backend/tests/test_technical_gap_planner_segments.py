@@ -148,6 +148,66 @@ class ScoreCapPolicyTests(unittest.TestCase):
             self.assertTrue(all(m[field] <= 0.98 for m in pool), field)
 
 
+class ChapterMasterDisplayScoreTests(unittest.TestCase):
+    """整章素材（chapter_master）必须自带展示分。
+
+    前端「已就绪」只认 matchScore，缺分会一路回落到 confidence，
+    把文件名精确命中的整章素材显示成低分「已匹配-待确认」。
+    """
+
+    def test_exact_file_name_chapter_master_scores_099(self) -> None:
+        material = {
+            "id": "RAW-0423",
+            "name": "与华能集团新能源项目合作.docx",
+            "path": "技术标/客户定制/华能/与华能集团新能源项目合作.docx",
+            "folderPath": "技术标/客户定制/华能",
+            "materialTier": "customer",
+            "confidence": 0.74,
+        }
+        selected, _alternatives = planner.pick_chapter_master_material(
+            [material],
+            "与华能集团新能源项目合作",
+            ["华能汕头勒门（二）海上大兆瓦机组国产化示范应用"],
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["usage"], "chapter_master")
+        self.assertEqual(selected["matchScore"], planner.EXACT_MATCH_SCORE)
+
+    def test_non_exact_chapter_master_capped_at_098(self) -> None:
+        # 文件名不精确命中（靠标题树/子节覆盖入围）：展示分走启发式，封顶 0.98。
+        material = {
+            "id": "RAW-0500",
+            "name": "业绩情况.docx",
+            "path": "技术标/通用素材/业绩情况.docx",
+            "folderPath": "技术标/通用素材",
+            "materialTier": "project",
+            "confidence": 0.74,
+            "topicRelevance": 0.98,
+        }
+        selected, _alternatives = planner.pick_chapter_master_material(
+            [material],
+            "投标机型业绩情况",
+            [],
+        )
+        self.assertIsNotNone(selected)
+        self.assertLessEqual(selected["matchScore"], planner.HEURISTIC_SCORE_CAP)
+        self.assertLess(selected["matchScore"], planner.EXACT_MATCH_SCORE)
+
+    def test_display_score_never_leaks_unbounded_ranking_score(self) -> None:
+        # chapter_master_score 是无界内部排序分（文件名命中就 +2.6），不得外泄成展示分。
+        material = {
+            "id": "RAW-0501",
+            "name": "风资源评估与机位排布方案.docx",
+            "path": "技术标/通用素材/风资源评估与机位排布方案.docx",
+            "folderPath": "技术标/通用素材",
+            "materialTier": "project",
+        }
+        title = "风资源评估与机位排布方案"
+        children = ["风资源评估", "机位排布", "发电量计算"]
+        self.assertGreater(planner.chapter_master_score(material, title, children), 1.0)
+        self.assertEqual(planner.display_match_score(material, title), planner.EXACT_MATCH_SCORE)
+
+
 class TrailingAppendixCoverageTests(unittest.TestCase):
     """整章覆盖延伸：chapter_master 章后的正文型附表按证据分级归入父章覆盖。"""
 

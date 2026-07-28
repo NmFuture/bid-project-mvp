@@ -71,9 +71,13 @@ def test_fastapi_dockerfile_is_lightweight_and_keeps_pip_cache() -> None:
 
 def test_docling_worker_dockerfile_installs_cpu_torch_and_models() -> None:
     dockerfile = (BACKEND_ROOT / "Dockerfile.docling-worker").read_text(encoding="utf-8")
+    pillow_install = 'pip install --index-url "${PIP_INDEX_URL}" -c requirements-docling-lock.txt pillow'
+    torch_install = 'pip install --index-url "${PYTORCH_CPU_INDEX_URL}" -r requirements-torch-cpu.txt'
 
     assert "ARG PYTORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu" in dockerfile
-    assert 'pip install --index-url "${PYTORCH_CPU_INDEX_URL}" -r requirements-torch-cpu.txt' in dockerfile
+    assert pillow_install in dockerfile
+    assert torch_install in dockerfile
+    assert dockerfile.index(pillow_install) < dockerfile.index(torch_install)
     assert "pip install --extra-index-url" in dockerfile
     assert "pip check" in dockerfile
     assert "torch.version.cuda is None" in dockerfile

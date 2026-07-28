@@ -9,6 +9,7 @@ from app.services.material_taxonomy import (
     BUSINESS_PROJECT_SUBFOLDERS,
     BUSINESS_STANDARD_SUBFOLDERS,
     BUSINESS_TIER_FOLDERS,
+    RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS,
     RAW_MATERIAL_ROOTS,
     TECHNICAL_TIER_FOLDERS,
     business_customized_child_tier_for_parent_path as _business_customized_child_tier_for_parent_path,
@@ -77,7 +78,20 @@ def raw_material_tier_folder_specs(bid_type: str) -> tuple[dict[str, Any], ...]:
 
 def is_raw_folder_move_protected_path(folder_path: str) -> bool:
     normalized = str(folder_path or "").replace("\\", "/").strip("/")
-    return normalized in RAW_FOLDER_MOVE_PROTECTED_PATHS or is_raw_material_protected_folder_path(normalized)
+    if normalized in RAW_FOLDER_MOVE_PROTECTED_PATHS or is_raw_material_protected_folder_path(normalized):
+        return True
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) == 3:
+        parent = "/".join(parts[:2])
+        if parent in _RAW_FOLDER_IDENTITY_PROTECTED_PARENT_PATHS:
+            return True
+    return False
+
+
+def is_raw_folder_rename_protected_path(folder_path: str) -> bool:
+    # 重命名保护口径 = 移动保护口径 + 技术标根级三个默认档位目录（固定口径，禁止改名）
+    normalized = str(folder_path or "").replace("\\", "/").strip("/")
+    return is_raw_folder_move_protected_path(normalized) or normalized in RAW_MATERIAL_DEFAULT_TIER_FOLDER_PATHS
 
 
 def is_raw_folder_move_descendant_target(source_path: str, target_parent_path: str) -> bool:
@@ -149,11 +163,6 @@ def business_customized_child_tier_for_parent_folder_path(parent_path: str) -> s
     return _business_customized_child_tier_for_parent_path(parent_path)
 
 
-def material_tier_folder_name(material_tier: str) -> str:
-    tier = normalize_material_tier(material_tier) or "project"
-    return TIER_FOLDER_NAMES[tier]
-
-
 def material_tier_folder_name_for_bid_type(bid_type: str, material_tier: str) -> str:
     tier = normalize_material_tier(material_tier) or "project"
     if require_material_bid_type(bid_type) == TECHNICAL_BID_TYPE:
@@ -174,6 +183,14 @@ def material_tier_folder_sort_order(material_tier: str) -> int:
 def material_tier_root_path(bid_type: str, material_tier: str) -> str:
     normalized_bid_type = require_material_bid_type(bid_type)
     return f"{normalized_bid_type}/{material_tier_folder_name_for_bid_type(normalized_bid_type, material_tier)}"
+
+
+# 客户/项目档位下的第 3 级目录是“身份目录”（projectId / customerName），改名/移动都会导致项目链路失联
+_RAW_FOLDER_IDENTITY_PROTECTED_PARENT_PATHS = {
+    material_tier_root_path(bid_type, tier)
+    for bid_type in MATERIAL_BID_TYPES
+    for tier in ("customer", "project")
+}
 
 
 def project_material_root_path(bid_type: str, project_id: str) -> str:

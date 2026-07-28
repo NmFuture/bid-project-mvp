@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -42,7 +43,7 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
                 {
                     "id": "RAW-TECH-001",
                     "name": "待填写-附表A.1 投标机型总方案信息表.docx",
-                    "folderPath": "技术标/项目定制/MAT-TECH-001",
+                    "folderPath": "技术标/项目定制/技术标附表入库测试/附表",
                 }
             ]
         }
@@ -65,9 +66,6 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
     }
 
     with patch(
-        "app.services.technical_parse_assets.technical_material_store.raw_bootstrap_folders",
-        new=AsyncMock(return_value={"payload": {"path": "技术标/项目定制/MAT-TECH-001"}}),
-    ) as bootstrap_folders, patch(
         "app.services.technical_parse_assets.technical_material_store.raw_upload",
         side_effect=fake_raw_upload,
     ), patch(
@@ -78,9 +76,8 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
 
     assert result["status"] == "synced"
     assert result["syncedCount"] == 1
-    bootstrap_folders.assert_awaited_once_with("MAT-TECH-001")
     assert len(upload_calls) == 1
-    assert upload_calls[0]["target_path"] == "技术标/项目定制/MAT-TECH-001"
+    assert upload_calls[0]["target_path"] == "技术标/项目定制/技术标附表入库测试/附表"
     assert upload_calls[0]["project_id"] == "MAT-TECH-001"
     assert upload_calls[0]["project_code"] == "TECH-2026-001"
     assert upload_calls[0]["material_tier"] == "project"
@@ -95,7 +92,7 @@ def test_sync_technical_parse_appendices_uploads_prefixed_files_and_refreshes_in
         }
     ]
     rebuild_index.assert_awaited_once_with()
-    assert result["targetPath"] == "技术标/项目定制/MAT-TECH-001"
+    assert result["targetPath"] == "技术标/项目定制/技术标附表入库测试/附表"
 
 
 def test_sync_technical_parse_appendices_reconciles_to_latest_selection(tmp_path: Path) -> None:
@@ -302,6 +299,80 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
     appendices = result["parseResult"]["structured"]["appendices"]
     assert [item["selectedForMaterial"] for item in appendices] == [False, True]
     assert result["selectedCount"] == 1
+    persist_state.assert_called_once_with(project)
+
+
+def test_refresh_technical_parse_result_preserves_appendix_runtime_state(tmp_path: Path) -> None:
+    from app.services.bid_parse_service import BidParseService
+
+    structured_path = tmp_path / "s1_structured_result.json"
+    structured_path.write_text(
+        json.dumps(
+            {
+                "items": [],
+                "structured": {
+                    "appendices": [
+                        {"id": "APPX-A", "title": "附表A（原始解析）"},
+                        {"id": "APPX-B", "title": "附表B（原始解析）"},
+                        {"id": "APPX-C", "title": "附表C（原始解析）"},
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    project = {
+        "id": "PRJ-TECH-001",
+        "bidType": "技术标",
+        "parse_result": {
+            "status": "completed",
+            "items": [],
+            "structured": {
+                "appendices": [
+                    {
+                        "id": "APPX-A",
+                        "title": "附表A",
+                        "selectedForMaterial": True,
+                        "assetMaterialId": "RAW-A",
+                        "assetSyncStatus": "synced",
+                    },
+                    {"id": "APPX-B", "title": "附表B", "selectedForMaterial": False},
+                ],
+                "technicalAppendixMaterialSync": {
+                    "schemaVersion": "technical-appendix-material-sync-v1",
+                    "items": [{"appendixId": "APPX-A", "materialId": "RAW-A"}],
+                    "pendingDeleteIds": [],
+                },
+            },
+        },
+        "parse_storage": {"structuredResultPath": str(structured_path)},
+    }
+
+    class _TechnicalProjectService:
+        bid_type = "技术标"
+
+        @staticmethod
+        def ensure_project(_project_id: str) -> dict[str, object]:
+            return project
+
+    service = BidParseService(_TechnicalProjectService(), "/api/technical")
+    with patch.object(service, "require_project_for_update", return_value=project), patch(
+        "app.services.bid_parse_service._materialize_technical_evidence_refs",
+        side_effect=lambda structured, **_kwargs: structured,
+    ), patch("app.services.bid_parse_service.persist_workspace_project_state") as persist_state:
+        refreshed = service._refresh_technical_parse_result_from_structured_file(project["id"])
+
+    appendices = refreshed["structured"]["appendices"]
+    assert appendices[0]["title"] == "附表A（原始解析）"
+    assert appendices[0]["selectedForMaterial"] is True
+    assert appendices[0]["assetMaterialId"] == "RAW-A"
+    assert appendices[0]["assetSyncStatus"] == "synced"
+    assert appendices[1]["selectedForMaterial"] is False
+    assert appendices[2]["selectedForMaterial"] is True
+    assert refreshed["structured"]["technicalAppendixMaterialSync"]["items"] == [
+        {"appendixId": "APPX-A", "materialId": "RAW-A"}
+    ]
     persist_state.assert_called_once_with(project)
 
 
@@ -519,6 +590,8 @@ def test_technical_project_confirmation_archives_appendices_with_final_material_
 
 
 def test_technical_project_confirmation_persists_sync_state_after_failure() -> None:
+    from fastapi import HTTPException
+
     from app.services.bid_project_service import BidProjectService
     from app.services.technical_parse_assets import TechnicalParseAssetError
 
@@ -566,13 +639,17 @@ def test_technical_project_confirmation_persists_sync_state_after_failure() -> N
         "app.services.bid_project_service.persist_technical_parse_result",
         return_value=parse_result,
     ) as persist_parse_result:
-        with pytest.raises(TechnicalParseAssetError, match="索引校验失败"):
+        with pytest.raises(HTTPException) as exc_info:
             asyncio.run(service.update(project_id, {"reviewDecision": "participate"}))
 
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "索引校验失败"
     persist_parse_result.assert_called_once_with(project_id, parse_result)
 
 
 def test_technical_project_confirmation_failure_does_not_persist_participate() -> None:
+    from fastapi import HTTPException
+
     from app.services.bid_project_service import BidProjectService
     from app.services.technical_parse_assets import TechnicalParseAssetError
 
@@ -606,13 +683,15 @@ def test_technical_project_confirmation_failure_does_not_persist_participate() -
         "app.services.bid_project_service.persist_technical_parse_result",
         return_value=runtime_project["parse_result"],
     ):
-        with pytest.raises(TechnicalParseAssetError, match="索引校验失败"):
+        with pytest.raises(HTTPException) as exc_info:
             asyncio.run(service.update(project_id, {"reviewDecision": "participate"}))
 
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "索引校验失败"
     update_project.assert_not_called()
 
 
-def test_participated_project_rename_does_not_bootstrap_stable_material_folder() -> None:
+def test_participated_project_rename_migrates_material_folder() -> None:
     from app.services.bid_project_service import BidProjectService
 
     project_id = "PRJ-TECH-001"
@@ -635,14 +714,28 @@ def test_participated_project_rename_does_not_bootstrap_stable_material_folder()
     with patch.object(service, "ensure_project", return_value=runtime_project), patch(
         "app.services.bid_project_service.update_workspace_project",
         return_value=updated_project,
-    ):
+    ), patch(
+        "app.services.bid_project_service.list_workspace_projects",
+        return_value={"items": [runtime_project]},
+    ), patch(
+        "app.services.bid_project_service.prepare_technical_project_material_folder",
+        new=AsyncMock(
+            return_value={
+                "status": "ok",
+                "projectId": project_id,
+                "path": "技术标/项目定制/新项目名称",
+                "appendixPath": "技术标/项目定制/新项目名称/附表",
+            }
+        ),
+    ) as prepare_folder:
         result = asyncio.run(service.update(project_id, {"name": "新项目名称"}))
 
     bootstrap_material_folder.assert_not_awaited()
-    assert "materialFolderBootstrap" not in result
+    prepare_folder.assert_awaited_once()
+    assert result["materialFolderBootstrap"]["path"] == "技术标/项目定制/新项目名称"
 
 
-def test_technical_project_confirmation_bootstraps_stable_material_folder() -> None:
+def test_technical_project_confirmation_prepares_named_material_folder() -> None:
     from app.services.bid_project_service import BidProjectService
 
     project_id = "PRJ-TECH-001"
@@ -672,7 +765,20 @@ def test_technical_project_confirmation_bootstraps_stable_material_folder() -> N
     with patch(
         "app.services.bid_project_service.update_workspace_project",
         return_value=updated_project,
-    ), patch.object(service, "ensure_project", return_value=updated_project):
+    ), patch.object(service, "ensure_project", return_value=updated_project), patch(
+        "app.services.bid_project_service.list_workspace_projects",
+        return_value={"items": [updated_project]},
+    ), patch(
+        "app.services.bid_project_service.prepare_technical_project_material_folder",
+        new=AsyncMock(
+            return_value={
+                "status": "ok",
+                "projectId": "MAT-FINAL-001",
+                "path": "技术标/项目定制/华能100MW风电项目",
+                "appendixPath": "技术标/项目定制/华能100MW风电项目/附表",
+            }
+        ),
+    ) as prepare_folder:
         result = asyncio.run(
             service.update(
                 project_id,
@@ -684,9 +790,11 @@ def test_technical_project_confirmation_bootstraps_stable_material_folder() -> N
             )
         )
 
-    bootstrap_material_folder.assert_awaited_once_with("MAT-FINAL-001")
+    bootstrap_material_folder.assert_not_awaited()
+    prepare_folder.assert_awaited_once()
     assert result["materialFolderBootstrap"] == {
         "status": "ok",
         "projectId": "MAT-FINAL-001",
-        "path": "技术标/项目定制/MAT-FINAL-001",
+        "path": "技术标/项目定制/华能100MW风电项目",
+        "appendixPath": "技术标/项目定制/华能100MW风电项目/附表",
     }

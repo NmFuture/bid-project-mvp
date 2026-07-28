@@ -651,6 +651,14 @@ async def technical_raw_delete_folder(path: str = Query(default="")) -> dict[str
     return await technical_material_store.raw_delete_folder(path)
 
 
+@router.patch("/api/technical/materials/raw/folders")
+async def technical_raw_rename_folder(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return await technical_material_store.raw_rename_folder(
+        path=str(data.get("path") or data.get("folderPath") or ""),
+        new_name=str(data.get("newName") or data.get("folderName") or data.get("name") or ""),
+    )
+
+
 @router.post("/api/technical/materials/raw/upload")
 async def technical_raw_upload(request: Request) -> dict[str, Any]:
     content_type = request.headers.get("content-type", "")
@@ -725,7 +733,12 @@ async def technical_raw_tag_import_commit(data: dict[str, Any] = Body(default_fa
     items = data.get("items")
     if not isinstance(items, list) or not items:
         raise PeripheralError(400, "没有可导入的标签条目。", "TAG_IMPORT_EMPTY_ITEMS")
-    return await technical_material_store.raw_tag_import_commit(items=items)
+    import_mode = "overwrite" if str(data.get("importMode") or "").strip().lower() == "overwrite" else "merge"
+    return await technical_material_store.raw_tag_import_commit(
+        items=items,
+        target_path=str(data.get("targetPath") or ""),
+        import_mode=import_mode,
+    )
 
 
 @router.patch("/api/technical/materials/raw/{file_id}")

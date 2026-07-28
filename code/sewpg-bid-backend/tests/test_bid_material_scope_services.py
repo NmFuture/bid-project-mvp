@@ -655,7 +655,7 @@ def test_bid_fill_state_labels_are_outside_store() -> None:
     runtime_source = Path("app/services/bid_runtime_state.py").read_text(encoding="utf-8")
 
     assert fill_document_label({"bidType": "商务标"}) == "商务标正文"
-    assert fill_task_label({"bidType": "技术标"}) == "调用技术标正文拼装 skill"
+    assert fill_task_label({"bidType": "技术标"}) == "组装技术标正文"
     for call in (fill_task_label, fill_document_label, default_fill_state):
         try:
             call({})
@@ -664,7 +664,7 @@ def test_bid_fill_state_labels_are_outside_store() -> None:
         else:
             raise AssertionError(f"{call.__name__} should require explicit bidType")
     assert business_state["tasks"][1]["label"] == "调用商务标正文拼装 skill"
-    assert technical_state["tasks"][1]["label"] == "调用技术标正文拼装 skill"
+    assert technical_state["tasks"][1]["label"] == "组装技术标正文"
     assert "def fill_task_label" not in store_source
     assert "def fill_document_label" not in store_source
     assert "def default_fill_tasks" not in store_source
@@ -703,7 +703,7 @@ def test_bid_fill_generation_state_rules_are_outside_store() -> None:
     assert business_running["summary"].startswith("已开始拼装商务标正文")
     assert business_running["tasks"][1]["label"] == "调用商务标正文拼装 skill"
     assert technical_running["summary"].startswith("已开始拼装技术标正文")
-    assert technical_running["tasks"][1]["label"] == "调用技术标正文拼装 skill"
+    assert technical_running["tasks"][1]["label"] == "组装技术标正文"
     assert business_saved["runDuration"] == "1分15秒"
     assert business_saved["output"]["size"] == "1.5 KB"
     assert business_saved["events"][-1]["message"] == "商务标正文拼装完成，已输出 1 个目录章节。"
@@ -1602,7 +1602,7 @@ def test_project_delete_uses_workspace_material_store_facades() -> None:
         store.delete_project(technical_project_id)
 
     assert business_deleted == [f"商务标/项目素材/{business_project_id}"]
-    assert technical_deleted == [f"技术标/项目定制/{technical_project_id}"]
+    assert technical_deleted == ["技术标/项目定制/技术标删除项目素材测试"]
 
 
 def test_project_material_cleanup_facades_only_accept_project_roots() -> None:
@@ -2569,6 +2569,59 @@ def test_material_runtime_tables_are_outside_material_store() -> None:
     ]:
         assert "from app.services.material_runtime_tables import ensure_material_runtime_tables" in source
         assert "from app.services.material_store import ensure_material_runtime_tables" not in source
+
+
+def test_performance_items_runtime_schema_keeps_partner_name() -> None:
+    from app.services.material_runtime_tables import MaterialRuntimeTables
+
+    class SqlCaptureSession:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def execute(self, statement: Any) -> None:
+            self.statements.append(str(statement))
+
+    session = SqlCaptureSession()
+    asyncio.run(MaterialRuntimeTables().ensure(session))
+
+    create_statement = next(
+        statement
+        for statement in session.statements
+        if "CREATE TABLE IF NOT EXISTS performance_items (" in statement
+    )
+    assert "partner_name VARCHAR(300)" in create_statement
+    assert (
+        "ALTER TABLE performance_items ADD COLUMN IF NOT EXISTS partner_name VARCHAR(300)"
+        in session.statements
+    )
+
+
+def test_material_runtime_tables_repairs_duplicate_folder_paths_before_unique_index() -> None:
+    from app.services.material_runtime_tables import MaterialRuntimeTables
+
+    class SqlCaptureSession:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def execute(self, statement: Any) -> None:
+            self.statements.append(str(statement))
+
+    session = SqlCaptureSession()
+    asyncio.run(MaterialRuntimeTables().ensure(session))
+
+    migration_statement = next(
+        statement
+        for statement in session.statements
+        if "CREATE UNIQUE INDEX idx_raw_folders_path" in statement
+    )
+    file_relink = migration_statement.index("UPDATE raw_files AS target")
+    child_relink = migration_statement.index("UPDATE raw_folders AS child")
+    duplicate_delete = migration_statement.index("DELETE FROM raw_folders AS target")
+    unique_index = migration_statement.index("CREATE UNIQUE INDEX idx_raw_folders_path")
+
+    assert "pg_advisory_xact_lock" in migration_statement
+    assert "MIN(id) OVER (PARTITION BY path)" in migration_statement
+    assert file_relink < child_relink < duplicate_delete < unique_index
 
 
 def test_material_file_display_helpers_are_outside_material_store() -> None:
