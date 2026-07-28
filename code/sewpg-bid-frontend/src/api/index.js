@@ -586,6 +586,7 @@ export const technicalMaterialsAPI = {
     saveScopes: (data) => request('/technical/materials/certificates/scopes', { method: 'PUT', body: data }),
     incremental: (data = {}) =>
       request('/technical/materials/certificates/incremental', { method: 'POST', body: data, timeoutMs: 20 * 60 * 1000 }),
+    incrementalStatus: () => request('/technical/materials/certificates/incremental/status'),
     recognize: (fileId) =>
       request(`/technical/materials/certificates/${fileId}/recognize`, { method: 'POST', timeoutMs: 10 * 60 * 1000 }),
     update: (fileId, data) =>
