@@ -175,6 +175,27 @@ def _seed_technical_gap_project(plan: dict) -> str:
             "plan": plan,
             "items": copy.deepcopy(plan.get("items") or []),
             "integrity": {},
+            # build_facts 门控 seed：测试绕过实时表上传，直接注入小清单作为项目 specs
+            "factSpecs": {
+                "fileName": "测试实时表.xlsx",
+                "uploadedAt": "2026-07-27T00:00:00",
+                "specs": [
+                    {
+                        "seq": 1,
+                        "key": "招标编号",
+                        "label": "招标编号",
+                        "reviewLabel": "",
+                        "sourceFile": "",
+                        "placeholder": "",
+                        "note": "",
+                        "needsConfirmation": False,
+                        "referenceFile": "招标文件",
+                        "valueRequired": True,
+                        "sourceKind": "tender",
+                        "aliases": [],
+                    }
+                ],
+            },
         }
     )
     store._persist_project(record)

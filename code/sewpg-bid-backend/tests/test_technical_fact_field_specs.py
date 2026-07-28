@@ -186,7 +186,15 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
             "identity": {"owner": "华能集团"},
             "parse_result": {},
         }
-        table = build_project_fact_table(project, {})
+        # 字段骨架来自项目实时表（gap_state["factSpecs"]）；本测试用全局清单做项目 specs
+        gap_state = {
+            "factSpecs": {
+                "fileName": "测试实时表.xlsx",
+                "uploadedAt": "2026-07-27T00:00:00",
+                "specs": fillable_specs(),
+            }
+        }
+        table = build_project_fact_table(project, gap_state)
         self.assertEqual(table["schemaVersion"], "bid-project-fact-table-v2")
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
         self.assertEqual(len(spec_fields), 128)
