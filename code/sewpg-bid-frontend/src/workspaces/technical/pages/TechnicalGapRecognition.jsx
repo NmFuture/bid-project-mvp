@@ -1315,6 +1315,19 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     setBusyAction('fact-field-confirm')
     try {
+      // 人工新增字段尚未落库时直接 PATCH 会 404：先整表持久化（后端保留字段 id），
+      // 再用同一 id 逐字段确认。整表保存为整体替换，重试不会产生重复字段。
+      const persistedIds = new Set(asObjectArray(factTable?.fields).map((item) => String(item?.id || '')))
+      if (!persistedIds.has(fieldId)) {
+        const fieldsToSave = factFields.filter((item) => String(item.label || item.value || '').trim())
+        const savedTable = await technicalGapsAPI.saveFacts(id, { fields: fieldsToSave, operator: '当前用户' })
+        if (!asObjectArray(savedTable?.fields).some((item) => String(item?.id || '') === fieldId)) {
+          throw new Error('字段保存失败，请重试')
+        }
+        setFactTable(savedTable)
+        setFactFields(asObjectArray(savedTable?.fields))
+        setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
+      }
       const payload = await technicalGapsAPI.saveFactField(id, fieldId, {
         value: field.value || '',
         status: field.status || 'unextracted',
