@@ -46,6 +46,29 @@ def test_queued_job_lock_uses_finite_queue_ttl() -> None:
     }
 
 
+def test_generation_jobs_are_routed_by_business_domain() -> None:
+    expected_queues = {
+        "s1_parse": job_queue.QUEUE_KEY,
+        "directory_generation": job_queue.QUEUE_KEY,
+        "fill_generation": job_queue.QUEUE_KEY,
+        "material_cleaning": job_queue.MATERIAL_QUEUE_KEY,
+        "material_deep_parse": job_queue.MATERIAL_QUEUE_KEY,
+        "material_wiki_generation": job_queue.MATERIAL_QUEUE_KEY,
+    }
+
+    for job_type, expected_queue in expected_queues.items():
+        client = MagicMock()
+        client.set.return_value = True
+        pipeline = client.pipeline.return_value
+        pipeline.execute.return_value = []
+
+        with patch.object(job_queue, "get_redis_client", return_value=client):
+            result = job_queue.enqueue_generation_job(job_type, "project-1", {})
+
+        assert result.queued is True
+        assert pipeline.rpush.call_args.args[0] == expected_queue
+
+
 def test_enqueue_failure_releases_lock_with_owner_check() -> None:
     client = MagicMock()
     client.set.return_value = True
@@ -226,7 +249,7 @@ def test_dequeue_can_use_docling_queue() -> None:
     )
 
 
-def test_find_active_jobs_scans_default_and_docling_queues() -> None:
+def test_find_active_jobs_scans_all_worker_queues() -> None:
     client = MagicMock()
     client.hgetall.return_value = {}
     docling_payload = json.dumps(
@@ -241,9 +264,38 @@ def test_find_active_jobs_scans_default_and_docling_queues() -> None:
     assert [call.args[0] for call in client.lrange.call_args_list] == [
         job_queue.QUEUE_KEY,
         job_queue.processing_queue_key(job_queue.QUEUE_KEY),
+        job_queue.MATERIAL_QUEUE_KEY,
+        job_queue.processing_queue_key(job_queue.MATERIAL_QUEUE_KEY),
         job_queue.DOCLING_QUEUE_KEY,
         job_queue.processing_queue_key(job_queue.DOCLING_QUEUE_KEY),
     ]
+
+
+def test_get_job_status_reads_persisted_job_hash() -> None:
+    client = MagicMock()
+    client.hgetall.return_value = {
+        "id": "wiki-job-1",
+        "type": "material_wiki_generation",
+        "projectId": "wiki:technical",
+        "status": "running",
+        "message": "正在生成",
+    }
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        status = job_queue.get_job_status("wiki-job-1")
+
+    assert status == client.hgetall.return_value
+    client.hgetall.assert_called_once_with(job_queue._job_key("wiki-job-1"))
+
+
+def test_get_job_status_exposes_redis_unavailability() -> None:
+    with patch.object(job_queue, "get_redis_client", return_value=None):
+        try:
+            job_queue.get_job_status("wiki-job-1")
+        except job_queue.JobStatusUnavailable:
+            pass
+        else:
+            raise AssertionError("Redis unavailable must not be reported as a missing job")
 
 
 def test_renew_returns_false_when_lock_owned_by_other_job() -> None:
