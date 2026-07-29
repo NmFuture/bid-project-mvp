@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
@@ -16,6 +17,11 @@ def raw_object_key(folder_path: str, file_name: str) -> str:
     return f"raw/{folder_path.strip('/')}/{file_name}"
 
 
+def raw_version_object_key(file_id: int, version: int, file_name: str) -> str:
+    safe_name = PurePosixPath(str(file_name or "").replace("\\", "/")).name
+    return f"raw-versions/RAW-{file_id:04d}/v{version}/{safe_name}"
+
+
 def remove_cleaned_object_from_ext(ext: dict[str, Any]) -> None:
     bucket = str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"])
     key = str(ext.get("cleanedMinioKey") or "")
@@ -27,12 +33,28 @@ def remove_cleaned_object_from_ext(ext: dict[str, Any]) -> None:
         logger.warning("Failed to remove cleaned material object %s/%s: %s", bucket, key, exc)
 
 
-def enqueue_cleaning_job(file_id: int) -> dict[str, Any]:
+def enqueue_cleaning_job(
+    file_id: int,
+    *,
+    source_version: int | None = None,
+    source_bucket: str = "",
+    source_key: str = "",
+) -> dict[str, Any]:
     from app.services.job_queue import enqueue_generation_job
 
     raw_id = f"RAW-{file_id:04d}"
+    lock_id = f"{raw_id}:v{source_version}" if source_version is not None else raw_id
+    data: dict[str, Any] = {"fileId": raw_id}
+    if source_version is not None:
+        data.update(
+            {
+                "sourceVersion": int(source_version),
+                "sourceBucket": str(source_bucket or ""),
+                "sourceKey": str(source_key or ""),
+            }
+        )
     try:
-        result = enqueue_generation_job("material_cleaning", raw_id, {"fileId": raw_id})
+        result = enqueue_generation_job("material_cleaning", lock_id, data)
     except Exception as exc:  # pragma: no cover - queue outages should not fail uploads
         logger.warning("Failed to enqueue material cleaning job for %s: %s", raw_id, exc)
         return {"queued": False, "unavailable": True, "message": str(exc)}

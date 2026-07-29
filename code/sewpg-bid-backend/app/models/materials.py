@@ -83,6 +83,16 @@ class RawFile(Base):
     def to_dict(self) -> dict[str, Any]:
         size = self.size_bytes or 0
         ext = self.ext_fields or {}
+        cleaned_source_version = ext.get("cleanedSourceVersion")
+        try:
+            cleaned_is_current = (cleaned_source_version is None or cleaned_source_version == "") or int(
+                cleaned_source_version
+            ) == int(
+                self.version or 1
+            )
+        except (TypeError, ValueError):
+            cleaned_is_current = False
+        has_cleaned_word = bool(ext.get("cleanedMinioKey")) and cleaned_is_current
         if size < 1024:
             size_label = f"{size} B"
         elif size < 1024 * 1024:
@@ -131,8 +141,9 @@ class RawFile(Base):
             "cleanedSize": ext.get("cleanedSize") or 0,
             "cleanedSizeLabel": _size_label(int(ext.get("cleanedSize") or 0)),
             "cleanedAt": ext.get("cleanedAt") or "",
-            "hasCleanedWord": bool(ext.get("cleanedMinioKey")),
-            "cleanedDownloadUrl": f"__scoped_material_raw__/RAW-{self.id:04d}/cleaned/content" if ext.get("cleanedMinioKey") else "",
+            "hasCleanedWord": has_cleaned_word,
+            "cleanedDownloadUrl": f"__scoped_material_raw__/RAW-{self.id:04d}/cleaned/content" if has_cleaned_word else "",
+            "cleanedSourceVersion": cleaned_source_version,
             "turbineModel": ext.get("turbineModel") or "",
             "turbineModelLabel": ext.get("turbineModelLabel") or ext.get("turbineModel") or "",
             "turbinePlatform": ext.get("turbinePlatform") or "",

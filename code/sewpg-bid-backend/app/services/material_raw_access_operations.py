@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.material_raw_file_filter import raw_file_matches_bid_type
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import INTERNAL_RAW_URL_PREFIX
@@ -87,7 +88,7 @@ async def raw_cleaned_preview_operation(
 
         ext = item.ext_fields or {}
         cleaned_key = str(ext.get("cleanedMinioKey") or "")
-        if str(ext.get("cleanStatus") or "") != "cleaned" or not cleaned_key:
+        if str(ext.get("cleanStatus") or "") != "cleaned" or not cleaned_artifact_is_current(item.version, ext):
             raise PeripheralError(
                 400,
                 "素材清洗完成后才可预览清洗稿。",
@@ -161,7 +162,7 @@ async def raw_download_cleaned_content_operation(
             raise PeripheralError(400, "该文件不属于当前素材库。", "RAW_FILE_SCOPE")
         ext = item.ext_fields or {}
         key = str(ext.get("cleanedMinioKey") or "")
-        if not key:
+        if not key or not cleaned_artifact_is_current(item.version, ext):
             raise PeripheralError(404, "清洗后的 Word 文件尚未生成。", "RAW_CLEANED_FILE_NOT_FOUND")
         return {
             "fileId": f"RAW-{item.id:04d}",

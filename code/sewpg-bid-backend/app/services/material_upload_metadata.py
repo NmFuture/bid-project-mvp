@@ -26,6 +26,28 @@ RAW_UPLOAD_VERSION_ACTION = "version"
 RAW_UPLOAD_OPERATOR_LABEL = "当前用户"
 RAW_UPLOAD_CONFLICT_ACTIONS = {RAW_UPLOAD_OVERWRITE_ACTION, RAW_UPLOAD_VERSION_ACTION}
 
+CLEANED_OUTPUT_EXT_FIELDS = {
+    "cleanError",
+    "cleanResultStatus",
+    "cleanLogTail",
+    "cleanReport",
+    "cleanRelativeSourcePath",
+    "cleanRelativeOutputPath",
+    "cleanNeedsHumanReview",
+    "cleanUsableForRetrieval",
+    "cleanedMinioBucket",
+    "cleanedMinioKey",
+    "cleanedFileName",
+    "cleanedSize",
+    "cleanedAt",
+    "cleanedSourceVersion",
+    "cleanedSourceKey",
+    "deepParseStatus",
+    "deepParseMessage",
+    "deepParseUpdatedAt",
+    "deepParseProfile",
+}
+
 
 def build_raw_upload_ext_fields(
     *,
@@ -144,6 +166,8 @@ def build_raw_upload_existing_ext_fields(
     last_operator: str = RAW_UPLOAD_OPERATOR_LABEL,
 ) -> dict[str, Any]:
     ext = dict(current_ext_fields or {})
+    for field in CLEANED_OUTPUT_EXT_FIELDS:
+        ext.pop(field, None)
     ext.update(dict(upload_ext_fields or {}))
     ext.update({"lastAction": last_action, "lastOperator": last_operator})
     return ext

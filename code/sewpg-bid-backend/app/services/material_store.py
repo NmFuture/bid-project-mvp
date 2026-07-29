@@ -18,6 +18,7 @@ from app.services.material_raw_object_operations import (
     enqueue_cleaning_job,
     purge_raw_file_objects,
     raw_object_key,
+    raw_version_object_key,
     remove_cleaned_object_from_ext,
 )
 from app.services.material_raw_update_operations import update_raw_file
@@ -200,6 +201,7 @@ class MaterialStore:
             ),
             remove_cleaned_object_from_ext=remove_cleaned_object_from_ext,
             raw_object_key=raw_object_key,
+            raw_version_object_key=raw_version_object_key,
             infer_material_tier_from_folder=infer_material_tier_from_raw_folder,
             enqueue_cleaning_job=enqueue_cleaning_job,
         )

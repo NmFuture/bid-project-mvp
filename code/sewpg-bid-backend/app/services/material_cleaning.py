@@ -12,7 +12,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm import selectinload
 
 from app.core.config import BASE_DIR, settings
@@ -20,6 +21,7 @@ from app.models import async_session
 from app.models.materials import RawFile
 from app.services.filename_utils import short_filename
 from app.services.material_doc_conversion import convert_doc_to_docx
+from app.services.material_raw_object_operations import enqueue_cleaning_job
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 
@@ -58,10 +60,21 @@ def is_cleanable_material(name: str) -> bool:
     return PurePosixPath(str(name or "")).suffix.lower() in CLEANABLE_SUFFIXES
 
 
-def cleaned_object_key(raw_file_id: int, file_name: str) -> str:
+def cleaned_object_key(raw_file_id: int, file_name: str, *, source_version: int | None = None) -> str:
     short_name = _short_file_name_for_path(file_name, f"RAW-{raw_file_id:04d}.docx")
     stem = short_filename(PurePosixPath(short_name).stem, f"RAW-{raw_file_id:04d}", max_bytes=82)
+    if source_version is not None:
+        return f"cleaned/RAW-{raw_file_id:04d}/v{int(source_version)}/{stem}.docx"
     return f"cleaned/RAW-{raw_file_id:04d}/{uuid4().hex}-{stem}.docx"
+
+
+def _stale_cleaning_result(source_version: int, current_version: int) -> dict[str, Any]:
+    return {
+        "cleanStatus": "stale",
+        "cleanMessage": "清洗任务对应的素材版本已过期。",
+        "sourceVersion": source_version,
+        "currentVersion": current_version,
+    }
 
 
 def _get_sync_cleaning_loop() -> asyncio.AbstractEventLoop:
@@ -179,6 +192,7 @@ async def set_material_clean_status(
     status: str,
     message: str,
     *,
+    source_version: int | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     numeric_id = _numeric_raw_file_id(file_id)
@@ -189,6 +203,11 @@ async def set_material_clean_status(
         item = result.scalar_one_or_none()
         if item is None:
             raise PeripheralError(404, "素材文件不存在。", "RAW_FILE_NOT_FOUND")
+        expected_version = int(source_version if source_version is not None else item.version or 1)
+        current_version = int(item.version or 1)
+        if current_version != expected_version:
+            await session.rollback()
+            return _stale_cleaning_result(expected_version, current_version)
         ext = dict(item.ext_fields or {})
         ext.update(
             {
@@ -199,12 +218,93 @@ async def set_material_clean_status(
         )
         if extra:
             ext.update(extra)
-        item.ext_fields = ext
-        await session.flush()
-        await session.refresh(item, attribute_names=["updated_at"])
+        update_result = await session.execute(
+            update(RawFile)
+            .where(RawFile.id == numeric_id, RawFile.version == expected_version)
+            .values(ext_fields=ext)
+            .execution_options(synchronize_session=False)
+        )
+        if update_result.rowcount != 1:
+            await session.rollback()
+            current_result = await session.execute(select(RawFile).where(RawFile.id == numeric_id))
+            current_item = current_result.scalar_one_or_none()
+            return _stale_cleaning_result(
+                expected_version,
+                int(current_item.version or 0) if current_item is not None else 0,
+            )
+        set_committed_value(item, "ext_fields", ext)
         payload = item.to_dict()
         await session.commit()
         return payload
+
+
+async def _requeue_latest_cleaning(file_id: str, *, stale_version: int) -> dict[str, Any]:
+    numeric_id = _numeric_raw_file_id(file_id)
+    async with async_session() as session:
+        result = await session.execute(select(RawFile).where(RawFile.id == numeric_id))
+        item = result.scalar_one_or_none()
+        if item is None:
+            return {"queued": False, "reason": "missing"}
+        current_version = int(item.version or 1)
+        ext = item.ext_fields or {}
+        if current_version <= stale_version or str(ext.get("cleanStatus") or "") != "pending":
+            return {"queued": False, "reason": "not_pending"}
+        source_bucket = str(item.minio_bucket or settings.minio_buckets["materials"])
+        source_key = str(item.minio_key or "")
+    return enqueue_cleaning_job(
+        numeric_id,
+        source_version=current_version,
+        source_bucket=source_bucket,
+        source_key=source_key,
+    )
+
+
+def _remove_cleaned_object_with_retries(bucket: str, key: str, *, attempts: int = 3) -> bool:
+    for attempt in range(1, attempts + 1):
+        try:
+            minio_client.remove_object(bucket, key)
+            return True
+        except Exception as exc:  # pragma: no cover - 重试失败路径依赖 MinIO 故障
+            logger.warning(
+                "清理 cleaned 对象 %s/%s 失败（%d/%d）：%s",
+                bucket,
+                key,
+                attempt,
+                attempts,
+                exc,
+            )
+    return False
+
+
+async def _discard_stale_artifact(
+    file_id: str,
+    *,
+    source_version: int,
+    bucket: str,
+    key: str,
+) -> None:
+    _remove_cleaned_object_with_retries(bucket, key)
+    await _requeue_latest_cleaning(file_id, stale_version=source_version)
+
+
+async def _set_task_clean_status(
+    file_id: str,
+    source_version: int,
+    status: str,
+    message: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = await set_material_clean_status(
+        file_id,
+        status,
+        message,
+        source_version=source_version,
+        extra=extra,
+    )
+    if result.get("cleanStatus") == "stale":
+        await _requeue_latest_cleaning(file_id, stale_version=source_version)
+    return result
 
 
 async def clean_material_file(
@@ -225,25 +325,44 @@ async def clean_material_file(
         source_key = str(item.minio_key or "")
         source_version = int(item.version or 1)
 
+    task_data = data or {}
+    task_source_version = task_data.get("sourceVersion")
+    if task_data and task_source_version is None and source_version > 1:
+        stale = _stale_cleaning_result(0, source_version)
+        await _requeue_latest_cleaning(file_id, stale_version=0)
+        return stale
+    if task_source_version is not None:
+        expected_version = int(task_source_version)
+        if expected_version != source_version:
+            stale = _stale_cleaning_result(expected_version, source_version)
+            await _requeue_latest_cleaning(file_id, stale_version=expected_version)
+            return stale
+        source_version = expected_version
+
     # 非 Word 素材不清洗，直接标记保留原件，同时兜底修正历史 pending 任务。
     if not is_cleanable_material(source_name):
-        return await set_material_clean_status(
+        return await _set_task_clean_status(
             file_id,
+            source_version,
             "original_only",
             "非 Word 素材保留原件，不触发自动清洗。",
         )
 
     converting_doc = PurePosixPath(source_name).suffix.lower() == ".doc"
-    await set_material_clean_status(
+    cleaning_status = await _set_task_clean_status(
         file_id,
+        source_version,
         "cleaning",
         "正在通过 OnlyOffice 将 DOC 转换为 DOCX。" if converting_doc else "正在清洗 Word 素材。",
     )
+    if cleaning_status.get("cleanStatus") == "stale":
+        return cleaning_status
 
     driver_path = _skill_driver_path()
     if not driver_path.exists():
-        return await set_material_clean_status(
+        return await _set_task_clean_status(
             file_id,
+            source_version,
             "failed",
             "bid-material-format-cleaner skill 未安装到后端镜像。",
             extra={"cleanError": str(driver_path)},
@@ -263,8 +382,9 @@ async def clean_material_file(
             )
         except Exception as exc:
             message = f"DOC 转 DOCX 失败：{exc}" if converting_doc else f"素材原件读取失败：{exc}"
-            return await set_material_clean_status(
+            return await _set_task_clean_status(
                 file_id,
+                source_version,
                 "failed",
                 message,
                 extra={"cleanError": message, "cleanResultStatus": "FAIL"},
@@ -307,8 +427,9 @@ async def clean_material_file(
                 message = f"清洗失败：{driver_detail}"
             elif proc.stderr.strip():
                 message = f"清洗失败：{proc.stderr.strip()[-300:]}"
-            return await set_material_clean_status(
+            return await _set_task_clean_status(
                 file_id,
+                source_version,
                 "failed",
                 message,
                 extra={
@@ -321,7 +442,7 @@ async def clean_material_file(
                 },
             )
 
-        key = cleaned_object_key(numeric_id, source_name)
+        key = cleaned_object_key(numeric_id, source_name, source_version=source_version)
         bucket = settings.minio_buckets["materials"]
         minio_client.upload_file(bucket, key, cleaned_path, WORD_MEDIA_TYPE)
         size = cleaned_path.stat().st_size
@@ -329,10 +450,11 @@ async def clean_material_file(
         if converting_doc:
             detail = f"DOC 已通过 OnlyOffice 转换为 DOCX；{detail}"
         try:
-            return await set_material_clean_status(
+            result = await set_material_clean_status(
                 file_id,
                 "cleaned",
                 detail,
+                source_version=source_version,
                 extra={
                     "cleanResultStatus": driver_status or ("OK" if proc.returncode == 0 else "REVIEW"),
                     "cleanedMinioBucket": bucket,
@@ -340,6 +462,8 @@ async def clean_material_file(
                     "cleanedFileName": f"{PurePosixPath(source_name).stem}.docx",
                     "cleanedSize": size,
                     "cleanedAt": _now_iso(),
+                    "cleanedSourceVersion": source_version,
+                    "cleanedSourceKey": source_key,
                     "cleanLogTail": report_tail,
                     "cleanReport": _compact_cleaning_manifest(manifest, manifest_record),
                     "cleanRelativeSourcePath": source_name,
@@ -348,12 +472,17 @@ async def clean_material_file(
                     "cleanUsableForRetrieval": bool(manifest_record.get("isUsableForRetrieval", True)),
                 },
             )
+            if result.get("cleanStatus") == "stale":
+                await _discard_stale_artifact(
+                    file_id,
+                    source_version=source_version,
+                    bucket=bucket,
+                    key=key,
+                )
+            return result
         except Exception:
             # 状态写库失败时补偿删除刚上传的 cleaned 对象，避免孤儿文件（L6）
-            try:
-                minio_client.remove_object(bucket, key)
-            except Exception as cleanup_exc:  # pragma: no cover - 补偿删除失败仅告警
-                logger.warning("清洗状态写入失败后清理 cleaned 对象 %s/%s 失败：%s", bucket, key, cleanup_exc)
+            _remove_cleaned_object_with_retries(bucket, key)
             raise
 
 
