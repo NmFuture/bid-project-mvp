@@ -8,7 +8,8 @@
 
 - 标签1 = 机型（路径第 3 段，如 ``EW6.7-202``）。以目录为准而不是文件名：
   示例中 ``EW6.7-220-125-...`` 文件放在 ``EW6.7-202`` 目录下，机型标签
-  仍是 ``EW6.7-202``。
+  仍是 ``EW6.7-202``。目录名带上置/下置等布局或配置后缀时只取前面的
+  英数字基准型号（后缀仅用于系统内部选型和素材过滤，不进标签）。
 - 标签2 = 类别（路径第 4 段，如 ``部件``/``认证证书``/``专题``，原文）。
 - 标签3：
   - 有五级目录 → 五级目录名原文（如 ``变流器``/``智能传感系统``）；
@@ -16,7 +17,9 @@
   - 文件直接挂在 ``部件`` 类别下 → 文件名去扩展名、去括号备注
     （如 ``动力电缆（常规方案）.pdf`` → ``动力电缆``）；
   - 其他情况无标签3。
-- 文件不在机型目录下（路径不足 3 段）→ 不打标签，返回空列表。
+- 跨机型复用（R06-B06-02）：第 3 段不是机型目录（如 ``通用素材`` 下的
+  类别目录）或文件直接挂在 ``标准文件`` 根下 → 标签1 打 ``通用``，
+  可被任意具体机型标签命中；后续层级仍按上面的规则追加。
 
 解析与匹配是确定性纯函数，便于单测。
 """
@@ -28,7 +31,8 @@ from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_tag_import import _file_stem, _fold
-from app.services.material_tags import normalize_material_tags
+from app.services.material_tags import GENERIC_MODEL_TAG, normalize_material_tags
+from app.services.turbine_models import LAYOUT_WORDS, is_valid_turbine_model
 
 # 四级专题目录名 → 标签3 的缩短映射。
 # 来源：业主机型标签示例 Excel（todo-example-机型标签-EW6.7-202.xlsx，20260728），
@@ -74,14 +78,34 @@ def _filename_tag(file_name: str) -> str:
     return cleaned
 
 
+def _model_segment_tag(segment: str) -> str:
+    """机型目录段 → 标签1：去上置/下置等布局配置后缀后的英数字基准型号。
+
+    不是有效机型的目录段（如「机型认证与测试报告」）返回空串，走通用标签。
+    """
+
+    base = str(segment or "").strip()
+    for word in LAYOUT_WORDS:
+        base = base.replace(word, "")
+    base = base.strip("_- ")
+    return base if is_valid_turbine_model(base) else ""
+
+
 def derive_auto_tags(folder_path: str, file_name: str) -> list[str]:
-    """按目录路径 + 文件名推导标签，返回规整后的标签列表（可为空）。"""
+    """按目录路径 + 文件名推导标签，返回规整后的标签列表。"""
 
     parts = _split_folder_parts(folder_path)
     # parts: [档位, 机型, 类别, 四级, 五级, ...]
     if len(parts) < 2:
-        return []
-    tags: list[str] = [parts[1]]  # 标签1：机型
+        # 直接挂在标准文件根下的文件不绑定机型，可跨机型复用
+        return normalize_material_tags([GENERIC_MODEL_TAG])
+    model_tag = _model_segment_tag(parts[1])
+    if model_tag:
+        tags: list[str] = [model_tag]  # 标签1：机型基准型号
+    else:
+        # 第 3 段不是机型目录（如通用素材下的类别目录）→ 跨机型通用素材，
+        # 标签1 打「通用」，目录段原文顺延为标签2
+        tags = [GENERIC_MODEL_TAG, parts[1]]
     if len(parts) < 3:
         return normalize_material_tags(tags)
     category = parts[2]
