@@ -116,13 +116,15 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const [refreshingWiki, setRefreshingWiki] = useState(false)
-  const [rebuildingWiki, setRebuildingWiki] = useState(false)
+  const [refreshingWikiPending, setRefreshingWiki] = useState(false)
+  const [rebuildingWikiPending, setRebuildingWiki] = useState(false)
   const [wikiJobId, setWikiJobId] = useState(() => readWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY))
   const [wikiJobMode, setWikiJobMode] = useState(() => readWikiJobStorage(WIKI_JOB_MODE_STORAGE_KEY))
   const [wikiJobActive, setWikiJobActive] = useState(() => Boolean(readWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY)))
   const [wikiJobPhase, setWikiJobPhase] = useState('')
   const [collapsedMap, setCollapsedMap] = useState({})
+  const refreshingWiki = refreshingWikiPending || (wikiJobActive && wikiJobMode !== 'replace')
+  const rebuildingWiki = rebuildingWikiPending || (wikiJobActive && wikiJobMode !== 'refresh')
 
   const splitContainerRef = useRef(null)
   const [treeWidth, setTreeWidth] = useState(TREE_WIDTH_DEFAULT)
@@ -207,19 +209,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     }, 0)
     return () => clearTimeout(timer)
   }, [loadData])
-
-  // 挂载时探测后台 Wiki 生成任务：任务在跑则恢复轮询态（离开页面再回来可接上）。
-  // 恢复时无法区分触发方式，两个按钮同时置忙、禁用，避免重复触发。
-  useEffect(() => {
-    if (!wikiJobId) return
-    if (wikiJobMode === 'replace') setRebuildingWiki(true)
-    else if (wikiJobMode === 'refresh') setRefreshingWiki(true)
-    else {
-      setRefreshingWiki(true)
-      setRebuildingWiki(true)
-    }
-    setWikiJobActive(true)
-  }, [wikiJobId, wikiJobMode])
 
   // 后台 Wiki 生成任务轮询：到达终态后应用结果或提示失败
   useEffect(() => {
