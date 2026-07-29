@@ -419,6 +419,26 @@ def mark_job_status(job: dict[str, Any], status: str, message: str = "") -> None
         logger.warning("Failed to update Redis job status: %s", exc)
 
 
+def mark_job_progress(job: dict[str, Any], progress: dict[str, Any]) -> None:
+    client = get_redis_client()
+    job_id = str(job.get("id") or "")
+    if client is None or not job_id:
+        return
+    try:
+        pipe = client.pipeline()
+        pipe.hset(
+            _job_key(job_id),
+            mapping={
+                "progress": json.dumps(progress or {}, ensure_ascii=False, separators=(",", ":")),
+                "updatedAt": _now_iso(),
+            },
+        )
+        pipe.expire(_job_key(job_id), settings.redis_job_result_ttl_sec)
+        pipe.execute()
+    except RedisError as exc:
+        logger.warning("Failed to update Redis job progress: %s", exc)
+
+
 def get_job_status(job_id: str) -> dict[str, Any] | None:
     resolved_job_id = str(job_id or "").strip()
     if not resolved_job_id:
@@ -431,7 +451,17 @@ def get_job_status(job_id: str) -> dict[str, Any] | None:
     except RedisError as exc:
         logger.warning("Failed to read Redis job status: %s", exc)
         raise JobStatusUnavailable("Redis job status is unavailable") from exc
-    return dict(payload) if payload else None
+    if not payload:
+        return None
+    result = dict(payload)
+    raw_progress = result.get("progress")
+    if isinstance(raw_progress, str):
+        try:
+            progress = json.loads(raw_progress)
+        except ValueError:
+            progress = {}
+        result["progress"] = progress if isinstance(progress, dict) else {}
+    return result
 
 
 def request_job_cancel(job_id: str) -> None:

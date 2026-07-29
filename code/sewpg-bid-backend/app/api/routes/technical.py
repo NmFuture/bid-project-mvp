@@ -21,7 +21,11 @@ from app.services.peripheral import PeripheralError
 from app.services.background_job_registry import get_job_status, start_job, update_job_progress
 from app.services.technical_material_store import technical_material_store
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.material_wiki_jobs import enqueue_material_wiki_generation, material_wiki_job_status
+from app.services.material_wiki_jobs import (
+    enqueue_material_wiki_generation,
+    latest_material_wiki_job_status,
+    material_wiki_job_status,
+)
 
 router = APIRouter()
 
@@ -1013,6 +1017,14 @@ async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=d
 @router.get("/api/technical/materials/wiki/jobs/{job_id}")
 async def technical_wiki_job_status(job_id: str) -> dict[str, Any]:
     return material_wiki_job_status(job_id, TECHNICAL_BID_TYPE)
+
+
+@router.get("/api/technical/materials/wiki/bootstrap/status")
+async def technical_wiki_bootstrap_status() -> dict[str, Any]:
+    status = latest_material_wiki_job_status(TECHNICAL_BID_TYPE)
+    if status.get("status") == "succeeded":
+        status["result"] = await technical_material_store.wiki_list("")
+    return status
 
 
 @router.post("/api/technical/materials/wiki")

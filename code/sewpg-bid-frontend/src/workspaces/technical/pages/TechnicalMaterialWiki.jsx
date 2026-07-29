@@ -241,7 +241,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         if (stopped) return
         const state = String(status?.status || '').toLowerCase()
         if (state === 'queued' || state === 'running') {
-          setWikiJobPhase('')
+          setWikiJobPhase(String(status?.progress?.phase || ''))
           return
         }
         finish()
@@ -249,7 +249,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
           await loadData()
           showToast(status?.message || `${activeBidType} Wiki 已更新`)
         } else if (state === 'failed' || state === 'cancelled') {
-          showToast(status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
+          showToast(status?.message || status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
         } else {
           // idle：后端重启丢了任务状态，AI 预览缓存已保留，提示重触续跑
           showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')

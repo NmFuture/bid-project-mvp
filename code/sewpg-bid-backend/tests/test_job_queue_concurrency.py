@@ -69,6 +69,24 @@ def test_generation_jobs_are_routed_by_business_domain() -> None:
         assert pipeline.rpush.call_args.args[0] == expected_queue
 
 
+def test_job_progress_round_trips_as_structured_data() -> None:
+    client = MagicMock()
+    pipeline = client.pipeline.return_value
+    client.hgetall.return_value = {
+        "id": "job-1",
+        "status": "running",
+        "progress": '{"phase":"preview"}',
+    }
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        job_queue.mark_job_progress({"id": "job-1"}, {"phase": "preview"})
+        status = job_queue.get_job_status("job-1")
+
+    progress_mapping = pipeline.hset.call_args.kwargs["mapping"]
+    assert progress_mapping["progress"] == '{"phase":"preview"}'
+    assert status == {"id": "job-1", "status": "running", "progress": {"phase": "preview"}}
+
+
 def test_enqueue_failure_releases_lock_with_owner_check() -> None:
     client = MagicMock()
     client.set.return_value = True

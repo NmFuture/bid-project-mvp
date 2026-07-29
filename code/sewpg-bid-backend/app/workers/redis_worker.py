@@ -14,6 +14,7 @@ from app.services.job_queue import (
     clear_job_inflight,
     dequeue_generation_job,
     mark_job_inflight,
+    mark_job_progress,
     mark_job_status,
     reclaim_stale_inflight_jobs,
     recover_inflight_jobs,
@@ -208,7 +209,10 @@ def _run_job(job: dict[str, Any]) -> bool:
         elif job_type == "material_wiki_generation":
             from app.services.material_wiki_jobs import execute_material_wiki_generation
 
-            final_state = execute_material_wiki_generation(data)
+            final_state = execute_material_wiki_generation(
+                data,
+                progress_callback=lambda progress: mark_job_progress(job, progress),
+            )
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
