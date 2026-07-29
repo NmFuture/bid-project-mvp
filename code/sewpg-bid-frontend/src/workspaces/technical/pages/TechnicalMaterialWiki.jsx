@@ -89,6 +89,15 @@ const WIKI_JOB_PHASE_LABELS = {
   import: '导入 Wiki',
 }
 
+// 已耗时展示：与解析页 formatElapsedDuration 同一口径（X 分 X 秒）。
+const formatWikiJobElapsed = (seconds) => {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)))
+  const minutes = Math.floor(total / 60)
+  const remaining = total % 60
+  if (minutes > 0) return `${minutes} 分 ${remaining} 秒`
+  return `${total} 秒`
+}
+
 export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const activeBidType = TECHNICAL_BID_TYPE
   const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
@@ -100,6 +109,9 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [rebuildingWiki, setRebuildingWiki] = useState(false)
   const [wikiJobActive, setWikiJobActive] = useState(false)
   const [wikiJobPhase, setWikiJobPhase] = useState('')
+  // 任务开始时间取自服务端 startedAt，页面刷新后已耗时仍对齐真实开始时间。
+  const [wikiJobStartedAt, setWikiJobStartedAt] = useState('')
+  const [wikiJobElapsedSeconds, setWikiJobElapsedSeconds] = useState(0)
   const [collapsedMap, setCollapsedMap] = useState({})
 
   const splitContainerRef = useRef(null)
@@ -194,6 +206,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       .then((status) => {
         if (cancelled || status?.status !== 'running') return
         setWikiJobPhase(String(status?.progress?.phase || ''))
+        setWikiJobStartedAt(String(status?.startedAt || ''))
         setRefreshingWiki(true)
         setRebuildingWiki(true)
         setWikiJobActive(true)
@@ -209,6 +222,8 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     const finish = () => {
       setWikiJobActive(false)
       setWikiJobPhase('')
+      setWikiJobStartedAt('')
+      setWikiJobElapsedSeconds(0)
       setRefreshingWiki(false)
       setRebuildingWiki(false)
     }
@@ -218,6 +233,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         if (stopped) return
         if (status?.status === 'running') {
           setWikiJobPhase(String(status?.progress?.phase || ''))
+          setWikiJobStartedAt(String(status?.startedAt || ''))
           return
         }
         finish()
@@ -243,6 +259,20 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       clearInterval(timer)
     }
   }, [wikiJobActive, activeBidType, applyPayload, loadData, showToast])
+
+  // 已耗时每秒刷新一次，仅本地计时，不额外请求后端。
+  useEffect(() => {
+    if (!wikiJobActive) return undefined
+    const update = () => {
+      const started = Date.parse(wikiJobStartedAt)
+      setWikiJobElapsedSeconds(
+        Number.isFinite(started) ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : 0,
+      )
+    }
+    update()
+    const timer = setInterval(update, 1000)
+    return () => clearInterval(timer)
+  }, [wikiJobActive, wikiJobStartedAt])
 
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
@@ -300,6 +330,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       bidType: activeBidType,
     })
     setWikiJobPhase(String(status?.progress?.phase || ''))
+    setWikiJobStartedAt(String(status?.startedAt || ''))
     setWikiJobActive(true)
     showToast('任务已在后台开始，可离开本页，完成后自动更新。')
   }
@@ -451,6 +482,28 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         )}
         basePath={materialsBasePath}
       />
+      {wikiJobActive && (
+        // 后台生成任务的持续运行提示：阶段文案 + 已耗时 + 无百分比时的滚动条，
+        // 让用户在长耗时阶段也能确认后台仍在执行。
+        <div
+          role="status"
+          className="flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3"
+        >
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-[1.6]">
+            <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[16px] text-primary">
+              progress_activity
+            </span>
+            <span className="font-medium text-on-surface">
+              Wiki 生成任务进行中{WIKI_JOB_PHASE_LABELS[wikiJobPhase] ? ` · ${WIKI_JOB_PHASE_LABELS[wikiJobPhase]}` : ''}
+            </span>
+            <span className="tabular-nums text-on-surface-variant">已耗时 {formatWikiJobElapsed(wikiJobElapsedSeconds)}</span>
+            <span className="text-xs text-outline">任务在后台运行，可离开本页，完成后自动更新。</span>
+          </div>
+          <div className="h-1 w-full overflow-hidden rounded-full bg-primary/10">
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/60" />
+          </div>
+        </div>
+      )}
       {previewStatusItems.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-outline-variant/45 px-1 py-2 text-xs">
           <span className="font-medium text-on-surface">解析状态</span>
