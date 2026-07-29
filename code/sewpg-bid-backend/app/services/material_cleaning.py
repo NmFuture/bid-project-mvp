@@ -19,16 +19,15 @@ from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
 from app.services.filename_utils import short_filename
+from app.services.material_doc_conversion import convert_doc_to_docx
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 
 logger = logging.getLogger(__name__)
 
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-# 线上清洗链路已收束到只处理 Word；其他格式一律保留原件（original_only）
-CLEANABLE_SUFFIXES = {".docx"}
-# 可由后台任务转换为 Word 的非 Word 素材（driver 的 pdf/excel 分支）
-DEEP_CONVERTIBLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm"}
+# 线上清洗链路只处理 Word；DOC 先经 OnlyOffice 转为 DOCX，其他格式保留原件。
+CLEANABLE_SUFFIXES = {".doc", ".docx"}
 _sync_cleaning_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -59,12 +58,6 @@ def is_cleanable_material(name: str) -> bool:
     return PurePosixPath(str(name or "")).suffix.lower() in CLEANABLE_SUFFIXES
 
 
-def is_deep_convertible_material(name: str) -> bool:
-    """是否可后台转换为 Word 的非 Word 素材（PDF/XLSX 走 driver 的转换分支）。"""
-
-    return PurePosixPath(str(name or "")).suffix.lower() in DEEP_CONVERTIBLE_SUFFIXES
-
-
 def cleaned_object_key(raw_file_id: int, file_name: str) -> str:
     short_name = _short_file_name_for_path(file_name, f"RAW-{raw_file_id:04d}.docx")
     stem = short_filename(PurePosixPath(short_name).stem, f"RAW-{raw_file_id:04d}", max_bytes=82)
@@ -81,6 +74,32 @@ def _get_sync_cleaning_loop() -> asyncio.AbstractEventLoop:
 
 def _skill_driver_path() -> Path:
     return BASE_DIR / "opencode" / "skills" / "bid-material-format-cleaner" / "scripts" / "driver.py"
+
+
+async def _prepare_cleaning_source(
+    *,
+    source_name: str,
+    source_bucket: str,
+    source_key: str,
+    source_version: int,
+    source_dir: Path,
+) -> Path:
+    source_dir.mkdir(parents=True, exist_ok=True)
+    if PurePosixPath(source_name).suffix.lower() == ".doc":
+        converted_name = _short_file_name_for_path(
+            f"{PurePosixPath(source_name).stem}.docx",
+            "material.docx",
+        )
+        return await convert_doc_to_docx(
+            source_url=minio_client.get_presigned_url(source_bucket, source_key, expires=1800),
+            source_name=source_name,
+            source_version=source_version,
+            target_path=source_dir / converted_name,
+        )
+
+    source_path = source_dir / source_name
+    minio_client.download_file(source_bucket, source_key, source_path)
+    return source_path
 
 
 def _extract_driver_line(output: str, file_name: str) -> tuple[str, str]:
@@ -191,8 +210,6 @@ async def set_material_clean_status(
 async def clean_material_file(
     file_id: str,
     data: dict[str, Any] | None = None,
-    *,
-    allow_convert: bool = False,
 ) -> dict[str, Any]:
     numeric_id = _numeric_raw_file_id(file_id)
 
@@ -206,22 +223,21 @@ async def clean_material_file(
         source_name = _safe_file_name(item.name, f"RAW-{numeric_id:04d}.bin")
         source_bucket = str(item.minio_bucket or settings.minio_buckets["materials"])
         source_key = str(item.minio_key or "")
+        source_version = int(item.version or 1)
 
-    # 非 Word 素材默认不清洗，直接标记保留原件（同时兜底修正历史 pending 任务）；
-    # allow_convert=True（后台深度解析任务）时，PDF/XLSX 走 driver 转换出 Word。
+    # 非 Word 素材不清洗，直接标记保留原件，同时兜底修正历史 pending 任务。
     if not is_cleanable_material(source_name):
-        if not (allow_convert and is_deep_convertible_material(source_name)):
-            return await set_material_clean_status(
-                file_id,
-                "original_only",
-                "非 Word 素材保留原件，不触发自动清洗。",
-            )
+        return await set_material_clean_status(
+            file_id,
+            "original_only",
+            "非 Word 素材保留原件，不触发自动清洗。",
+        )
 
-    converting_non_word = not is_cleanable_material(source_name)
+    converting_doc = PurePosixPath(source_name).suffix.lower() == ".doc"
     await set_material_clean_status(
         file_id,
         "cleaning",
-        "正在后台转换为 Word 素材。" if converting_non_word else "正在清洗 Word 素材。",
+        "正在通过 OnlyOffice 将 DOC 转换为 DOCX。" if converting_doc else "正在清洗 Word 素材。",
     )
 
     driver_path = _skill_driver_path()
@@ -237,8 +253,23 @@ async def clean_material_file(
         root = Path(temp_root)
         source_dir = root / "source"
         output_dir = root / "cleaned"
-        source_path = source_dir / source_name
-        minio_client.download_file(source_bucket, source_key, source_path)
+        try:
+            source_path = await _prepare_cleaning_source(
+                source_name=source_name,
+                source_bucket=source_bucket,
+                source_key=source_key,
+                source_version=source_version,
+                source_dir=source_dir,
+            )
+        except Exception as exc:
+            message = f"DOC 转 DOCX 失败：{exc}" if converting_doc else f"素材原件读取失败：{exc}"
+            return await set_material_clean_status(
+                file_id,
+                "failed",
+                message,
+                extra={"cleanError": message, "cleanResultStatus": "FAIL"},
+            )
+        driver_source_name = source_path.name
 
         env = os.environ.copy()
         env["FORMAT_CLEANER_ALLOW_SYSTEM_PY"] = "1"
@@ -262,8 +293,8 @@ async def clean_material_file(
 
         report_tail = _tail_output(proc.stdout, proc.stderr)
         manifest = _read_cleaning_manifest(output_dir)
-        manifest_record = _cleaning_manifest_record(manifest, source_name)
-        driver_status, driver_detail = _extract_driver_line(proc.stdout, source_name)
+        manifest_record = _cleaning_manifest_record(manifest, driver_source_name)
+        driver_status, driver_detail = _extract_driver_line(proc.stdout, driver_source_name)
         if manifest_record:
             driver_status = str(manifest_record.get("status") or driver_status)
             driver_detail = str(manifest_record.get("detail") or driver_detail)
@@ -295,6 +326,8 @@ async def clean_material_file(
         minio_client.upload_file(bucket, key, cleaned_path, WORD_MEDIA_TYPE)
         size = cleaned_path.stat().st_size
         detail = driver_detail or ("清洗完成" if proc.returncode == 0 else "已生成 Word，需复核清洗日志")
+        if converting_doc:
+            detail = f"DOC 已通过 OnlyOffice 转换为 DOCX；{detail}"
         try:
             return await set_material_clean_status(
                 file_id,
@@ -309,7 +342,7 @@ async def clean_material_file(
                     "cleanedAt": _now_iso(),
                     "cleanLogTail": report_tail,
                     "cleanReport": _compact_cleaning_manifest(manifest, manifest_record),
-                    "cleanRelativeSourcePath": str(manifest_record.get("relativeSourcePath") or source_name),
+                    "cleanRelativeSourcePath": source_name,
                     "cleanRelativeOutputPath": str(manifest_record.get("relativeOutputPath") or cleaned_path.name),
                     "cleanNeedsHumanReview": bool(manifest_record.get("needsHumanReview")),
                     "cleanUsableForRetrieval": bool(manifest_record.get("isUsableForRetrieval", True)),

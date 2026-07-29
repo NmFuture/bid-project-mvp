@@ -4,7 +4,7 @@ driver.py — bid-material-format-cleaner 的总控入口。
 
 职责：
 - 只依赖 venv 解释器运行，不依赖 activate
-- 扫描素材目录并按类型路由到 PDF / Excel / Word 分支
+- 扫描经入库服务准备好的 DOCX 素材
 - 统一维护输出目录镜像结构
 - Word 分支采用“单临时副本事务 + 预检快路径”
 - 输出统一报告，并可发送飞书通知
@@ -38,13 +38,10 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
 
 WEBHOOK = os.getenv("FORMAT_CLEANER_FEISHU_WEBHOOK", "").strip()
 RUNTIME_DEPENDENCIES = {
-    "fitz": "pymupdf",
     "docx": "python-docx",
-    "pandas": "pandas",
-    "openpyxl": "openpyxl",
     "lxml": "lxml",
 }
-SUPPORTED_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm", ".docx"}
+SUPPORTED_SUFFIXES = {".docx"}
 HEADING_STYLE_RE = re.compile(r"^(?:heading(?:\s*[1-9]\d*)?|标题(?:\s*[一二三四五六七八九十\d]+)?|[1-9]\d*)$", re.I)
 BODY_HEADING_RE = re.compile(
     r"^(?:第[一二三四五六七八九十百零\d]+[章节部分编]|[一二三四五六七八九十百零]+、|\d+(?:\.\d+){0,4}[、.．)]?)"
@@ -627,27 +624,6 @@ def _process_word_docx(source_path: Path, output_path: Path) -> FileRecord:
     return FileRecord(kind="word", source=source_path, output=output_path, status=status, detail=detail)
 
 
-def _process_pdf(source_path: Path, output_path: Path) -> FileRecord:
-    from pdf_to_word import process_pdf
-
-    try:
-        result = process_pdf(source_path, output_dir=output_path.parent)
-        return FileRecord(kind="pdf", source=source_path, output=result, status="OK", detail="已转换为 Word")
-    except Exception as exc:
-        return FileRecord(kind="pdf", source=source_path, output=None, status="FAIL", detail=str(exc))
-
-
-def _process_excel(source_path: Path, output_path: Path) -> FileRecord:
-    from excel_to_word import convert_excel_to_word
-
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        convert_excel_to_word(source_path, output_path)
-        return FileRecord(kind="excel", source=source_path, output=output_path, status="OK", detail="已转换为 Word")
-    except Exception as exc:
-        return FileRecord(kind="excel", source=source_path, output=None, status="FAIL", detail=str(exc))
-
-
 def _relative_display(path: Path, base: Path) -> str:
     try:
         return str(path.resolve().relative_to(base.resolve()))
@@ -674,18 +650,12 @@ def _scan_sources(source_dir: Path, output_dir: Path) -> list[Path]:
 
 def _output_path_for(source_path: Path, source_dir: Path, output_dir: Path) -> Path:
     relative_parent = source_path.relative_to(source_dir).parent
-    if source_path.suffix.lower() in {".pdf", ".xlsx", ".xls", ".xlsm"}:
-        return output_dir / relative_parent / f"{source_path.stem}.docx"
     return output_dir / relative_parent / source_path.name
 
 
 def _render_report(source_dir: Path, output_dir: Path, records: list[FileRecord]) -> str:
-    pdf_records = [r for r in records if r.kind == "pdf"]
-    excel_records = [r for r in records if r.kind == "excel"]
     word_records = [r for r in records if r.kind == "word"]
 
-    pdf_ok = sum(r.status == "OK" for r in pdf_records)
-    excel_ok = sum(r.status == "OK" for r in excel_records)
     word_ok = sum(r.status == "OK" for r in word_records)
     word_skip = sum(r.status == "SKIP" for r in word_records)
     word_review = sum(r.status == "REVIEW" for r in word_records)
@@ -700,8 +670,6 @@ def _render_report(source_dir: Path, output_dir: Path, records: list[FileRecord]
         f"输出目录: {output_dir}",
         "───────────────────────────────────────",
         "文件统计:",
-        f"  PDF  文件: {len(pdf_records)} 个（成功 {pdf_ok} / 失败 {len(pdf_records) - pdf_ok}）",
-        f"  Excel文件: {len(excel_records)} 个（成功 {excel_ok} / 失败 {len(excel_records) - excel_ok}）",
         f"  Word 文件: {len(word_records)} 个（清洗 {word_ok} / 无需切割 {word_skip} / 人工复核 {word_review} / 失败 {word_fail}）",
         f"  总计: {len(records)} 个文件（成功 {total_ok} / 异常 {len(records) - total_ok}）",
         "───────────────────────────────────────",
@@ -777,8 +745,6 @@ def _send_feishu_summary(source_dir: Path, output_dir: Path, records: list[FileR
         print("未配置 FORMAT_CLEANER_FEISHU_WEBHOOK，跳过飞书通知。")
         return
 
-    pdf_records = [r for r in records if r.kind == "pdf"]
-    excel_records = [r for r in records if r.kind == "excel"]
     word_records = [r for r in records if r.kind == "word"]
 
     payload = {
@@ -788,8 +754,6 @@ def _send_feishu_summary(source_dir: Path, output_dir: Path, records: list[FileR
                 "【bid-material-format-cleaner 清洗完成】\n"
                 f"源目录: {source_dir}\n"
                 f"输出目录: {output_dir}\n"
-                f"PDF: {sum(r.status == 'OK' for r in pdf_records)}/{len(pdf_records)} | "
-                f"Excel: {sum(r.status == 'OK' for r in excel_records)}/{len(excel_records)} | "
                 f"Word: {sum(r.status in {'OK', 'SKIP'} for r in word_records)}/{len(word_records)}\n"
                 f"总计: {sum(r.status in {'OK', 'SKIP'} for r in records)}/{len(records)} 个文件处理成功"
             )
@@ -821,13 +785,7 @@ def run(source_dir: Path, output_dir: Path, *, notify: bool, report_file: Path |
     for path in files:
         output_path = _output_path_for(path, source_dir, output_dir)
         print(f"\n[{path.name}]")
-        suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            record = _process_pdf(path, output_path)
-        elif suffix in {".xlsx", ".xls", ".xlsm"}:
-            record = _process_excel(path, output_path)
-        else:
-            record = _process_word_docx(path, output_path)
+        record = _process_word_docx(path, output_path)
 
         records.append(record)
         print(f"  -> {record.status}: {record.detail}")
