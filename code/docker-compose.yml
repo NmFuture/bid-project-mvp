@@ -318,71 +318,6 @@ services:
       - opencode_cache:/root/.cache/opencode
     restart: unless-stopped
 
-  opencode-2:
-    <<: *opencode-service
-    container_name: sewpg_bid_opencode_2
-    profiles: ["opencode-multi"]
-    ports: []
-    volumes:
-      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
-      - uploads:/data/uploads:ro
-      - documents:/data/documents
-      - parsed:/data/parsed
-      - opencode_data_2:/root/.local/share/opencode
-      - opencode_cache_2:/root/.cache/opencode
-
-  opencode-3:
-    <<: *opencode-service
-    container_name: sewpg_bid_opencode_3
-    profiles: ["opencode-multi"]
-    ports: []
-    volumes:
-      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
-      - uploads:/data/uploads:ro
-      - documents:/data/documents
-      - parsed:/data/parsed
-      - opencode_data_3:/root/.local/share/opencode
-      - opencode_cache_3:/root/.cache/opencode
-
-  opencode-4:
-    <<: *opencode-service
-    container_name: sewpg_bid_opencode_4
-    profiles: ["opencode-multi"]
-    ports: []
-    volumes:
-      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
-      - uploads:/data/uploads:ro
-      - documents:/data/documents
-      - parsed:/data/parsed
-      - opencode_data_4:/root/.local/share/opencode
-      - opencode_cache_4:/root/.cache/opencode
-
-  opencode-5:
-    <<: *opencode-service
-    container_name: sewpg_bid_opencode_5
-    profiles: ["opencode-multi"]
-    ports: []
-    volumes:
-      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
-      - uploads:/data/uploads:ro
-      - documents:/data/documents
-      - parsed:/data/parsed
-      - opencode_data_5:/root/.local/share/opencode
-      - opencode_cache_5:/root/.cache/opencode
-
-  opencode-6:
-    <<: *opencode-service
-    container_name: sewpg_bid_opencode_6
-    profiles: ["opencode-multi"]
-    ports: []
-    volumes:
-      - ${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}:/bootstrap/opencode-host:ro
-      - uploads:/data/uploads:ro
-      - documents:/data/documents
-      - parsed:/data/parsed
-      - opencode_data_6:/root/.local/share/opencode
-      - opencode_cache_6:/root/.cache/opencode
-
   onlyoffice:
     image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.3.1.2}
     platform: ${ONLYOFFICE_PLATFORM:-linux/amd64}
@@ -473,16 +408,6 @@ volumes:
   parsed:
   opencode_data:
   opencode_cache:
-  opencode_data_2:
-  opencode_cache_2:
-  opencode_data_3:
-  opencode_cache_3:
-  opencode_data_4:
-  opencode_cache_4:
-  opencode_data_5:
-  opencode_cache_5:
-  opencode_data_6:
-  opencode_cache_6:
   onlyoffice_logs:
   onlyoffice_data:
   onlyoffice_lib:

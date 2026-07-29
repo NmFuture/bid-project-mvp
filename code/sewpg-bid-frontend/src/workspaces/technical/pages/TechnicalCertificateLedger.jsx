@@ -975,7 +975,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                           title={item.validityNote || ''}
                         >
                           {item.expiryDate
-                            ? `${item.expiryDate}${item.validityBasis === 'rule_derived' ? '（推算）' : ''}`
+                            ? `${item.expiryDate}${item.validityBasis === 'rule_derived' ? '（推算）' : item.validityBasis === 'follow_turbine' ? '（跟随整机证）' : ''}`
                             : item.longTerm
                               ? item.validityNote || '长期有效'
                               : item.validityBasis === 'follow_turbine'

@@ -26,13 +26,12 @@ BUSINESS_MATERIAL_KIND_LABELS = {
     "ai_fill": "AI填写",
     "other": "其他",
 }
-CLEANABLE_MATERIAL_SUFFIXES = {".docx"}
+CLEANABLE_MATERIAL_SUFFIXES = {".doc", ".docx"}
 ORIGINAL_ONLY_MATERIAL_SUFFIXES = {
     ".pdf",
     ".xlsx",
     ".xls",
     ".xlsm",
-    ".doc",
     ".md",
     ".png",
     ".jpg",

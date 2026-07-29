@@ -789,6 +789,15 @@ async def technical_raw_tag_import_commit(data: dict[str, Any] = Body(default_fa
     )
 
 
+@router.post("/api/technical/materials/raw/auto-tags")
+async def technical_raw_auto_tags(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """一键自动打标签：按目录结构（机型/类别）为当前目录子树素材推导并合并标签。"""
+
+    return await technical_material_store.raw_auto_tag_apply(
+        target_path=str(data.get("targetPath") or ""),
+    )
+
+
 @router.patch("/api/technical/materials/raw/{file_id}")
 async def technical_raw_update_file(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await technical_material_store.raw_update_file(

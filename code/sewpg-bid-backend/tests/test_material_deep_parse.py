@@ -1,7 +1,6 @@
 """素材后台深度解析（material_deep_parse）测试。
 
-覆盖：PDF/XLSX 后台转 Word、超大 docx 后台画像解析、wiki 两侧不再终态跳过、
-任务队列分发与本地兜底去重。
+覆盖：超大 docx 后台画像解析、非 Word 原件不转换、任务队列分发与本地兜底去重。
 """
 
 from __future__ import annotations
@@ -53,17 +52,21 @@ def _raw_file(name: str, *, size: int = 1024, ext_fields: dict | None = None) ->
 
 
 class DeepParseKindTests(unittest.TestCase):
-    def test_pdf_xlsx_without_cleaned_needs_convert(self) -> None:
-        self.assertEqual(raw_file_deep_parse_kind("报告.pdf", {}), "convert")
-        self.assertEqual(raw_file_deep_parse_kind("台账.xlsx", {}), "convert")
-        self.assertEqual(raw_file_deep_parse_kind("台账.xlsm", {}), "convert")
+    def test_pdf_xlsx_without_cleaned_are_not_deep_parsed(self) -> None:
+        self.assertEqual(raw_file_deep_parse_kind("报告.pdf", {}), "")
+        self.assertEqual(raw_file_deep_parse_kind("台账.xlsx", {}), "")
+        self.assertEqual(raw_file_deep_parse_kind("台账.xlsm", {}), "")
 
     def test_oversize_docx_needs_parse(self) -> None:
         self.assertEqual(raw_file_deep_parse_kind("方案.docx", {}), "parse")
-        self.assertEqual(
-            raw_file_deep_parse_kind("扫描件.pdf", {"cleanedMinioKey": "k", "cleanedSize": OVER_LIMIT}),
-            "parse",
-        )
+
+    def test_non_word_with_legacy_cleaned_output_is_not_deep_parsed(self) -> None:
+        for name in ["扫描件.pdf", "台账.xlsx", "台账.xls"]:
+            self.assertEqual(
+                raw_file_deep_parse_kind(name, {"cleanedMinioKey": "legacy", "cleanedSize": OVER_LIMIT}),
+                "",
+                name,
+            )
 
     def test_small_or_converted_material_needs_nothing(self) -> None:
         self.assertEqual(raw_file_deep_parse_kind("扫描件.pdf", {"cleanedMinioKey": "k", "cleanedSize": 1024}), "")
@@ -90,11 +93,24 @@ class DeepParseKindTests(unittest.TestCase):
 
 
 class TechnicalProfileGateTests(unittest.TestCase):
-    def test_pdf_without_cleaned_marks_deep_parse_pending(self) -> None:
+    def test_pdf_without_cleaned_stays_original_only(self) -> None:
         ext, profile = _docx_profile_for_raw_file(_raw_file("检测报告.pdf"))
 
         self.assertEqual(ext, "pdf")
-        self.assertTrue(profile["deepParsePending"])
+        self.assertNotIn("deepParsePending", profile)
+        self.assertIn("非 docx", profile["parseError"])
+
+    def test_pdf_ignores_legacy_cleaned_output(self) -> None:
+        ext, profile = _docx_profile_for_raw_file(
+            _raw_file(
+                "检测报告.pdf",
+                ext_fields={"cleanedMinioKey": "legacy.pdf.docx", "cleanedSize": OVER_LIMIT},
+            )
+        )
+
+        self.assertEqual(ext, "pdf")
+        self.assertNotIn("deepParsePending", profile)
+        self.assertIn("非 docx", profile["parseError"])
 
     def test_oversize_docx_marks_deep_parse_pending(self) -> None:
         ext, profile = _docx_profile_for_raw_file(_raw_file("方案.docx", size=OVER_LIMIT))
@@ -222,13 +238,25 @@ class BusinessProfileGateTests(unittest.TestCase):
         self.assertIn("后台深度解析", profile["parseError"])
         enqueue_mock.assert_called_once_with("RAW-0001")
 
-    def test_xlsx_enqueues_background_convert(self) -> None:
+    def test_xlsx_does_not_enqueue_background_convert(self) -> None:
         with patch("app.services.business_wiki_generation.enqueue_deep_parse_job") as enqueue_mock:
             profile = self._profile(_raw_file("价格表.xlsx"))
 
-        self.assertTrue(profile["deepParsePending"])
-        self.assertIn("后台转换", profile["parseError"])
-        enqueue_mock.assert_called_once_with("RAW-0001")
+        self.assertNotIn("deepParsePending", profile)
+        enqueue_mock.assert_not_called()
+
+    def test_xlsx_ignores_legacy_cleaned_output(self) -> None:
+        item = _raw_file(
+            "价格表.xlsx",
+            ext_fields={"cleanedMinioKey": "legacy.xlsx.docx", "cleanedSize": OVER_LIMIT},
+        )
+        with patch("app.services.business_wiki_generation.enqueue_deep_parse_job") as enqueue_mock:
+            profile = self._profile(item)
+
+        self.assertEqual(profile["ext"], "xlsx")
+        self.assertFalse(profile["hasCleanedWord"])
+        self.assertNotIn("deepParsePending", profile)
+        enqueue_mock.assert_not_called()
 
     def test_deep_parse_profile_used_directly(self) -> None:
         profile_data = {"headings": [{"level": 1, "title": "资质"}], "paragraphs": [], "tableCount": 0}
@@ -243,6 +271,69 @@ class BusinessProfileGateTests(unittest.TestCase):
         self.assertEqual(profile["headings"][0]["title"], "资质")
         self.assertEqual(profile["parseError"], "")
         enqueue_mock.assert_not_called()
+
+
+class BusinessOcrGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pdf_source_ignores_fresh_legacy_ocr_cache(self) -> None:
+        from app.services import business_wiki_generation
+
+        signature = {
+            "version": 1,
+            "sourceMinioKey": "raw/1/report.pdf",
+            "sourceSizeBytes": 1024,
+            "cleanedMinioKey": "",
+            "cleanedSize": 0,
+        }
+        item = SimpleNamespace(
+            id=1,
+            name="检测报告.pdf",
+            version=1,
+            size_bytes=1024,
+            minio_bucket="bid-materials",
+            minio_key="raw/1/report.pdf",
+            ext_fields={
+                "businessWikiOcr": {
+                    "schemaVersion": business_wiki_generation.BUSINESS_WIKI_OCR_VERSION,
+                    "signature": signature,
+                    "status": "completed",
+                    "sourceType": "source_file",
+                    "text": "历史 PDF OCR 文本",
+                }
+            },
+        )
+
+        payload = await business_wiki_generation._ensure_business_wiki_ocr_cache(
+            item,
+            {"sourceExt": "pdf", "ext": "pdf"},
+        )
+
+        self.assertEqual(payload["status"], "not_required")
+        self.assertEqual(payload["text"], "")
+
+    async def test_pdf_source_does_not_trigger_business_wiki_ocr(self) -> None:
+        from app.services import business_wiki_generation
+
+        item = SimpleNamespace(
+            id=1,
+            name="检测报告.pdf",
+            version=1,
+            size_bytes=1024,
+            minio_bucket="bid-materials",
+            minio_key="raw/1/report.pdf",
+            ext_fields={},
+        )
+        with patch.object(
+            business_wiki_generation,
+            "_recognize_source_file_for_wiki",
+            new=AsyncMock(return_value={"status": "completed", "text": "不应读取"}),
+        ) as recognize_mock:
+            payload = await business_wiki_generation._ensure_business_wiki_ocr_cache(
+                item,
+                {"sourceExt": "pdf", "ext": "pdf"},
+            )
+
+        self.assertEqual(payload["status"], "not_required")
+        recognize_mock.assert_not_awaited()
 
 
 class _DeepParseSession:
@@ -283,26 +374,32 @@ class DeepParseMaterialFileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["profile"]["headings"][0]["title"], "总体方案")
         self.assertEqual(item.ext_fields["deepParseStatus"], "parsed")
 
-    async def test_pdf_converts_then_ready_when_cleaned_is_small(self) -> None:
+    async def test_pdf_is_not_converted_by_deep_parse(self) -> None:
         item = _raw_file("检测报告.pdf")
+        with patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)):
+            result = await deep_parse_material_file("RAW-0001")
 
-        async def fake_clean(file_id: str, data: dict | None = None, *, allow_convert: bool = False) -> dict:
-            assert allow_convert is True
-            item.ext_fields = {
-                "cleanedMinioKey": "cleaned/1.docx",
+        self.assertEqual(result["deepParseStatus"], "failed")
+        self.assertIn("不支持", result["deepParseMessage"])
+
+    async def test_pdf_with_legacy_cleaned_output_is_not_parsed(self) -> None:
+        item = _raw_file(
+            "检测报告.pdf",
+            ext_fields={
+                "cleanedMinioKey": "legacy.pdf.docx",
                 "cleanedMinioBucket": "bid-materials",
-                "cleanedSize": 2048,
-            }
-            return {"cleanStatus": "cleaned"}
-
+                "cleanedSize": OVER_LIMIT,
+            },
+        )
         with (
             patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
-            patch("app.services.material_deep_parse.clean_material_file", side_effect=fake_clean),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
         ):
             result = await deep_parse_material_file("RAW-0001")
 
-        self.assertEqual(result["deepParseStatus"], "ready")
-        self.assertEqual(item.ext_fields["deepParseStatus"], "ready")
+        self.assertEqual(result["deepParseStatus"], "failed")
+        self.assertIn("不支持", result["deepParseMessage"])
+        minio_mock.get_object.assert_not_called()
 
     async def test_unsupported_type_fails_explicitly(self) -> None:
         item = _raw_file("现场照片.png")

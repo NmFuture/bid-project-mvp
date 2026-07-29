@@ -12,7 +12,7 @@ word_cleaner.py — officecli 的纯 Python 后备方案，用于 Word 文档清
                                                 优先按 paraId（可选文本校验）定位锚点
     trim <docx> --anchor-index N [--anchor-text TEXT]
                                                 仅在 paraId 不可用时按 body index 定位
-    normalize <docx>                             格式规范化（标题去编号、修正空标题、合并连续空行、清理文末空白）
+    normalize <docx>                             格式规范化（标题去编号、清除空标题元数据、合并连续空行、清理文末空白）
 
 中文路径兼容: 自动复制到临时 ASCII 路径处理，再拷回。
 """
@@ -24,12 +24,16 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+
+
+_BLANK_HEADING_BOOKMARK_PREFIX = "_MaterialCleanerBlankHeading_"
 
 # Windows 终端默认使用 GBK 编码，无法稳定输出中文 Unicode 字符。
 # 强制 stdout/stderr 使用 UTF-8，确保 JSON、日志和报错正常输出。
@@ -820,6 +824,8 @@ def _is_empty_or_page_break_only_body_para(body_child) -> bool:
 
 def _is_empty_body_para(body_child) -> bool:
     """body 一级子元素是否为可参与空行群统计的空段落。"""
+    if _is_preserved_blank_heading(body_child):
+        return False
     if _get_element_tag(body_child) != "p":
         return False
     if _has_sect_pr(body_child):
@@ -833,6 +839,8 @@ def _is_empty_body_para(body_child) -> bool:
 
 def _is_substantive_body_child(body_child) -> bool:
     """body 一级子元素是否承载实际内容。"""
+    if _is_preserved_blank_heading(body_child):
+        return True
     tag = _get_element_tag(body_child)
     if tag == "sectPr":
         return False
@@ -892,7 +900,40 @@ def _is_blank_sectpr_para(body_child) -> bool:
 
 def _is_removable_blank_residue(body_child) -> bool:
     """可安全删除的空白页残留：普通空段落、纯分页符段落。"""
+    if _is_preserved_blank_heading(body_child):
+        return False
     return _is_empty_or_page_break_only_body_para(body_child)
+
+
+def _mark_preserved_blank_heading(para_element) -> None:
+    """用不可见书签标记空白标题，确保重复 normalize 时仍保留段落。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    for bookmark in para_element.iter(qn("w:bookmarkStart")):
+        if str(bookmark.get(qn("w:name")) or "").startswith(_BLANK_HEADING_BOOKMARK_PREFIX):
+            return
+
+    bookmark_id = str(secrets.randbelow(2_000_000_000) + 1)
+    bookmark_start = OxmlElement("w:bookmarkStart")
+    bookmark_start.set(qn("w:id"), bookmark_id)
+    bookmark_start.set(qn("w:name"), f"{_BLANK_HEADING_BOOKMARK_PREFIX}{bookmark_id}")
+    bookmark_end = OxmlElement("w:bookmarkEnd")
+    bookmark_end.set(qn("w:id"), bookmark_id)
+    para_element.append(bookmark_start)
+    para_element.append(bookmark_end)
+
+
+def _is_preserved_blank_heading(body_child) -> bool:
+    """段落是否为本次 normalize 必须保留的空白标题段落。"""
+    if _get_element_tag(body_child) != "p":
+        return False
+    from docx.oxml.ns import qn
+
+    return any(
+        str(bookmark.get(qn("w:name")) or "").startswith(_BLANK_HEADING_BOOKMARK_PREFIX)
+        for bookmark in body_child.iter(qn("w:bookmarkStart"))
+    )
 
 
 def _is_blank_page_residue(body_child) -> bool:
@@ -1015,6 +1056,8 @@ def _has_substantive_after_break(body_child, break_el) -> bool:
 
 def _has_substantive_before_event(body_children, event: _PageBreakEvent) -> bool:
     """指定分页事件之前是否已有实质内容。"""
+    if _is_preserved_blank_heading(event.body_child):
+        return True
     for child in body_children[:event.body_idx]:
         if _is_substantive_body_child(child):
             return True
@@ -1023,6 +1066,8 @@ def _has_substantive_before_event(body_children, event: _PageBreakEvent) -> bool
 
 def _has_substantive_after_event(body_children, event: _PageBreakEvent) -> bool:
     """指定分页事件之后是否仍有实质内容。"""
+    if _is_preserved_blank_heading(event.body_child):
+        return True
     if _has_substantive_after_break(event.body_child, event.break_el):
         return True
     for child in body_children[event.body_idx + 1:]:
@@ -1054,6 +1099,8 @@ def _range_has_substantive_between_breaks(
     right_event: _PageBreakEvent,
 ) -> bool:
     """两个相邻分页符之间是否存在实质内容。"""
+    if _is_preserved_blank_heading(left_event.body_child) or _is_preserved_blank_heading(right_event.body_child):
+        return True
     if left_event.body_idx == right_event.body_idx:
         seen_left = False
         for node in left_event.body_child.iter():
@@ -1334,7 +1381,7 @@ def _remove_blank_pages_via_xml(docx_path: Path) -> int:
 
 
 def cmd_normalize(docx_path: Path) -> None:
-    """格式规范化：标题去编号并保留/补齐 Heading，修正空段落的目录级别、合并连续空行、按显式分页符清理空白页、清理文末空白。"""
+    """格式规范化：标题去编号并保留/补齐 Heading，清除空段落的标题元数据、合并连续空行、按显式分页符清理空白页、清理文末空白。"""
     blank_pages_removed = 0
     blank_page_error = None
 
@@ -1347,23 +1394,20 @@ def cmd_normalize(docx_path: Path) -> None:
     # ── 操作 A：标题去编号，并保留/补齐 Heading ──
     heading_number_stripped = _strip_numbered_heading_prefixes(doc)
 
-    # ── 操作 B：修正空段落的目录级别 ──
-    heading_fixed = 0
+    # ── 操作 B：清除空段落的 Heading 样式和目录级别 ──
+    heading_cleared = 0
     for para in doc.paragraphs:
         text = para.text.strip()
         if text:
             continue  # 有文字的段落不处理
 
-        style_name = _get_para_style(para)
-        is_heading_style = style_name.lower().startswith("heading")
         para_outline_lvl = _get_outline_level(para._element)
+        if not _looks_like_heading_para(para):
+            continue
 
-        if not is_heading_style and para_outline_lvl is None:
-            continue  # 既不是 Heading 样式也没有 outlineLvl 覆盖
-
-        # 修正：清除目录级别
-        if is_heading_style:
-            para.style = doc.styles["Normal"]
+        # 仅清除标题元数据；段落、换行符和分页符保持不变。
+        _mark_preserved_blank_heading(para._element)
+        para.style = doc.styles["Normal"]
 
         if para_outline_lvl is not None:
             pPr = para._element.find(qn("w:pPr"))
@@ -1372,7 +1416,7 @@ def cmd_normalize(docx_path: Path) -> None:
                 if ol is not None:
                     pPr.remove(ol)
 
-        heading_fixed += 1
+        heading_cleared += 1
 
     # ── 操作 C：连续空段落合并为分页符 ──
     # 在 body XML 层面操作，避免跨越实际内容元素误合并空行群
@@ -1462,7 +1506,7 @@ def cmd_normalize(docx_path: Path) -> None:
 
     # 统计输出
     print(f"  标题去编号: {heading_number_stripped} 个标题段落")
-    print(f"  标题修正: {heading_fixed} 个空标题段落 → Normal")
+    print(f"  空标题清理: {heading_cleared} 个段落已清除 Heading/outlineLvl")
     print(f"  空行合并: {empty_merged_groups} 处连续空行群（共删除 {empty_merged_paras} 个空段落）")
     if blank_pages_removed > 0:
         print(f"  空白页清除: 删除 {blank_pages_removed} 张物理空白页")
@@ -1508,7 +1552,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # normalize
-    p_norm = sub.add_parser("normalize", help="格式规范化（标题去编号+显式分页符空白页清理+空标题修正+空行合并+文末清理）")
+    p_norm = sub.add_parser("normalize", help="格式规范化（标题去编号+显式分页符空白页清理+空标题元数据清理+空行合并+文末清理）")
     p_norm.add_argument("docx", help="Word 文档路径")
 
     args = parser.parse_args(argv)
