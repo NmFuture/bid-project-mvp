@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import copy
 import asyncio
+import logging
 import mimetypes
 import re
 import shutil
@@ -52,6 +53,8 @@ from parser_core import parse_documents as parse_structured_documents  # noqa: E
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 TEXT_PREVIEW_LIMIT = 600
 DOCX_SLICE_STORED_XML_THRESHOLD_BYTES = 5 * 1024 * 1024
+
+logger = logging.getLogger(__name__)
 
 
 def _raise_if_parse_cancelled(cancel_check: Callable[[], bool] | None) -> None:
@@ -6562,6 +6565,8 @@ def parse_tender_documents(
     combined_parts: list[str] = []
     texts_by_id: dict[str, str] = {}
     warnings: list[str] = []
+    # 单文件失败隔离：解析异常的文件记到这里，整批继续，结果与进度中显式可见。
+    failed_documents: list[dict[str, Any]] = []
     if progress_callback:
         progress_callback("extract_started", {"fileCount": len(tender_files), "fileExtension": primary_extension})
 
@@ -6585,153 +6590,204 @@ def parse_tender_documents(
                 },
             )
 
-        if extension == ".docx":
-            def report_docx_text_progress(progress: int, text_length: int) -> None:
-                if progress_callback:
-                    progress_callback(
-                        "extracting_file_progress",
-                        {
-                            "fileName": file_record.get("name") or file_path.name,
-                            "current": file_index,
-                            "total": len(tender_files),
-                            "fileCount": len(tender_files),
-                            "progress": progress,
-                            "textLength": text_length,
-                            "fileExtension": extension,
-                        },
-                    )
-
-            text = extract_docx_text(file_path, progress_callback=report_docx_text_progress)
-        elif extension == ".md":
-            text = file_path.read_text(encoding="utf-8", errors="replace")
-        elif extension == ".txt":
-            text = file_path.read_text(encoding="utf-8", errors="replace")
-        elif extension == ".pdf":
-            pdf_text_fallback_enabled = True
-            if (
-                profile.key in {"business", "technical"}
-                and settings.business_pdf_parse_engine == "docling"
-            ):
-                def report_pdf_extract_progress(metadata: dict[str, Any] | None = None) -> None:
+        try:
+            if extension == ".docx":
+                def report_docx_text_progress(progress: int, text_length: int) -> None:
                     if progress_callback:
-                        payload = {
-                            "fileName": file_record.get("name") or file_path.name,
-                            "current": file_index,
-                            "total": len(tender_files),
-                            "fileCount": len(tender_files),
-                            "fileExtension": extension,
-                        }
-                        payload.update(metadata or {})
-                        progress_callback("pdf_extracting_progress", payload)
+                        progress_callback(
+                            "extracting_file_progress",
+                            {
+                                "fileName": file_record.get("name") or file_path.name,
+                                "current": file_index,
+                                "total": len(tender_files),
+                                "fileCount": len(tender_files),
+                                "progress": progress,
+                                "textLength": text_length,
+                                "fileExtension": extension,
+                            },
+                        )
 
-                text, parse_metadata, engine_warnings = _run_with_progress_heartbeat(
-                    lambda: _parse_pdf_with_document_engine(
-                        project_id=project_id,
-                        document={
-                            "id": file_record["id"],
-                            "name": file_record.get("name") or file_path.name,
-                            "path": str(file_path),
-                            "sourcePath": str(file_path),
-                            "sha256": str(file_record.get("sha256") or ""),
-                            "runId": str(file_record.get("runId") or ""),
-                        },
-                        file_path=file_path,
-                        project_dir=project_dir,
-                        engine_fallback="none" if profile.key == "technical" else None,
-                        require_preparsed=require_preparsed_pdf,
-                        technical_document_nav=profile.key == "technical",
-                    ),
-                    heartbeat=report_pdf_extract_progress,
-                    cancel_check=cancel_check,
-                )
-                page_count = parse_metadata.get("pageCount") or page_count
-                file_warnings.extend(engine_warnings)
-                pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
-                pdf_text_fallback_enabled = (
-                    profile.key == "business" and settings.business_pdf_engine_fallback == "lightweight"
-                )
-            else:
-                text = ""
-                pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
-            if not text and pdf_text_fallback_enabled:
-                text, pdf_meta = extract_pdf_text(file_path)
-            page_count = pdf_meta["pageCount"]
-            file_warnings.extend(pdf_meta["warnings"])
-            if pdf_meta.get("requiresOcr") and (
-                profile.key != "business" or settings.business_pdf_ocr_fallback_enabled
-            ):
+                text = extract_docx_text(file_path, progress_callback=report_docx_text_progress)
+            elif extension == ".md":
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            elif extension == ".txt":
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            elif extension == ".pdf":
+                pdf_text_fallback_enabled = True
+                if (
+                    profile.key in {"business", "technical"}
+                    and settings.business_pdf_parse_engine == "docling"
+                ):
+                    def report_pdf_extract_progress(metadata: dict[str, Any] | None = None) -> None:
+                        if progress_callback:
+                            payload = {
+                                "fileName": file_record.get("name") or file_path.name,
+                                "current": file_index,
+                                "total": len(tender_files),
+                                "fileCount": len(tender_files),
+                                "fileExtension": extension,
+                            }
+                            payload.update(metadata or {})
+                            progress_callback("pdf_extracting_progress", payload)
+
+                    text, parse_metadata, engine_warnings = _run_with_progress_heartbeat(
+                        lambda: _parse_pdf_with_document_engine(
+                            project_id=project_id,
+                            document={
+                                "id": file_record["id"],
+                                "name": file_record.get("name") or file_path.name,
+                                "path": str(file_path),
+                                "sourcePath": str(file_path),
+                                "sha256": str(file_record.get("sha256") or ""),
+                                "runId": str(file_record.get("runId") or ""),
+                            },
+                            file_path=file_path,
+                            project_dir=project_dir,
+                            engine_fallback="none" if profile.key == "technical" else None,
+                            require_preparsed=require_preparsed_pdf,
+                            technical_document_nav=profile.key == "technical",
+                        ),
+                        heartbeat=report_pdf_extract_progress,
+                        cancel_check=cancel_check,
+                    )
+                    page_count = parse_metadata.get("pageCount") or page_count
+                    file_warnings.extend(engine_warnings)
+                    pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
+                    pdf_text_fallback_enabled = (
+                        profile.key == "business" and settings.business_pdf_engine_fallback == "lightweight"
+                    )
+                else:
+                    text = ""
+                    pdf_meta = {"pageCount": page_count, "warnings": [], "requiresOcr": False}
+                if not text and pdf_text_fallback_enabled:
+                    text, pdf_meta = extract_pdf_text(file_path)
+                page_count = pdf_meta["pageCount"]
+                file_warnings.extend(pdf_meta["warnings"])
+                if pdf_meta.get("requiresOcr") and (
+                    profile.key != "business" or settings.business_pdf_ocr_fallback_enabled
+                ):
+                    ocr_text, ocr_meta = _ocr_fallback_text(project_id, file_record, file_path)
+                    if ocr_text:
+                        text = ocr_text
+                        page_count = ocr_meta.get("pageCount") or page_count
+                        file_warnings.append("扫描型 PDF 已通过 OCR/视觉模型转为可解析文本。")
+                    else:
+                        file_warnings.append(
+                            f"OCR 兜底识别未完成：{ocr_meta.get('message') if ocr_meta else '未知错误'}"
+                        )
+            elif extension in IMAGE_SUFFIXES:
                 ocr_text, ocr_meta = _ocr_fallback_text(project_id, file_record, file_path)
                 if ocr_text:
                     text = ocr_text
-                    page_count = ocr_meta.get("pageCount") or page_count
-                    file_warnings.append("扫描型 PDF 已通过 OCR/视觉模型转为可解析文本。")
+                    page_count = ocr_meta.get("pageCount") or 1
+                    file_warnings.append("图片文件已通过 OCR/视觉模型转为可解析文本。")
                 else:
+                    text = ""
+                    page_count = 1
                     file_warnings.append(
-                        f"OCR 兜底识别未完成：{ocr_meta.get('message') if ocr_meta else '未知错误'}"
+                        f"图片文件需要 OCR 识别，但兜底识别未完成：{ocr_meta.get('message') if ocr_meta else '未知错误'}"
                     )
-        elif extension in IMAGE_SUFFIXES:
-            ocr_text, ocr_meta = _ocr_fallback_text(project_id, file_record, file_path)
-            if ocr_text:
-                text = ocr_text
-                page_count = ocr_meta.get("pageCount") or 1
-                file_warnings.append("图片文件已通过 OCR/视觉模型转为可解析文本。")
             else:
                 text = ""
-                page_count = 1
-                file_warnings.append(
-                    f"图片文件需要 OCR 识别，但兜底识别未完成：{ocr_meta.get('message') if ocr_meta else '未知错误'}"
+                file_warnings.append(f"当前 MVP 暂不解析 {extension or '未知'} 类型文件。")
+
+            _raise_if_parse_cancelled(cancel_check)
+            text = _normalize_text(text)
+            text_length = len(text)
+            text_path = project_dir / f"{file_record['id']}.txt"
+            text_path.write_text(text, encoding="utf-8")
+
+            metadata = {
+                "id": file_record["id"],
+                "name": file_record["name"],
+                "sourcePath": str(file_path),
+                "textPath": str(text_path),
+                "textLength": text_length,
+                "pageCount": page_count,
+                "warnings": file_warnings,
+                "status": "completed",
+            }
+            if ocr_meta:
+                metadata["ocr"] = ocr_meta
+            if parse_metadata:
+                metadata.update(parse_metadata)
+            documents.append(metadata)
+            texts_by_id[str(file_record["id"])] = text
+            warnings.extend(file_warnings)
+
+            if text:
+                combined_parts.append(f"# 文件：{file_record['name']}\n\n{text}")
+            if progress_callback:
+                progress_callback(
+                    "file_extracted",
+                    {
+                        "fileName": file_record.get("name") or file_path.name,
+                        "textLength": text_length,
+                        "warnings": file_warnings,
+                        "current": file_index,
+                        "total": len(tender_files),
+                        "fileCount": len(tender_files),
+                        "fileExtension": extension,
+                    },
                 )
-        else:
-            text = ""
-            file_warnings.append(f"当前 MVP 暂不解析 {extension or '未知'} 类型文件。")
-
-        _raise_if_parse_cancelled(cancel_check)
-        text = _normalize_text(text)
-        text_length = len(text)
-        text_path = project_dir / f"{file_record['id']}.txt"
-        text_path.write_text(text, encoding="utf-8")
-
-        metadata: dict[str, Any] = {
-            "id": file_record["id"],
-            "name": file_record["name"],
-            "sourcePath": str(file_path),
-            "textPath": str(text_path),
-            "textLength": text_length,
-            "pageCount": page_count,
-            "warnings": file_warnings,
-        }
-        if ocr_meta:
-            metadata["ocr"] = ocr_meta
-        if parse_metadata:
-            metadata.update(parse_metadata)
-        documents.append(metadata)
-        texts_by_id[str(file_record["id"])] = text
-        warnings.extend(file_warnings)
-
-        if text:
-            combined_parts.append(f"# 文件：{file_record['name']}\n\n{text}")
-        if progress_callback:
-            progress_callback(
-                "file_extracted",
+            _raise_if_parse_cancelled(cancel_check)
+        except ParseCancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 单文件失败隔离：记为失败条目，整批继续
+            logger.warning("S1 单文件解析失败，跳过继续整批：%s", file_path, exc_info=True)
+            error_text = str(exc)
+            file_warnings = [f"文件解析失败：{error_text}"]
+            warnings.extend(file_warnings)
+            failed_documents.append(
                 {
-                    "fileName": file_record.get("name") or file_path.name,
-                    "textLength": text_length,
-                    "warnings": file_warnings,
-                    "current": file_index,
-                    "total": len(tender_files),
-                    "fileCount": len(tender_files),
-                    "fileExtension": extension,
-                },
+                    "id": str(file_record.get("id") or ""),
+                    "name": str(file_record.get("name") or file_path.name),
+                    "error": error_text,
+                }
             )
-        _raise_if_parse_cancelled(cancel_check)
+            documents.append(
+                {
+                    "id": file_record["id"],
+                    "name": file_record["name"],
+                    "sourcePath": str(file_path),
+                    "textPath": "",
+                    "textLength": 0,
+                    "pageCount": "-",
+                    "warnings": file_warnings,
+                    "status": "failed",
+                    "parseError": error_text,
+                }
+            )
+            texts_by_id[str(file_record["id"])] = ""
+            if progress_callback:
+                progress_callback(
+                    "file_extracted",
+                    {
+                        "fileName": file_record.get("name") or file_path.name,
+                        "textLength": 0,
+                        "warnings": file_warnings,
+                        "failed": True,
+                        "error": error_text,
+                        "current": file_index,
+                        "total": len(tender_files),
+                        "fileCount": len(tender_files),
+                        "fileExtension": extension,
+                    },
+                )
+            _raise_if_parse_cancelled(cancel_check)
+            continue
 
     combined_text = _normalize_text("\n\n".join(combined_parts))
     combined_text_path = project_dir / "combined.txt"
     combined_text_path.write_text(combined_text, encoding="utf-8")
 
+    # 单文件失败隔离：提取失败的文件只保留在结果清单（documents/summary）中可见，
+    # 不进入下游二次解析——结构化抽取、附表/章节树扫描都会按 sourcePath 重开源文件。
+    parseable_documents = [document for document in documents if document.get("status") != "failed"]
+
     if progress_callback:
-        progress_callback("local_structure_started", {"documentCount": len(documents), "fileExtension": primary_extension})
-    structured_result = _extract_structured_requirements(documents, texts_by_id)
+        progress_callback("local_structure_started", {"documentCount": len(parseable_documents), "fileExtension": primary_extension})
+    structured_result = _extract_structured_requirements(parseable_documents, texts_by_id)
     if progress_callback:
         local_items = structured_result.get("items") if isinstance(structured_result.get("items"), list) else []
         progress_callback("local_structure_finished", {"itemCount": len(local_items), "fileExtension": primary_extension})
@@ -6743,7 +6799,7 @@ def parse_tender_documents(
 
     if profile.key == "business":
         _raise_if_parse_cancelled(cancel_check)
-        section_tree_path, section_tree_payload = write_business_section_tree(documents, project_dir)
+        section_tree_path, section_tree_payload = write_business_section_tree(parseable_documents, project_dir)
         business_section_tree_path = str(section_tree_path)
         business_section_tree_summary = (
             section_tree_payload.get("summary")
@@ -6753,11 +6809,11 @@ def parse_tender_documents(
         if progress_callback:
             progress_callback(
                 "business_template_extraction_started",
-                {"documentCount": len(documents), "fileExtension": primary_extension},
+                {"documentCount": len(parseable_documents), "fileExtension": primary_extension},
             )
         appendices, template_extraction_payload, template_extraction_warning = run_business_template_extractor(
             project_id=project_id,
-            documents=documents,
+            documents=parseable_documents,
             project_dir=project_dir,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
@@ -6775,12 +6831,12 @@ def parse_tender_documents(
             )
         if not appendices and _business_template_extractor_allows_preview_fallback(template_extraction_warning):
             if progress_callback:
-                progress_callback("appendices_started", {"documentCount": len(documents), "fileExtension": primary_extension})
-            appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+                progress_callback("appendices_started", {"documentCount": len(parseable_documents), "fileExtension": primary_extension})
+            appendices = _extract_markdown_appendices(project_id, parseable_documents, texts_by_id, profile=profile)
             appendices.extend(
                 _extract_docx_appendices(
                     project_id,
-                    documents,
+                    parseable_documents,
                     start_index=len(appendices),
                     profile=profile,
                     progress_callback=progress_callback,
@@ -6790,7 +6846,7 @@ def parse_tender_documents(
             appendices.extend(
                 _extract_text_business_appendices(
                     project_id,
-                    documents,
+                    parseable_documents,
                     texts_by_id,
                     start_index=len(appendices),
                     profile=profile,
@@ -6799,12 +6855,12 @@ def parse_tender_documents(
     else:
         _raise_if_parse_cancelled(cancel_check)
         if progress_callback:
-            progress_callback("appendices_started", {"documentCount": len(documents), "fileExtension": primary_extension})
-        appendices = _extract_markdown_appendices(project_id, documents, texts_by_id, profile=profile)
+            progress_callback("appendices_started", {"documentCount": len(parseable_documents), "fileExtension": primary_extension})
+        appendices = _extract_markdown_appendices(project_id, parseable_documents, texts_by_id, profile=profile)
         appendices.extend(
             _extract_docx_appendices(
                 project_id,
-                documents,
+                parseable_documents,
                 start_index=len(appendices),
                 profile=profile,
                 progress_callback=progress_callback,
@@ -6813,7 +6869,7 @@ def parse_tender_documents(
         )
         document_nav_appendices = _extract_document_nav_appendices(
             project_id,
-            documents,
+            parseable_documents,
             start_index=len(appendices),
             profile=profile,
         )
@@ -6826,7 +6882,7 @@ def parse_tender_documents(
         appendices.extend(
             _extract_text_appendices(
                 project_id,
-                documents,
+                parseable_documents,
                 texts_by_id,
                 start_index=len(appendices),
                 profile=profile,
@@ -6840,7 +6896,7 @@ def parse_tender_documents(
             project_id,
             structured_result,
             profile=profile,
-            documents=documents,
+            documents=parseable_documents,
             texts_by_id=texts_by_id,
         )
         structured_result = local_business_result
@@ -6873,7 +6929,7 @@ def parse_tender_documents(
         ),
         "businessSectionTreePath": business_section_tree_path,
         "businessSectionTreeSummary": business_section_tree_summary,
-        "documents": documents,
+        "documents": parseable_documents,
         "targets": list(profile.targets),
     }
     skill_manifest_path.write_text(json.dumps(skill_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -6952,6 +7008,8 @@ def parse_tender_documents(
 
     summary = {
         "fileCount": len(tender_files),
+        "failedFileCount": len(failed_documents),
+        "failedDocuments": failed_documents,
         "extractedCount": len(items),
         "textLength": len(combined_text),
         "textPreview": combined_text[:TEXT_PREVIEW_LIMIT],
@@ -6974,6 +7032,8 @@ def parse_tender_documents(
             {
                 "extractedCount": len(items),
                 "appendixCount": len(structured.get("appendices") or []),
+                "failedFileCount": len(failed_documents),
+                "failedDocuments": failed_documents,
             },
         )
     _raise_if_parse_cancelled(cancel_check)

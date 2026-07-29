@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import json
@@ -975,6 +975,58 @@ class ParsePipelineTests(unittest.TestCase):
                 bid_type="技术标",
                 cancel_check=lambda: True,
             )
+
+    def test_parse_tender_documents_isolates_single_file_failure(self) -> None:
+        """单文件解析抛异常时记为失败条目并继续整批：结果/进度中显式可见，不静默吞掉。"""
+        project_id = self.create_project()
+        good_path = settings.uploads_dir / project_id / "tender-good.md"
+        bad_path = settings.uploads_dir / project_id / "tender-bad.docx"
+        good_path.parent.mkdir(parents=True, exist_ok=True)
+        good_path.write_text("第一章 总则\n本项目为风力发电机组采购。", encoding="utf-8")
+        bad_path.write_bytes(b"not-a-real-docx")
+
+        progress_events: list[tuple[str, dict]] = []
+        summary, storage = parsing_service.parse_tender_documents(
+            project_id,
+            [
+                {
+                    "id": "DOC-1",
+                    "name": "tender-good.md",
+                    "path": str(good_path),
+                    "content_type": "text/markdown",
+                },
+                {
+                    "id": "DOC-2",
+                    "name": "tender-bad.docx",
+                    "path": str(bad_path),
+                    "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                },
+            ],
+            bid_type="技术标",
+            progress_callback=lambda event, payload: progress_events.append((event, payload or {})),
+        )
+
+        # 失败条目在整批结果中显式可见
+        self.assertEqual(summary["failedFileCount"], 1)
+        self.assertEqual(len(summary["failedDocuments"]), 1)
+        self.assertEqual(summary["failedDocuments"][0]["name"], "tender-bad.docx")
+        self.assertTrue(summary["failedDocuments"][0]["error"])
+        self.assertTrue(any("文件解析失败" in warning for warning in summary["warnings"]))
+
+        # 成功文件正常解析，失败文件带 status/parseError 占位
+        documents = {doc["name"]: doc for doc in storage["documents"]}
+        self.assertEqual(documents["tender-good.md"]["status"], "completed")
+        self.assertGreater(documents["tender-good.md"]["textLength"], 0)
+        self.assertEqual(documents["tender-bad.docx"]["status"], "failed")
+        self.assertTrue(documents["tender-bad.docx"]["parseError"])
+        self.assertIn("本项目为风力发电机组采购", summary["textPreview"])
+
+        # 进度事件中失败显式可见（failed 标记 + 错误信息）
+        failed_events = [
+            payload for event, payload in progress_events if event == "file_extracted" and payload.get("failed")
+        ]
+        self.assertEqual(len(failed_events), 1)
+        self.assertEqual(failed_events[0]["fileName"], "tender-bad.docx")
 
     def test_business_section_tree_is_ready_before_structured_parser(self) -> None:
         project_id = self.create_business_project()
