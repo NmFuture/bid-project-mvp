@@ -381,7 +381,7 @@ def reconcile_fact_fields_with_specs(
     - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
     - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
     - specs 为 None 时回退全局 fillable_specs()；项目构建链路显式传项目级清单
-      （用户上传的实时表 Excel 解析结果）。
+      （用户上传的事实表 Excel 解析结果）。
     """
     existing_by_key = existing_by_key or {}
     matched_field_keys: set[str] = set()
@@ -725,7 +725,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             )
 
     preserve_manual_fields()
-    # 字段骨架来自本项目上传的实时表 Excel（gap_state["factSpecs"]），不再用全局默认清单
+    # 字段骨架来自本项目上传的事实表 Excel（gap_state["factSpecs"]），不再用全局默认清单
     fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
     project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
     reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
@@ -1122,20 +1122,12 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
             material_scope = build_project_material_scope(project)
             selected_model = project_turbine_model(project)
             seen: set[str] = set()
-            for scope in material_scope.get("readableScopes") or []:
-                if not isinstance(scope, dict):
-                    continue
-                # 事实表匹配只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
-                # 相关项目素材由用户归置到该目录下），不扫标准文件/客户定制目录
-                if str(scope.get("materialTier") or "") != "project":
-                    continue
-                folder_path = str(scope.get("path") or "").strip()
-                if not folder_path:
-                    continue
+
+            def collect_scope_files(folder_path: str, material_tier: str) -> None:
                 payload = run_async_material_files(
                     folder_path=folder_path,
                     bid_type=TECHNICAL_BID_TYPE,
-                    material_tier=str(scope.get("materialTier") or ""),
+                    material_tier=material_tier,
                     turbine_model=selected_model,
                     recursive=True,
                     page=1,
@@ -1153,13 +1145,33 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                             "id": material_id,
                             "name": str(raw.get("name") or ""),
                             "folderPath": str(raw.get("folderPath") or ""),
-                            "materialTier": str(raw.get("materialTier") or scope.get("materialTier") or ""),
+                            "materialTier": str(raw.get("materialTier") or material_tier),
                             "hasCleanedWord": bool(raw.get("hasCleanedWord")),
                             "cleanedFileName": str(raw.get("cleanedFileName") or ""),
                             "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
                             "size": int(raw.get("size") or 0),
                         }
                     )
+
+            for scope in material_scope.get("readableScopes") or []:
+                if not isinstance(scope, dict):
+                    continue
+                # 事实表匹配只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
+                # 相关项目素材由用户归置到该目录下），不扫标准文件/客户定制目录
+                if str(scope.get("materialTier") or "") != "project":
+                    continue
+                folder_path = str(scope.get("path") or "").strip()
+                if folder_path:
+                    collect_scope_files(folder_path, str(scope.get("materialTier") or ""))
+            # 用户自定义的参考资料目录（素材库虚拟路径）并入扫描，按项目层素材对待
+            custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
+            for raw_path in custom_paths:
+                folder_path = str(raw_path or "").strip().strip("/")
+                # 与保存时同款容错：兼容早期存入的缺标类前缀路径
+                if folder_path and not folder_path.startswith(f"{TECHNICAL_BID_TYPE}/"):
+                    folder_path = f"{TECHNICAL_BID_TYPE}/{folder_path}"
+                if folder_path:
+                    collect_scope_files(folder_path, "project")
         except Exception:
             logger.exception("项目事实素材索引回退查询失败，按无素材继续构建")
             materials = []

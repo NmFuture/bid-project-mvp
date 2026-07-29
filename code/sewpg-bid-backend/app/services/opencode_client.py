@@ -107,7 +107,13 @@ class OpencodeClient:
         time.sleep(delay)
         return True
 
-    def send_prompt(self, session_id: str, prompt_text: str) -> dict[str, Any]:
+    def send_prompt(
+        self,
+        session_id: str,
+        prompt_text: str,
+        *,
+        timeout: httpx.Timeout | None = None,
+    ) -> dict[str, Any]:
         payload = {
             "model": {
                 "providerID": self.provider_id,
@@ -123,7 +129,7 @@ class OpencodeClient:
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
             with self._request_slots:
-                with httpx.Client(timeout=self.timeout) as client:
+                with httpx.Client(timeout=timeout or self.timeout) as client:
                     response = client.post(
                         f"{self.base_url}/session/{session_id}/message",
                         json=payload,
@@ -529,7 +535,6 @@ class OpencodeClient:
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
-        early_tool_wait_file: str = "",
     ) -> dict[str, Any]:
         session = self.create_session("S3 技术标事实表维护")
         session_id = str(session.get("id") or "")
@@ -546,7 +551,6 @@ class OpencodeClient:
             prompt_text,
             stream_callback=stream_callback,
             early_tool_command=early_tool_command,
-            early_tool_wait_file=early_tool_wait_file,
         )
         parsed = self._extract_fact_curator_json(response)
         return {
@@ -947,9 +951,16 @@ class OpencodeClient:
                 self.abort_session(session_id)
             raise ParseCancelledError("解析已取消。")
 
+        idle_timeout = self._session_polling_idle_timeout(early_tool_command)
+        # 轮询监管的长任务：阻塞 message 请求的读超时不得短于轮询 idle 监管时限。
+        # 系统设置的 timeoutMs（默认 30s）若直接作用于这里，脚本/生成阶段 HTTP 层先超时，
+        # 后端 400 返回而 futurecode 会话仍在后台运行，产物（如事实表建议文件）无人回收。
+        configured_read = float(self.timeout.read or 0.0)
+        run_timeout = httpx.Timeout(max(configured_read, idle_timeout + 60.0), connect=10.0)
+
         def worker() -> None:
             try:
-                response_holder["response"] = self.send_prompt(session_id, prompt_text)
+                response_holder["response"] = self.send_prompt(session_id, prompt_text, timeout=run_timeout)
             except Exception as exc:  # pragma: no cover - exercised via caller path
                 error_holder["error"] = exc
             finally:
@@ -967,7 +978,6 @@ class OpencodeClient:
         last_activity = progress_started_at
         last_heartbeat = last_activity
         heartbeat_index = 0
-        idle_timeout = self._session_polling_idle_timeout(early_tool_command)
         while not finished.wait(0.5):
             raise_if_cancelled()
             previous_signature = last_signature
@@ -1044,13 +1054,12 @@ class OpencodeClient:
                         stream_callback=stream_callback,
                         elapsed_seconds=time.monotonic() - progress_started_at,
                     )
-                early_ready = bool(tool_output) and not (
+                # factcurate 不提前返回：建议文件由 LLM 多轮迭代写出（先草稿后填值），
+                # 「脚本完成 / 文件已落地」都不代表终稿——提前返回会回收草稿并把会话
+                # 孤儿化（实测三轮三种竞态）；等会话自然完成即可，轮询仍提供 idle 监管。
+                early_ready = bool(tool_output) and early_tool_command != "factcurate" and not (
                     early_tool_command == "s2outline-finalize" and terminal_validator is not None
                 )
-                if early_ready and early_tool_wait_file and not Path(early_tool_wait_file).is_file():
-                    # 脚本只产出中间产物（如 factcurate 的证据简报），最终结果文件由 LLM 后续写出：
-                    # 文件未出现前不提前返回，继续轮询；始终不写则等同无提前返回，走正常完成/超时路径
-                    early_ready = False
                 if early_ready:
                     if early_tool_command in {"s2outline-finalize", "s2outline-decision-batch"}:
                         self._stop_s2_outline_session_after_finalize(

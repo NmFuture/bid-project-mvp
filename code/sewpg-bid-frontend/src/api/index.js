@@ -453,6 +453,15 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   uploadFactSpecs: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
+  saveMaterialSources: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
+  curateFacts: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/curate`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 30 * 60 * 1000,
+      retryCount: 0,
+    }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>
@@ -537,6 +546,8 @@ export const technicalMaterialsAPI = {
       request('/technical/materials/raw/tag-import/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     tagImportCommit: (data) =>
       request('/technical/materials/raw/tag-import/commit', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    autoTags: (data) =>
+      request('/technical/materials/raw/auto-tags', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
     batchDelete: (data) => request('/technical/materials/raw/batch-delete', { method: 'POST', body: data }),
@@ -561,6 +572,7 @@ export const technicalMaterialsAPI = {
     },
     bootstrap: (data = {}) =>
       request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    bootstrapStatus: () => request('/technical/materials/wiki/bootstrap/status'),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
@@ -586,6 +598,7 @@ export const technicalMaterialsAPI = {
     saveScopes: (data) => request('/technical/materials/certificates/scopes', { method: 'PUT', body: data }),
     incremental: (data = {}) =>
       request('/technical/materials/certificates/incremental', { method: 'POST', body: data, timeoutMs: 20 * 60 * 1000 }),
+    incrementalStatus: () => request('/technical/materials/certificates/incremental/status'),
     recognize: (fileId) =>
       request(`/technical/materials/certificates/${fileId}/recognize`, { method: 'POST', timeoutMs: 10 * 60 * 1000 }),
     update: (fileId, data) =>

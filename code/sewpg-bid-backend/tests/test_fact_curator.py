@@ -153,6 +153,31 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
 
 
+def test_curate_targets_fill_covers_material_and_cert() -> None:
+    """补抽范围：招标/素材/证书类未提取字段都进 fill 桶；模板/平台/自动生成类不填。"""
+    fields = [
+        {"key": "f-tender", "status": "unextracted", "sourceKind": "tender"},
+        {"key": "f-material", "status": "unextracted", "sourceKind": "material"},
+        {"key": "f-cert", "status": "unextracted", "sourceKind": "cert"},
+        {"key": "x-platform", "status": "unextracted", "sourceKind": "platform"},
+        {"key": "x-derived", "status": "unextracted", "sourceKind": "derived"},
+        {"key": "x-template", "status": "unextracted", "sourceKind": "template"},
+    ]
+
+    targets = curator._curate_targets(fields)
+
+    assert targets["fill"] == ["f-tender", "f-material", "f-cert"]
+
+
+def test_apply_summary_spec_total_follows_project_specs() -> None:
+    """落表 summary 的清单口径用项目上传条数，不回退全局默认清单。"""
+    table, _ = curator.apply_fact_curator_suggestions(
+        _table(), [], operator="测试", saved_at="2026-07-27T00:00:00Z", spec_total=148
+    )
+
+    assert table["summary"]["specTotal"] == 148
+
+
 def test_manifest_tender_sources_only_existing(workspace_dirs, monkeypatch) -> None:
     monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
     combined = settings.documents_dir / "P-CUR" / "technical-workspace" / "parse" / "combined.txt"
@@ -496,12 +521,12 @@ def test_load_suggestions_falls_back_to_inline(workspace_dirs) -> None:
     assert suggestions[0]["action"] == "fix"
 
 
-def test_run_skill_passes_output_file_as_early_tool_wait_file(tmp_path, monkeypatch) -> None:
-    """factcurate 脚本只产简报，提前返回必须等 LLM 写出的 outputFile 落地（竞态修复回归）。"""
-    output_file = tmp_path / "fact_curate_suggestions.json"
+def test_run_skill_supervises_factcurate_without_early_return(tmp_path, monkeypatch) -> None:
+    """factcurate 只传 early_tool_command 做轮询 idle 监管，不传等待文件：
+    建议文件由 LLM 多轮迭代写出（先草稿后填值），提前返回会回收草稿并孤儿化会话。"""
     manifest_path = tmp_path / "fact_curate_input.json"
     manifest_path.write_text(
-        json.dumps({"schemaVersion": "bid-tech-fact-curate-v1", "outputFile": str(output_file)}, ensure_ascii=False),
+        json.dumps({"schemaVersion": "bid-tech-fact-curate-v1", "outputFile": str(tmp_path / "out.json")}, ensure_ascii=False),
         encoding="utf-8",
     )
     calls: dict = {}
@@ -516,7 +541,28 @@ def test_run_skill_passes_output_file_as_early_tool_wait_file(tmp_path, monkeypa
     curator.run_technical_fact_curator_skill(manifest_path)
 
     assert calls["early_tool_command"] == "factcurate"
-    assert calls["early_tool_wait_file"] == str(output_file)
+    assert "early_tool_wait_file" not in calls
+
+
+def test_run_clears_stale_suggestions_before_skill(workspace_dirs, monkeypatch) -> None:
+    """上一轮残留的 suggestions 必须先清掉：会话未能写出新文件时，残留 outputFile
+    会被当作本轮结果回收（表现为建议数与上次完全相同）。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+    work_dir = curator._curator_work_dir(_project())
+    stale_output = work_dir / "fact_curate_suggestions.json"
+    stale_output.write_text(json.dumps({"suggestions": [{"fieldKey": "STALE"}]}), encoding="utf-8")
+    seen: dict = {}
+
+    def fake_skill(manifest_path):
+        seen["output_existed_at_skill_start"] = stale_output.exists()
+        return {"schema": "bid-tech-fact-curate-v1", "suggestions": [], "opencodeOutput": {}}
+
+    monkeypatch.setattr(curator, "run_technical_fact_curator_skill", fake_skill)
+
+    curator.run_fact_curator_for_project(_project(), gap_state, {})
+
+    assert seen["output_existed_at_skill_start"] is False
 
 
 # ---------------------------------------------------------------- skill 脚本简报

@@ -337,6 +337,8 @@ const FactMaintenanceModal = ({
   fieldBusy,
   specsImported,
   specsFileName,
+  materialPaths,
+  curating,
   onClose,
   onBuild,
   onConfirm,
@@ -344,7 +346,17 @@ const FactMaintenanceModal = ({
   onFieldChange,
   onAddField,
   onUploadSpecs,
+  onSaveMaterialPaths,
+  onCurate,
 }) => {
+  const [pathsDraft, setPathsDraft] = useState('')
+  const [pathsEditing, setPathsEditing] = useState(false)
+  useEffect(() => {
+    if (open) {
+      setPathsDraft((materialPaths || []).join(', '))
+      setPathsEditing(false)
+    }
+  }, [open])
   if (!open) return null
   const summary = factTable?.summary || {}
   const status = factTable?.status || 'empty'
@@ -365,6 +377,16 @@ const FactMaintenanceModal = ({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onCurate}
+              disabled={busy || !fields.length}
+              title="AI 匹配项目素材并填充字段值，结果置为待人工确认（耗时较长）"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-secondary px-3 text-xs font-semibold text-on-secondary hover:bg-secondary-container hover:text-on-secondary-container disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
+              {curating ? '匹配填充中...' : 'AI 匹配填充'}
+            </button>
             <button
               type="button"
               onClick={onBuild}
@@ -401,6 +423,64 @@ const FactMaintenanceModal = ({
               <span className="material-symbols-outlined text-[18px]">close</span>
             </button>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-surface-container-high bg-surface-container-lowest px-5 py-2.5 text-xs text-on-surface-variant">
+          <span className="inline-flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px]">description</span>
+            事实表清单：{specsImported ? (specsFileName || '已上传') : '未上传'}
+          </span>
+          <button
+            type="button"
+            onClick={onUploadSpecs}
+            disabled={busy}
+            className="inline-flex h-7 items-center gap-1 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[14px]">upload_file</span>
+            {specsImported ? '重新上传' : '上传事实表'}
+          </button>
+          <span className="inline-flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px]">folder_open</span>
+            参考路径：项目定制/本项目{materialPaths?.length ? ` + ${materialPaths.length} 个自定义目录` : ''}
+          </span>
+          {pathsEditing ? (
+            <span className="inline-flex min-w-[280px] flex-1 items-center gap-2">
+              <input
+                value={pathsDraft}
+                onChange={(event) => setPathsDraft(event.target.value)}
+                placeholder="素材库目录，如：技术标/项目定制/其他项目；多个用逗号分隔"
+                className="h-7 flex-1 rounded-md border border-surface-container-high bg-surface px-2 text-xs text-on-surface"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  onSaveMaterialPaths(pathsDraft.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean))
+                  setPathsEditing(false)
+                }}
+                disabled={busy}
+                className="inline-flex h-7 items-center rounded-md bg-primary px-2 font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+              >
+                保存
+              </button>
+              <button
+                type="button"
+                onClick={() => setPathsEditing(false)}
+                className="inline-flex h-7 items-center rounded-md bg-surface-container-high px-2 text-on-surface-variant hover:bg-surface-dim"
+              >
+                取消
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setPathsEditing(true)}
+              disabled={busy}
+              className="inline-flex h-7 items-center gap-1 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[14px]">edit</span>
+              设置参考路径
+            </button>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto p-4">
@@ -525,7 +605,7 @@ const FactMaintenanceModal = ({
                 {specsImported ? (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      实时表「{specsFileName || '已上传'}」尚未生成事实表，点击下方按钮按清单提取字段。
+                      事实表「{specsFileName || '已上传'}」已解析，点击下方按钮按清单提取字段。
                     </p>
                     <button
                       type="button"
@@ -540,7 +620,7 @@ const FactMaintenanceModal = ({
                 ) : (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      还没有项目事实表。请先上传本项目的实时表 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
+                      还没有项目事实表。请先上传本项目的事实表 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
                     </p>
                     <button
                       type="button"
@@ -549,7 +629,7 @@ const FactMaintenanceModal = ({
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
                       <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                      上传实时表
+                      上传事实表
                     </button>
                   </>
                 )}
@@ -840,9 +920,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
-  // 实时表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
-  // 未上传的项目不出字段，仅引导上传。
+  // 事实表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
+  // 未上传的项目不出字段，仅引导上传。factMaterialPaths 是用户自定义的参考资料目录。
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
+  const [factMaterialPaths, setFactMaterialPaths] = useState([])
   const fillRuleInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
@@ -866,6 +947,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         imported: Boolean(factsPayload?.specsImported),
         fileName: String(factsPayload?.specsFileName || ''),
       })
+      setFactMaterialPaths(Array.isArray(factsPayload?.materialPaths) ? factsPayload.materialPaths : [])
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
       if (!silent) setError(e?.message || '缺口识别与处理加载失败')
@@ -1201,6 +1283,12 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(payload)
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
+      if (build) {
+        const summary = payload?.summary || {}
+        showToast?.(
+          `刷新完成：已提取 ${summary.extractedCount ?? 0} · 待确认 ${summary.pendingConfirmationCount ?? 0} · 未提取 ${summary.unextractedCount ?? 0}（AI 匹配填充可继续补值）`
+        )
+      }
       return payload
     } catch (e) {
       showToast?.(e?.message || '项目事实表加载失败', 'error')
@@ -1212,10 +1300,10 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   const ensureFactTableReady = async () => {
     if (factTable?.status === 'confirmed') return true
-    // 未上传实时表的项目不出字段：引导上传，不再静默自动生成事实表
+    // 未上传事实表的项目不出字段：打开事实表弹窗引导上传，不再静默自动生成事实表
     if (!factSpecsMeta.imported && !factFields.length) {
-      showToast?.('请先上传本项目的实时表 Excel，系统才能提取要填写的字段', 'error')
-      fillRuleInputRef.current?.click()
+      showToast?.('请先上传本项目的事实表 Excel，系统才能提取要填写的字段', 'error')
+      setFactModalOpen(true)
       return false
     }
     if (busyAction) return false
@@ -1636,7 +1724,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     event.target.value = ''
     if (!file) return
     if (!/\.xlsx$/i.test(file.name)) {
-      showToast?.('实时表仅支持 .xlsx 文件', 'error')
+      showToast?.('事实表仅支持 .xlsx 文件', 'error')
       return
     }
     if (busyAction) return
@@ -1651,10 +1739,44 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(table)
       setFactFields(asObjectArray(table?.fields))
       setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      showToast?.(`实时表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
+      showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
       setFactModalOpen(true)
     } catch (e) {
-      showToast?.(e?.message || '实时表上传失败', 'error')
+      showToast?.(e?.message || '事实表上传失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
+  const handleSaveMaterialPaths = async (paths) => {
+    if (busyAction) return
+    setBusyAction('facts-material-sources')
+    try {
+      const payload = await technicalGapsAPI.saveMaterialSources(id, { paths })
+      setFactMaterialPaths(Array.isArray(payload?.paths) ? payload.paths : [])
+      showToast?.('参考路径已保存，下次生成/刷新事实表时生效')
+    } catch (e) {
+      showToast?.(e?.message || '参考路径保存失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
+  // AI 匹配填充：后端事实表维护 Skill 按素材给字段补值/修正/口径建议，结果落为待人工确认
+  const handleCurateFacts = async () => {
+    if (busyAction) return
+    setBusyAction('facts-curate')
+    try {
+      const payload = await technicalGapsAPI.curateFacts(id, {})
+      const table = payload?.projectFactTable
+      if (table?.schemaVersion) {
+        setFactTable(table)
+        setFactFields(asObjectArray(table.fields))
+        setData((current) => (current ? { ...current, projectFactTable: table } : current))
+      }
+      showToast?.(payload?.message || '匹配填充完成')
+    } catch (e) {
+      showToast?.(e?.message || '匹配填充失败，请稍后重试', 'error')
     } finally {
       setBusyAction('')
     }
@@ -1679,22 +1801,13 @@ export default function TechnicalGapRecognition({ showToast }) {
             />
             <Button
               type="button"
-              onClick={() => fillRuleInputRef.current?.click()}
-              disabled={Boolean(busyAction) || data?.status !== 'completed'}
-              title={factSpecsMeta.imported ? `已上传：${factSpecsMeta.fileName}（重新上传将覆盖字段清单并重建事实表）` : '上传本项目实时表 Excel，提取要填写的字段'}
-              size="stage"
-              variant={factSpecsMeta.imported ? 'secondary' : 'quiet'}
-            >
-              {busyAction === 'fact-specs-upload' ? '上传中...' : factSpecsMeta.imported ? '实时表（已上传）' : '上传实时表'}
-            </Button>
-            <Button
-              type="button"
               onClick={() => setFactModalOpen(true)}
               disabled={Boolean(busyAction) || data?.status !== 'completed'}
+              title={factSpecsMeta.imported ? `事实表清单：${factSpecsMeta.fileName}` : '尚未上传事实表，打开后按引导上传'}
               size="stage"
               variant={factConfirmed ? 'secondary' : 'quiet'}
             >
-              {factConfirmed ? '项目事实表已确认' : '维护项目事实表'}
+              {busyAction === 'fact-specs-upload' ? '上传中...' : factConfirmed ? '项目事实表已确认' : '项目事实表'}
             </Button>
             <Button
               type="button"
@@ -2102,10 +2215,12 @@ export default function TechnicalGapRecognition({ showToast }) {
         open={factModalOpen}
         factTable={factTable}
         fields={factFields}
-        busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload'].includes(busyAction)}
+        busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
         fieldBusy={busyAction === 'fact-field-confirm'}
         specsImported={factSpecsMeta.imported}
         specsFileName={factSpecsMeta.fileName}
+        materialPaths={factMaterialPaths}
+        curating={busyAction === 'facts-curate'}
         onClose={() => setFactModalOpen(false)}
         onBuild={() => loadFactTable({ build: true })}
         onConfirm={handleConfirmFactTable}
@@ -2113,6 +2228,8 @@ export default function TechnicalGapRecognition({ showToast }) {
         onFieldChange={handleFactFieldChange}
         onAddField={handleAddFactField}
         onUploadSpecs={() => fillRuleInputRef.current?.click()}
+        onSaveMaterialPaths={handleSaveMaterialPaths}
+        onCurate={handleCurateFacts}
       />
       <TechnicalGenerationProgressModal
         open={generationModalOpen || generationRunning}

@@ -179,6 +179,10 @@ def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> li
     return result
 
 
+# 不参与 AI 补抽的来源类别：模板占位（无需取值）、平台输入（人工录入）、自动生成（代码计算）
+_NO_FILL_SOURCE_KINDS = {"template", "platform", "derived"}
+
+
 def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
     """按方案 B 的三件事给字段分桶，桶内只放 fieldKey。"""
     targets: dict[str, list[str]] = {"fill": [], "fix": [], "confirmAdvice": []}
@@ -187,7 +191,8 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
         if not field_key:
             continue
         status = str(field.get("status") or "")
-        if status == FACT_STATUS_UNEXTRACTED and str(field.get("sourceKind") or "") == "tender":
+        # 补抽范围：招标类 + 素材/证书类未提取字段（模板/平台/自动生成类不交 AI 填）
+        if status == FACT_STATUS_UNEXTRACTED and str(field.get("sourceKind") or "") not in _NO_FILL_SOURCE_KINDS:
             targets["fill"].append(field_key)
         if status == FACT_STATUS_EXTRACTED:
             targets["fix"].append(field_key)
@@ -196,11 +201,11 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
     return targets
 
 
-def _spec_reference_maps() -> tuple[dict[str, dict[str, Any]], dict[int, dict[str, Any]]]:
+def _spec_reference_maps(specs: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[int, dict[str, Any]]]:
     """spec 索引：按 key 精确匹配为主，按 seq 兜底（字段 dict 里有 specKey 和 specSeq）。"""
     by_key: dict[str, dict[str, Any]] = {}
     by_seq: dict[int, dict[str, Any]] = {}
-    for spec in load_specs():
+    for spec in specs:
         key = str(spec.get("key") or "")
         if key and key not in by_key:
             by_key[key] = spec
@@ -222,8 +227,11 @@ def build_fact_curator_manifest(
     table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     fields = [copy.deepcopy(field) for field in (table.get("fields") or []) if isinstance(field, dict)]
     # 按 specKey 关联 spec 补 referenceFile/materialClass（specKey 匹配不上用 specSeq 兜底），
-    # 供 skill 按字段 materialClass 定向找素材、按 referenceFile 分辨招标文件字段
-    spec_by_key, spec_by_seq = _spec_reference_maps()
+    # 供 skill 按字段 materialClass 定向找素材、按 referenceFile 分辨招标文件字段。
+    # spec 优先用项目上传的事实表清单（gap_state["factSpecs"]），缺省回退全局清单
+    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
+    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+    spec_by_key, spec_by_seq = _spec_reference_maps(project_specs or load_specs())
     for field in fields:
         spec = spec_by_key.get(str(field.get("specKey") or ""))
         if spec is None:
@@ -267,26 +275,19 @@ manifest：{manifest_path}
 
 factcurate {manifest_path}
 
-然后按 SKILL.md 的流程阅读简报与原文，把逐字段建议写入 manifest 指定的 outputFile。最后只返回小型 JSON（schema、suggestionsPath、counts），不要返回解释文字，不要使用 Markdown 代码块。
+然后按 SKILL.md 的流程阅读简报与原文，把逐字段建议写入 manifest 指定的 outputFile。注意：本环境没有 read / write / edit 工具，绝对不要调用它们——读文件用 Bash（grep -n 定位、sed -n 或 cat 取内容）；写建议文件必须用 Bash heredoc 先写 outputFile.tmp（内容多时分段 cat >> 追加），确认 JSON 完整后再 mv -f 改名为 outputFile，绝对不要直接写 outputFile（后端检测到完整文件会立即回收，写一半会被截断收走）。最后只返回小型 JSON（schema、suggestionsPath、counts），不要返回解释文字，不要使用 Markdown 代码块。
 """.strip()
 
 
 def run_technical_fact_curator_skill(manifest_path: Path) -> dict[str, Any]:
     """opencode 调用隔离点：测试 patch 本函数即可mock 全链路。"""
     prompt = _build_fact_curator_prompt(manifest_path)
-    # factcurate 脚本只生成证据简报，建议文件 outputFile 由 LLM 后续写出：
-    # 脚本完成不等于建议就绪，提前返回必须等 outputFile 落地，否则回收 0 条（实测竞态）
-    output_file = ""
-    try:
-        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            output_file = str(payload.get("outputFile") or "")
-    except (OSError, json.JSONDecodeError):
-        output_file = ""
+    # early_tool_command 只用于轮询 idle 监管；factcurate 不走提前返回——
+    # 建议文件由 LLM 多轮迭代写出（先草稿后填值），「脚本完成/文件落地」都不代表终稿，
+    # 提前返回会回收草稿并把会话孤儿化（实测三轮三种竞态），必须等会话自然完成
     return OpencodeClient().run_bid_tech_fact_curator_with_trace(
         prompt,
         early_tool_command="factcurate",
-        early_tool_wait_file=output_file,
     )
 
 
@@ -352,6 +353,7 @@ def apply_fact_curator_suggestions(
     operator: str,
     saved_at: str,
     cross_materials: list[dict[str, Any]] | None = None,
+    spec_total: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """把 curator 建议落到事实表。返回 (更新后的表, 回收报告)。
 
@@ -458,7 +460,7 @@ def apply_fact_curator_suggestions(
         field["updatedBy"] = operator
 
     table["fields"] = fields
-    table["summary"] = summarize_project_fact_fields(fields)
+    table["summary"] = summarize_project_fact_fields(fields, spec_total=spec_total)
     table["updatedAt"] = saved_at
     # curator 绝不写 confirmed；已 confirmed 的表出现新的非终态字段时降回 draft 待人工
     if str(table.get("status") or "") == "confirmed" and not all(
@@ -480,7 +482,17 @@ def run_fact_curator_for_project(
     table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     if not table.get("fields"):
         raise ValueError("项目事实表为空，请先构建事实表再运行维护 Skill。")
+    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
+    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
     manifest, manifest_path = build_fact_curator_manifest(project, gap_state, data)
+    # 清掉上一轮产物：会话未能写出新建议文件时，残留的上一轮回 outputFile 会被
+    # load_fact_curator_suggestions 当作本轮结果回收（表现为建议数与上次完全相同）
+    for artifact_key in ("outputFile", "briefFile"):
+        artifact_text = str(manifest.get(artifact_key) or "").strip()
+        if artifact_text:
+            artifact = Path(artifact_text)
+            if artifact.is_file():
+                artifact.unlink()
     result = run_technical_fact_curator_skill(manifest_path)
     suggestions = load_fact_curator_suggestions(result, manifest)
     saved_at = _now_iso()
@@ -491,7 +503,13 @@ def run_fact_curator_for_project(
         if isinstance(material, dict) and material.get("crossProject")
     ]
     updated_table, report = apply_fact_curator_suggestions(
-        table, suggestions, operator=operator, saved_at=saved_at, cross_materials=cross_materials
+        table,
+        suggestions,
+        operator=operator,
+        saved_at=saved_at,
+        cross_materials=cross_materials,
+        # summary 的清单口径与项目上传的事实表对齐，不回退全局默认清单
+        spec_total=len(project_specs) if project_specs else None,
     )
     report["manifestPath"] = str(manifest_path)
     report["suggestionCount"] = len(suggestions)

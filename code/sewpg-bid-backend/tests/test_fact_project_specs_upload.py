@@ -181,6 +181,58 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
         self.assertEqual(after.json()["specTotal"], 2)
 
 
+    def test_material_sources_roundtrip(self) -> None:
+        project_id = self._create_project()
+
+        before = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertEqual(before.json()["materialPaths"], [])
+
+        response = self.client.put(
+            f"/api/technical/projects/{project_id}/gaps/facts/material-sources",
+            json={"paths": ["技术标/项目定制/其他项目/", " 技术标/项目定制/其他项目 ", "技术标/客户定制/某业主"]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        # 去空白、去尾斜杠、去重
+        self.assertEqual(
+            response.json()["paths"], ["技术标/项目定制/其他项目", "技术标/客户定制/某业主"]
+        )
+
+        project = store._require(project_id)
+        self.assertEqual(
+            project["gap_state"]["factMaterialPaths"],
+            ["技术标/项目定制/其他项目", "技术标/客户定制/某业主"],
+        )
+
+        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(
+            after.json()["materialPaths"], ["技术标/项目定制/其他项目", "技术标/客户定制/某业主"]
+        )
+
+    def test_material_sources_rejects_non_list(self) -> None:
+        project_id = self._create_project()
+
+        response = self.client.put(
+            f"/api/technical/projects/{project_id}/gaps/facts/material-sources",
+            json={"paths": "技术标/项目定制/其他项目"},
+        )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertNotIn("factMaterialPaths", store._require(project_id).get("gap_state") or {})
+
+    def test_material_sources_prefix_tolerance(self) -> None:
+        """用户省略标类前缀（项目定制/xxx）时自动补全为素材库完整路径。"""
+        project_id = self._create_project()
+
+        response = self.client.put(
+            f"/api/technical/projects/{project_id}/gaps/facts/material-sources",
+            json={"paths": ["项目定制/其他项目"]},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["paths"], ["技术标/项目定制/其他项目"])
+
+
 class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
     """素材回退扫描只查本项目「项目定制」目录，不扫标准/客户定制目录。"""
 
@@ -225,6 +277,40 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
         )
         self.assertTrue(all(call["material_tier"] == "project" for call in calls))
         self.assertEqual([material["id"] for material in materials], ["RAW-P1"])
+
+    def test_fallback_scan_includes_custom_material_paths(self) -> None:
+        """用户自定义的参考资料目录并入回退扫描，按项目层素材发起查询。"""
+        scopes = [
+            {"materialTier": "standard", "path": "技术标/标准素材"},
+            {"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目"},
+        ]
+        calls: list[dict] = []
+
+        def fake_material_files(**kwargs):
+            calls.append(kwargs)
+            return {"items": []}
+
+        with (
+            patch.object(
+                fact_table_module,
+                "build_project_material_scope",
+                lambda project: {"readableScopes": scopes},
+            ),
+            patch.object(
+                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+            ),
+        ):
+            fact_table_module.project_fact_material_index(
+                {"id": "P-SCOPE", "name": "实时表上传测试项目"},
+                # 兼容早期存入的缺标类前缀路径：扫描侧同样补全
+                {"plan": {}, "factMaterialPaths": ["项目定制/其他项目"]},
+            )
+
+        self.assertEqual(
+            [call["folder_path"] for call in calls],
+            ["技术标/项目定制/实时表上传测试项目", "技术标/项目定制/其他项目"],
+        )
+        self.assertTrue(all(call["material_tier"] == "project" for call in calls))
 
 
 if __name__ == "__main__":

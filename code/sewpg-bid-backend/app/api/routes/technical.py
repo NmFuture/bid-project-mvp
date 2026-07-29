@@ -18,6 +18,7 @@ from app.services.technical_generation_service import technical_generation_servi
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_audit_service import technical_audit_service
 from app.services.peripheral import PeripheralError
+from app.services.background_job_registry import get_job_status, start_job, update_job_progress
 from app.services.technical_material_store import technical_material_store
 from app.services.technical_wiki_generation import generate_technical_wiki
 
@@ -404,10 +405,19 @@ async def upload_technical_gap_fact_specs(
     project_id: str,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    """上传本项目实时表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
+    """上传本项目事实表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
     return await technical_gap_service.upload_fact_specs(
         project_id, str(file.filename or ""), await file.read()
     )
+
+
+@router.put("/api/technical/projects/{project_id}/gaps/facts/material-sources")
+async def save_technical_gap_fact_material_sources(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """配置本项目事实表匹配的参考资料目录（素材库虚拟路径列表），生成/刷新事实表时生效。"""
+    return await technical_gap_service.save_fact_material_sources(project_id, data)
 
 
 @router.put("/api/technical/projects/{project_id}/gaps/facts")
@@ -783,6 +793,15 @@ async def technical_raw_tag_import_commit(data: dict[str, Any] = Body(default_fa
     )
 
 
+@router.post("/api/technical/materials/raw/auto-tags")
+async def technical_raw_auto_tags(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """一键自动打标签：按目录结构（机型/类别）为当前目录子树素材推导并合并标签。"""
+
+    return await technical_material_store.raw_auto_tag_apply(
+        target_path=str(data.get("targetPath") or ""),
+    )
+
+
 @router.patch("/api/technical/materials/raw/{file_id}")
 async def technical_raw_update_file(file_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await technical_material_store.raw_update_file(
@@ -954,9 +973,29 @@ async def technical_update_certificate_scopes(data: dict[str, Any] = Body(defaul
     return await technical_material_store.update_certificate_time_scopes(data)
 
 
+CERTIFICATE_INCREMENTAL_JOB = "technical_certificate_incremental"
+TECHNICAL_WIKI_BOOTSTRAP_JOB = "technical_wiki_bootstrap"
+
+
 @router.post("/api/technical/materials/certificates/incremental")
 async def technical_run_certificate_incremental(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.run_certificate_time_incremental(data)
+    """启动证书增量识别后台任务并立即返回；运行中重复触发返回当前运行状态（幂等）。
+
+    任务在 web 进程后台持续运行，与请求生命周期解耦，离开页面不中断；
+    状态仅存内存，后端重启后需重新触发（已识别文件按 certificateMeta 跳过，可断点续跑）。
+    """
+    return start_job(
+        CERTIFICATE_INCREMENTAL_JOB,
+        lambda: technical_material_store.run_certificate_time_incremental(
+            data,
+            on_progress=lambda progress: update_job_progress(CERTIFICATE_INCREMENTAL_JOB, progress),
+        ),
+    )
+
+
+@router.get("/api/technical/materials/certificates/incremental/status")
+async def technical_certificate_incremental_status() -> dict[str, Any]:
+    return get_job_status(CERTIFICATE_INCREMENTAL_JOB)
 
 
 @router.post("/api/technical/materials/certificates/{file_id}/recognize")
@@ -981,11 +1020,26 @@ async def technical_delete_certificate_ledger(file_id: str) -> dict[str, Any]:
 
 @router.post("/api/technical/materials/wiki/bootstrap")
 async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await generate_technical_wiki(
-        reference_path=str(data.get("referencePath") or ""),
-        mode=str(data.get("mode") or "create"),
-        fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
+    """启动技术标 Wiki 生成后台任务并立即返回；运行中重复触发返回当前运行状态（幂等）。
+
+    任务在 web 进程后台持续运行，与请求生命周期解耦，离开页面不中断；
+    状态仅存内存，后端重启后需重新触发（AI 预览有签名缓存，可断点续跑）。
+    """
+    mode = str(data.get("mode") or "create")
+    return start_job(
+        TECHNICAL_WIKI_BOOTSTRAP_JOB,
+        lambda: generate_technical_wiki(
+            reference_path=str(data.get("referencePath") or ""),
+            mode=mode,
+            fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
+            on_progress=lambda progress: update_job_progress(TECHNICAL_WIKI_BOOTSTRAP_JOB, progress),
+        ),
     )
+
+
+@router.get("/api/technical/materials/wiki/bootstrap/status")
+async def technical_wiki_bootstrap_status() -> dict[str, Any]:
+    return get_job_status(TECHNICAL_WIKI_BOOTSTRAP_JOB)
 
 
 @router.post("/api/technical/materials/wiki")

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -125,17 +126,26 @@ async def generate_technical_wiki(
     mode: str = "create",
     reference_path: str = "",
     fallback_to_deterministic: bool = False,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """技术标 Wiki：确定性镜像三级目录 JSON 索引（tier→folder→file），不走 LLM。
 
     技术标的目录树严格以已落盘的 `technical_material_index.json` 为唯一凭证，
     不在 Wiki 生成入口重新从 DB 拼结构。刷新/重建只决定导入策略，不改变索引来源。
     `reference_path` / `fallback_to_deterministic` 仅为兼容 route 透传，技术标忽略。
+    `on_progress` 用于后台任务回报阶段进度（preview → build → import）。
     """
     _ = (reference_path, fallback_to_deterministic)
     index_payload = load_technical_material_index()
     if not isinstance(index_payload, dict) or not isinstance(index_payload.get("tiers"), list):
         raise RuntimeError("技术标 Wiki 缺少有效 technical_material_index.json，请先刷新原始素材 JSON 索引。")
+    if on_progress is not None:
+        on_progress({"phase": "preview"})
     preview_stats = await enrich_technical_wiki_previews(index_payload)
     write_json_file_atomic(TECHNICAL_MATERIAL_INDEX_PATH, index_payload)
-    return await mirror_technical_index_to_wiki(index_payload, mode=mode, preview_stats=preview_stats)
+    if on_progress is not None:
+        on_progress({"phase": "build"})
+    result = await mirror_technical_index_to_wiki(index_payload, mode=mode, preview_stats=preview_stats)
+    if on_progress is not None:
+        on_progress({"phase": "import"})
+    return result

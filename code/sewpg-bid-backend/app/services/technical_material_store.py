@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -24,6 +25,7 @@ from app.services.material_certificate_time import (
     update_certificate_time_scopes,
     update_certificate_time_record,
 )
+from app.services.material_auto_tags import build_auto_tag_items
 from app.services.material_tag_import import build_preview, parse_tag_excel, same_name_file_ids
 from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
@@ -509,6 +511,54 @@ class TechnicalMaterialStore:
         )
         return {"message": message, "succeeded": succeeded, "failed": failed}
 
+    async def raw_auto_tag_apply(self, *, target_path: str) -> dict[str, Any]:
+        """一键自动打标签：按目录结构（机型/类别/子类）推导标签并合并写入。
+
+        幂等：推导标签已全部存在的文件计入 unchanged 跳过；只增不删（merge）。
+        """
+
+        normalized_target = self.ensure_root_path(target_path, "目标目录")
+        files = await self._raw_subtree_files(normalized_target)
+        files = (await self._with_current_index_tags({"items": files})).get("items") or []
+        items = build_auto_tag_items(files)
+
+        succeeded: list[dict[str, Any]] = []
+        unchanged: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for item in items:
+            derived = list(item.get("tags") or [])
+            existing = {str(tag).casefold() for tag in (item.get("existingTags") or [])}
+            if derived and all(str(tag).casefold() in existing for tag in derived):
+                unchanged.append({"fileId": item["fileId"], "name": item.get("name") or ""})
+                continue
+            try:
+                updated = await self.set_index_tags(item["fileId"], derived, merge=True)
+                succeeded.append(
+                    {
+                        "fileId": item["fileId"],
+                        "name": str(updated.get("name") or ""),
+                        "tags": updated.get("tags") or [],
+                    }
+                )
+            except PeripheralError as exc:
+                failed.append({"fileId": item["fileId"], "name": item.get("name") or "", "message": exc.detail})
+            except Exception as exc:  # pragma: no cover - 兜底
+                failed.append({"fileId": item["fileId"], "name": item.get("name") or "", "message": str(exc)})
+        skipped = len(files) - len(items)
+        message = f"自动打标签完成：更新 {len(succeeded)} 个，已是最新 {len(unchanged)} 个"
+        if skipped:
+            message += f"，不在机型目录跳过 {skipped} 个"
+        if failed:
+            message += f"，失败 {len(failed)} 个"
+        return {
+            "message": message,
+            "targetPath": normalized_target,
+            "succeeded": succeeded,
+            "unchanged": unchanged,
+            "failed": failed,
+            "total": len(files),
+        }
+
     async def set_index_tags(self, target_id: str, tags: Any, *, merge: bool = False) -> dict[str, Any]:
         from app.services.technical_material_index import set_tags_for_node
 
@@ -712,11 +762,17 @@ class TechnicalMaterialStore:
             scopes=data.get("scopes") or [],
         )
 
-    async def run_certificate_time_incremental(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def run_certificate_time_incremental(
+        self,
+        data: dict[str, Any],
+        *,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         return await run_certificate_time_incremental(
             bid_type=TECHNICAL_BID_TYPE,
-            limit=int(data.get("limit") or 50),
+            limit=int(data.get("limit") or 0),
             include_failed=bool(data.get("includeFailed", True)),
+            on_progress=on_progress,
         )
 
     async def recognize_certificate_time(self, file_id: str) -> dict[str, Any]:

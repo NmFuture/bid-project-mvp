@@ -1041,21 +1041,8 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
   const [conflictContext, setConflictContext] = useState(null)
 
-  const [showTagImportModal, setShowTagImportModal] = useState(false)
-  const [tagImportStep, setTagImportStep] = useState('pick') // 'pick' | 'preview'
-  const [tagImportTargetPath, setTagImportTargetPath] = useState('')
-  const [tagImportFile, setTagImportFile] = useState(null)
-  const [tagImportUseFuzzy, setTagImportUseFuzzy] = useState(false)
-  const [tagImportMode, setTagImportMode] = useState('merge') // 'merge' | 'overwrite'
-  const [tagImportPreview, setTagImportPreview] = useState(null)
-  const [tagImportLoading, setTagImportLoading] = useState(false)
-  const [tagImportError, setTagImportError] = useState('')
-  // 勾选/候选选择：key 用 rowIndex
-  const [tagImportSelectedMatched, setTagImportSelectedMatched] = useState({})
-  const [tagImportSelectedFuzzy, setTagImportSelectedFuzzy] = useState({})
-  const [tagImportAmbiguousPick, setTagImportAmbiguousPick] = useState({})
-  const [tagImportApplyAll, setTagImportApplyAll] = useState({}) // rowIndex -> 应用到全部同名文件（跨机型）
-  const tagImportFileInputRef = useRef(null)
+  // 自动打标签：按目录结构（机型/类别）为当前目录子树素材推导并合并标签
+  const [autoTagLoading, setAutoTagLoading] = useState(false)
 
   // 多选框架
   const [bulkMode, setBulkMode] = useState(false)
@@ -1088,7 +1075,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     ...selectedFilterTags,
   ].filter((value) => String(value || '').trim()).length
   const tagOptions = useMemo(() => normalizeTagOptions(filesPayload?.tagOptions || []), [filesPayload?.tagOptions])
-  const tagImportFolderOptions = useMemo(() => flattenTreePaths(tree), [tree])
   const hasActiveFilters = activeFilterCount > 0
   const displayTree = useMemo(
     () => (hasActiveFilters ? filterTreeByMatchedFiles(tree, filesByFolderPath) : tree),
@@ -1498,139 +1484,19 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     }
   }
 
-  const openTagImportModal = () => {
-    // 跨机型「应用到同名文件」按目标目录匹配：选中标准文件子树时默认上溯到标准文件根，避免只覆盖单机型子目录
-    const defaultTargetPath =
-      selectedFolderPath && (selectedFolderPath === TECHNICAL_ROOT_PATH || selectedFolderPath.startsWith(`${TECHNICAL_ROOT_PATH}/`))
-        ? TECHNICAL_ROOT_PATH
-        : (selectedFolderPath || activeBidType)
-    setTagImportTargetPath(defaultTargetPath)
-    setTagImportFile(null)
-    setTagImportUseFuzzy(false)
-    setTagImportMode('merge')
-    setTagImportPreview(null)
-    setTagImportStep('pick')
-    setTagImportError('')
-    setTagImportSelectedMatched({})
-    setTagImportSelectedFuzzy({})
-    setTagImportAmbiguousPick({})
-    setTagImportApplyAll({})
-    if (tagImportFileInputRef.current) tagImportFileInputRef.current.value = ''
-    setShowTagImportModal(true)
-  }
-
-  const closeTagImportModal = () => {
-    if (tagImportLoading) return
-    setShowTagImportModal(false)
-  }
-
-  const handleTagImportPreview = async () => {
-    if (!tagImportFile) {
-      setTagImportError('请先选择标签清单 Excel 文件。')
-      return
-    }
-    if (!tagImportTargetPath) {
-      setTagImportError('请选择目标文件夹。')
-      return
-    }
-    setTagImportLoading(true)
-    setTagImportError('')
+  // 一键自动打标签：按目录结构（机型/类别）为当前目录子树素材推导标签，merge 合并写入，幂等
+  const handleAutoTags = async () => {
+    if (!selectedFolderPath || autoTagLoading) return
+    setAutoTagLoading(true)
     try {
-      const payload = new FormData()
-      payload.append('file', tagImportFile, tagImportFile.name)
-      payload.append('targetPath', tagImportTargetPath)
-      payload.append('useFuzzy', tagImportUseFuzzy ? 'true' : 'false')
-      payload.append('importMode', tagImportMode)
-      const result = await technicalMaterialsAPI.raw.tagImportPreview(payload)
-      setTagImportPreview(result)
-      // 默认全选 matched，不选 fuzzy
-      const matchedSel = {}
-      ;(result?.matched || []).forEach((row) => { matchedSel[row.rowIndex] = true })
-      setTagImportSelectedMatched(matchedSel)
-      setTagImportSelectedFuzzy({})
-      setTagImportAmbiguousPick({})
-      setTagImportApplyAll({})
-      setTagImportStep('preview')
-    } catch (e) {
-      setTagImportError(safeMessage(e, '解析预览失败，请稍后重试。'))
-    } finally {
-      setTagImportLoading(false)
-    }
-  }
-
-  const toggleTagImportApplyAll = (checked) => {
-    setTagImportApplyAll((prev) => {
-      const next = { ...prev }
-      ;(tagImportPreview?.matched || []).forEach((row) => {
-        if (Number(row.matches) > 1) next[row.rowIndex] = checked
-      })
-      return next
-    })
-  }
-
-  const handleTagImportCommit = async () => {
-    const preview = tagImportPreview
-    if (!preview) return
-    const items = []
-    // matched
-    ;(preview.matched || []).forEach((row) => {
-      if (!tagImportSelectedMatched[row.rowIndex]) return
-      // 跨机型批量应用：交由后端把本行清单标签写入目标目录内所有同名文件（含当前匹配项）
-      if (tagImportApplyAll[row.rowIndex] && Number(row.matches) > 1) {
-        items.push({ fileName: row.fileName, tags: normalizeTagList(row.incomingTags || row.tags || []), applyToAllMatches: true })
-        return
-      }
-      if (row.fileId) {
-        items.push({ fileId: row.fileId, tags: row.mergedTags })
-      }
-    })
-    // fuzzy（已勾选）
-    ;(preview.fuzzy || []).forEach((row) => {
-      if (tagImportSelectedFuzzy[row.rowIndex] && row.suggestedFileId) {
-        items.push({ fileId: row.suggestedFileId, tags: row.mergedTags })
-      }
-    })
-    // ambiguous（已选定候选）
-    ;(preview.ambiguous || []).forEach((row) => {
-      const pickedId = tagImportAmbiguousPick[row.rowIndex]
-      if (!pickedId) return
-      const incoming = normalizeTagList(row.tags || [])
-      // 全部同名文件：跨机型批量应用，后端按目标目录同名文件逐个锁内合并
-      if (pickedId === '__ALL__') {
-        items.push({ fileName: row.fileName, tags: incoming, applyToAllMatches: true })
-        return
-      }
-      const candidate = (row.candidates || []).find((c) => c.fileId === pickedId)
-      if (!candidate) return
-      // 覆盖模式:Excel 有标签整条替换;留空则保留原候选标签(防误删),与后端 matched/fuzzy 一致。
-      const merged = tagImportMode === 'overwrite'
-        ? (incoming.length ? incoming : normalizeTagList(candidate.tags || []))
-        : normalizeTagList([...(candidate.tags || []), ...incoming])
-      items.push({ fileId: pickedId, tags: merged })
-    })
-
-    if (!items.length) {
-      setTagImportError('没有勾选任何要导入的条目。')
-      return
-    }
-    if (tagImportMode === 'overwrite') {
-      const confirmed = window.confirm(
-        `将以本次清单覆盖 ${items.length} 个文件的标签，原标签将被替换（Excel 未填标签的文件保持原样）。是否继续？`
-      )
-      if (!confirmed) return
-    }
-    setTagImportLoading(true)
-    setTagImportError('')
-    try {
-      const result = await technicalMaterialsAPI.raw.tagImportCommit({ items, targetPath: tagImportTargetPath, importMode: tagImportMode })
+      const result = await technicalMaterialsAPI.raw.autoTags({ targetPath: selectedFolderPath })
       const failedCount = (result?.failed || []).length
-      showToast(result?.message || `标签导入完成：成功 ${(result?.succeeded || []).length} 个`, failedCount ? 'warning' : 'success')
-      setShowTagImportModal(false)
+      showToast(result?.message || '自动打标签完成', failedCount ? 'warning' : 'success')
       await loadLibrary({ silent: true })
     } catch (e) {
-      setTagImportError(safeMessage(e, '标签导入失败，请稍后重试。'))
+      showToast(safeMessage(e, '自动打标签失败，请稍后重试。'), 'error')
     } finally {
-      setTagImportLoading(false)
+      setAutoTagLoading(false)
     }
   }
 
@@ -2022,12 +1888,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           </button>
           <button
             type="button"
-            title="按 Excel 清单批量导入标签"
-            onClick={openTagImportModal}
-            disabled={!selectedFolderPath}
+            title="按目录结构（机型/类别）为当前目录下的素材自动打标签，只增不删、可重复执行"
+            onClick={handleAutoTags}
+            disabled={!selectedFolderPath || autoTagLoading}
             className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45"
           >
-            导入标签
+            {autoTagLoading ? '打标中...' : '自动打标签'}
           </button>
           <button
             type="button"
@@ -2455,256 +2321,6 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
               >
                 生成 v2
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showTagImportModal && (
-        <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="wizard-modal-surface w-full max-w-3xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col overflow-hidden animate-float-in">
-            <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
-              <div className="min-w-0">
-                <h2 className="text-lg font-headline font-bold text-on-surface">导入标签</h2>
-                <p className="mt-1 text-xs text-outline">按 Excel 清单（文件名称 + 属性1/2/3）批量为素材打标签。</p>
-              </div>
-              <button onClick={closeTagImportModal} disabled={tagImportLoading} className="close-plain text-on-surface-variant hover:text-primary transition-colors disabled:opacity-50" aria-label="关闭">
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-4">
-              {tagImportStep === 'pick' ? (
-                <>
-                  <label className="block text-sm text-on-surface-variant">
-                    <span className="block mb-1">目标文件夹（在该目录及其子目录内按文件名匹配）</span>
-                    <select
-                      value={tagImportTargetPath}
-                      onChange={(e) => setTagImportTargetPath(e.target.value)}
-                      className="w-full h-10 px-3 rounded-lg bg-surface-container-highest border-none text-sm"
-                    >
-                      {tagImportFolderOptions.map((path) => (
-                        <option key={path} value={path}>{path}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="block text-sm text-on-surface-variant">
-                    <span className="block mb-1">标签清单 Excel</span>
-                    <input
-                      ref={tagImportFileInputRef}
-                      type="file"
-                      accept=".xlsx,.xls"
-                      onChange={(e) => { setTagImportFile(e.target.files?.[0] || null); setTagImportError('') }}
-                      className="block w-full text-sm text-on-surface file:mr-3 file:rounded-lg file:border-0 file:bg-surface-container-high file:px-3 file:py-2 file:text-xs file:font-semibold file:text-on-surface"
-                    />
-                    {tagImportFile && (
-                      <span className="mt-1 block truncate text-xs text-outline">已选择：{tagImportFile.name}</span>
-                    )}
-                  </label>
-
-                  <fieldset className="block text-sm text-on-surface-variant">
-                    <legend className="mb-1.5 block">导入方式</legend>
-                    <div className="space-y-1.5">
-                      <label className="flex items-start gap-2">
-                        <input
-                          type="radio"
-                          name="tagImportMode"
-                          checked={tagImportMode === 'merge'}
-                          onChange={() => setTagImportMode('merge')}
-                          className="mt-0.5 h-4 w-4 accent-primary"
-                        />
-                        <span className="min-w-0">
-                          <span className="font-medium text-on-surface">合并已有标签（默认）</span>
-                          <span className="block text-xs text-outline">在文件原有标签基础上追加，不删除已有标签。</span>
-                        </span>
-                      </label>
-                      <label className="flex items-start gap-2">
-                        <input
-                          type="radio"
-                          name="tagImportMode"
-                          checked={tagImportMode === 'overwrite'}
-                          onChange={() => setTagImportMode('overwrite')}
-                          className="mt-0.5 h-4 w-4 accent-primary"
-                        />
-                        <span className="min-w-0">
-                          <span className="font-medium text-on-surface">覆盖为本次清单</span>
-                          <span className="block text-xs text-outline">以 Excel 为准替换文件标签；Excel 未填标签的文件保持原样。</span>
-                        </span>
-                      </label>
-                    </div>
-                  </fieldset>
-
-                  <label className="flex items-center gap-2 text-sm text-on-surface-variant">
-                    <input
-                      type="checkbox"
-                      checked={tagImportUseFuzzy}
-                      onChange={(e) => setTagImportUseFuzzy(e.target.checked)}
-                      className="h-4 w-4 rounded border-outline-variant"
-                    />
-                    <span>对精确匹配不上的行，启用 AI 模糊匹配（结果需人工勾选确认）</span>
-                  </label>
-                </>
-              ) : (
-                <>
-                  {tagImportPreview?.stats && (
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      {tagImportMode === 'overwrite' ? (
-                        <span className="rounded-full bg-error-container/50 px-3 py-1 font-medium text-error">覆盖模式：以清单为准替换标签</span>
-                      ) : (
-                        <span className="rounded-full bg-secondary-container px-3 py-1 font-medium text-on-secondary-container">合并模式：追加标签</span>
-                      )}
-                      <span className="rounded-full bg-primary/10 px-3 py-1 font-medium text-primary">将导入 {tagImportPreview.stats.matched}</span>
-                      <span className="rounded-full bg-surface-container-high px-3 py-1 text-on-surface-variant">AI 建议 {(tagImportPreview.fuzzy || []).length}</span>
-                      <span className="rounded-full bg-surface-container-high px-3 py-1 text-on-surface-variant">歧义 {tagImportPreview.stats.ambiguous}</span>
-                      <span className="rounded-full bg-surface-container-high px-3 py-1 text-on-surface-variant">未匹配 {tagImportPreview.stats.unmatched}</span>
-                      <span className="rounded-full bg-surface-container-high px-3 py-1 text-outline">共 {tagImportPreview.stats.totalRows} 行 / 目录文件 {tagImportPreview.stats.candidateFiles}</span>
-                    </div>
-                  )}
-                  {tagImportPreview?.fuzzyError && (
-                    <div className="rounded-lg border border-amber-300/40 bg-amber-100/30 px-3 py-2 text-xs text-amber-700">AI 模糊匹配不可用：{tagImportPreview.fuzzyError}</div>
-                  )}
-
-                  {/* matched */}
-                  {(tagImportPreview?.matched || []).length > 0 && (
-                    <section className="space-y-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-on-surface">✅ 将导入（{(tagImportPreview.matched || []).length}）</h3>
-                        {(tagImportPreview.matched || []).some((row) => Number(row.matches) > 1) && (
-                          <label className="flex items-center gap-1.5 text-xs text-primary">
-                            <input
-                              type="checkbox"
-                              checked={(tagImportPreview.matched || []).filter((row) => Number(row.matches) > 1).every((row) => Boolean(tagImportApplyAll[row.rowIndex]))}
-                              onChange={(e) => toggleTagImportApplyAll(e.target.checked)}
-                              className="h-3.5 w-3.5 rounded border-outline-variant"
-                            />
-                            <span>全部应用到同名文件（跨机型）</span>
-                          </label>
-                        )}
-                      </div>
-                      <div className="rounded-lg border border-outline-variant/40 divide-y divide-outline-variant/30">
-                        {(tagImportPreview.matched || []).map((row) => (
-                          <label key={`m-${row.rowIndex}`} className="flex items-start gap-2 px-3 py-2 text-xs">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(tagImportSelectedMatched[row.rowIndex])}
-                              onChange={(e) => setTagImportSelectedMatched((prev) => ({ ...prev, [row.rowIndex]: e.target.checked }))}
-                              className="mt-0.5 h-4 w-4 rounded border-outline-variant"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate font-medium text-on-surface">{row.matchedName}</div>
-                              <div className="truncate text-outline">{row.folderPath}</div>
-                              <div className="mt-1 flex flex-wrap gap-1">
-                                {(row.mergedTags || []).map((tag) => (
-                                  <span key={tag} className={`rounded px-1.5 py-0.5 ${(row.addedTags || []).includes(tag) ? 'bg-primary/15 text-primary' : 'bg-surface-container-high text-on-surface-variant'}`}>{tag}</span>
-                                ))}
-                              </div>
-                              {Number(row.matches) > 1 && (
-                                <div className="mt-1 flex items-center gap-1.5 text-primary" onClick={(e) => e.stopPropagation()}>
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(tagImportApplyAll[row.rowIndex])}
-                                    onChange={(e) => setTagImportApplyAll((prev) => ({ ...prev, [row.rowIndex]: e.target.checked }))}
-                                    className="h-3.5 w-3.5 rounded border-outline-variant"
-                                  />
-                                  <span>应用到全部 {row.matches} 个同名文件（跨机型）</span>
-                                </div>
-                              )}
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  {/* fuzzy */}
-                  {(tagImportPreview?.fuzzy || []).length > 0 && (
-                    <section className="space-y-2">
-                      <h3 className="text-sm font-semibold text-on-surface">🤖 AI 模糊匹配建议（默认不选，请人工确认）</h3>
-                      <div className="rounded-lg border border-outline-variant/40 divide-y divide-outline-variant/30">
-                        {(tagImportPreview.fuzzy || []).map((row) => (
-                          <label key={`f-${row.rowIndex}`} className="flex items-start gap-2 px-3 py-2 text-xs">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(tagImportSelectedFuzzy[row.rowIndex])}
-                              onChange={(e) => setTagImportSelectedFuzzy((prev) => ({ ...prev, [row.rowIndex]: e.target.checked }))}
-                              className="mt-0.5 h-4 w-4 rounded border-outline-variant"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-on-surface"><span className="text-outline">{row.fileName}</span> → <span className="font-medium">{row.matchedName}</span></div>
-                              <div className="truncate text-outline">{row.folderPath} · 置信度 {(Number(row.confidence) * 100).toFixed(0)}%</div>
-                              {row.reason && <div className="text-outline">{row.reason}</div>}
-                              <div className="mt-1 flex flex-wrap gap-1">
-                                {(row.mergedTags || []).map((tag) => (
-                                  <span key={tag} className={`rounded px-1.5 py-0.5 ${(row.addedTags || []).includes(tag) ? 'bg-primary/15 text-primary' : 'bg-surface-container-high text-on-surface-variant'}`}>{tag}</span>
-                                ))}
-                              </div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  {/* ambiguous */}
-                  {(tagImportPreview?.ambiguous || []).length > 0 && (
-                    <section className="space-y-2">
-                      <h3 className="text-sm font-semibold text-on-surface">⚠️ 同名歧义（请选择对应文件）</h3>
-                      <div className="rounded-lg border border-outline-variant/40 divide-y divide-outline-variant/30">
-                        {(tagImportPreview.ambiguous || []).map((row) => (
-                          <div key={`a-${row.rowIndex}`} className="px-3 py-2 text-xs">
-                            <div className="truncate font-medium text-on-surface">{row.fileName}</div>
-                            <div className="mt-1 flex flex-wrap gap-1 text-outline">标签：{(row.tags || []).join('、')}</div>
-                            <select
-                              value={tagImportAmbiguousPick[row.rowIndex] || ''}
-                              onChange={(e) => setTagImportAmbiguousPick((prev) => ({ ...prev, [row.rowIndex]: e.target.value }))}
-                              className="mt-1 w-full h-9 px-2 rounded-lg bg-surface-container-highest border-none text-xs"
-                            >
-                              <option value="">不导入</option>
-                              <option value="__ALL__">全部 {(row.candidates || []).length} 个同名文件（跨机型应用）</option>
-                              {(row.candidates || []).map((c) => (
-                                <option key={c.fileId} value={c.fileId}>{c.folderPath}/{c.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  {/* unmatched */}
-                  {(tagImportPreview?.unmatched || []).length > 0 && (
-                    <section className="space-y-2">
-                      <h3 className="text-sm font-semibold text-on-surface">未匹配（{(tagImportPreview.unmatched || []).length}）</h3>
-                      <div className="rounded-lg border border-outline-variant/40 bg-surface-container-lowest px-3 py-2 text-xs text-outline max-h-40 overflow-y-auto">
-                        {(tagImportPreview.unmatched || []).map((row) => (
-                          <div key={`u-${row.rowIndex}`} className="truncate">第 {row.rowIndex} 行：{row.fileName}（标签：{(row.tags || []).join('、')}）</div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-                </>
-              )}
-
-              {tagImportError && (
-                <div className="rounded-lg border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">{tagImportError}</div>
-              )}
-            </div>
-
-            <div className="px-5 sm:px-6 py-4 border-t border-surface-container-high bg-surface-container-low flex justify-between gap-2 rounded-b-xl shrink-0">
-              <div>
-                {tagImportStep === 'preview' && (
-                  <button onClick={() => { setTagImportStep('pick'); setTagImportError('') }} disabled={tagImportLoading} className="px-4 py-2 text-sm rounded-lg text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50">返回</button>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button onClick={closeTagImportModal} disabled={tagImportLoading} className="px-4 py-2 text-sm rounded-lg text-on-surface-variant hover:bg-surface-container-high disabled:opacity-50">取消</button>
-                {tagImportStep === 'pick' ? (
-                  <button onClick={handleTagImportPreview} disabled={tagImportLoading || !tagImportFile} className="px-4 py-2 text-sm rounded-lg bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50">{tagImportLoading ? '解析中...' : '解析预览'}</button>
-                ) : (
-                  <button onClick={handleTagImportCommit} disabled={tagImportLoading} className="px-4 py-2 text-sm rounded-lg bg-primary text-on-primary hover:bg-primary-container disabled:opacity-50">{tagImportLoading ? '导入中...' : '确认导入'}</button>
-                )}
-              </div>
             </div>
           </div>
         </div>
