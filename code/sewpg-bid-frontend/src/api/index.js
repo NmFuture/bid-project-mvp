@@ -537,6 +537,8 @@ export const technicalMaterialsAPI = {
       request('/technical/materials/raw/tag-import/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     tagImportCommit: (data) =>
       request('/technical/materials/raw/tag-import/commit', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    autoTags: (data) =>
+      request('/technical/materials/raw/auto-tags', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
     batchDelete: (data) => request('/technical/materials/raw/batch-delete', { method: 'POST', body: data }),
