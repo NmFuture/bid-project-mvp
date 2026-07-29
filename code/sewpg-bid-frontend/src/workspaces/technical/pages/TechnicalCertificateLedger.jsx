@@ -902,7 +902,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
               <button
                 type="button"
                 onClick={deleteSelectedRecords}
-                disabled={!selectedVisibleCount || bulkDeleting}
+                disabled={!selectedVisibleCount || bulkDeleting || incrementalRunning}
                 className="h-9 rounded-lg bg-error-container px-3 text-xs font-semibold text-error hover:bg-error-container/80 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {bulkDeleting ? '删除中...' : '批量删除'}
@@ -1029,10 +1029,10 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                         <button
                           type="button"
                           onClick={() => recognizeOne(item)}
-                          disabled={recognizingIds.has(item.fileId)}
+                          disabled={recognizingIds.has(item.fileId) || incrementalRunning}
                           className="flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-secondary-container/50 hover:text-secondary disabled:cursor-not-allowed disabled:opacity-45"
                           aria-label={`重新识别 ${item.name} 的证书时间`}
-                          title="重新识别"
+                          title={incrementalRunning ? '增量识别运行中，完成后可重新识别' : '重新识别'}
                         >
                           <span className={`material-symbols-outlined text-[16px] ${recognizingIds.has(item.fileId) ? 'animate-spin' : ''}`}>
                             {recognizingIds.has(item.fileId) ? 'progress_activity' : 'sync'}
@@ -1041,18 +1041,20 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                         <button
                           type="button"
                           onClick={() => startEdit(item)}
-                          className="flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary"
+                          disabled={incrementalRunning}
+                          className="flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
                           aria-label={`编辑 ${item.name} 的证书时间`}
-                          title="编辑"
+                          title={incrementalRunning ? '增量识别运行中，完成后可编辑' : '编辑'}
                         >
                           <span className="material-symbols-outlined text-[16px]">edit</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => deleteRecord(item)}
-                          className="flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-error-container/30 hover:text-error"
+                          disabled={incrementalRunning}
+                          className="flex h-7 w-7 items-center justify-center rounded text-outline hover:bg-error-container/30 hover:text-error disabled:cursor-not-allowed disabled:opacity-45"
                           aria-label={`删除 ${item.name} 的证书时间记录`}
-                          title="删除记录"
+                          title={incrementalRunning ? '增量识别运行中，完成后可删除' : '删除记录'}
                         >
                           <span className="material-symbols-outlined text-[16px]">delete</span>
                         </button>
