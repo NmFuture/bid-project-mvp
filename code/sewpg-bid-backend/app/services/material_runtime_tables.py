@@ -338,6 +338,8 @@ class MaterialRuntimeTables:
                     max_retries INT DEFAULT 2,
                     input_path VARCHAR(500),
                     locked_at TIMESTAMPTZ,
+                    locked_by VARCHAR(80),
+                    fence_token BIGINT DEFAULT 0,
                     audit_meta JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     created_by VARCHAR(100),
@@ -352,6 +354,8 @@ class MaterialRuntimeTables:
             "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 2",
             "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS input_path VARCHAR(500)",
             "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS locked_by VARCHAR(80)",
+            "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS fence_token BIGINT DEFAULT 0",
             "ALTER TABLE ocr_tasks ADD COLUMN IF NOT EXISTS audit_meta JSONB DEFAULT '{}'::jsonb",
         ):
             await session.execute(text(column_def))
