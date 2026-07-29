@@ -47,6 +47,7 @@ from app.services.technical_gap_domain import (
 from app.services.technical_fact_curator import run_fact_curator_for_project
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
+from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_spec_version
 from app.services.technical_gap_repository import (
     get_technical_gap_project_runtime_state,
     persist_technical_gap_project,
@@ -541,10 +542,20 @@ class TechnicalGapService:
         payload["specsImported"] = bool(specs)
         payload["specsFileName"] = str(fact_specs.get("fileName") or "")
         payload["specTotal"] = len(specs)
+        # 规则版本元数据（R06-B04-02）：审计当前绑定的是哪一版规则
+        payload["specsRuleId"] = str(fact_specs.get("ruleId") or "")
+        payload["specsVersion"] = int(fact_specs.get("version") or 0)
+        payload["specsSha256"] = str(fact_specs.get("sha256") or "")
         return payload
 
-    async def upload_fact_specs(self, project_id: str, filename: str, content: bytes) -> dict[str, Any]:
-        """项目级实时表 Excel 上传：解析出的字段清单只作用于本项目，作为事实表字段骨架。"""
+    async def upload_fact_specs(
+        self, project_id: str, filename: str, content: bytes, operator: str = "当前用户"
+    ) -> dict[str, Any]:
+        """项目级实时表 Excel 上传：固化为不可变规则版本并绑定到本项目（R06-B04-02）。
+
+        每次上传生成独立版本（ruleId/版本号/上传人/时间/sha256 落数据卷），
+        gap_state["factSpecs"] 只更新本项目的绑定与 specs 快照，不影响其他项目。
+        """
         if not filename.lower().endswith(".xlsx"):
             raise HTTPException(status_code=400, detail="实时表必须是 .xlsx 文件。")
         if not content:
@@ -563,15 +574,27 @@ class TechnicalGapService:
 
         project = require_technical_gap_project_for_update(project_id)
         gap_state = ensure_technical_gap_state(project)
-        uploaded_at = now_iso()
-        gap_state["factSpecs"] = {
-            "fileName": filename,
-            "uploadedAt": uploaded_at,
-            "specs": specs,
-        }
-        project["updatedAt"] = uploaded_at
+        previous = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
+        binding = save_fact_spec_version(
+            project_id,
+            specs,
+            file_name=filename,
+            uploaded_by=operator,
+            content=content,
+            previous_version=int(previous.get("version") or 0),
+        )
+        gap_state["factSpecs"] = binding
+        project["updatedAt"] = binding["uploadedAt"]
         persist_technical_gap_project(project)
-        return {"specTotal": len(specs), "fileName": filename, "uploadedAt": uploaded_at}
+        ref = fact_specs_ref(binding)
+        return {
+            "specTotal": len(specs),
+            "fileName": filename,
+            "uploadedAt": binding["uploadedAt"],
+            "ruleId": ref["ruleId"],
+            "version": ref["version"],
+            "sha256": ref["sha256"],
+        }
 
     async def build_facts(self, project_id: str) -> dict[str, Any]:
         try:

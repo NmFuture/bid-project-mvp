@@ -20,7 +20,7 @@ from typing import Any
 
 from app.core.config import BASE_DIR
 from app.services.opencode_client import OpencodeClient
-from app.services.technical_fact_field_specs import load_specs
+from app.services.technical_fact_spec_versions import resolve_project_specs
 from app.services.technical_fact_material_classes import (
     build_fact_material_check,
     classify_material,
@@ -196,11 +196,13 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
     return targets
 
 
-def _spec_reference_maps() -> tuple[dict[str, dict[str, Any]], dict[int, dict[str, Any]]]:
+def _spec_reference_maps(
+    specs: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> tuple[dict[str, dict[str, Any]], dict[int, dict[str, Any]]]:
     """spec 索引：按 key 精确匹配为主，按 seq 兜底（字段 dict 里有 specKey 和 specSeq）。"""
     by_key: dict[str, dict[str, Any]] = {}
     by_seq: dict[int, dict[str, Any]] = {}
-    for spec in load_specs():
+    for spec in specs:
         key = str(spec.get("key") or "")
         if key and key not in by_key:
             by_key[key] = spec
@@ -221,9 +223,11 @@ def build_fact_curator_manifest(
     """组装 curator manifest 并落盘，返回 (manifest, manifest_path)。"""
     table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     fields = [copy.deepcopy(field) for field in (table.get("fields") or []) if isinstance(field, dict)]
-    # 按 specKey 关联 spec 补 referenceFile/materialClass（specKey 匹配不上用 specSeq 兜底），
+    # 按项目绑定的规则版本关联 spec 补 referenceFile/materialClass（R06-B04-02：
+    # 不再读系统公共清单；项目无绑定时 resolve_project_specs 回落系统默认），
     # 供 skill 按字段 materialClass 定向找素材、按 referenceFile 分辨招标文件字段
-    spec_by_key, spec_by_seq = _spec_reference_maps()
+    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    spec_by_key, spec_by_seq = _spec_reference_maps(project_specs)
     for field in fields:
         spec = spec_by_key.get(str(field.get("specKey") or ""))
         if spec is None:
@@ -247,6 +251,8 @@ def build_fact_curator_manifest(
         "targets": _curate_targets(fields),
         "tenderSources": _tender_sources(project),
         "materials": _curator_materials(project, gap_state),
+        # 本次维护任务实际使用的规则版本快照（审计追溯）
+        "factSpecsRef": fact_specs_meta,
         "briefFile": str(work_dir / "fact_curate_brief.json"),
         "outputFile": str(work_dir / "fact_curate_suggestions.json"),
     }
@@ -458,7 +464,11 @@ def apply_fact_curator_suggestions(
         field["updatedBy"] = operator
 
     table["fields"] = fields
-    table["summary"] = summarize_project_fact_fields(fields)
+    # specTotal 沿用建表时的口径（项目绑定版本的条数），不被系统默认清单条数覆盖
+    previous_summary = table.get("summary") if isinstance(table.get("summary"), dict) else {}
+    table["summary"] = summarize_project_fact_fields(
+        fields, spec_total=previous_summary.get("specTotal")
+    )
     table["updatedAt"] = saved_at
     # curator 绝不写 confirmed；已 confirmed 的表出现新的非终态字段时降回 draft 待人工
     if str(table.get("status") or "") == "confirmed" and not all(
@@ -495,5 +505,6 @@ def run_fact_curator_for_project(
     )
     report["manifestPath"] = str(manifest_path)
     report["suggestionCount"] = len(suggestions)
+    report["factSpecsRef"] = manifest.get("factSpecsRef") or {}
     report["opencodeOutput"] = result.get("opencodeOutput") or {}
     return updated_table, report
