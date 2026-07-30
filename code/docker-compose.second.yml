@@ -16,6 +16,9 @@ services:
       BUSINESS_PDF_ENGINE_FALLBACK: none
       BUSINESS_PDF_OCR_FALLBACK_ENABLED: "false"
 
+  material-worker:
+    container_name: sewpg_bid_second_material_worker
+
   docling-worker:
     container_name: sewpg_bid_second_docling_worker
 

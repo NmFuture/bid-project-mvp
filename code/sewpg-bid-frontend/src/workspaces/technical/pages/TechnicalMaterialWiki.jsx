@@ -4,6 +4,11 @@ import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
+import {
+  calculateWikiJobElapsedSeconds,
+  formatWikiJobElapsed,
+  resolveWikiJobElapsedTimestamp,
+} from '../technicalWikiJobProgress'
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
@@ -89,13 +94,24 @@ const WIKI_JOB_PHASE_LABELS = {
   import: '导入 Wiki',
 }
 
-// 已耗时展示：与解析页 formatElapsedDuration 同一口径（X 分 X 秒）。
-const formatWikiJobElapsed = (seconds) => {
-  const total = Math.max(0, Math.floor(Number(seconds || 0)))
-  const minutes = Math.floor(total / 60)
-  const remaining = total % 60
-  if (minutes > 0) return `${minutes} 分 ${remaining} 秒`
-  return `${total} 秒`
+const WIKI_JOB_ID_STORAGE_KEY = 'technical-wiki-job-id'
+const WIKI_JOB_MODE_STORAGE_KEY = 'technical-wiki-job-mode'
+
+const readWikiJobStorage = (key) => {
+  try {
+    return window.localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+const writeWikiJobStorage = (key, value) => {
+  try {
+    if (value) window.localStorage.setItem(key, value)
+    else window.localStorage.removeItem(key)
+  } catch {
+    // 浏览器禁用本地存储时仍允许当前页面跟踪任务。
+  }
 }
 
 export default function TechnicalMaterialWiki({ showToast = () => {} }) {
@@ -105,14 +121,18 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const [refreshingWiki, setRefreshingWiki] = useState(false)
-  const [rebuildingWiki, setRebuildingWiki] = useState(false)
-  const [wikiJobActive, setWikiJobActive] = useState(false)
+  const [refreshingWikiPending, setRefreshingWiki] = useState(false)
+  const [rebuildingWikiPending, setRebuildingWiki] = useState(false)
+  const [wikiJobId, setWikiJobId] = useState(() => readWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY))
+  const [wikiJobMode, setWikiJobMode] = useState(() => readWikiJobStorage(WIKI_JOB_MODE_STORAGE_KEY))
+  const [wikiJobActive, setWikiJobActive] = useState(() => Boolean(readWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY)))
   const [wikiJobPhase, setWikiJobPhase] = useState('')
-  // 任务开始时间取自服务端 startedAt，页面刷新后已耗时仍对齐真实开始时间。
-  const [wikiJobStartedAt, setWikiJobStartedAt] = useState('')
+  // 优先使用服务端 startedAt；新队列未提供时回退到 createdAt，刷新后仍对齐任务提交时间。
+  const [wikiJobElapsedFrom, setWikiJobElapsedFrom] = useState('')
   const [wikiJobElapsedSeconds, setWikiJobElapsedSeconds] = useState(0)
   const [collapsedMap, setCollapsedMap] = useState({})
+  const refreshingWiki = refreshingWikiPending || (wikiJobActive && wikiJobMode !== 'replace')
+  const rebuildingWiki = rebuildingWikiPending || (wikiJobActive && wikiJobMode !== 'refresh')
 
   const splitContainerRef = useRef(null)
   const [treeWidth, setTreeWidth] = useState(TREE_WIDTH_DEFAULT)
@@ -198,57 +218,49 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     return () => clearTimeout(timer)
   }, [loadData])
 
-  // 挂载时探测后台 Wiki 生成任务：任务在跑则恢复轮询态（离开页面再回来可接上）。
-  // 恢复时无法区分触发方式，两个按钮同时置忙、禁用，避免重复触发。
-  useEffect(() => {
-    let cancelled = false
-    technicalMaterialsAPI.wiki.bootstrapStatus()
-      .then((status) => {
-        if (cancelled || status?.status !== 'running') return
-        setWikiJobPhase(String(status?.progress?.phase || ''))
-        setWikiJobStartedAt(String(status?.startedAt || ''))
-        setRefreshingWiki(true)
-        setRebuildingWiki(true)
-        setWikiJobActive(true)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [])
-
   // 后台 Wiki 生成任务轮询：到达终态后应用结果或提示失败
   useEffect(() => {
-    if (!wikiJobActive) return undefined
+    if (!wikiJobActive || !wikiJobId) return undefined
     let stopped = false
     const finish = () => {
       setWikiJobActive(false)
+      setWikiJobId('')
+      setWikiJobMode('')
       setWikiJobPhase('')
-      setWikiJobStartedAt('')
+      setWikiJobElapsedFrom('')
       setWikiJobElapsedSeconds(0)
       setRefreshingWiki(false)
       setRebuildingWiki(false)
+      writeWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY, '')
+      writeWikiJobStorage(WIKI_JOB_MODE_STORAGE_KEY, '')
     }
     const tick = async () => {
       try {
-        const status = await technicalMaterialsAPI.wiki.bootstrapStatus()
+        const status = await technicalMaterialsAPI.wiki.bootstrapStatus(wikiJobId)
         if (stopped) return
-        if (status?.status === 'running') {
+        const state = String(status?.status || '').toLowerCase()
+        if (state === 'queued' || state === 'running') {
           setWikiJobPhase(String(status?.progress?.phase || ''))
-          setWikiJobStartedAt(String(status?.startedAt || ''))
+          const timestamp = resolveWikiJobElapsedTimestamp(status)
+          if (timestamp) setWikiJobElapsedFrom(timestamp)
           return
         }
         finish()
-        if (status?.status === 'succeeded') {
-          const payload = status?.result || {}
-          applyPayload(payload)
-          showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已更新`)
-        } else if (status?.status === 'failed') {
-          showToast(status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
+        if (state === 'succeeded') {
+          await loadData()
+          showToast(status?.message || `${activeBidType} Wiki 已更新`)
+        } else if (state === 'failed' || state === 'cancelled') {
+          showToast(status?.message || status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
         } else {
           // idle：后端重启丢了任务状态，AI 预览缓存已保留，提示重触续跑
           showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')
           loadData()
         }
-      } catch {
+      } catch (error) {
+        if (!stopped && error?.status === 404) {
+          finish()
+          loadData()
+        }
         // 单次轮询失败不影响任务本身，下一轮重试
       }
     }
@@ -258,21 +270,18 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       stopped = true
       clearInterval(timer)
     }
-  }, [wikiJobActive, activeBidType, applyPayload, loadData, showToast])
+  }, [wikiJobActive, wikiJobId, activeBidType, loadData, showToast])
 
   // 已耗时每秒刷新一次，仅本地计时，不额外请求后端。
   useEffect(() => {
     if (!wikiJobActive) return undefined
     const update = () => {
-      const started = Date.parse(wikiJobStartedAt)
-      setWikiJobElapsedSeconds(
-        Number.isFinite(started) ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : 0,
-      )
+      setWikiJobElapsedSeconds(calculateWikiJobElapsedSeconds(wikiJobElapsedFrom))
     }
     update()
     const timer = setInterval(update, 1000)
     return () => clearInterval(timer)
-  }, [wikiJobActive, wikiJobStartedAt])
+  }, [wikiJobActive, wikiJobElapsedFrom])
 
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
@@ -329,8 +338,15 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       mode,
       bidType: activeBidType,
     })
-    setWikiJobPhase(String(status?.progress?.phase || ''))
-    setWikiJobStartedAt(String(status?.startedAt || ''))
+    const jobId = String(status?.jobId || '')
+    if (!jobId) throw new Error('Wiki 任务未返回任务编号。')
+    writeWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY, jobId)
+    writeWikiJobStorage(WIKI_JOB_MODE_STORAGE_KEY, mode)
+    setWikiJobId(jobId)
+    setWikiJobMode(mode)
+    setWikiJobPhase('')
+    setWikiJobElapsedFrom(resolveWikiJobElapsedTimestamp(status))
+    setWikiJobElapsedSeconds(0)
     setWikiJobActive(true)
     showToast('任务已在后台开始，可离开本页，完成后自动更新。')
   }

@@ -624,7 +624,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:brightness-95 disabled:opacity-50"
             >
               <span className="material-symbols-outlined text-base">upload_file</span>
-              {previewing ? '解析中...' : '导入'}
+              {previewing ? '解析中...' : '导入汇总表'}
             </button>
           </div>
         </section>

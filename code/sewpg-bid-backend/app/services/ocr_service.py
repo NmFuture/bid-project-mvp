@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import and_, desc, or_, select, update
+from sqlalchemy import and_, desc, func, or_, select, update
 
 from app.core.config import settings
 from app.models import async_session
@@ -40,6 +40,8 @@ _OCR_WAIT_POLL_INTERVAL = 0.5
 _OCR_INTERNAL_PROJECT_ID = "_internal_ocr_"
 # processing 任务锁超时（秒）：超时视为进程崩溃遗留，允许回收重领
 _OCR_LOCK_TIMEOUT_SECONDS = 600
+# 持有者心跳续租间隔（秒）：远小于锁超时，避免长任务被误判崩溃而重领
+_OCR_HEARTBEAT_INTERVAL_SECONDS = 60
 
 
 def _ocr_project_not_found(project_id: str) -> PeripheralError:
@@ -182,111 +184,292 @@ class OcrService:
             ).scalar_one_or_none()
             if candidate_id is None:
                 return False
-            # 单条原子条件更新完成 claim，避免多 worker/副本重复领取同一任务
-            claimed_id = (
+            # 单条原子条件更新完成 claim，避免多 worker/副本重复领取同一任务；
+            # 同时写入持有者标识并递增 fencing token，供续租与结果写入校验
+            owner = f"ocr-worker-{uuid4().hex[:12]}"
+            claimed = (
                 await session.execute(
                     update(OcrTask)
                     .where(OcrTask.id == candidate_id, claimable)
-                    .values(status="processing", locked_at=now)
+                    .values(
+                        status="processing",
+                        locked_at=now,
+                        locked_by=owner,
+                        fence_token=func.coalesce(OcrTask.fence_token, 0) + 1,
+                    )
+                    .returning(OcrTask.id, OcrTask.fence_token)
+                )
+            ).first()
+            await session.commit()
+            if claimed is None:
+                # 被其他 worker 抢走，返回 True 继续抢下一条而不空转 sleep
+                return True
+            claimed_id, fence_token = claimed
+
+        async with self._ocr_semaphore:
+            await self._process_task(claimed_id, owner, int(fence_token or 0))
+        return True
+
+    async def _process_task(self, task_id: str, owner: str, fence_token: int) -> None:
+        lost_lease = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            self._heartbeat_loop(task_id, owner, fence_token, lost_lease, asyncio.current_task())
+        )
+        try:
+            await self._run_claimed_task(task_id, owner, fence_token, lost_lease)
+        except asyncio.CancelledError:
+            # 续租失败导致的取消静默放弃（任务已被新持有者接管）；worker 关停仍向上抛
+            if lost_lease.is_set():
+                logger.info("OCR 任务 %s 租约已易主，放弃本地处理", task_id)
+                return
+            raise
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _heartbeat_loop(
+        self,
+        task_id: str,
+        owner: str,
+        fence_token: int,
+        lost_lease: asyncio.Event,
+        parent_task: "asyncio.Task[Any] | None",
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_OCR_HEARTBEAT_INTERVAL_SECONDS)
+                if not await self._renew_lease(task_id, owner, fence_token):
+                    lost_lease.set()
+                    logger.warning("OCR 任务 %s 续租失败，租约已易主", task_id)
+                    if parent_task is not None:
+                        parent_task.cancel()
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def _renew_lease(self, task_id: str, owner: str, fence_token: int) -> bool:
+        """以 (task_id, owner, fence_token) 条件刷新 locked_at；返回 False 表示租约已失。"""
+        async with async_session() as session:
+            renewed_id = (
+                await session.execute(
+                    update(OcrTask)
+                    .where(self._fencing_guard(task_id, owner, fence_token))
+                    .values(locked_at=datetime.now(timezone.utc))
                     .returning(OcrTask.id)
                 )
             ).scalar_one_or_none()
             await session.commit()
-            if claimed_id is None:
-                # 被其他 worker 抢走，返回 True 继续抢下一条而不空转 sleep
-                return True
+        return renewed_id is not None
 
-        async with self._ocr_semaphore:
-            await self._process_task(claimed_id)
-        return True
-
-    async def _process_task(self, task_id: str) -> None:
+    async def _run_claimed_task(
+        self,
+        task_id: str,
+        owner: str,
+        fence_token: int,
+        lost_lease: asyncio.Event,
+    ) -> None:
         async with async_session() as session:
             task = (
                 await session.execute(select(OcrTask).where(OcrTask.id == task_id))
             ).scalar_one_or_none()
             if task is None:
                 return
-
+            # 快照任务字段后即释放会话，避免长 OCR 期间持有数据库连接
+            project_id = task.project_id
+            file_name = task.source_file_name
+            mime_type = task.mime_type
+            input_path_str = task.input_path
+            retry_count = int(task.retry_count or 0)
+            max_retries = int(task.max_retries or _OCR_MAX_RETRIES)
+            audit_meta = task.audit_meta or {}
             config = await system_settings_service.get_model_secret_config("ocr")
-            if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
-                task.status = "failed"
-                task.error_message = "OCR 模型未启用或未配置"
-                await session.commit()
-                await self._record_task_audit(task, [], succeeded=False)
-                return
 
-            input_path = Path(task.input_path) if task.input_path else None
-            if input_path is None or not input_path.exists():
-                task.status = "failed"
-                task.error_message = "OCR 任务输入文件丢失"
-                await session.commit()
-                await self._record_task_audit(task, [], succeeded=False)
-                return
+        def _task_snapshot(status: str) -> OcrTask:
+            return OcrTask(
+                id=task_id,
+                project_id=project_id,
+                source_file_name=file_name,
+                audit_meta=audit_meta,
+                status=status,
+            )
 
-            try:
-                content = input_path.read_bytes()
-                file_name = task.source_file_name
-                suffix = Path(file_name).suffix.lower()
-                extracted_text = ""
-                raw_response: dict[str, Any] = {}
+        if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
+            finalized, _ = await self._finalize_task_failure(
+                task_id,
+                owner,
+                fence_token,
+                error_message="OCR 模型未启用或未配置",
+                retry_count=retry_count,
+                max_retries=max_retries,
+                allow_retry=False,
+            )
+            if finalized:
+                await self._record_task_audit(_task_snapshot("failed"), [], succeeded=False)
+            return
+
+        input_path = Path(input_path_str) if input_path_str else None
+        if input_path is None or not input_path.exists():
+            finalized, _ = await self._finalize_task_failure(
+                task_id,
+                owner,
+                fence_token,
+                error_message="OCR 任务输入文件丢失",
+                retry_count=retry_count,
+                max_retries=max_retries,
+                allow_retry=False,
+            )
+            if finalized:
+                await self._record_task_audit(_task_snapshot("failed"), [], succeeded=False)
+            return
+
+        try:
+            content = input_path.read_bytes()
+            suffix = Path(file_name).suffix.lower()
+            extracted_text = ""
+            raw_response: dict[str, Any] = {}
+            page_count = 1
+            if suffix == ".pdf":
+                extracted_text, raw_response, page_count = await self._ocr_pdf(content, config)
+            elif suffix in IMAGE_SUFFIXES:
+                extracted_text, raw_response = await self._ocr_image(
+                    content,
+                    mime_type or mimetypes.guess_type(file_name)[0] or "image/png",
+                    config,
+                )
                 page_count = 1
-                if suffix == ".pdf":
-                    extracted_text, raw_response, page_count = await self._ocr_pdf(content, config)
-                elif suffix in IMAGE_SUFFIXES:
-                    extracted_text, raw_response = await self._ocr_image(
-                        content,
-                        task.mime_type or mimetypes.guess_type(file_name)[0] or "image/png",
-                        config,
-                    )
-                    page_count = 1
-                else:
-                    raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
+            else:
+                raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
 
-                candidates = _extract_candidates_from_text(extracted_text)
-                task.status = "completed"
-                task.page_count = page_count
-                task.raw_response = {
-                    **raw_response,
-                    "extractedText": extracted_text,
-                }
-                task.error_message = ""
-                await session.flush()
-                for index, item in enumerate(candidates, start=1):
-                    session.add(
-                        OcrCandidate(
-                            id=f"OC-{uuid4().hex[:12]}",
-                            task_id=task_id,
-                            project_id=task.project_id,
-                            page_number=int(item.get("pageNumber") or 1),
-                            field_name=str(item.get("fieldName") or f"识别字段 {index}"),
-                            field_value=str(item.get("fieldValue") or ""),
-                            field_type=str(item.get("fieldType") or "text"),
-                            confidence=int(item.get("confidence") or 80),
-                            source_text=str(item.get("sourceText") or ""),
-                            status="pending",
-                        )
-                    )
-                await session.commit()
-                self._delete_task_input(input_path)
-            except Exception as exc:
-                await session.refresh(task)
-                is_final_failure = False
-                if int(task.retry_count or 0) < int(task.max_retries or _OCR_MAX_RETRIES):
-                    task.retry_count = int(task.retry_count or 0) + 1
-                    task.status = "pending"
-                    task.locked_at = None
-                    task.error_message = str(exc)
-                else:
-                    task.status = "failed"
-                    task.error_message = str(exc)
-                    is_final_failure = True
-                await session.commit()
-                if is_final_failure:
-                    await self._record_task_audit(task, [], succeeded=False)
+            candidates = _extract_candidates_from_text(extracted_text)
+        except Exception as exc:
+            if lost_lease.is_set():
                 return
+            finalized, is_final_failure = await self._finalize_task_failure(
+                task_id,
+                owner,
+                fence_token,
+                error_message=str(exc),
+                retry_count=retry_count,
+                max_retries=max_retries,
+                allow_retry=True,
+            )
+            if finalized and is_final_failure:
+                await self._record_task_audit(_task_snapshot("failed"), [], succeeded=False)
+            return
 
-            await self._record_task_audit(task, candidates, succeeded=True)
+        if lost_lease.is_set():
+            return
+        finalized = await self._finalize_task_success(
+            task_id,
+            owner,
+            fence_token,
+            project_id=project_id,
+            page_count=page_count,
+            raw_response=raw_response,
+            extracted_text=extracted_text,
+            candidates=candidates,
+        )
+        if not finalized:
+            # fencing 校验失败：任务已被接管或重复提交，丢弃迟到/重复结果
+            logger.warning("OCR 任务 %s 结果写入被 fencing 拒绝，丢弃迟到/重复结果", task_id)
+            return
+        self._delete_task_input(input_path)
+        await self._record_task_audit(_task_snapshot("completed"), candidates, succeeded=True)
+
+    def _fencing_guard(self, task_id: str, owner: str, fence_token: int) -> Any:
+        """结果写入/续租的持有者校验：仅当前 fencing token 持有者可写。"""
+        return and_(
+            OcrTask.id == task_id,
+            OcrTask.status == "processing",
+            OcrTask.locked_by == owner,
+            OcrTask.fence_token == fence_token,
+        )
+
+    async def _finalize_task_success(
+        self,
+        task_id: str,
+        owner: str,
+        fence_token: int,
+        *,
+        project_id: str,
+        page_count: int,
+        raw_response: dict[str, Any],
+        extracted_text: str,
+        candidates: list[dict[str, Any]],
+    ) -> bool:
+        """按 fencing 条件写入成功结果并落候选；返回 False 表示结果被丢弃。
+
+        幂等：guard 要求任务仍处于 processing 且持有者/token 匹配，
+        已 completed 或被接管的任务重复提交不会再次写候选。
+        """
+        async with async_session() as session:
+            finalized_id = (
+                await session.execute(
+                    update(OcrTask)
+                    .where(self._fencing_guard(task_id, owner, fence_token))
+                    .values(
+                        status="completed",
+                        page_count=page_count,
+                        raw_response={**raw_response, "extractedText": extracted_text},
+                        error_message="",
+                        locked_at=datetime.now(timezone.utc),
+                    )
+                    .returning(OcrTask.id)
+                )
+            ).scalar_one_or_none()
+            if finalized_id is None:
+                await session.rollback()
+                return False
+            for index, item in enumerate(candidates, start=1):
+                session.add(
+                    OcrCandidate(
+                        id=f"OC-{uuid4().hex[:12]}",
+                        task_id=task_id,
+                        project_id=project_id,
+                        page_number=int(item.get("pageNumber") or 1),
+                        field_name=str(item.get("fieldName") or f"识别字段 {index}"),
+                        field_value=str(item.get("fieldValue") or ""),
+                        field_type=str(item.get("fieldType") or "text"),
+                        confidence=int(item.get("confidence") or 80),
+                        source_text=str(item.get("sourceText") or ""),
+                        status="pending",
+                    )
+                )
+            await session.commit()
+        return True
+
+    async def _finalize_task_failure(
+        self,
+        task_id: str,
+        owner: str,
+        fence_token: int,
+        *,
+        error_message: str,
+        retry_count: int,
+        max_retries: int,
+        allow_retry: bool,
+    ) -> tuple[bool, bool]:
+        """按 fencing 条件写入失败/重试状态。返回 (是否写入成功, 是否最终失败)。"""
+        can_retry = allow_retry and retry_count < max_retries
+        values: dict[str, Any] = {
+            "status": "pending" if can_retry else "failed",
+            "error_message": error_message,
+            "locked_at": None,
+            "locked_by": None,
+        }
+        if can_retry:
+            values["retry_count"] = retry_count + 1
+        async with async_session() as session:
+            finalized_id = (
+                await session.execute(
+                    update(OcrTask)
+                    .where(self._fencing_guard(task_id, owner, fence_token))
+                    .values(**values)
+                    .returning(OcrTask.id)
+                )
+            ).scalar_one_or_none()
+            await session.commit()
+        return finalized_id is not None, not can_retry
 
     def _persist_task_input(self, task_id: str, file_name: str, content: bytes) -> Path:
         directory = settings.documents_dir / "_runtime" / "ocr_inputs" / task_id

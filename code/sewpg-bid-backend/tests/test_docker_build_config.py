@@ -124,6 +124,25 @@ def test_compose_uses_separate_docling_worker_and_shared_volumes() -> None:
         assert all("docling-models" not in volume for volume in services[service_name]["volumes"])
 
 
+def test_compose_uses_separate_material_worker() -> None:
+    compose = yaml.safe_load((CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    material_worker = services["material-worker"]
+
+    assert material_worker["image"] == services["fastapi"]["image"]
+    assert material_worker["command"] == ["python", "-m", "app.workers.material_worker"]
+    assert material_worker["container_name"] == "sewpg_bid_material_worker"
+    assert material_worker["environment"]["REDIS_MATERIAL_QUEUE_KEY"] == (
+        "${REDIS_MATERIAL_QUEUE_KEY:-bid:jobs:material}"
+    )
+    assert material_worker["volumes"] == services["worker"]["volumes"]
+
+    second = yaml.safe_load((CODE_ROOT / "docker-compose.second.yml").read_text(encoding="utf-8"))
+    airgap = yaml.safe_load((CODE_ROOT / "docker-compose.airgap.yml").read_text(encoding="utf-8"))
+    assert second["services"]["material-worker"]["container_name"] == "sewpg_bid_second_material_worker"
+    assert airgap["services"]["material-worker"]["pull_policy"] == "never"
+
+
 def test_compose_uses_one_opencode_service_for_parallel_chapter_sessions() -> None:
     compose = yaml.safe_load((CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]

@@ -26,6 +26,7 @@ from app.services.material_certificate_time import (
     update_certificate_time_record,
 )
 from app.services.material_auto_tags import build_auto_tag_items
+from app.services.material_tags import GENERIC_MODEL_TAG
 from app.services.material_tag_import import build_preview, parse_tag_excel, same_name_file_ids
 from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
@@ -39,7 +40,7 @@ from app.services.technical_material_paths import (
     normalize_technical_material_path,
 )
 from app.services.technical_turbine_material_options import list_technical_turbine_model_options
-from app.services.turbine_models import material_model_fit, normalize_project_turbine_model
+from app.services.turbine_models import is_valid_turbine_model, material_model_fit, normalize_project_turbine_model
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +255,15 @@ class TechnicalMaterialStore:
     @classmethod
     def _item_matches_tags(cls, item: dict[str, Any], requested_tags: list[str]) -> bool:
         tags = cls._normalize_tags(item.get("tags"))
-        return all(any(requested_tag in tag for tag in tags) for requested_tag in requested_tags)
+        return all(cls._requested_tag_hit(tags, requested_tag) for requested_tag in requested_tags)
+
+    @staticmethod
+    def _requested_tag_hit(tags: list[str], requested_tag: str) -> bool:
+        if any(requested_tag in tag for tag in tags):
+            return True
+        # 跨机型复用（R06-B06-02）：带「通用」标签的素材可被任意具体机型标签命中；
+        # 非机型标签（部件/认证证书等）维持原有子串匹配，不受影响。
+        return is_valid_turbine_model(requested_tag) and GENERIC_MODEL_TAG in tags
 
     @classmethod
     def _tag_options(cls, items: list[dict[str, Any]]) -> list[str]:
@@ -547,7 +556,7 @@ class TechnicalMaterialStore:
         skipped = len(files) - len(items)
         message = f"自动打标签完成：更新 {len(succeeded)} 个，已是最新 {len(unchanged)} 个"
         if skipped:
-            message += f"，不在机型目录跳过 {skipped} 个"
+            message += f"，无法推导标签跳过 {skipped} 个"
         if failed:
             message += f"，失败 {len(failed)} 个"
         return {
