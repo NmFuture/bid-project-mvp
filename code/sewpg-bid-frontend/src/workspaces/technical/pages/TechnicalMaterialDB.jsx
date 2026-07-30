@@ -2003,7 +2003,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {materialToolbar}
 
-      <div className="grid min-h-[680px] grid-cols-1 gap-3 xl:min-h-[calc(100vh-12rem)] xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]">
+      <div className="grid min-h-[680px] grid-cols-1 gap-3 xl:h-[calc(100vh-12rem)] xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]">
         {loading ? (
           <div className="col-span-full flex min-h-[680px] items-center justify-center rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-[calc(100vh-12rem)]">
             <PageLoading
