@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.material_cleaning import is_cleanable_material
 from app.services.material_deep_parse import (
     DEEP_PARSE_STATUS_FIELD,
@@ -106,7 +107,11 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     ext_fields = item.ext_fields or {}
     name = str(item.name or "")
     source_ext = Path(name).suffix.lower().lstrip(".") or "file"
-    cleaned_key = str(ext_fields.get("cleanedMinioKey") or "")
+    cleaned_key = (
+        str(ext_fields.get("cleanedMinioKey") or "")
+        if cleaned_artifact_is_current(int(getattr(item, "version", 1) or 1), ext_fields)
+        else ""
+    )
     has_cleaned = is_cleanable_material(name) and bool(cleaned_key)
     ext = "docx" if source_ext == "docx" or has_cleaned else source_ext
     empty: dict[str, Any] = {

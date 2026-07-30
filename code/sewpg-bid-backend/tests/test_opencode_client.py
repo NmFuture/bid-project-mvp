@@ -1274,6 +1274,36 @@ class OpencodeClientTests(unittest.TestCase):
         idle_timeout = client._session_polling_idle_timeout("factcurate")
         self.assertGreaterEqual(run_timeout.read, idle_timeout)
 
+    def test_idle_timeout_aborts_session_and_joins_worker(self) -> None:
+        client = OpencodeClient()
+        release_worker = threading.Event()
+
+        def blocked_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
+            release_worker.wait(2.0)
+            return {"parts": []}
+
+        def abort_session(_session_id: str) -> bool:
+            release_worker.set()
+            return True
+
+        with (
+            patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+            patch.object(client, "abort_session", side_effect=abort_session) as abort,
+            patch.object(client, "list_session_messages", return_value=[]),
+            patch.object(client, "_session_polling_idle_timeout", return_value=0.01),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "idle timeout"):
+                client._send_prompt_with_session_polling(
+                    "ses-idle-abort",
+                    "prompt",
+                    early_tool_command="factcurate",
+                )
+
+        abort.assert_called_once_with("ses-idle-abort")
+        self.assertFalse(
+            any(thread.name == "opencode-message-ses-idle-abort" for thread in threading.enumerate())
+        )
+
     def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
         client = OpencodeClient()
         events: list[dict] = []

@@ -412,6 +412,7 @@ const FactMaintenanceModal = ({
   specsImported,
   specsFileName,
   materialPaths,
+  curateReport,
   curating,
   onClose,
   onBuild,
@@ -423,7 +424,7 @@ const FactMaintenanceModal = ({
   onSaveMaterialPaths,
   onCurate,
 }) => {
-  const [selectedPaths, setSelectedPaths] = useState([])
+  const [selectedPaths, setSelectedPaths] = useState(() => uniqueStrings(materialPaths || []))
   const [pathsEditing, setPathsEditing] = useState(false)
   const [treeNodes, setTreeNodes] = useState([])
   const [treeLoading, setTreeLoading] = useState(false)
@@ -431,13 +432,7 @@ const FactMaintenanceModal = ({
   const [expandedTreePaths, setExpandedTreePaths] = useState(() => new Set())
   // 统计条联动筛选：{ type: 'status' | 'spec', key, label }，null 表示全部
   const [factFilter, setFactFilter] = useState(null)
-  useEffect(() => {
-    if (open) {
-      setSelectedPaths(uniqueStrings(materialPaths || []))
-      setPathsEditing(false)
-      setFactFilter(null)
-    }
-  }, [open])
+  const ignoredSuggestions = Array.isArray(curateReport?.ignored) ? curateReport.ignored : []
   if (!open) return null
   const status = factTable?.status || 'empty'
 
@@ -757,6 +752,22 @@ const FactMaintenanceModal = ({
                 <div className="flex h-24 items-center justify-center text-xs text-outline">素材目录树为空，请先在原始材料库中建立目录</div>
               )}
             </div>
+          </div>
+        ) : null}
+
+        {ignoredSuggestions.length ? (
+          <div className="border-b border-error/30 bg-error-container/35 px-5 py-3 text-xs text-on-error-container">
+            <p className="font-semibold">有 {ignoredSuggestions.length} 条 AI 建议未能写入事实表</p>
+            <ul className="mt-1 space-y-1">
+              {ignoredSuggestions.slice(0, 5).map((item, index) => (
+                <li key={`${typeof item === 'object' ? item?.fieldKey : item}-${index}`}>
+                  {typeof item === 'object'
+                    ? `${item?.fieldKey || '未知字段'}：${item?.reason || '未提供原因'}`
+                    : String(item)}
+                </li>
+              ))}
+            </ul>
+            {ignoredSuggestions.length > 5 ? <p className="mt-1">另有 {ignoredSuggestions.length - 5} 条未展示</p> : null}
           </div>
         ) : null}
 
@@ -1210,6 +1221,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factModalOpen, setFactModalOpen] = useState(false)
   const [factTable, setFactTable] = useState(null)
   const [factFields, setFactFields] = useState([])
+  const [factCurateReport, setFactCurateReport] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
@@ -1579,6 +1591,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
       if (build) {
+        setFactCurateReport(null)
         const summary = payload?.summary || {}
         showToast?.(
           `刷新完成：已提取 ${summary.extractedCount ?? 0} · 待确认 ${summary.pendingConfirmationCount ?? 0} · 未提取 ${summary.unextractedCount ?? 0}（AI 匹配填充可继续补值）`
@@ -2023,6 +2036,9 @@ export default function TechnicalGapRecognition({ showToast }) {
       return
     }
     if (busyAction) return
+    if (factFields.length && !window.confirm('重新上传会按新清单重建事实表；不再属于清单且未受保留规则保护的字段可能被移除。是否继续？')) {
+      return
+    }
     setBusyAction('fact-specs-upload')
     try {
       const formData = new FormData()
@@ -2033,6 +2049,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       const table = await technicalGapsAPI.buildFacts(id)
       setFactTable(table)
       setFactFields(asObjectArray(table?.fields))
+      setFactCurateReport(null)
       setData((current) => (current ? { ...current, projectFactTable: table } : current))
       showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
       setFactModalOpen(true)
@@ -2060,10 +2077,28 @@ export default function TechnicalGapRecognition({ showToast }) {
   // AI 匹配填充：后端事实表维护 Skill 按素材给字段补值/修正/口径建议，结果落为待人工确认
   const handleCurateFacts = async () => {
     if (busyAction) return
+    const hasUnnamedManualValue = factFields.some((field) => {
+      const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+      return isManualField && String(field.value || '').trim() && !String(field.label || '').trim()
+    })
+    if (hasUnnamedManualValue) {
+      showToast?.('请先填写人工新增字段的字段名称', 'error')
+      return
+    }
     setBusyAction('facts-curate')
     try {
+      const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
+      const savedTable = await technicalGapsAPI.saveFacts(id, {
+        fields: fieldsToSave,
+        confirm: false,
+        operator: '当前用户',
+      })
+      setFactTable(savedTable)
+      setFactFields(asObjectArray(savedTable?.fields))
+      setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
       const payload = await technicalGapsAPI.curateFacts(id, {})
       const table = payload?.projectFactTable
+      setFactCurateReport(payload?.curateReport || null)
       if (table?.schemaVersion) {
         setFactTable(table)
         setFactFields(asObjectArray(table.fields))
@@ -2516,26 +2551,29 @@ export default function TechnicalGapRecognition({ showToast }) {
           </div>
         )}
       </DataCard>
-      <FactMaintenanceModal
-        open={factModalOpen}
-        factTable={factTable}
-        fields={factFields}
-        busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
-        fieldBusy={busyAction === 'fact-field-confirm'}
-        specsImported={factSpecsMeta.imported}
-        specsFileName={factSpecsMeta.fileName}
-        materialPaths={factMaterialPaths}
-        curating={busyAction === 'facts-curate'}
-        onClose={() => setFactModalOpen(false)}
-        onBuild={() => loadFactTable({ build: true })}
-        onConfirm={handleConfirmFactTable}
-        onConfirmField={handleConfirmFactField}
-        onFieldChange={handleFactFieldChange}
-        onAddField={handleAddFactField}
-        onUploadSpecs={() => fillRuleInputRef.current?.click()}
-        onSaveMaterialPaths={handleSaveMaterialPaths}
-        onCurate={handleCurateFacts}
-      />
+      {factModalOpen ? (
+        <FactMaintenanceModal
+          open
+          factTable={factTable}
+          fields={factFields}
+          busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
+          fieldBusy={busyAction === 'fact-field-confirm'}
+          specsImported={factSpecsMeta.imported}
+          specsFileName={factSpecsMeta.fileName}
+          materialPaths={factMaterialPaths}
+          curateReport={factCurateReport}
+          curating={busyAction === 'facts-curate'}
+          onClose={() => setFactModalOpen(false)}
+          onBuild={() => loadFactTable({ build: true })}
+          onConfirm={handleConfirmFactTable}
+          onConfirmField={handleConfirmFactField}
+          onFieldChange={handleFactFieldChange}
+          onAddField={handleAddFactField}
+          onUploadSpecs={() => fillRuleInputRef.current?.click()}
+          onSaveMaterialPaths={handleSaveMaterialPaths}
+          onCurate={handleCurateFacts}
+        />
+      ) : null}
       <TechnicalGenerationProgressModal
         open={generationModalOpen || generationRunning}
         status={generationStatus}

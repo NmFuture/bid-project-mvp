@@ -2,12 +2,11 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { technicalProjectsAPI } from '../../../api'
 import Pagination from '../../../components/shared/Pagination'
-import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import { PageLoading, PageEmpty, PageError } from '../../../components/states/PageState'
 import FilterBar from '../../../components/shared/FilterBar'
 import { parseRouteFromBidType, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import { getTechnicalCompactStageLabel, getTechnicalStageRoute } from '../technicalStageFlow'
-import { technicalProjectParseResultMenuRoute } from '../technicalProjectRoutes'
+import { technicalProjectParseResultMenuRoute, technicalProjectParseResultRoute } from '../technicalProjectRoutes'
 import ProjectActionMenu from '../../shared/components/ProjectActionMenu'
 
 // 与 EntryRedirect 保持一致：阶段值 clamp 到 1-6，异常值不落到空路由
@@ -29,7 +28,6 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
   const [dateFilter, setDateFilter] = useState('all')
   const [currentPage, setCurrentPage] = useState(1)
   const [pagination, setPagination] = useState({ page: 1, pageSize: 12, total: 0 })
-  const [showWizard, setShowWizard] = useState(false)
   const [activeMenuId, setActiveMenuId] = useState('')
   const [actionLoadingId, setActionLoadingId] = useState('')
   const effectiveBidType = '技术标'
@@ -195,11 +193,11 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
         )}
         right={(
           <button
-            onClick={() => setShowWizard(true)}
+            onClick={() => navigate(technicalProjectParseResultRoute())}
             className="h-[30px] px-4 flex items-center gap-1.5 bg-[#0067B6] text-on-primary font-semibold border border-[#0f77c4] hover:bg-[#0b74c8] transition-colors"
           >
             <span className="material-symbols-outlined text-lg">add</span>
-            新建项目
+            解析并新建项目
           </button>
         )}
       />
@@ -222,9 +220,10 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
       {!projects.length ? (
         <PageEmpty
           title="当前没有项目数据"
-          description="你可以先创建一个项目，或者调整筛选条件后重试。"
-          actionText="重新加载"
-          onAction={loadProjects}
+          description="请先解析招标文件，确认参与后项目会显示在这里。"
+          actionText="解析并新建项目"
+          showActionIcon={false}
+          onAction={() => navigate(technicalProjectParseResultRoute())}
         />
       ) : (
         <div className="project-table-frame mt-2 bg-surface-container-lowest border border-outline-variant/50 flex-1 min-h-0 flex flex-col">
@@ -299,16 +298,6 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
         </div>
       )}
 
-      {showWizard && (
-        <TechnicalProjectWizardModal
-          onClose={() => setShowWizard(false)}
-          onCreated={() => {
-            setShowWizard(false)
-            showToast('项目创建成功！')
-            loadProjects()
-          }}
-        />
-      )}
     </div>
   )
 }

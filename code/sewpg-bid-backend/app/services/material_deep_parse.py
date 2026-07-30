@@ -26,6 +26,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.job_queue import enqueue_generation_job
 from app.services.local_job_executor import submit_local_job
 from app.services.material_cleaning import is_cleanable_material
@@ -193,7 +194,12 @@ async def deep_parse_material_file(file_id: str, data: dict[str, Any] | None = N
     try:
         suffix = PurePosixPath(source_name).suffix.lower()
         source_is_word = is_cleanable_material(source_name)
-        cleaned_key = str(ext_fields.get("cleanedMinioKey") or "") if source_is_word else ""
+        cleaned_key = (
+            str(ext_fields.get("cleanedMinioKey") or "")
+            if source_is_word
+            and cleaned_artifact_is_current(int(getattr(item, "version", 1) or 1), ext_fields)
+            else ""
+        )
         cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or source_bucket)
 
         # 目标 DOCX 仍超同步上限时，后台解析画像写入 ext_fields。

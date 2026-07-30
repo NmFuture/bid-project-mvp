@@ -21,6 +21,7 @@ from app.services.technical_fact_field_specs import (
     fillable_specs,
     spec_category,
 )
+from app.services.technical_fact_spec_versions import fact_specs_ref, resolve_project_specs
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 
@@ -135,9 +136,10 @@ def empty_fact_summary() -> dict[str, int]:
         "conflictCount": 0,
         "notApplicableCount": 0,
         "specTotal": 0,
+        "specBuiltTotal": 0,
         # deprecated：旧口径"有值的 spec 行数"，保留兼容，前端展示改用下方四段确认进度
         "specMatched": 0,
-        # 清单确认进度四段：互斥穷尽所有 spec 行，加总 == specTotal
+        # 清单确认进度四段：互斥穷尽已构建的 spec 行，加总 == specBuiltTotal
         "specConfirmedCount": 0,
         "specPendingConfirmationCount": 0,
         "specUnfilledCount": 0,
@@ -162,12 +164,12 @@ def empty_project_fact_table(project_id: str) -> dict[str, Any]:
     }
 
 
-def summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int]:
+def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int | None = None) -> dict[str, int]:
     def count(status: str) -> int:
         return sum(1 for field in fields if str(field.get("status") or "") == status)
 
-    # 清单进度口径：以表内有 specSeq 的骨架行为分母（specTotal），不再按上传清单条数另算
-    spec_rows = [field for field in fields if field.get("specSeq")]
+    # 四段进度只统计规则骨架行；specSeq=0 也是合法序号，不能按真值过滤。
+    spec_rows = [field for field in fields if field.get("specSeq") is not None]
     spec_confirmed = sum(1 for field in spec_rows if str(field.get("status") or "") == FACT_STATUS_CONFIRMED)
     spec_pending = sum(1 for field in spec_rows if str(field.get("status") or "") == FACT_STATUS_PENDING_CONFIRMATION)
     # 「未填」：值为空，或状态仍属 unextracted/missing_source；confirmed/pending 已各自成段，不重复计
@@ -192,12 +194,14 @@ def summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int
             "missingSourceCount": count(FACT_STATUS_MISSING_SOURCE),
             "conflictCount": count(FACT_STATUS_CONFLICT),
             "notApplicableCount": count(FACT_STATUS_NOT_APPLICABLE),
-            "specTotal": len(spec_rows),
+            # Dev 口径保持不变：已绑定规则条数是稳定分母，不能随当前建表结果波动。
+            "specTotal": len(spec_rows) if spec_total is None else max(0, int(spec_total)),
+            "specBuiltTotal": len(spec_rows),
             "specMatched": sum(1 for field in spec_rows if str(field.get("value") or "").strip()),
             "specConfirmedCount": spec_confirmed,
             "specPendingConfirmationCount": spec_pending,
             "specUnfilledCount": spec_unfilled,
-            # 剩余 spec 行（extracted/conflict 等有值但未确认）：四段加总 == specTotal
+            # 剩余 spec 行（extracted/conflict 等有值但未确认）：四段加总 == specBuiltTotal
             "specFilledUnconfirmedCount": len(spec_rows) - spec_confirmed - spec_pending - spec_unfilled,
         }
     )
@@ -362,6 +366,8 @@ def normalize_project_fact_field(
     for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
+    if field.get("outOfSpec"):
+        normalized["outOfSpec"] = True
     if normalized["status"] == FACT_STATUS_CONFIRMED:
         normalized["confirmedAt"] = saved_at
         normalized["confirmedBy"] = operator
@@ -420,6 +426,7 @@ def reconcile_fact_fields_with_specs(
                 matched_field_keys.add(key)
                 break
         if field is not None:
+            field.pop("outOfSpec", None)
             field["specSeq"] = int(spec.get("seq") or 0)
             field["specKey"] = str(spec.get("key") or "")
             field["reviewLabel"] = str(spec.get("reviewLabel") or "")
@@ -493,6 +500,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if isinstance(field, dict) and fact_label_key(field.get("label"))
     }
     fields_by_key: dict[str, dict[str, Any]] = {}
+    # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
+    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
 
     def is_material_fact_ref(ref: dict[str, Any]) -> bool:
         return str(ref.get("type") or "") in {"materialFact", "derivedMaterialFact"}
@@ -619,13 +628,18 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if preserve_existing and value_text:
             field["status"] = FACT_STATUS_CONFIRMED
 
-    def preserve_manual_fields() -> None:
+    def preserve_compatible_existing_fields() -> None:
+        """保留人工新增字段及旧规则下已确认的字段，避免重建时丢失人工结论。
+
+        已确认字段先移除旧 spec 元数据，再参与当前规则对齐；若没有命中当前规则，
+        则以 outOfSpec 标记留在表尾，且不计入当前规则版本的进度。
+        """
         for existing in existing_by_key.values():
             if not isinstance(existing, dict):
                 continue
             label_text = canonical_fact_label(existing.get("label"))
             key = fact_label_key(label_text)
-            if not key or key in fields_by_key:
+            if not key:
                 continue
             source_refs = [
                 ref
@@ -633,15 +647,22 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 if isinstance(ref, dict)
             ]
             is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
-            if not is_manual:
+            is_confirmed = str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
+            if not (is_manual or is_confirmed):
                 continue
             has_value = bool(str(existing.get("value") or "").strip())
             field = copy.deepcopy(existing)
+            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
+                field.pop(meta_key, None)
             field["label"] = label_text
             field["key"] = key
-            field["category"] = str(field.get("category") or "人工补充事实")
+            field["category"] = str(field.get("category") or ("人工补充事实" if is_manual else "清单外历史事实"))
             field["status"] = normalize_fact_status(field.get("status"), has_value=has_value)
-            field["sourceRefs"] = source_refs or [{"type": "manualFact", "title": "人工新增", "field": label_text}]
+            field["sourceRefs"] = source_refs or (
+                [{"type": "manualFact", "title": "人工新增", "field": label_text}] if is_manual else []
+            )
+            if is_confirmed and not is_manual:
+                field["outOfSpec"] = True
             fields_by_key[key] = field
 
     trusted_parse_facts = trusted_parse_fact_fields(project.get("parse_result"))
@@ -688,7 +709,9 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             source_priority=260,
         )
 
-    for fact in project_material_fact_fields(project, gap_state, excluded_paths=blank_source_paths()):
+    for fact in project_material_fact_fields(
+        project, gap_state, excluded_paths=blank_source_paths(), specs=project_specs
+    ):
         if fact.get("internal"):
             continue
         add_candidate(
@@ -755,22 +778,22 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 confidence=0.0,
             )
 
-    preserve_manual_fields()
-    # 字段骨架：项目上传的事实表 Excel（gap_state["factSpecs"]）优先，未上传时回退全局默认清单
-    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
-    effective_specs = project_specs or fillable_specs()
-    spec_mode = bool(effective_specs)
+    preserve_compatible_existing_fields()
+    # 字段骨架来自任务启动时固化的规则快照（项目绑定版本，无绑定回落系统默认清单）
+    spec_mode = bool(project_specs)
     if not spec_mode:
-        # 极端兜底：项目未上传且全局清单也加载失败，维持来源并集行为
-        logger.warning("项目 %s 无可用事实表字段清单（未上传且全局默认清单加载失败），按来源并集构建", project.get("id"))
-    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, effective_specs)
+        logger.warning("项目 %s 无可用事实表字段规则，按来源并集构建", project.get("id"))
+    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
 
     fields = list(fields_by_key.values())
     if spec_mode:
         # 以清单为唯一字段骨架：匹配不到 spec 的来源字段不再单独成行，
-        # 只保留 spec 行（匹配并入抽取值的行 + 未提取骨架）和人工新增字段
-        fields = [field for field in fields if field.get("specSeq") or is_manual_fact_field(field)]
+        # 只保留 spec 行、人工新增字段，以及旧规则下已经人工确认的兼容字段。
+        fields = [
+            field
+            for field in fields
+            if field.get("specSeq") is not None or is_manual_fact_field(field) or bool(field.get("outOfSpec"))
+        ]
     for field in fields:
         source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
         field["sourceRefs"] = source_refs
@@ -798,11 +821,11 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     }
     fields.sort(
         key=lambda field: (
-            # 清单模式下人工新增字段追加在 spec 行之后
-            1 if spec_mode and is_manual_fact_field(field) else 0,
+            # 清单模式下，人工新增和清单外历史字段追加在当前规则骨架之后。
+            1 if spec_mode and field.get("specSeq") is None else 0,
             category_order.get(str(field.get("category") or ""), 9),
             0 if field.get("required") else 1,
-            int(field.get("specSeq") or 9999),
+            int(field.get("specSeq")) if field.get("specSeq") is not None else 9999,
             field.get("label") or "",
         )
     )
@@ -828,7 +851,9 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "confirmedAt": "",
         "confirmedBy": "",
         "fields": fields,
-        "summary": summarize_project_fact_fields(fields),
+        "summary": summarize_project_fact_fields(fields, spec_total=len(project_specs)),
+        # 本次构建实际使用的规则版本快照（审计：正式标书用了哪版规则）
+        "factSpecsRef": fact_specs_meta,
     }
 
 
@@ -1094,6 +1119,7 @@ def project_material_fact_fields(
     gap_state: dict[str, Any],
     *,
     excluded_paths: set[str] | None = None,
+    specs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     materials = project_fact_material_index(project, gap_state)
     if not materials:
@@ -1126,7 +1152,7 @@ def project_material_fact_fields(
             cert_materials.append((material, path))
             continue
         if kind:
-            special_facts = run_special_extractor(kind, path, material, project)
+            special_facts = run_special_extractor(kind, path, material, project, specs=specs)
             if special_facts is not None:
                 facts.extend(special_facts)
                 continue
@@ -1135,20 +1161,36 @@ def project_material_fact_fields(
             facts.extend(facts_from_docx_material(path, material))
         elif suffix in {".xlsx", ".xlsm"}:
             facts.extend(facts_from_xlsx_material(path, material, project))
-    facts.extend(facts_from_certificate_materials(cert_materials, project))
+    facts.extend(facts_from_certificate_materials(cert_materials, project, specs=specs))
     facts.extend(derived_material_fact_fields(project, facts))
     return facts
 
 
 def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
-    materials = [
-        dict(item)
-        for item in (plan.get("materialIndex") if isinstance(plan.get("materialIndex"), list) else [])
-        if isinstance(item, dict)
-    ]
+    materials: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def material_key(item: dict[str, Any]) -> str:
+        material_id = str(item.get("id") or item.get("materialId") or "").strip()
+        if material_id:
+            return f"id:{material_id}"
+        path = str(item.get("path") or item.get("folderPath") or "").strip()
+        name = str(item.get("name") or item.get("materialName") or item.get("fileName") or "").strip()
+        return f"path:{path}/{name}" if path or name else ""
+
+    def append_material(item: dict[str, Any]) -> None:
+        key = material_key(item)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        materials.append(item)
+
+    for item in (plan.get("materialIndex") if isinstance(plan.get("materialIndex"), list) else []):
+        if isinstance(item, dict):
+            append_material(dict(item))
+
     if not materials and isinstance(plan.get("tasks"), list):
-        seen: set[str] = set()
         for task in plan.get("tasks") or []:
             if not isinstance(task, dict):
                 continue
@@ -1156,10 +1198,9 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                 if not isinstance(raw, dict):
                     continue
                 material_id = str(raw.get("id") or raw.get("materialId") or "").strip()
-                if not material_id or material_id in seen:
+                if not material_id:
                     continue
-                seen.add(material_id)
-                materials.append(
+                append_material(
                     {
                         "id": material_id,
                         "name": str(raw.get("name") or raw.get("materialName") or raw.get("fileName") or material_id),
@@ -1170,42 +1211,41 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                         "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
                     }
                 )
-    if not materials:
-        try:
-            material_scope = build_project_material_scope(project)
-            selected_model = project_turbine_model(project)
-            seen: set[str] = set()
+    try:
+        selected_model = project_turbine_model(project)
 
-            def collect_scope_files(folder_path: str, material_tier: str) -> None:
-                payload = run_async_material_files(
-                    folder_path=folder_path,
-                    bid_type=TECHNICAL_BID_TYPE,
-                    material_tier=material_tier,
-                    turbine_model=selected_model,
-                    recursive=True,
-                    page=1,
-                    page_size=1000,
+        def collect_scope_files(folder_path: str, material_tier: str) -> None:
+            payload = run_async_material_files(
+                folder_path=folder_path,
+                bid_type=TECHNICAL_BID_TYPE,
+                material_tier=material_tier,
+                turbine_model=selected_model,
+                recursive=True,
+                page=1,
+                page_size=1000,
+            )
+            for raw in payload.get("items") or []:
+                if not isinstance(raw, dict):
+                    continue
+                material_id = str(raw.get("id") or "")
+                if not material_id:
+                    continue
+                append_material(
+                    {
+                        "id": material_id,
+                        "name": str(raw.get("name") or ""),
+                        "folderPath": str(raw.get("folderPath") or ""),
+                        "materialTier": str(raw.get("materialTier") or material_tier),
+                        "hasCleanedWord": bool(raw.get("hasCleanedWord")),
+                        "cleanedFileName": str(raw.get("cleanedFileName") or ""),
+                        "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
+                        "size": int(raw.get("size") or 0),
+                    }
                 )
-                for raw in payload.get("items") or []:
-                    if not isinstance(raw, dict):
-                        continue
-                    material_id = str(raw.get("id") or "")
-                    if not material_id or material_id in seen:
-                        continue
-                    seen.add(material_id)
-                    materials.append(
-                        {
-                            "id": material_id,
-                            "name": str(raw.get("name") or ""),
-                            "folderPath": str(raw.get("folderPath") or ""),
-                            "materialTier": str(raw.get("materialTier") or material_tier),
-                            "hasCleanedWord": bool(raw.get("hasCleanedWord")),
-                            "cleanedFileName": str(raw.get("cleanedFileName") or ""),
-                            "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
-                            "size": int(raw.get("size") or 0),
-                        }
-                    )
 
+        # 无现成索引时，沿用项目默认目录扫描作为回退。
+        if not materials:
+            material_scope = build_project_material_scope(project)
             for scope in material_scope.get("readableScopes") or []:
                 if not isinstance(scope, dict):
                     continue
@@ -1216,20 +1256,18 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                 folder_path = str(scope.get("path") or "").strip()
                 if folder_path:
                     collect_scope_files(folder_path, str(scope.get("materialTier") or ""))
-            # 用户自定义的参考资料目录（素材库虚拟路径）并入扫描，按项目层素材对待
-            custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
-            for raw_path in custom_paths:
-                folder_path = str(raw_path or "").strip().strip("/")
-                # 与保存时同款容错：兼容早期存入的缺标类前缀路径
-                if folder_path and not folder_path.startswith(f"{TECHNICAL_BID_TYPE}/"):
-                    folder_path = f"{TECHNICAL_BID_TYPE}/{folder_path}"
-                if folder_path:
-                    # 用户显式选定的参考目录不按 tier 过滤（空串=不过滤）：
-                    # 目录内素材 tier 标成 standard 也不应挡路，相关性由 material_is_fact_relevant 把守
-                    collect_scope_files(folder_path, "")
-        except Exception:
-            logger.exception("项目事实素材索引回退查询失败，按无素材继续构建")
-            materials = []
+
+        # 用户显式选择的目录始终叠加到计划索引，并按素材 ID 去重。
+        custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
+        for raw_path in custom_paths:
+            folder_path = str(raw_path or "").strip().strip("/")
+            if folder_path and not folder_path.startswith(f"{TECHNICAL_BID_TYPE}/"):
+                folder_path = f"{TECHNICAL_BID_TYPE}/{folder_path}"
+            if folder_path:
+                # 显式目录不按 tier 过滤，相关性由 material_is_fact_relevant 把守。
+                collect_scope_files(folder_path, "")
+    except Exception:
+        logger.exception("项目事实素材索引查询失败，保留已收集素材继续构建")
     return [item for item in materials if material_is_fact_relevant(item)]
 
 

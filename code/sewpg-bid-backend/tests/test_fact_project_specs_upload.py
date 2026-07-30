@@ -181,9 +181,27 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
         self.assertEqual(after.status_code, 200, after.text)
         self.assertTrue(after.json()["specsImported"])
         self.assertEqual(after.json()["specsFileName"], "实时表.xlsx")
-        # specTotal 与 summary 同口径（表内有 specSeq 的骨架行数）：尚未构建事实表时为 0，
-        # 上传状态以 specsImported/specsFileName 表达
-        self.assertEqual(after.json()["specTotal"], 0)
+        # specTotal 始终表示上传规则条数，构建前后口径不变。
+        self.assertEqual(after.json()["specTotal"], 2)
+
+    def test_draft_save_preserves_rule_reference_and_spec_total(self) -> None:
+        project_id = self._create_project()
+        xlsx_path = _build_xlsx(
+            Path(self.temp_dir.name) / "事实表.xlsx",
+            [("招标编号", "招标文件/招标公告"), ("总装机容量", "项目定制/工程量清单")],
+        )
+        self.assertEqual(self._upload_specs(project_id, xlsx_path).status_code, 200)
+        built = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(built.status_code, 200, built.text)
+
+        saved = self.client.put(
+            f"/api/technical/projects/{project_id}/gaps/facts",
+            json={"fields": built.json()["fields"], "confirm": False, "operator": "测试用户"},
+        )
+
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["factSpecsRef"], built.json()["factSpecsRef"])
+        self.assertEqual(saved.json()["summary"]["specTotal"], 2)
 
 
     def test_material_sources_roundtrip(self) -> None:
@@ -359,6 +377,52 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
 
         self.assertEqual([material["id"] for material in materials], ["RAW-N1", "RAW-N2"])
         self.assertTrue(all(material["materialTier"] == "standard" for material in materials))
+
+    def test_custom_material_paths_union_with_plan_index_and_dedupe(self) -> None:
+        """已有 plan.materialIndex 时仍扫描自定义目录，并按素材 ID 合并去重。"""
+        calls: list[dict] = []
+
+        def fake_material_files(**kwargs):
+            calls.append(kwargs)
+            return {
+                "items": [
+                    {
+                        "id": "RAW-PLAN",
+                        "name": "计划内风资源报告.docx",
+                        "folderPath": "技术标/项目定制/当前项目",
+                        "materialTier": "project",
+                    },
+                    {
+                        "id": "RAW-CUSTOM",
+                        "name": "参考项目风资源报告.docx",
+                        "folderPath": "技术标/项目定制/参考项目",
+                        "materialTier": "standard",
+                    },
+                ]
+            }
+
+        with patch.object(
+            fact_table_module, "run_async_material_files", side_effect=fake_material_files
+        ):
+            materials = fact_table_module.project_fact_material_index(
+                {"id": "P-SCOPE", "name": "当前项目"},
+                {
+                    "plan": {
+                        "materialIndex": [
+                            {
+                                "id": "RAW-PLAN",
+                                "name": "计划内风资源报告.docx",
+                                "folderPath": "技术标/项目定制/当前项目",
+                                "materialTier": "project",
+                            }
+                        ]
+                    },
+                    "factMaterialPaths": ["技术标/项目定制/参考项目"],
+                },
+            )
+
+        self.assertEqual([call["folder_path"] for call in calls], ["技术标/项目定制/参考项目"])
+        self.assertEqual([material["id"] for material in materials], ["RAW-PLAN", "RAW-CUSTOM"])
 
     def test_fill_templates_excluded_from_index(self) -> None:
         """「待填写」前缀的附表模板不进索引（它们是要填的目标表格，不是取数素材）。"""

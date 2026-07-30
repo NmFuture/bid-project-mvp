@@ -14,6 +14,7 @@ from app.core.redis import RedisError, get_redis_client
 logger = logging.getLogger(__name__)
 
 QUEUE_KEY = "bid:jobs"
+MATERIAL_QUEUE_KEY = os.getenv("REDIS_MATERIAL_QUEUE_KEY", "bid:jobs:material").strip() or "bid:jobs:material"
 DOCLING_QUEUE_KEY = os.getenv("REDIS_DOCLING_QUEUE_KEY", "bid:jobs:docling").strip() or "bid:jobs:docling"
 PROCESSING_QUEUE_SUFFIX = ":processing"
 JOB_KEY_PREFIX = "bid:job:"
@@ -30,6 +31,7 @@ KNOWN_JOB_TYPES = {
     "fill_generation",
     "material_cleaning",
     "material_deep_parse",
+    "material_wiki_generation",
     "s1_parse",
     *INTERNAL_JOB_TYPES,
 }
@@ -100,6 +102,10 @@ class EnqueueResult:
         return self.queued or (bool(self.job_id) and not self.locked and not self.unavailable)
 
 
+class JobStatusUnavailable(RuntimeError):
+    pass
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -109,7 +115,11 @@ def _job_key(job_id: str) -> str:
 
 
 def _queue_key_for_job_type(job_type: str) -> str:
-    return DOCLING_QUEUE_KEY if job_type == "s1_docling_batch" else QUEUE_KEY
+    if job_type == "s1_docling_batch":
+        return DOCLING_QUEUE_KEY
+    if job_type in {"material_cleaning", "material_deep_parse", "material_wiki_generation"}:
+        return MATERIAL_QUEUE_KEY
+    return QUEUE_KEY
 
 
 def processing_queue_key(queue_key: str) -> str:
@@ -228,7 +238,7 @@ def enqueue_generation_job(job_type: str, project_id: str, data: dict[str, Any])
             },
         )
         pipe.expire(_job_key(job_id), settings.redis_job_result_ttl_sec)
-        pipe.rpush(QUEUE_KEY, payload)
+        pipe.rpush(_queue_key_for_job_type(job_type), payload)
         pipe.execute()
         return EnqueueResult(queued=True, job_id=job_id)
     except RedisError as exc:
@@ -407,6 +417,51 @@ def mark_job_status(job: dict[str, Any], status: str, message: str = "") -> None
         pipe.execute()
     except RedisError as exc:
         logger.warning("Failed to update Redis job status: %s", exc)
+
+
+def mark_job_progress(job: dict[str, Any], progress: dict[str, Any]) -> None:
+    client = get_redis_client()
+    job_id = str(job.get("id") or "")
+    if client is None or not job_id:
+        return
+    try:
+        pipe = client.pipeline()
+        pipe.hset(
+            _job_key(job_id),
+            mapping={
+                "progress": json.dumps(progress or {}, ensure_ascii=False, separators=(",", ":")),
+                "updatedAt": _now_iso(),
+            },
+        )
+        pipe.expire(_job_key(job_id), settings.redis_job_result_ttl_sec)
+        pipe.execute()
+    except RedisError as exc:
+        logger.warning("Failed to update Redis job progress: %s", exc)
+
+
+def get_job_status(job_id: str) -> dict[str, Any] | None:
+    resolved_job_id = str(job_id or "").strip()
+    if not resolved_job_id:
+        return None
+    client = get_redis_client()
+    if client is None:
+        raise JobStatusUnavailable("Redis job status is unavailable")
+    try:
+        payload = client.hgetall(_job_key(resolved_job_id))
+    except RedisError as exc:
+        logger.warning("Failed to read Redis job status: %s", exc)
+        raise JobStatusUnavailable("Redis job status is unavailable") from exc
+    if not payload:
+        return None
+    result = dict(payload)
+    raw_progress = result.get("progress")
+    if isinstance(raw_progress, str):
+        try:
+            progress = json.loads(raw_progress)
+        except ValueError:
+            progress = {}
+        result["progress"] = progress if isinstance(progress, dict) else {}
+    return result
 
 
 def request_job_cancel(job_id: str) -> None:
@@ -674,6 +729,8 @@ def find_active_jobs_of_type(job_type: str) -> list[dict[str, Any]]:
     queue_keys = (
         QUEUE_KEY,
         processing_queue_key(QUEUE_KEY),
+        MATERIAL_QUEUE_KEY,
+        processing_queue_key(MATERIAL_QUEUE_KEY),
         DOCLING_QUEUE_KEY,
         processing_queue_key(DOCLING_QUEUE_KEY),
     )
@@ -705,7 +762,7 @@ def find_active_jobs_of_type(job_type: str) -> list[dict[str, Any]]:
     return active
 
 
-def reclaim_stale_inflight_jobs(max_age_sec: int) -> int:
+def reclaim_stale_inflight_jobs(max_age_sec: int, queue_key: str = QUEUE_KEY) -> int:
     """把执行时长超过 max_age_sec 的残留 in-flight job 显式置为 failed 并释放其锁。
 
     由 worker 在启动时和运行中周期调用：正常完成的 job 会在 finally 里清除 in-flight 标记，
@@ -736,7 +793,7 @@ def reclaim_stale_inflight_jobs(max_age_sec: int) -> int:
         job_type = str(entry.get("type") or "")
         project_id = str(entry.get("projectId") or "")
         # Docling 使用独立单实例 worker 启动恢复，普通 worker 不应误回收其长任务。
-        if _queue_key_for_job_type(job_type) != QUEUE_KEY:
+        if _queue_key_for_job_type(job_type) != queue_key:
             continue
         reclaim_job = {
             "id": str(job_id),

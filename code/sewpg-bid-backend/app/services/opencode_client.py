@@ -1016,6 +1016,18 @@ class OpencodeClient:
                     )
                     last_heartbeat = now
                 if now - last_activity > idle_timeout:
+                    if not abort_sent:
+                        abort_sent = True
+                        aborted = self.abort_session(session_id)
+                    else:
+                        aborted = True
+                    thread.join(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS)
+                    if thread.is_alive():
+                        abort_status = "已发送 abort" if aborted else "abort 失败"
+                        raise RuntimeError(
+                            "futurecode idle timeout 后 Opencode worker 未停止"
+                            f"（{abort_status}），请检查 session {session_id}。"
+                        )
                     if early_tool_command == "s1parse-finalize":
                         self._raise_s1_opencode_stalled(session_id, self.list_session_messages(session_id), idle_timeout)
                     if early_tool_command == "btplnav-finalize":

@@ -157,6 +157,7 @@ class Settings:
     s2_toc_output_file_name: str
     s2_toc_evidence_file_name: str
     fact_specs_override_path: Path
+    fact_specs_versions_dir: Path
 
     # PostgreSQL
     database_url: str
@@ -265,6 +266,12 @@ settings = Settings(
         os.getenv(
             "FACT_SPECS_OVERRIDE_PATH",
             str(DOCUMENTS_DIR / "technical_fact_field_specs.override.json"),
+        )
+    ),
+    fact_specs_versions_dir=Path(
+        os.getenv(
+            "FACT_SPECS_VERSIONS_DIR",
+            str(DOCUMENTS_DIR / "fact_spec_versions"),
         )
     ),
     database_url=os.getenv(

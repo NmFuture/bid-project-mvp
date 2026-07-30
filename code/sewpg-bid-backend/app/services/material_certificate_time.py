@@ -94,11 +94,6 @@ def _normalize_path(value: Any) -> str:
     return str(value or "").replace("\\", "/").strip().strip("/")
 
 
-def _parent_path(value: Any) -> str:
-    parts = [part for part in _normalize_path(value).split("/") if part]
-    return "/".join(parts[:-1])
-
-
 def _looks_like_certificate(value: Any) -> bool:
     text = str(value or "").casefold()
     return any(keyword.casefold() in text for keyword in CERTIFICATE_SCOPE_KEYWORDS)
@@ -832,47 +827,48 @@ async def list_certificate_time_registry(*, bid_type: str) -> dict[str, Any]:
 
 
 async def suggest_certificate_time_scopes(*, bid_type: str) -> dict[str, Any]:
-    from app.services.technical_material_index import load_technical_material_index, rebuild_technical_material_index
+    """基于素材库实时目录生成证书识别范围建议。
 
-    index_payload = load_technical_material_index()
-    if not index_payload:
-        index_payload = await rebuild_technical_material_index()
-
+    直接扫库而不是读三级目录 JSON 索引快照：索引只在结构变更钩子里
+    best-effort 重建，可能滞后，且只覆盖规范档位的三级目录；扫库保证
+    每次「生成建议」都反映当前真实目录结构。
+    """
+    items = await _load_raw_files(bid_type=bid_type)
     configured = set(_configured_scope_paths(bid_type=bid_type))
     grouped: dict[str, dict[str, Any]] = {}
-    for tier in index_payload.get("tiers") or []:
-        for folder in tier.get("folders") or []:
-            folder_path = _normalize_path(folder.get("path"))
-            for file_item in folder.get("files") or []:
-                name = str(file_item.get("name") or "")
-                file_path = _normalize_path(file_item.get("path"))
-                if not _supported_file_name(name):
-                    continue
-                haystack = " ".join([
-                    name,
-                    file_path,
-                    " ".join(str(tag or "") for tag in file_item.get("tags") or []),
-                ])
-                if not _looks_like_certificate(haystack):
-                    continue
-                file_parent = _parent_path(file_path)
-                scope_path = file_parent if _looks_like_certificate(file_parent) else folder_path
-                if not scope_path:
-                    continue
-                item = grouped.setdefault(scope_path, {
-                    "path": scope_path,
-                    "name": scope_path.split("/")[-1],
-                    "tier": folder.get("tier") or tier.get("tier") or "",
-                    "candidateCount": 0,
-                    "fileCount": 0,
-                    "examples": [],
-                    "selected": scope_path in configured,
-                    "reason": "目录或文件名命中证书关键词",
-                })
-                item["candidateCount"] += 1
-                item["fileCount"] += 1
-                if len(item["examples"]) < 3:
-                    item["examples"].append(name)
+    for raw_file in items:
+        name = str(raw_file.name or "")
+        if not _supported_file_name(name):
+            continue
+        folder_path = _normalize_path(raw_file.folder.path if raw_file.folder else "")
+        parts = [part for part in folder_path.split("/") if part]
+        # 识别范围至少要落到三级目录，与 _normalize_scopes 的约束一致。
+        if len(parts) < 3 or parts[0] != bid_type:
+            continue
+        ext = raw_file.ext_fields or {}
+        tags = ext.get("tags") if isinstance(ext.get("tags"), list) else []
+        haystack = " ".join([
+            name,
+            folder_path,
+            " ".join(str(tag or "") for tag in tags),
+        ])
+        if not _looks_like_certificate(haystack):
+            continue
+        scope_path = folder_path if _looks_like_certificate(folder_path) else "/".join(parts[:3])
+        item = grouped.setdefault(scope_path, {
+            "path": scope_path,
+            "name": scope_path.split("/")[-1],
+            "tier": parts[1] if scope_path == folder_path else "",
+            "candidateCount": 0,
+            "fileCount": 0,
+            "examples": [],
+            "selected": scope_path in configured,
+            "reason": "目录或文件名命中证书关键词",
+        })
+        item["candidateCount"] += 1
+        item["fileCount"] += 1
+        if len(item["examples"]) < 3:
+            item["examples"].append(name)
 
     suggestions = sorted(
         grouped.values(),

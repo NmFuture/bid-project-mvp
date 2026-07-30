@@ -20,6 +20,7 @@ from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.technical_fact_field_specs import fillable_specs
+from app.services.technical_fact_spec_versions import FACT_SPECS_SOURCE_PROJECT, resolve_project_specs
 from app.services.technical_gap_fact_table import (
     material_is_fill_template,
     project_fact_material_index,
@@ -107,12 +108,20 @@ def material_home_project(material: dict[str, Any]) -> str:
     return ""
 
 
-def required_material_classes() -> dict[str, dict[str, Any]]:
-    """从 fillable_specs() 聚合需素材类别 → {fieldKeys, fieldCount}（无需素材类别不计入）。"""
+def required_material_classes(
+    specs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """从 fillable spec 聚合需素材类别 → {fieldKeys, fieldCount}（无需素材类别不计入）。
+
+    specs 为 None 时用系统默认清单 fillable_specs()；项目链路传项目绑定版本快照。
+    """
     required: dict[str, dict[str, Any]] = {
         material_class: {"fieldKeys": [], "fieldCount": 0} for material_class in MATERIAL_CLASSES
     }
-    for spec in fillable_specs():
+    active_specs = (
+        [spec for spec in specs if spec.get("valueRequired")] if specs is not None else fillable_specs()
+    )
+    for spec in active_specs:
         material_class = material_class_of(spec)
         info = required.get(material_class)
         if info is None:
@@ -142,7 +151,11 @@ def build_fact_material_check(project: dict[str, Any], gap_state: dict[str, Any]
 
     同步重活（素材索引内部经 run_awaitable_sync 桥接异步），调用方须放工作线程。
     """
-    required = required_material_classes()
+    # 规则按项目绑定版本取（R06-B04-02）；项目未上传实时表时回落系统默认清单
+    project_specs, specs_meta = resolve_project_specs(gap_state)
+    required = required_material_classes(
+        project_specs if specs_meta.get("source") == FACT_SPECS_SOURCE_PROJECT else None
+    )
     materials = project_fact_material_index(project, gap_state)
     project_name = str(project.get("name") or "")
     matched_by_class: dict[str, list[dict[str, Any]]] = {key: [] for key in required}

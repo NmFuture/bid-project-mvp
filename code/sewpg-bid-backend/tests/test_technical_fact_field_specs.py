@@ -179,6 +179,18 @@ class TestNormalizeProjectFactFieldV2(unittest.TestCase):
         self.assertEqual(field["specSeq"], 4)
         self.assertEqual(field["sourceKind"], "tender")
 
+    def test_out_of_spec_compatibility_marker_is_preserved(self) -> None:
+        field = self._normalize(
+            {
+                "label": "旧规则字段",
+                "value": "人工确认值",
+                "status": FACT_STATUS_CONFIRMED,
+                "outOfSpec": True,
+            }
+        )
+
+        self.assertTrue(field["outOfSpec"])
+
 
 class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
     def _spec_gap_state(self) -> dict:
@@ -263,6 +275,56 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertFalse(manual.get("specSeq"))
         self.assertEqual(table["summary"]["specTotal"], 128)
 
+    def test_build_preserves_confirmed_field_removed_from_current_specs(self) -> None:
+        """规则换版后，旧规则下已确认字段保留为清单外历史事实，不污染新规则进度。"""
+        project = {"id": "P-SPEC", "name": "规则换版项目", "parse_result": {}}
+        gap_state = {
+            "projectFactTable": {
+                "schemaVersion": "bid-project-fact-table-v2",
+                "fields": [
+                    {
+                        "id": "FACT-9002",
+                        "key": "旧规则字段",
+                        "label": "旧规则字段",
+                        "value": "已人工确认的历史值",
+                        "status": FACT_STATUS_CONFIRMED,
+                        "specSeq": 88,
+                        "specKey": "legacy-field",
+                        "sourceRefs": [{"type": "project", "title": "旧项目资料"}],
+                    }
+                ],
+            }
+        }
+        current_specs = [
+            {
+                "seq": 0,
+                "key": "current-field",
+                "label": "当前规则字段",
+                "valueRequired": True,
+                "sourceKind": "tender",
+            }
+        ]
+
+        with (
+            patch.object(
+                fact_table_module,
+                "resolve_project_specs",
+                return_value=(current_specs, {"source": "project", "ruleId": "fsr-current"}),
+            ),
+            patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
+        ):
+            table = build_project_fact_table(project, gap_state)
+
+        self.assertEqual(table["summary"]["specTotal"], 1)
+        current = next(field for field in table["fields"] if field["label"] == "当前规则字段")
+        self.assertEqual(current["specSeq"], 0)
+        legacy = next(field for field in table["fields"] if field["label"] == "旧规则字段")
+        self.assertEqual(legacy["value"], "已人工确认的历史值")
+        self.assertEqual(legacy["status"], FACT_STATUS_CONFIRMED)
+        self.assertTrue(legacy["outOfSpec"])
+        self.assertNotIn("specSeq", legacy)
+        self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
+
     def test_build_falls_back_to_global_specs_when_project_not_uploaded(self) -> None:
         """项目未上传清单时以全局默认清单为骨架。"""
         project = {"id": "P-GLOBAL", "name": "全局清单项目", "parse_result": {}}
@@ -305,11 +367,21 @@ class TestSummarizeSpecProgressBuckets(unittest.TestCase):
             + summary["specPendingConfirmationCount"]
             + summary["specUnfilledCount"]
             + summary["specFilledUnconfirmedCount"],
-            summary["specTotal"],
+            summary["specBuiltTotal"],
         )
         # 七态计数仍是全表口径（含人工行）
         self.assertEqual(summary["totalCount"], 7)
         self.assertEqual(summary["confirmedCount"], 2)
+
+    def test_spec_seq_zero_is_counted_with_stable_bound_total(self) -> None:
+        fields = [{"label": "A", "specSeq": 0, "status": "confirmed", "value": "x"}]
+
+        summary = summarize_project_fact_fields(fields, spec_total=2)
+
+        self.assertEqual(summary["specTotal"], 2)
+        self.assertEqual(summary["specBuiltTotal"], 1)
+        self.assertEqual(summary["specMatched"], 1)
+        self.assertEqual(summary["specConfirmedCount"], 1)
 
 
 if __name__ == "__main__":

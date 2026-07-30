@@ -41,8 +41,9 @@ EnsureNestedFolder = Callable[[Any, RawFolder, str], Awaitable[RawFolder]]
 ArchiveRawFileVersion = Callable[[Any, RawFile], Awaitable[None]]
 CleanedObjectRemover = Callable[[dict[str, Any]], None]
 RawObjectKeyBuilder = Callable[[str, str], str]
+RawVersionObjectKeyBuilder = Callable[[int, int, str], str]
 MaterialTierResolver = Callable[[RawFolder | None], str]
-CleaningJobEnqueuer = Callable[[int], dict[str, Any]]
+CleaningJobEnqueuer = Callable[..., dict[str, Any]]
 
 
 def _safe_segment(value: str, fallback: str, *, preserve_leading_dot: bool = True) -> str:
@@ -96,6 +97,7 @@ async def upload_raw_files(
     raw_object_key: RawObjectKeyBuilder,
     infer_material_tier_from_folder: MaterialTierResolver,
     enqueue_cleaning_job: CleaningJobEnqueuer,
+    raw_version_object_key: RawVersionObjectKeyBuilder | None = None,
 ) -> dict[str, Any]:
     file_inputs = list(files or [])
     if not file_inputs:
@@ -189,7 +191,7 @@ async def upload_raw_files(
 
     async with async_session() as session:
         uploaded_items: list[dict[str, Any]] = []
-        clean_job_targets: list[int] = []
+        clean_job_targets: list[dict[str, Any]] = []
         # 本次已写入 MinIO 的新对象；任一环节失败时补偿删除，避免孤儿对象（H1）
         written_object_keys: list[tuple[str, str]] = []
         # 覆盖上传时旧 cleaned 对象延后到 DB commit 成功后再删，写失败不动旧对象（H2）
@@ -285,11 +287,17 @@ async def upload_raw_files(
                 mime_type = str(prepared["mimeType"])
                 size = int(prepared["size"])
                 result = await session.execute(
-                    select(RawFile).where(RawFile.folder_id == folder.id, RawFile.name == file_name)
+                    select(RawFile)
+                    .where(RawFile.folder_id == folder.id, RawFile.name == file_name)
+                    .with_for_update()
                 )
                 existing = result.scalar_one_or_none()
 
-                minio_key = raw_object_key(folder.path, file_name)
+                next_version = int(existing.version or 1) + 1 if existing and on_conflict in RAW_UPLOAD_CONFLICT_ACTIONS else 1
+                if existing and on_conflict in RAW_UPLOAD_CONFLICT_ACTIONS and raw_version_object_key is not None:
+                    minio_key = raw_version_object_key(int(existing.id), next_version, file_name)
+                else:
+                    minio_key = raw_object_key(folder.path, file_name)
                 common_ext, clean_status = build_raw_upload_ext_fields(
                     file_name=file_name,
                     folder_path=folder.path,
@@ -354,7 +362,7 @@ async def upload_raw_files(
                     existing.size_bytes = size
                     existing.minio_key = minio_key
                     existing.mime_type = mime_type
-                    existing.version += 1
+                    existing.version = next_version
                     existing.ext_fields = build_raw_upload_existing_ext_fields(
                         existing.ext_fields or {},
                         common_ext,
@@ -362,7 +370,14 @@ async def upload_raw_files(
                     )
                     uploaded_items.append(existing.to_dict())
                     if clean_status == "pending":
-                        clean_job_targets.append(int(existing.id))
+                        clean_job_targets.append(
+                            {
+                                "file_id": int(existing.id),
+                                "source_version": next_version,
+                                "source_bucket": materials_bucket,
+                                "source_key": minio_key,
+                            }
+                        )
                     continue
 
                 if existing and not on_conflict:
@@ -395,7 +410,14 @@ async def upload_raw_files(
                 await session.flush()
                 uploaded_items.append(record.to_dict())
                 if clean_status == "pending":
-                    clean_job_targets.append(int(record.id))
+                    clean_job_targets.append(
+                        {
+                            "file_id": int(record.id),
+                            "source_version": int(record.version or 1),
+                            "source_bucket": materials_bucket,
+                            "source_key": minio_key,
+                        }
+                    )
 
             await session.commit()
         except Exception:
@@ -414,7 +436,7 @@ async def upload_raw_files(
                 minio_client.remove_object(removal["bucket"], removal["key"])
             except Exception as cleanup_exc:  # pragma: no cover - 旧对象清理失败仅告警
                 logger.warning("覆盖上传清理旧 cleaned 对象 %s/%s 失败：%s", removal["bucket"], removal["key"], cleanup_exc)
-        clean_jobs = [enqueue_cleaning_job(file_id) for file_id in clean_job_targets]
+        clean_jobs = [enqueue_cleaning_job(**target) for target in clean_job_targets]
         message = f"上传完成，共处理 {len(uploaded_items)} 个文件，已触发 {len(clean_job_targets)} 个清洗任务。"
         if skipped_items:
             shown = skipped_items[:5]
