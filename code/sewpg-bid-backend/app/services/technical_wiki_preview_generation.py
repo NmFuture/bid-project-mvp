@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.material_cleaning import is_deep_convertible_material
+from app.services.material_cleaning import is_cleanable_material
 from app.services.material_deep_parse import (
     DEEP_PARSE_STATUS_FIELD,
     deep_parse_profile_for,
@@ -107,7 +107,7 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     name = str(item.name or "")
     source_ext = Path(name).suffix.lower().lstrip(".") or "file"
     cleaned_key = str(ext_fields.get("cleanedMinioKey") or "")
-    has_cleaned = bool(cleaned_key)
+    has_cleaned = is_cleanable_material(name) and bool(cleaned_key)
     ext = "docx" if source_ext == "docx" or has_cleaned else source_ext
     empty: dict[str, Any] = {
         "headings": [],
@@ -118,15 +118,13 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         "parseError": "",
     }
 
-    # 后台深度解析产物优先：sourceKey 与当前 cleaned/原始对象一致时直接采用
+    if ext != "docx":
+        return ext, {**empty, "parseError": "非 docx，无可解析正文"}
+
+    # 后台深度解析产物只对 DOC/DOCX 有效，避免历史非 Word 清洗稿绕过格式边界。
     deep_profile = deep_parse_profile_for(ext_fields, cleaned_key or str(item.minio_key or ""))
     if deep_profile is not None:
         return ext, {**empty, **deep_profile, "parseError": ""}
-    if ext != "docx":
-        # PDF/XLSX 无清洗稿：交给后台深度解析转换，不再终态跳过
-        if is_deep_convertible_material(name):
-            return ext, {**empty, "deepParsePending": True}
-        return ext, empty
 
     if has_cleaned:
         bucket = str(ext_fields.get("cleanedMinioBucket") or item.minio_bucket or "")
@@ -386,8 +384,8 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 retryable = False
                 deep_status = str(ext_fields.get(DEEP_PARSE_STATUS_FIELD) or "")
                 if profile.get("deepParsePending"):
-                    # PDF/XLSX 待转换、超大 docx 待后台解析：排队深度解析，
-                    # 保持 retryable，产物就绪后下次刷新自动升级为正式预览。
+                    # 超大 DOCX 待后台解析：保持 retryable，产物就绪后
+                    # 下次刷新自动升级为正式预览。
                     if deep_parse_status_allows_enqueue(ext_fields):
                         enqueue_deep_parse_job(file_id)
                         deep_status = deep_status or "queued"

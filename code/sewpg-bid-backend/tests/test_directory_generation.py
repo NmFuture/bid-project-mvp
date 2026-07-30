@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1120,7 +1121,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ],
             )
 
-    def test_parallel_outline_chapters_load_model_config_once_before_workers(self) -> None:
+    def test_parallel_outline_chapters_use_one_model_config_and_six_workers(self) -> None:
         self.parallel_outline_patcher.stop()
         from app.services.outline_generation import (
             _TECH_OUTLINE_REQUEST_SLOTS,
@@ -1134,8 +1135,12 @@ class DirectoryGenerationTests(unittest.TestCase):
         chapter_root = root / "chapters"
         chapter_root.mkdir()
         chapters = [
-            {"chapter_id": "TPL-0001", "number": "第1章", "title": "第一章"},
-            {"chapter_id": "TPL-0002", "number": "第2章", "title": "第二章"},
+            {
+                "chapter_id": f"TPL-{index:04d}",
+                "number": f"第{index}章",
+                "title": f"第{index}章",
+            }
+            for index in range(1, 7)
         ]
         chapter_manifests: dict[str, Path] = {}
         for chapter in chapters:
@@ -1157,6 +1162,11 @@ class DirectoryGenerationTests(unittest.TestCase):
         runner.decision_workflow.chapter_decision_progress.return_value = {
             "complete": True
         }
+        worker_counts: list[int] = []
+
+        def recording_executor(*, max_workers: int) -> RealThreadPoolExecutor:
+            worker_counts.append(max_workers)
+            return RealThreadPoolExecutor(max_workers=max_workers)
 
         with (
             patch(
@@ -1171,17 +1181,25 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
                 return_value=model_config,
             ) as load_config,
+            patch(
+                "app.services.outline_generation._outline_chapter_base_urls",
+                return_value=["http://opencode:4096"],
+            ),
+            patch(
+                "app.services.outline_generation.ThreadPoolExecutor",
+                side_effect=recording_executor,
+            ),
             patch("app.services.outline_generation.OpencodeClient") as client_class,
         ):
             client_class.return_value.run_outline_decision_session.side_effect = [
-                {"sessionId": "ses-1"},
-                {"sessionId": "ses-2"},
+                {"sessionId": f"ses-{index}"} for index in range(1, 7)
             ]
             session_ids = _run_parallel_outline_chapters(manifest_path, {})
 
         load_config.assert_called_once_with()
-        self.assertEqual(set(session_ids), {"ses-1", "ses-2"})
-        self.assertEqual(client_class.call_count, 2)
+        self.assertEqual(worker_counts, [6])
+        self.assertEqual(len(session_ids), 6)
+        self.assertEqual(client_class.call_count, 6)
         for call in client_class.call_args_list:
             self.assertIs(call.kwargs["model_config"], model_config)
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)

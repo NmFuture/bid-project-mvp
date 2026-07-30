@@ -33,13 +33,13 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.identity import canonical_customer, classify_material_path, material_identity
-from app.services.material_cleaning import is_deep_convertible_material
 from app.services.material_deep_parse import (
     deep_parse_profile_for,
     deep_parse_status_allows_enqueue,
     enqueue_deep_parse_job,
 )
 from app.services.material_tags import normalize_material_tags
+from app.services.material_cleaning import is_cleanable_material
 from app.services.material_taxonomy import infer_business_material_category, infer_business_material_subcategory
 from app.services.minio_client import minio_client
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
@@ -64,7 +64,7 @@ BUSINESS_WIKI_OCR_VERSION = 1
 # 这里只控制同时进行 OCR 的素材数量，风格对齐技术标 PREVIEW_CONCURRENCY。
 BUSINESS_WIKI_OCR_CONCURRENCY = 8
 OCR_IMAGE_EXTS = {item.lstrip(".") for item in IMAGE_SUFFIXES}
-OCR_SOURCE_EXTS = OCR_IMAGE_EXTS | {"pdf"}
+OCR_SOURCE_EXTS = OCR_IMAGE_EXTS
 
 BUSINESS_WIKI_SKILL_NAME = "bid-business-wiki-material-builder"
 BUSINESS_WIKI_RUNNER = (
@@ -378,11 +378,12 @@ async def _ensure_business_wiki_ocr_cache(item: RawFile, profile: dict[str, Any]
     ext_fields = dict(item.ext_fields or {})
     signature = _ocr_cache_signature(item)
     cached = ext_fields.get("businessWikiOcr") if isinstance(ext_fields.get("businessWikiOcr"), dict) else {}
-    if _ocr_cache_is_fresh(cached, signature):
-        return cached
-
     source_ext = str(profile.get("sourceExt") or "").lower()
     ext = str(profile.get("ext") or "").lower()
+    cache_allowed = source_ext in OCR_SOURCE_EXTS or ext == "docx"
+    if cache_allowed and _ocr_cache_is_fresh(cached, signature):
+        return cached
+
     try:
         if source_ext in OCR_SOURCE_EXTS:
             payload = await _recognize_source_file_for_wiki(item, source_ext)
@@ -523,7 +524,7 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     tags = normalize_material_tags(ext_fields.get("tags"))
     clean_report = ext_fields.get("cleanReport") if isinstance(ext_fields.get("cleanReport"), dict) else {}
     clean_report_record = clean_report.get("record") if isinstance(clean_report.get("record"), dict) else {}
-    has_cleaned_word = bool(cleaned_minio_key)
+    has_cleaned_word = is_cleanable_material(file_name) and bool(cleaned_minio_key)
     ext = "docx" if source_ext == "docx" or has_cleaned_word else source_ext
     inferred_bid_type = _material_bid_type(folder_path, file_name, folder_bid_type)
     path_identity = classify_material_path(
@@ -657,14 +658,7 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
             except Exception as exc:  # pragma: no cover - depends on object store state
                 profile["parseError"] = f"MinIO 读取失败：{exc}"
     else:
-        if is_deep_convertible_material(file_name):
-            # PDF/XLSX：排队后台转换为 Word 后解析，不再直接终态跳过
-            if deep_parse_status_allows_enqueue(ext_fields):
-                enqueue_deep_parse_job(str(profile["id"]))
-            profile["parseError"] = "PDF/XLSX 素材已排队后台转换为 Word，完成后自动补充 Wiki 卡片正文"
-            profile["deepParsePending"] = True
-        else:
-            profile["parseError"] = "非 docx 文件，未进入 Wiki 卡片正文解析"
+        profile["parseError"] = "非 docx 文件，未进入 Wiki 卡片正文解析"
 
     profile["headingCount"] = len(profile["headings"])
     profile["materialLevelRange"] = _material_level_range(profile["headings"])
