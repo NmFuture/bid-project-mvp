@@ -24,6 +24,7 @@ from app.services.job_queue import (
     release_generation_lock,
     renew_generation_lock,
 )
+from app.services.job_timing import track_job_timing
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ def _parent_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 耗时监控：docling 批次统一记为 docling_batch，runId 继承 S1 父任务。
+@track_job_timing(tracked_types={DOCLING_BATCH_JOB_TYPE}, job_type_override="docling_batch")
 def _run_job(job: dict[str, Any]) -> None:
     if str(job.get("type") or "") != DOCLING_BATCH_JOB_TYPE:
         raise RuntimeError(f"Docling worker received unsupported job: {job.get('type')}")

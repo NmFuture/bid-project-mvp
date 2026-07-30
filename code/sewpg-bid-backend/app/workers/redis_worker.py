@@ -24,6 +24,7 @@ from app.services.job_queue import (
     requeue_processing_job,
     renew_generation_lock,
 )
+from app.services.job_timing import track_job_timing
 from app.services.workspace_project_access import get_any_workspace_project_runtime_state
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,8 @@ def _finish_expired_s1_job(
     return True
 
 
+# 耗时监控：仅对跟踪的任务类型在终态时汇总写 job_timings，中间态（等待/重试）跳过。
+@track_job_timing(tracked_types={"s1_parse", "s1_parse_continue", "directory_generation"})
 def _run_job(job: dict[str, Any]) -> bool:
     job_type = str(job.get("type") or "")
     project_id = str(job.get("projectId") or "")
