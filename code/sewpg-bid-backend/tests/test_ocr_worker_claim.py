@@ -17,6 +17,9 @@ class _ScalarResult:
     def scalar_one_or_none(self) -> Any:
         return self.value
 
+    def first(self) -> Any:
+        return self.value
+
 
 class _ClaimSession:
     """按调用顺序返回预设 scalar 结果：第一次 execute 是候选 SELECT，第二次是原子 claim UPDATE。"""
@@ -55,14 +58,18 @@ class OcrAtomicClaimTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_claim_won_marks_processing_and_runs_task(self) -> None:
         service = OcrService()
-        session = _ClaimSession(["OCR-1", "OCR-1"])
+        session = _ClaimSession(["OCR-1", ("OCR-1", 7)])
         process_task = AsyncMock()
 
         with self._patch_session(session), patch.object(service, "_process_task", new=process_task):
             processed = await service._process_one_pending_task()
 
         self.assertTrue(processed)
-        process_task.assert_awaited_once_with("OCR-1")
+        process_task.assert_awaited_once()
+        task_id, owner, fence_token = process_task.await_args.args
+        self.assertEqual(task_id, "OCR-1")
+        self.assertTrue(str(owner).startswith("ocr-worker-"))
+        self.assertEqual(fence_token, 7)
         self.assertEqual(session.commits, 1)
         self.assertEqual(len(session.statements), 2)
         claim_stmt = session.statements[1]
@@ -70,6 +77,10 @@ class OcrAtomicClaimTests(unittest.IsolatedAsyncioTestCase):
         claim_params = claim_stmt.compile().params
         self.assertEqual(claim_params["status"], "processing")
         self.assertIn("locked_at", claim_params)
+        self.assertIn("locked_by", claim_params)
+        # fencing token 单调递增：coalesce(fence_token, 0) + 1
+        self.assertIn("coalesce", str(claim_stmt).lower())
+        self.assertIn("fence_token", str(claim_stmt))
 
     async def test_claim_lost_returns_true_without_processing(self) -> None:
         """候选任务被其他 worker 抢先 claim：UPDATE 条件不满足返回空，不处理但继续抢下一条。"""
@@ -87,7 +98,7 @@ class OcrAtomicClaimTests(unittest.IsolatedAsyncioTestCase):
     async def test_claim_condition_covers_pending_and_stale_processing(self) -> None:
         """claim 条件同时覆盖未锁定 pending 与锁超时的 processing 回收。"""
         service = OcrService()
-        session = _ClaimSession(["OCR-1", "OCR-1"])
+        session = _ClaimSession(["OCR-1", ("OCR-1", 1)])
 
         with self._patch_session(session), patch.object(service, "_process_task", new=AsyncMock()):
             await service._process_one_pending_task()
