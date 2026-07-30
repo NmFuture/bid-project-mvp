@@ -25,6 +25,7 @@ import {
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
   technicalGenerationPresentation,
+  technicalGapParentCoverageState,
   technicalGapTagOf,
   technicalMatchScore,
   uniqueStrings,
@@ -150,6 +151,33 @@ function TechnicalGapReadyControl({ item, items, busy, onConfirmReady }) {
   )
 }
 
+// 「父章节覆盖」控件（产品需求 2026-07-27）：放在「确认」左边，只对有下级目录的节点渲染。
+// 作用是把本节点选定的素材铺给它下面的所有小节——评审时人一眼能看出「这一章就是这份
+// 素材写的」，不用逐个小节再选一遍。本节点自己没选素材时禁用（覆盖源不能是空的）。
+// 已设置后按钮切成撤销态，与「确认/已就绪」的交互一致。
+function TechnicalGapParentCoverageControl({ item, items, busy, onSetParentCoverage }) {
+  const state = technicalGapParentCoverageState(item, items)
+  if (!state.descendantCount) return null
+  const disabled = busy || (!state.applied && !state.canApply)
+  const title = state.applied
+    ? `已把 ${state.coveredCount} 个下级目录设为父章节覆盖，点击撤销`
+    : state.hasMaterial
+      ? `把下面 ${state.descendantCount} 个目录项设为由本章素材覆盖`
+      : '本章还没有选用素材，选好素材后才能设置父章节覆盖'
+  return (
+    <Button
+      type="button"
+      onClick={() => onSetParentCoverage(item, !state.applied)}
+      disabled={disabled}
+      title={title}
+      size="sm"
+      variant="secondary"
+    >
+      {state.applied ? `已覆盖下级 ${state.coveredCount}` : '父章节覆盖'}
+    </Button>
+  )
+}
+
 // 素材卡（产品裁决 2026-07-21 交互重构）：候选池/搜索结果里的素材一律只有 预览 + 选择；
 // 点「选择」进入上方已选区后，待填写素材（命名纪律「待填写-」前缀或填写任务空白模板）
 // 才出现 AI填写，不用填写的已选素材只有 预览——AI填写 按钮仅在传入 onAiFill 时渲染。
@@ -260,12 +288,45 @@ function MaterialCandidateCard({
 }
 
 const factStatusLabels = {
+  // 表级状态
   empty: '待生成',
   draft: '待确认',
   confirmed: '已确认',
+  // 字段级七态（事实表 v2）
+  unextracted: '未提取',
+  extracted: '已自动提取',
+  pending_confirmation: '待人工确认',
+  missing_source: '缺少来源',
+  conflict: '存在冲突',
+  not_applicable: '不适用',
+  // v1 遗留（旧数据兼容展示）
   candidate: '候选',
   missing: '待补充',
-  conflict: '冲突',
+}
+
+const factFieldStatusOptions = [
+  'unextracted',
+  'extracted',
+  'pending_confirmation',
+  'confirmed',
+  'missing_source',
+  'conflict',
+  'not_applicable',
+]
+
+const factSourceKindLabels = {
+  tender: '招标文件',
+  material: '项目材料',
+  cert: '认证证书',
+  platform: '平台输入',
+  derived: '自动生成',
+  template: '模板',
+}
+
+const formatConfirmedAt = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
 }
 
 const FactMaintenanceModal = ({
@@ -273,11 +334,16 @@ const FactMaintenanceModal = ({
   factTable,
   fields,
   busy,
+  fieldBusy,
+  specsImported,
+  specsFileName,
   onClose,
   onBuild,
   onConfirm,
+  onConfirmField,
   onFieldChange,
   onAddField,
+  onUploadSpecs,
 }) => {
   if (!open) return null
   const summary = factTable?.summary || {}
@@ -294,7 +360,8 @@ const FactMaintenanceModal = ({
               </span>
             </div>
             <p className="mt-1 text-xs text-on-surface-variant">
-              字段：{summary.totalCount || fields.length || 0} · 已确认：{summary.confirmedCount || 0} · 待补充：{summary.missingCount || 0} · 冲突：{summary.conflictCount || 0}
+              字段：{summary.totalCount || fields.length || 0} · 已确认：{summary.confirmedCount || 0} · 待人工确认：{summary.pendingConfirmationCount || 0} · 未提取：{summary.unextractedCount || 0} · 缺少来源：{summary.missingSourceCount ?? summary.missingCount ?? 0} · 冲突：{summary.conflictCount || 0}
+              {summary.specTotal ? ` · 清单覆盖：${summary.specMatched || 0}/${summary.specTotal}` : ''}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -344,7 +411,7 @@ const FactMaintenanceModal = ({
                   <tr>
                     <th className="w-36 px-3 py-2 font-semibold">字段</th>
                     <th className="w-64 px-3 py-2 font-semibold">确认值</th>
-                    <th className="w-24 px-3 py-2 font-semibold">状态</th>
+                    <th className="w-32 px-3 py-2 font-semibold">状态</th>
                     <th className="w-28 px-3 py-2 font-semibold">置信度</th>
                     <th className="px-3 py-2 font-semibold">来源素材/依据</th>
                   </tr>
@@ -352,12 +419,13 @@ const FactMaintenanceModal = ({
                 <tbody className="divide-y divide-surface-container-high">
                   {fields.map((field, index) => {
                     const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+                    const isEmptyStatus = ['missing', 'missing_source', 'unextracted'].includes(field.status)
                     const statusTone = field.status === 'confirmed'
                       ? 'bg-secondary-container text-on-secondary-container'
-                      : field.status === 'missing'
-                        ? 'bg-tertiary-fixed text-on-tertiary-fixed'
-                        : field.status === 'conflict'
-                          ? 'bg-error/10 text-error'
+                      : field.status === 'conflict'
+                        ? 'bg-error/10 text-error'
+                        : field.status === 'pending_confirmation' || field.status === 'missing' || field.status === 'missing_source'
+                          ? 'bg-tertiary-fixed text-on-tertiary-fixed'
                           : 'bg-surface-container-high text-on-surface-variant'
                     const refs = asObjectArray(field.sourceRefs).slice(0, 2)
                     return (
@@ -371,25 +439,68 @@ const FactMaintenanceModal = ({
                               className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
                             />
                           ) : (
-                            <div className="font-semibold text-on-surface">{field.label}</div>
+                            <div className="font-semibold text-on-surface">
+                              {field.label}
+                              {field.needsConfirmation ? (
+                                <span className="ml-1.5 rounded bg-tertiary-fixed px-1 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径需人工确认'}>待确认口径</span>
+                              ) : null}
+                            </div>
                           )}
                           <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
+                          {field.reviewLabel && field.reviewLabel !== field.label ? (
+                            <div className="mt-0.5 text-[11px] text-outline" title={field.reviewLabel}>复核：{field.reviewLabel}</div>
+                          ) : null}
+                          {field.sourceKind ? (
+                            <span
+                              className="mt-0.5 inline-block rounded bg-surface-container-high px-1 py-0.5 text-[10px] font-semibold text-on-surface-variant"
+                              title={field.sourceHint || ''}
+                            >
+                              {factSourceKindLabels[field.sourceKind] || field.sourceKind}
+                            </span>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2">
                           <input
                             value={field.value || ''}
                             onChange={(event) => onFieldChange(index, 'value', event.target.value)}
                             className={`h-9 w-full rounded-md border px-2 text-sm text-on-surface ${
-                              field.status === 'missing'
+                              isEmptyStatus
                                 ? 'border-tertiary bg-tertiary-fixed/40'
                                 : 'border-surface-container-high bg-surface'
                             }`}
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-md px-2 py-1 text-[11px] font-semibold ${statusTone}`}>
-                            {factStatusLabels[field.status] || field.status || '-'}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            <select
+                              value={field.status || 'unextracted'}
+                              onChange={(event) => onFieldChange(index, 'status', event.target.value)}
+                              className={`h-7 min-w-0 flex-1 rounded-md border-0 px-1 text-[11px] font-semibold ${statusTone}`}
+                            >
+                              {factFieldStatusOptions.map((option) => (
+                                <option key={option} value={option}>{factStatusLabels[option] || option}</option>
+                              ))}
+                              {field.status && !factFieldStatusOptions.includes(field.status) ? (
+                                <option value={field.status}>{factStatusLabels[field.status] || field.status}</option>
+                              ) : null}
+                            </select>
+                            {field.id ? (
+                              <button
+                                type="button"
+                                onClick={() => onConfirmField(field)}
+                                disabled={busy || fieldBusy}
+                                title="确认并保存该字段"
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">check</span>
+                              </button>
+                            ) : null}
+                          </div>
+                          {field.status === 'confirmed' && (field.confirmedBy || formatConfirmedAt(field.confirmedAt)) ? (
+                            <div className="mt-1 text-[11px] text-outline">
+                              {[field.confirmedBy, formatConfirmedAt(field.confirmedAt)].filter(Boolean).join(' · ')}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2 text-xs text-on-surface-variant">
                           {field.confidence ? `${Math.round(Number(field.confidence) * 100)}%` : '-'}
@@ -410,17 +521,38 @@ const FactMaintenanceModal = ({
           ) : (
             <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
               <div>
-                <span className="material-symbols-outlined text-4xl text-primary">fact_check</span>
-                <p className="mt-3 text-sm text-on-surface-variant">还没有项目事实表，先从项目基础信息、目录缺口、素材和解析字段生成候选事实。</p>
-                <button
-                  type="button"
-                  onClick={onAddField}
-                  disabled={busy}
-                  className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-                >
-                  <span className="material-symbols-outlined text-[16px]">add</span>
-                  新增字段
-                </button>
+                <span className="material-symbols-outlined text-4xl text-primary">upload_file</span>
+                {specsImported ? (
+                  <>
+                    <p className="mt-3 text-sm text-on-surface-variant">
+                      实时表「{specsFileName || '已上传'}」尚未生成事实表，点击下方按钮按清单提取字段。
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onBuild}
+                      disabled={busy}
+                      className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">sync</span>
+                      生成事实表
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-3 text-sm text-on-surface-variant">
+                      还没有项目事实表。请先上传本项目的实时表 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onUploadSpecs}
+                      disabled={busy}
+                      className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">upload_file</span>
+                      上传实时表
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -708,8 +840,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
-  // 填表规则：上传 Excel 用于匹配 AI 填写规则；解析与匹配待后端接入，前端先记录文件。
-  const [fillRuleFile, setFillRuleFile] = useState(null)
+  // 实时表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
+  // 未上传的项目不出字段，仅引导上传。
+  const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
   const fillRuleInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
@@ -729,6 +862,10 @@ export default function TechnicalGapRecognition({ showToast }) {
       const nextFacts = factsPayload?.schemaVersion ? factsPayload : payload?.projectFactTable
       setFactTable(nextFacts || null)
       setFactFields(asObjectArray(nextFacts?.fields))
+      setFactSpecsMeta({
+        imported: Boolean(factsPayload?.specsImported),
+        fileName: String(factsPayload?.specsFileName || ''),
+      })
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
       if (!silent) setError(e?.message || '缺口识别与处理加载失败')
@@ -1075,6 +1212,12 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   const ensureFactTableReady = async () => {
     if (factTable?.status === 'confirmed') return true
+    // 未上传实时表的项目不出字段：引导上传，不再静默自动生成事实表
+    if (!factSpecsMeta.imported && !factFields.length) {
+      showToast?.('请先上传本项目的实时表 Excel，系统才能提取要填写的字段', 'error')
+      fillRuleInputRef.current?.click()
+      return false
+    }
     if (busyAction) return false
 
     setBusyAction('facts-auto')
@@ -1097,17 +1240,19 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
 
   const handleFactFieldChange = (index, key, value) => {
-    setFactFields((current) => current.map((field, idx) => (
-      idx === index
-        ? {
-            ...field,
-            [key]: value,
-            status: String(key === 'value' ? value : field.value || '').trim()
-              ? (field.status === 'confirmed' ? 'confirmed' : 'candidate')
-              : 'missing',
-          }
-        : field
-    )))
+    setFactFields((current) => current.map((field, idx) => {
+      if (idx !== index) return field
+      if (key === 'status') {
+        return { ...field, status: value }
+      }
+      return {
+        ...field,
+        [key]: value,
+        status: String(key === 'value' ? value : field.value || '').trim()
+          ? (field.status === 'confirmed' ? 'confirmed' : 'extracted')
+          : 'unextracted',
+      }
+    }))
   }
 
   const handleAddFactField = () => {
@@ -1122,7 +1267,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         value: '',
         unit: '',
         required: false,
-        status: 'missing',
+        status: 'unextracted',
         confidence: 1,
         sourcePriority: 360,
         sourceRefs: [{ type: 'manualFact', title: '人工新增', field: '' }],
@@ -1155,6 +1300,46 @@ export default function TechnicalGapRecognition({ showToast }) {
       return payload
     } catch (e) {
       showToast?.(e?.message || '项目事实表保存失败', 'error')
+      return null
+    } finally {
+      setBusyAction('')
+    }
+  }
+
+  const handleConfirmFactField = async (field) => {
+    if (busyAction) return null
+    const fieldId = String(field?.id || '').trim()
+    if (!fieldId) {
+      showToast?.('该字段缺少稳定标识，请先整表保存', 'error')
+      return null
+    }
+    setBusyAction('fact-field-confirm')
+    try {
+      const payload = await technicalGapsAPI.saveFactField(id, fieldId, {
+        value: field.value || '',
+        status: field.status || 'unextracted',
+        confirm: true,
+        operator: '当前用户',
+      })
+      const savedField = payload?.field
+      if (savedField) {
+        // 仅替换当前行，保留其他行未保存的编辑
+        setFactFields((current) => current.map((item) => (String(item?.id || '') === fieldId ? savedField : item)))
+      }
+      const mergeTableMeta = (current) => {
+        const base = current && typeof current === 'object' ? current : {}
+        return {
+          ...base,
+          summary: payload?.summary || base.summary,
+          status: payload?.status || base.status,
+        }
+      }
+      setFactTable((current) => mergeTableMeta(current))
+      setData((current) => (current ? { ...current, projectFactTable: mergeTableMeta(current.projectFactTable) } : current))
+      showToast?.(`字段「${savedField?.label || field.label || fieldId}」已确认`)
+      return payload
+    } catch (e) {
+      showToast?.(e?.message || '字段确认失败', 'error')
       return null
     } finally {
       setBusyAction('')
@@ -1260,6 +1445,14 @@ export default function TechnicalGapRecognition({ showToast }) {
     `confirm-ready:${item.id}`,
     () => technicalGapsAPI.confirmReady(id, item.id, { confirmed, operator: '当前用户' }),
     (result) => result?.message || (confirmed ? '本章已确认就绪' : '已撤销就绪确认'),
+  )
+
+  // 人工设「父章节覆盖」：把本节点的素材铺给全部下级目录项，可撤销。
+  // 已自行选过素材的下级由后端跳过，跳过数量在返回消息里说明。
+  const handleSetParentCoverage = (item, covered) => runAction(
+    `parent-coverage:${item.id}`,
+    () => technicalGapsAPI.setParentCoverage(id, item.id, { covered, operator: '当前用户' }),
+    (result) => result?.message || (covered ? '已设为父章节覆盖' : '已撤销父章节覆盖'),
   )
 
   const handleSelectMaterial = async (material) => {
@@ -1438,16 +1631,33 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
-  const handleFillRuleFile = (event) => {
+  const handleFactSpecsUpload = async (event) => {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
-    if (!/\.(xlsx|xls)$/i.test(file.name)) {
-      showToast?.('填表规则仅支持 Excel 文件（.xlsx / .xls）', 'error')
+    if (!/\.xlsx$/i.test(file.name)) {
+      showToast?.('实时表仅支持 .xlsx 文件', 'error')
       return
     }
-    setFillRuleFile({ name: file.name, size: file.size })
-    showToast?.(`填表规则已接收：${file.name}（解析与 AI 填写规则匹配待后端接入）`)
+    if (busyAction) return
+    setBusyAction('fact-specs-upload')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const payload = await technicalGapsAPI.uploadFactSpecs(id, formData)
+      setFactSpecsMeta({ imported: true, fileName: payload?.fileName || file.name })
+      // 上传成功后立即按新清单重建事实表字段
+      const table = await technicalGapsAPI.buildFacts(id)
+      setFactTable(table)
+      setFactFields(asObjectArray(table?.fields))
+      setData((current) => (current ? { ...current, projectFactTable: table } : current))
+      showToast?.(`实时表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
+      setFactModalOpen(true)
+    } catch (e) {
+      showToast?.(e?.message || '实时表上传失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
   }
 
   if (loading) return <PageLoading title="正在加载素材匹配..." />
@@ -1463,19 +1673,19 @@ export default function TechnicalGapRecognition({ showToast }) {
             <input
               ref={fillRuleInputRef}
               type="file"
-              accept=".xlsx,.xls"
+              accept=".xlsx"
               className="hidden"
-              onChange={handleFillRuleFile}
+              onChange={handleFactSpecsUpload}
             />
             <Button
               type="button"
               onClick={() => fillRuleInputRef.current?.click()}
               disabled={Boolean(busyAction) || data?.status !== 'completed'}
-              title={fillRuleFile ? `已上传：${fillRuleFile.name}` : '上传 Excel 填表规则，用于匹配 AI 填写规则'}
+              title={factSpecsMeta.imported ? `已上传：${factSpecsMeta.fileName}（重新上传将覆盖字段清单并重建事实表）` : '上传本项目实时表 Excel，提取要填写的字段'}
               size="stage"
-              variant={fillRuleFile ? 'secondary' : 'quiet'}
+              variant={factSpecsMeta.imported ? 'secondary' : 'quiet'}
             >
-              {fillRuleFile ? '填表规则（已上传）' : '填表规则'}
+              {busyAction === 'fact-specs-upload' ? '上传中...' : factSpecsMeta.imported ? '实时表（已上传）' : '上传实时表'}
             </Button>
             <Button
               type="button"
@@ -1623,12 +1833,20 @@ export default function TechnicalGapRecognition({ showToast }) {
                       <div className="text-xs font-medium text-outline">{selected.number || selected.section || '-'}</div>
                       <div className="mt-1 flex items-center justify-between gap-3">
                         <h3 className="min-w-0 truncate text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
-                        <TechnicalGapReadyControl
-                          item={selected}
-                          items={items}
-                          busy={Boolean(busyAction)}
-                          onConfirmReady={handleConfirmGapReady}
-                        />
+                        <div className="flex shrink-0 items-center gap-2">
+                          <TechnicalGapParentCoverageControl
+                            item={selected}
+                            items={items}
+                            busy={Boolean(busyAction)}
+                            onSetParentCoverage={handleSetParentCoverage}
+                          />
+                          <TechnicalGapReadyControl
+                            item={selected}
+                            items={items}
+                            busy={Boolean(busyAction)}
+                            onConfirmReady={handleConfirmGapReady}
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1884,12 +2102,17 @@ export default function TechnicalGapRecognition({ showToast }) {
         open={factModalOpen}
         factTable={factTable}
         fields={factFields}
-        busy={['facts-build', 'facts-load', 'facts-confirm'].includes(busyAction)}
+        busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload'].includes(busyAction)}
+        fieldBusy={busyAction === 'fact-field-confirm'}
+        specsImported={factSpecsMeta.imported}
+        specsFileName={factSpecsMeta.fileName}
         onClose={() => setFactModalOpen(false)}
         onBuild={() => loadFactTable({ build: true })}
         onConfirm={handleConfirmFactTable}
+        onConfirmField={handleConfirmFactField}
         onFieldChange={handleFactFieldChange}
         onAddField={handleAddFactField}
+        onUploadSpecs={() => fillRuleInputRef.current?.click()}
       />
       <TechnicalGenerationProgressModal
         open={generationModalOpen || generationRunning}

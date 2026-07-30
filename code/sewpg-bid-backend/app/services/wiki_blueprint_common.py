@@ -125,8 +125,8 @@ def run_local_wiki_skill(manifest_path: Path, *, skill_name: str, runner: Path) 
 # 避免技术标侧反向依赖商务标模块。
 # ---------------------------------------------------------------------------
 
-MAX_CARD_EXCERPT_PARAGRAPHS = 10
-MAX_CARD_HEADINGS = 80
+# 标题/段落/表格默认全量抽取（2026-07 全量读取改造）：数量与单行长度均不设上限，
+# 保留原始完整文本；脏数据防护靠目录行排除、伪标题判据等结构规则，不靠截断。
 MAX_SYNC_DOCX_BYTES = 30 * 1024 * 1024
 HEADING_STYLE_RE = re.compile(r"(?:Heading|标题)\s*([1-9])|Heading([1-9])", re.IGNORECASE)
 NUMBERED_HEADING_RE = re.compile(
@@ -205,8 +205,12 @@ def heading_level_from_style(style_id: str, text: str) -> int | None:
 def extract_docx_profile(
     data: bytes,
     *,
-    heading_limit: int | None = MAX_CARD_HEADINGS,
+    heading_limit: int | None = None,
 ) -> dict[str, Any]:
+    """抽取 docx 结构画像；默认全量（标题/段落/表格预览不设上限）。
+
+    heading_limit 仅供调用方显式限制标题数量；None 表示全量。
+    """
     try:
         with zipfile.ZipFile(BytesIO(data)) as archive:
             document_xml = archive.read("word/document.xml")
@@ -236,10 +240,10 @@ def extract_docx_profile(
                 table_depth = max(0, table_depth - 1)
                 table_count += 1
                 if table_depth == 0:
-                    if len(table_previews) < 6:
-                        text = xml_text(element)
-                        if text:
-                            table_previews.append(text[:320])
+                    # 表格预览全量收集：张数与单表文本长度均不截断。
+                    text = xml_text(element)
+                    if text:
+                        table_previews.append(text)
                     element.clear()
                 continue
             if event != "end":
@@ -257,30 +261,25 @@ def extract_docx_profile(
                     # 不在此 clear，外层 tbl 结束时还要收集整表预览文本。
                     level = explicit_level or (None if in_table else heading_level_from_style(style_id, text))
                     if level is not None and (heading_limit is None or len(headings) < heading_limit):
-                        heading = {"level": level, "title": text[:180]}
+                        heading = {"level": level, "title": text}
                         headings.append(heading)
                         if (
                             not in_table
                             and explicit_level is not None
                             and (heading_limit is None or len(body_headings) < heading_limit)
                         ):
-                            body_headings.append({"level": explicit_level, "title": text[:180]})
+                            body_headings.append({"level": explicit_level, "title": text})
                     elif (
                         not in_table
-                        and len(paragraphs) < MAX_CARD_EXCERPT_PARAGRAPHS
                         and len(text) >= 4
                         and text not in seen_paragraphs
                     ):
                         seen_paragraphs.add(text)
-                        paragraphs.append(text[:260])
+                        paragraphs.append(text)
                 if not in_table:
                     element.clear()
-            if (
-                heading_limit is not None
-                and len(headings) >= heading_limit
-                and len(paragraphs) >= MAX_CARD_EXCERPT_PARAGRAPHS
-                and len(table_previews) >= 6
-            ):
+            # 仅在调用方显式给出 heading_limit 时才提前结束；默认全量扫描整个文档。
+            if heading_limit is not None and len(headings) >= heading_limit:
                 break
     except Exception as exc:
         return {
@@ -295,7 +294,7 @@ def extract_docx_profile(
     return {
         "headings": headings if heading_limit is None else headings[:heading_limit],
         "bodyHeadings": body_headings if heading_limit is None else body_headings[:heading_limit],
-        "paragraphs": paragraphs[:MAX_CARD_EXCERPT_PARAGRAPHS],
+        "paragraphs": paragraphs,
         "tables": table_previews,
         "tableCount": table_count,
         "parseError": "",
@@ -309,15 +308,16 @@ def material_level_range(headings: list[dict[str, Any]]) -> str:
     return f"L{levels[0]}-L{levels[-1]}"
 
 
-def format_heading_tree(headings: list[dict[str, Any]], limit: int = 60) -> str:
+def format_heading_tree(headings: list[dict[str, Any]], limit: int | None = None) -> str:
     if not headings:
         return "未检测到 Word Heading 样式；该素材会按整篇材料挂载，后续应补充 Heading 样式审计。"
     min_level = min(int(item.get("level") or 1) for item in headings)
     lines: list[str] = []
-    for item in headings[:limit]:
+    # 默认全量渲染；limit 仅供调用方显式限制。
+    for item in headings if limit is None else headings[:limit]:
         level = int(item.get("level") or 1)
         indent = "  " * max(0, level - min_level)
         lines.append(f"{indent}- L{level} {item.get('title')}")
-    if len(headings) > limit:
+    if limit is not None and len(headings) > limit:
         lines.append(f"- ... 另有 {len(headings) - limit} 条 Heading")
     return "\n".join(lines)

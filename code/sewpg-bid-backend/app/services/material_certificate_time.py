@@ -6,6 +6,7 @@ import logging
 import re
 import tempfile
 from calendar import monthrange
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -592,7 +593,7 @@ def apply_certificate_validity_rules(
     - 报告明确写了有效期至 → 以报告为准（explicit），规则不覆盖；
     - 规则为固定年限且已识别发证日期 → 按 发证+N年-1天 推算（rule_derived）；
     - 规则为长期有效 → 标注 longTerm 并给出条件（设计不变/控制策略不变）；
-    - 规则为跟随整机型式证 → 不推算日期，标注 follow_turbine；
+    - 规则为跟随整机证 → 不推算日期，标注 follow_turbine（有效期在台账列表按机型匹配整机型式认证解析）；
     - 报告标注与规则矛盾（如 B 级 1 年却写长期有效）→ 加人工复核 warning。
     """
     meta = dict(extracted)
@@ -618,7 +619,7 @@ def apply_certificate_validity_rules(
     if rule["mode"] == "follow_turbine":
         if not expiry and not long_term:
             meta["validityBasis"] = "follow_turbine"
-            meta["validityNote"] = "跟随对应整机型式认证有效期"
+            meta["validityNote"] = "跟随整机证有效期(型式认证)"
             if str(meta.get("status") or "") in {"", "not_found"}:
                 meta["status"] = "extracted"
             meta["confidence"] = max(int(meta.get("confidence") or 0), 40)
@@ -670,6 +671,84 @@ def apply_certificate_validity_rules(
     return meta
 
 
+# ---------- 跟随整机证有效期解析 ----------
+
+# 机型编码（如 EW6.7-202、EW10.0-220）；布局后缀（上置/下置等）不参与匹配
+TURBINE_MODEL_RE = re.compile(r"EW\s*\d+(?:\.\d+)?-\d+", re.IGNORECASE)
+
+
+def _turbine_model_key(folder_path: Any, name: Any) -> tuple[str, str] | None:
+    """提取（机型, 项目前缀）：项目前缀为目录路径中机型所在段之前的部分。
+
+    目录里没有机型时退化为按文件名机型匹配，项目前缀为空（不参与跨目录约束）。
+    """
+    parts = [part for part in _normalize_path(folder_path).split("/") if part]
+    for index, part in enumerate(parts):
+        match = TURBINE_MODEL_RE.search(part)
+        if match:
+            return (match.group(0).upper().replace(" ", ""), "/".join(parts[:index]))
+    match = TURBINE_MODEL_RE.search(str(name or ""))
+    if match:
+        return (match.group(0).upper().replace(" ", ""), "")
+    return None
+
+
+def resolve_follow_turbine_expiries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 follow_turbine 报告按「机型 + 项目目录」匹配到整机型式认证证书的有效期。
+
+    规则表（《证书报告有效期确认.xlsx》Sheet2）：LVRT/HVRT/电能质量/电网适应性/
+    故障电压连续穿越报告「跟随整机证有效期(型式认证)」。同键多本证书取最晚有效期；
+    匹配不到保持原标注，不猜日期。带项目前缀的行只与同前缀证书匹配，避免跨项目串证。
+    """
+    cert_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    cert_by_model: dict[str, dict[str, Any]] = {}
+
+    def _pick_latest(current: dict[str, Any] | None, candidate: dict[str, Any]) -> dict[str, Any]:
+        if current is None or str(candidate.get("expiryDate") or "") > str(current.get("expiryDate") or ""):
+            return candidate
+        return current
+
+    for row in rows:
+        if str(row.get("certCategory") or "") != "整机型式认证" or not row.get("expiryDate"):
+            continue
+        key = _turbine_model_key(row.get("folderPath"), row.get("name"))
+        if not key:
+            continue
+        model, project = key
+        if project:
+            cert_by_key[(model, project)] = _pick_latest(cert_by_key.get((model, project)), row)
+        else:
+            cert_by_model[model] = _pick_latest(cert_by_model.get(model), row)
+
+    resolved: list[dict[str, Any]] = []
+    for row in rows:
+        if (
+            str(row.get("validityBasis") or "") != "follow_turbine"
+            or row.get("expiryDate")
+            or row.get("longTerm")
+        ):
+            resolved.append(row)
+            continue
+        key = _turbine_model_key(row.get("folderPath"), row.get("name"))
+        cert = None
+        if key:
+            model, project = key
+            cert = cert_by_key.get((model, project)) if project else cert_by_model.get(model)
+        if not cert:
+            resolved.append(row)
+            continue
+        row = dict(row)
+        row["expiryDate"] = str(cert.get("expiryDate") or "")
+        row["followTurbineCertFileId"] = str(cert.get("fileId") or "")
+        row["followTurbineCertName"] = str(cert.get("name") or "")
+        row["validityNote"] = (
+            f"跟随整机证有效期(型式认证)：匹配{cert.get('name') or '整机型式认证'}，"
+            f"有效期至{row['expiryDate']}"
+        )
+        resolved.append(row)
+    return resolved
+
+
 async def _load_raw_files(*, bid_type: str, folder_path: str = "", file_ids: list[str] | None = None) -> list[RawFile]:
     async with async_session() as session:
         await ensure_material_runtime_tables(session)
@@ -708,6 +787,8 @@ def _certificate_payload_from_item(item: RawFile) -> dict[str, Any]:
         "certGrade": str(meta.get("certGrade") or ""),
         "validityBasis": str(meta.get("validityBasis") or ""),
         "validityNote": str(meta.get("validityNote") or ""),
+        "followTurbineCertFileId": str(meta.get("followTurbineCertFileId") or ""),
+        "followTurbineCertName": str(meta.get("followTurbineCertName") or ""),
         "warnings": [str(item) for item in meta.get("warnings") or [] if item] if isinstance(meta.get("warnings"), list) else [],
         "updatedAt": str(meta.get("updatedAt") or ""),
         "errorMessage": str(meta.get("errorMessage") or ""),
@@ -723,6 +804,7 @@ async def list_certificate_time_registry(*, bid_type: str) -> dict[str, Any]:
         if row["issueDate"] or row["expiryDate"] or row["status"] in {"extracted", "not_found", "failed", "unsupported"}
     ]
     rows = dedupe_certificate_rows(rows)
+    rows = resolve_follow_turbine_expiries(rows)
     rows.sort(key=lambda item: (item.get("expiryDate") or "9999-99-99", item.get("folderPath") or "", item.get("name") or ""))
     return {
         "items": rows,
@@ -860,7 +942,13 @@ async def delete_certificate_time_records(*, bid_type: str, file_ids: Any) -> di
     }
 
 
-async def run_certificate_time_incremental(*, bid_type: str, limit: int = 50, include_failed: bool = True) -> dict[str, Any]:
+async def run_certificate_time_incremental(
+    *,
+    bid_type: str,
+    limit: int = 0,
+    include_failed: bool = True,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     scope_paths = _configured_scope_paths(bid_type=bid_type)
     if not scope_paths:
         raise PeripheralError(400, "请先确认需要识别的证书目录。", "CERTIFICATE_SCOPE_REQUIRED")
@@ -902,6 +990,7 @@ async def run_certificate_time_incremental(*, bid_type: str, limit: int = 50, in
         bid_type=bid_type,
         file_ids=selected_ids,
         limit=limit,
+        on_progress=on_progress,
     )
 
 
@@ -1114,11 +1203,13 @@ async def run_certificate_time_batch(
     bid_type: str,
     folder_path: str = "",
     file_ids: list[str] | None = None,
-    limit: int = 50,
+    limit: int = 0,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     items = await _load_raw_files(bid_type=bid_type, folder_path=folder_path, file_ids=file_ids)
-    limit = max(1, min(int(limit or 50), 200))
-    selected = items[:limit]
+    # limit <= 0 表示处理全部待识别文件；limit > 0 时按顺序截取（如单文件重识别传 1）
+    limit = int(limit or 0)
+    selected = items if limit <= 0 else items[:limit]
     rows: list[dict[str, Any]] = []
 
     for item in selected:
@@ -1191,6 +1282,13 @@ async def run_certificate_time_batch(
             "folderPath": item.folder.path if item.folder else "",
             **meta,
         })
+        if on_progress is not None:
+            on_progress({
+                "processed": len(rows),
+                "total": len(selected),
+                "failed": sum(1 for row in rows if row.get("status") in {"failed", "unsupported"}),
+                "currentFile": item.name,
+            })
 
     failed = [row for row in rows if row.get("status") in {"failed", "unsupported"}]
     extracted_count = sum(1 for row in rows if row.get("status") == "extracted")

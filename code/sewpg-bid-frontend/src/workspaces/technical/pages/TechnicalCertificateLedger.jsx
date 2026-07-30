@@ -120,6 +120,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   const [suggestionLoading, setSuggestionLoading] = useState(false)
   const [scopeSaving, setScopeSaving] = useState(false)
   const [incrementalRunning, setIncrementalRunning] = useState(false)
+  const [incrementalProgress, setIncrementalProgress] = useState(null)
   const [recognizingIds, setRecognizingIds] = useState(new Set())
   const [runResult, setRunResult] = useState(null)
   const [previewItem, setPreviewItem] = useState(null)
@@ -140,8 +141,10 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   const [expandedTreePaths, setExpandedTreePaths] = useState(() => new Set())
   const [scopeDropActive, setScopeDropActive] = useState(false)
 
-  const loadData = useCallback(async () => {
-    setLoading(true)
+  const loadData = useCallback(async (options = {}) => {
+    // quiet 模式供后台轮询使用，避免整页 loading 闪烁
+    const quiet = Boolean(options?.quiet)
+    if (!quiet) setLoading(true)
     setError('')
     try {
       const payload = await technicalMaterialsAPI.certificates.ledger()
@@ -153,7 +156,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
       setError(message)
       showToast(message, 'error')
     } finally {
-      setLoading(false)
+      if (!quiet) setLoading(false)
     }
   }, [showToast])
 
@@ -163,6 +166,60 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
     }, 0)
     return () => clearTimeout(timer)
   }, [loadData])
+
+  // 挂载时探测后台识别任务：任务在跑则直接进入轮询态（离开页面再回来可接上）
+  useEffect(() => {
+    let cancelled = false
+    technicalMaterialsAPI.certificates.incrementalStatus()
+      .then((status) => {
+        if (cancelled || status?.status !== 'running') return
+        setIncrementalProgress(status?.progress || null)
+        setIncrementalRunning(true)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  // 后台识别任务轮询：刷新台账计数，直到任务到达终态
+  useEffect(() => {
+    if (!incrementalRunning) return undefined
+    let stopped = false
+    const finish = () => {
+      setIncrementalRunning(false)
+      setIncrementalProgress(null)
+    }
+    const tick = async () => {
+      try {
+        const status = await technicalMaterialsAPI.certificates.incrementalStatus()
+        if (stopped) return
+        if (status?.status === 'running') {
+          setIncrementalProgress(status?.progress || null)
+          loadData({ quiet: true })
+          return
+        }
+        finish()
+        if (status?.status === 'succeeded') {
+          const result = status?.result || {}
+          setRunResult(result)
+          showToast(result?.message || '增量识别完成', (result?.failed || []).length ? 'warning' : 'success')
+        } else if (status?.status === 'failed') {
+          showToast(status?.error || '增量识别失败', 'error')
+        } else {
+          // idle：后端重启丢了任务状态，已识别成果已逐文件落库，提示重触续跑
+          showToast('识别任务已随服务重启中断，已识别的成果已保留，可重新触发继续。', 'warning')
+        }
+        loadData({ quiet: true })
+      } catch {
+        // 单次轮询失败不影响任务本身，下一轮重试
+      }
+    }
+    const timer = setInterval(tick, 8000)
+    tick()
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [incrementalRunning, loadData, showToast])
 
   const rows = useMemo(() => (Array.isArray(data?.items) ? data.items : []), [data])
   const confirmedScopePaths = useMemo(() => scopes.map((scope) => normalizeScopePath(scope.path)).filter(Boolean), [scopes])
@@ -594,18 +651,16 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
       showToast('请先添加并保存需要识别的目录。', 'error')
       return
     }
-    setIncrementalRunning(true)
     try {
       const saved = await technicalMaterialsAPI.certificates.saveScopes({ scopes })
       setScopes(saved?.config?.scopes || scopes)
-      const payload = await technicalMaterialsAPI.certificates.incremental({ limit: 200, includeFailed: true })
-      setRunResult(payload)
-      showToast(payload?.message || '增量识别完成', (payload?.failed || []).length ? 'warning' : 'success')
-      await loadData()
+      // 后台任务：立即返回，全量处理所有待识别文件，离开页面不中断
+      const status = await technicalMaterialsAPI.certificates.incremental({ includeFailed: true })
+      setIncrementalProgress(status?.progress || null)
+      setIncrementalRunning(true)
+      showToast('增量识别已在后台开始，将处理全部待识别文件；可离开本页，完成后自动更新。')
     } catch (e) {
-      showToast(safeMessage(e, '增量识别失败'), 'error')
-    } finally {
-      setIncrementalRunning(false)
+      showToast(safeMessage(e, '增量识别启动失败'), 'error')
     }
   }
 
@@ -747,7 +802,9 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                 disabled={incrementalRunning || scopeSaving}
                 className="h-9 rounded-lg bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-45"
               >
-                {incrementalRunning ? '识别中...' : '增量识别'}
+                {incrementalRunning
+                  ? `识别中${incrementalProgress?.total ? ` ${incrementalProgress?.processed || 0}/${incrementalProgress.total}` : ''}...`
+                  : '增量识别'}
               </button>
               <button
                 type="button"
@@ -918,7 +975,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                           title={item.validityNote || ''}
                         >
                           {item.expiryDate
-                            ? `${item.expiryDate}${item.validityBasis === 'rule_derived' ? '（推算）' : ''}`
+                            ? `${item.expiryDate}${item.validityBasis === 'rule_derived' ? '（推算）' : item.validityBasis === 'follow_turbine' ? '（跟随整机证）' : ''}`
                             : item.longTerm
                               ? item.validityNote || '长期有效'
                               : item.validityBasis === 'follow_turbine'

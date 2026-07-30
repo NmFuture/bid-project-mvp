@@ -3,11 +3,18 @@ from __future__ import annotations
 from typing import Any
 
 import base64
+import json
+import os
+import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 
+from app.core.config import settings as app_settings
 from app.services.auth_service import auth_service, current_user
 from app.services.system_settings import system_settings_service
+from app.services.technical_fact_field_specs import clear_specs_cache
+from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
 
 router = APIRouter()
 
@@ -147,3 +154,52 @@ async def settings_default_templates_delete(
 @router.get("/api/settings/health")
 async def settings_health(_: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
     return await system_settings_service.health()
+
+
+@router.post("/api/settings/technical-fact-specs")
+async def settings_technical_fact_specs_upload(
+    file: UploadFile = File(...),
+    _: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """上传技术标项目事实表填表规则清单（.xlsx），解析成功后覆盖运行时 spec。
+
+    契约：multipart 单文件字段 file；成功返回
+    {"specTotal", "fillableTotal", "needsConfirmation", "template", "override": true}；
+    非法文件返回 400，且不写 override。
+    """
+    filename = str(file.filename or "")
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="填表规则清单必须是 .xlsx 文件。")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传文件为空。")
+
+    tmp_upload: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
+            handle.write(content)
+            tmp_upload = Path(handle.name)
+        specs = import_specs(tmp_upload)
+    except FactSpecImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        if tmp_upload is not None:
+            tmp_upload.unlink(missing_ok=True)
+
+    # 先写临时文件再原子替换，避免半截 JSON 被运行时读到。
+    override_path = Path(app_settings.fact_specs_override_path)
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_override = override_path.with_name(override_path.name + ".tmp")
+    tmp_override.write_text(
+        json.dumps(specs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp_override, override_path)
+    clear_specs_cache()
+
+    return {
+        "specTotal": len(specs),
+        "fillableTotal": sum(1 for spec in specs if spec.get("valueRequired")),
+        "needsConfirmation": sum(1 for spec in specs if spec.get("needsConfirmation")),
+        "template": sum(1 for spec in specs if spec.get("sourceKind") == "template"),
+        "override": True,
+    }

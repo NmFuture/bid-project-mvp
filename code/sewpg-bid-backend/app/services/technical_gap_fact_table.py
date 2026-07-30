@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,11 +16,56 @@ from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.file_utils import run_awaitable_sync
 from app.services.identity import build_project_material_scope
 from app.services.project_fact_materials import prepare_project_fact_material_files
+from app.services.technical_fact_field_specs import (
+    SPEC_LABEL_ALIASES,
+    fillable_specs,
+    spec_category,
+)
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 
+logger = logging.getLogger(__name__)
 
-PROJECT_FACT_TABLE_SCHEMA_VERSION = "bid-project-fact-table-v1"
+
+PROJECT_FACT_TABLE_SCHEMA_VERSION = "bid-project-fact-table-v2"
+
+# 字段状态模型（七态，对应任务文档 §7）：
+# unextracted 未提取 → extracted 已自动提取 → pending_confirmation 待人工确认 → confirmed 已人工确认
+#   ├─ missing_source 缺少来源（登记了缺口但无值来源）
+#   ├─ conflict 存在冲突（多来源同优先级不同值，人工裁决后进 confirmed）
+#   └─ not_applicable 不适用（字段对本项目不适用，notes 注明原因）
+FACT_STATUS_UNEXTRACTED = "unextracted"
+FACT_STATUS_EXTRACTED = "extracted"
+FACT_STATUS_PENDING_CONFIRMATION = "pending_confirmation"
+FACT_STATUS_CONFIRMED = "confirmed"
+FACT_STATUS_MISSING_SOURCE = "missing_source"
+FACT_STATUS_CONFLICT = "conflict"
+FACT_STATUS_NOT_APPLICABLE = "not_applicable"
+
+FACT_FIELD_STATUSES = {
+    FACT_STATUS_UNEXTRACTED,
+    FACT_STATUS_EXTRACTED,
+    FACT_STATUS_PENDING_CONFIRMATION,
+    FACT_STATUS_CONFIRMED,
+    FACT_STATUS_MISSING_SOURCE,
+    FACT_STATUS_CONFLICT,
+    FACT_STATUS_NOT_APPLICABLE,
+}
+
+# v1 四态 → v2 七态迁移映射
+LEGACY_FACT_STATUS_MAP = {
+    "candidate": FACT_STATUS_EXTRACTED,
+    "missing": FACT_STATUS_MISSING_SOURCE,
+}
+
+
+def normalize_fact_status(status: Any, *, has_value: bool) -> str:
+    """归一字段状态：旧四态映射为七态，非法/空值按有无取值给默认态。"""
+    text = str(status or "").strip()
+    text = LEGACY_FACT_STATUS_MAP.get(text, text)
+    if text in FACT_FIELD_STATUSES:
+        return text
+    return FACT_STATUS_EXTRACTED if has_value else FACT_STATUS_MISSING_SOURCE
 
 FACT_TABLE_HEADER_WORDS = {
     "编号",
@@ -77,6 +123,25 @@ FACT_MATERIAL_SOURCE_PRIORITIES = {
 }
 
 
+def empty_fact_summary() -> dict[str, int]:
+    return {
+        "totalCount": 0,
+        "requiredCount": 0,
+        "confirmedCount": 0,
+        "extractedCount": 0,
+        "pendingConfirmationCount": 0,
+        "unextractedCount": 0,
+        "missingSourceCount": 0,
+        "conflictCount": 0,
+        "notApplicableCount": 0,
+        "specTotal": 0,
+        "specMatched": 0,
+        # v1 兼容别名：candidate=已自动提取，missing=缺少来源
+        "candidateCount": 0,
+        "missingCount": 0,
+    }
+
+
 def empty_project_fact_table(project_id: str) -> dict[str, Any]:
     return {
         "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
@@ -87,26 +152,33 @@ def empty_project_fact_table(project_id: str) -> dict[str, Any]:
         "confirmedAt": "",
         "confirmedBy": "",
         "fields": [],
-        "summary": {
-            "totalCount": 0,
-            "requiredCount": 0,
-            "confirmedCount": 0,
-            "candidateCount": 0,
-            "missingCount": 0,
-            "conflictCount": 0,
-        },
+        "summary": empty_fact_summary(),
     }
 
 
-def summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int]:
-    return {
-        "totalCount": len(fields),
-        "requiredCount": sum(1 for field in fields if field.get("required", True)),
-        "confirmedCount": sum(1 for field in fields if str(field.get("status") or "") == "confirmed"),
-        "candidateCount": sum(1 for field in fields if str(field.get("status") or "") == "candidate"),
-        "missingCount": sum(1 for field in fields if str(field.get("status") or "") == "missing"),
-        "conflictCount": sum(1 for field in fields if str(field.get("status") or "") == "conflict"),
-    }
+def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int | None = None) -> dict[str, int]:
+    def count(status: str) -> int:
+        return sum(1 for field in fields if str(field.get("status") or "") == status)
+
+    summary = empty_fact_summary()
+    summary.update(
+        {
+            "totalCount": len(fields),
+            "requiredCount": sum(1 for field in fields if field.get("required", True)),
+            "confirmedCount": count(FACT_STATUS_CONFIRMED),
+            "extractedCount": count(FACT_STATUS_EXTRACTED),
+            "pendingConfirmationCount": count(FACT_STATUS_PENDING_CONFIRMATION),
+            "unextractedCount": count(FACT_STATUS_UNEXTRACTED),
+            "missingSourceCount": count(FACT_STATUS_MISSING_SOURCE),
+            "conflictCount": count(FACT_STATUS_CONFLICT),
+            "notApplicableCount": count(FACT_STATUS_NOT_APPLICABLE),
+            "specTotal": len(fillable_specs()) if spec_total is None else spec_total,
+            "specMatched": sum(1 for field in fields if field.get("specSeq") and str(field.get("value") or "").strip()),
+        }
+    )
+    summary["candidateCount"] = summary["extractedCount"]
+    summary["missingCount"] = summary["missingSourceCount"]
+    return summary
 
 
 def canonical_fact_label(label: Any) -> str:
@@ -230,9 +302,16 @@ def normalize_project_fact_field(
     saved_at: str,
 ) -> dict[str, Any]:
     value = str(field.get("value") or "").strip()
-    status = str(field.get("status") or ("candidate" if value else "missing")).strip()
     if confirm:
-        status = "confirmed" if value else "missing"
+        # 整表确认时保留人工标记的"不适用"，其余有值→已人工确认、无值→缺少来源
+        incoming = normalize_fact_status(field.get("status"), has_value=bool(value))
+        status = (
+            incoming
+            if incoming == FACT_STATUS_NOT_APPLICABLE
+            else (FACT_STATUS_CONFIRMED if value else FACT_STATUS_MISSING_SOURCE)
+        )
+    else:
+        status = normalize_fact_status(field.get("status"), has_value=bool(value))
     source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
     source_priority = int(field.get("sourcePriority") or 0)
     if source_refs:
@@ -245,7 +324,7 @@ def normalize_project_fact_field(
         "value": value,
         "unit": str(field.get("unit") or ""),
         "required": bool(field.get("required", True)),
-        "status": status if status in {"candidate", "confirmed", "missing", "conflict"} else "candidate",
+        "status": status,
         "confidence": float(field.get("confidence") or 0),
         "sourcePriority": source_priority,
         "sourceRefs": source_refs,
@@ -254,7 +333,11 @@ def normalize_project_fact_field(
         "updatedAt": saved_at,
         "updatedBy": operator,
     }
-    if normalized["status"] == "confirmed":
+    # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
+        if field.get(meta_key) is not None:
+            normalized[meta_key] = copy.deepcopy(field.get(meta_key))
+    if normalized["status"] == FACT_STATUS_CONFIRMED:
         normalized["confirmedAt"] = saved_at
         normalized["confirmedBy"] = operator
     else:
@@ -274,6 +357,100 @@ def fact_table_value_map(fact_table: dict[str, Any]) -> dict[str, str]:
             values[label] = value
             values[fact_label_key(label)] = value
     return values
+
+
+def _spec_match_keys(spec: dict[str, Any]) -> list[str]:
+    """spec 的候选匹配键：label、reviewLabel、手工别名，统一走 canonical 归一。"""
+    keys: list[str] = []
+    for label in [spec.get("label"), spec.get("reviewLabel"), *SPEC_LABEL_ALIASES.get(str(spec.get("label") or ""), [])]:
+        key = fact_label_key(label)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def reconcile_fact_fields_with_specs(
+    fields_by_key: dict[str, dict[str, Any]],
+    existing_by_key: dict[str, dict[str, Any]] | None = None,
+    specs: list[dict[str, Any]] | None = None,
+) -> None:
+    """以填值 spec 为骨架对齐抽取结果。
+
+    - 匹配到的字段打上 spec 元数据；needsConfirmation 且已自动提取的转"待人工确认"。
+    - 未匹配到的 spec 生成"未提取"骨架字段，保证清单字段在事实表中齐全。
+    - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
+    - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
+    - specs 为 None 时回退全局 fillable_specs()；项目构建链路显式传项目级清单
+      （用户上传的实时表 Excel 解析结果）。
+    """
+    existing_by_key = existing_by_key or {}
+    matched_field_keys: set[str] = set()
+    for spec in (specs if specs is not None else fillable_specs()):
+        match_keys = _spec_match_keys(spec)
+        field: dict[str, Any] | None = None
+        for key in match_keys:
+            candidate = fields_by_key.get(key)
+            if candidate is not None and key not in matched_field_keys:
+                field = candidate
+                matched_field_keys.add(key)
+                break
+        if field is not None:
+            field["specSeq"] = int(spec.get("seq") or 0)
+            field["specKey"] = str(spec.get("key") or "")
+            field["reviewLabel"] = str(spec.get("reviewLabel") or "")
+            field["needsConfirmation"] = bool(spec.get("needsConfirmation"))
+            field["sourceKind"] = str(spec.get("sourceKind") or "")
+            if spec.get("needsConfirmation") and str(field.get("status") or "") == FACT_STATUS_EXTRACTED:
+                field["status"] = FACT_STATUS_PENDING_CONFIRMATION
+            continue
+        key = fact_label_key(spec.get("label")) or f"spec-{int(spec.get('seq') or 0):03d}"
+        if key in fields_by_key:
+            key = f"spec-{int(spec.get('seq') or 0):03d}"
+        skeleton = {
+            "id": "",
+            "key": key,
+            "label": str(spec.get("label") or ""),
+            "category": spec_category(spec),
+            "value": "",
+            "unit": "",
+            "required": True,
+            "status": FACT_STATUS_UNEXTRACTED,
+            "confidence": 0.0,
+            "sourcePriority": 0,
+            "sourceRefs": [],
+            "alternatives": [],
+            "notes": str(spec.get("note") or ""),
+            "updatedAt": "",
+            "updatedBy": "",
+            "confirmedAt": "",
+            "confirmedBy": "",
+            "specSeq": int(spec.get("seq") or 0),
+            "specKey": str(spec.get("key") or ""),
+            "reviewLabel": str(spec.get("reviewLabel") or ""),
+            "needsConfirmation": bool(spec.get("needsConfirmation")),
+            "sourceKind": str(spec.get("sourceKind") or ""),
+            "sourceHint": str(spec.get("referenceFile") or ""),
+        }
+        # 上一轮的人工结果（有值或人工置过的状态）随重建保留
+        previous = next(
+            (existing_by_key[k] for k in [key, *match_keys, f"spec-{int(spec.get('seq') or 0):03d}"] if k in existing_by_key),
+            None,
+        )
+        if previous is not None:
+            prev_value = str(previous.get("value") or "").strip()
+            prev_status = normalize_fact_status(previous.get("status"), has_value=bool(prev_value))
+            if prev_value or prev_status in {FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE, FACT_STATUS_PENDING_CONFIRMATION}:
+                skeleton["value"] = prev_value
+                skeleton["unit"] = str(previous.get("unit") or "")
+                skeleton["status"] = prev_status
+                skeleton["sourceRefs"] = copy.deepcopy(
+                    previous.get("sourceRefs") if isinstance(previous.get("sourceRefs"), list) else []
+                )
+                skeleton["confirmedAt"] = str(previous.get("confirmedAt") or "")
+                skeleton["confirmedBy"] = str(previous.get("confirmedBy") or "")
+        fields_by_key[key] = skeleton
+        # 骨架键同样占位，避免后续 spec 把别人的骨架当成匹配字段
+        matched_field_keys.add(key)
 
 
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
@@ -324,7 +501,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         existing = existing_by_key.get(key)
         preserve_existing = bool(
             existing
-            and str(existing.get("status") or "") == "confirmed"
+            and str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
             and str(existing.get("value") or "").strip()
         )
         if preserve_existing:
@@ -340,7 +517,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 "value": value_text,
                 "unit": str(((existing or {}).get("unit") if preserve_existing else unit) or ""),
                 "required": bool((existing or {}).get("required", required)),
-                "status": "confirmed" if preserve_existing else ("candidate" if value_text else "missing"),
+                "status": FACT_STATUS_CONFIRMED if preserve_existing else (FACT_STATUS_EXTRACTED if value_text else FACT_STATUS_MISSING_SOURCE),
                 "confidence": float(((existing or {}).get("confidence") if preserve_existing else None) or (confidence if value_text else 0) or 0),
                 "sourcePriority": int((existing or {}).get("sourcePriority") if preserve_existing else (incoming_priority if value_text else 0)),
                 "sourceRefs": [],
@@ -360,27 +537,27 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             alternatives = field.setdefault("alternatives", [])
             existing_rank = (int(field.get("sourcePriority") or 0), float(field.get("confidence") or 0))
             incoming_rank = (incoming_priority, float(confidence or 0))
-            if incoming_rank > existing_rank and str(field.get("status") or "") != "confirmed":
+            if incoming_rank > existing_rank and str(field.get("status") or "") != FACT_STATUS_CONFIRMED:
                 old_value = str(field.get("value") or "")
                 if old_value and old_value not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
                     alternatives.append({"value": old_value, "source": (field.get("sourceRefs") or [{}])[0]})
                 field["value"] = value_text
                 field["unit"] = str(unit or field.get("unit") or "")
                 field["category"] = category
-                field["status"] = "candidate"
+                field["status"] = FACT_STATUS_EXTRACTED
                 field["confidence"] = float(confidence or 0)
                 field["sourcePriority"] = incoming_priority
                 if source_ref:
                     field["sourceRefs"] = [source_ref] + list(field.get("sourceRefs") or [])
                     source_ref = {}
-            elif incoming_rank == existing_rank and str(field.get("status") or "") != "confirmed":
+            elif incoming_rank == existing_rank and str(field.get("status") or "") != FACT_STATUS_CONFIRMED:
                 existing_material = any(
                     is_material_fact_ref(ref)
                     for ref in (field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else [])
                     if isinstance(ref, dict)
                 )
                 if not (existing_material and is_material_fact_ref(source_ref)):
-                    field["status"] = "conflict"
+                    field["status"] = FACT_STATUS_CONFLICT
                 if value_text not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
                     alternatives.append({"value": value_text, "source": source_ref})
             elif value_text not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
@@ -388,7 +565,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         elif value_text and field.get("value") and value_text == field.get("value"):
             existing_rank = (int(field.get("sourcePriority") or 0), float(field.get("confidence") or 0))
             incoming_rank = (incoming_priority, float(confidence or 0))
-            if incoming_rank > existing_rank and str(field.get("status") or "") != "confirmed":
+            if incoming_rank > existing_rank and str(field.get("status") or "") != FACT_STATUS_CONFIRMED:
                 field["unit"] = str(unit or field.get("unit") or "")
                 field["category"] = category
                 field["confidence"] = float(confidence or 0)
@@ -398,7 +575,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                     source_ref = {}
         elif value_text and not field.get("value"):
             field["value"] = value_text
-            field["status"] = "candidate"
+            field["status"] = FACT_STATUS_EXTRACTED
             field["unit"] = str(unit or field.get("unit") or "")
             field["confidence"] = max(float(field.get("confidence") or 0), float(confidence or 0))
             field["sourcePriority"] = incoming_priority
@@ -409,7 +586,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if source_ref:
             field.setdefault("sourceRefs", []).append(source_ref)
         if preserve_existing and value_text:
-            field["status"] = "confirmed"
+            field["status"] = FACT_STATUS_CONFIRMED
 
     def preserve_manual_fields() -> None:
         for existing in existing_by_key.values():
@@ -432,7 +609,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             field["label"] = label_text
             field["key"] = key
             field["category"] = str(field.get("category") or "人工补充事实")
-            field["status"] = str(field.get("status") or ("candidate" if has_value else "missing"))
+            field["status"] = normalize_fact_status(field.get("status"), has_value=has_value)
             field["sourceRefs"] = source_refs or [{"type": "manualFact", "title": "人工新增", "field": label_text}]
             fields_by_key[key] = field
 
@@ -548,6 +725,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             )
 
     preserve_manual_fields()
+    # 字段骨架来自本项目上传的实时表 Excel（gap_state["factSpecs"]），不再用全局默认清单
+    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
+    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
 
     fields = list(fields_by_key.values())
     for field in fields:
@@ -569,11 +750,17 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "待填写Word字段": 7,
         "待填写表格字段": 8,
         "技术待填写字段": 9,
+        "清单-招标文件": 10,
+        "清单-项目定制材料": 11,
+        "清单-认证证书": 12,
+        "清单-平台输入": 13,
+        "清单-自动生成": 14,
     }
     fields.sort(
         key=lambda field: (
             category_order.get(str(field.get("category") or ""), 9),
             0 if field.get("required") else 1,
+            int(field.get("specSeq") or 9999),
             field.get("label") or "",
         )
     )
@@ -588,7 +775,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "confirmedAt": "",
         "confirmedBy": "",
         "fields": fields,
-        "summary": summarize_project_fact_fields(fields),
+        "summary": summarize_project_fact_fields(fields, spec_total=len(project_specs)),
     }
 
 
@@ -859,7 +1046,15 @@ def project_material_fact_fields(
     if not materials:
         return []
     prepared = prepare_project_fact_materials(project, materials)
+    # 延迟 import 避免循环：专项模块复用本模块的 material_fact/clean_fact_text
+    from app.services.technical_fact_special_extractors import (
+        facts_from_certificate_materials,
+        run_special_extractor,
+        special_extractor_for_material,
+    )
+
     facts: list[dict[str, Any]] = []
+    cert_materials: list[tuple[dict[str, Any], Path]] = []
     for material in prepared:
         if not isinstance(material, dict):
             continue
@@ -872,11 +1067,22 @@ def project_material_fact_fields(
             continue
         if str(path.resolve()) in (excluded_paths or set()):
             continue
+        kind = special_extractor_for_material(material)
+        if kind == "certificate":
+            # 证书按"型式认证 > 设计认证"成组处理
+            cert_materials.append((material, path))
+            continue
+        if kind:
+            special_facts = run_special_extractor(kind, path, material, project)
+            if special_facts is not None:
+                facts.extend(special_facts)
+                continue
         suffix = path.suffix.lower()
         if suffix in {".docx", ".doc"}:
             facts.extend(facts_from_docx_material(path, material))
         elif suffix in {".xlsx", ".xlsm"}:
             facts.extend(facts_from_xlsx_material(path, material, project))
+    facts.extend(facts_from_certificate_materials(cert_materials, project))
     facts.extend(derived_material_fact_fields(project, facts))
     return facts
 
@@ -919,6 +1125,10 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
             for scope in material_scope.get("readableScopes") or []:
                 if not isinstance(scope, dict):
                     continue
+                # 事实表匹配只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
+                # 相关项目素材由用户归置到该目录下），不扫标准文件/客户定制目录
+                if str(scope.get("materialTier") or "") != "project":
+                    continue
                 folder_path = str(scope.get("path") or "").strip()
                 if not folder_path:
                     continue
@@ -951,6 +1161,7 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                         }
                     )
         except Exception:
+            logger.exception("项目事实素材索引回退查询失败，按无素材继续构建")
             materials = []
     return [item for item in materials if material_is_fact_relevant(item)]
 
@@ -965,7 +1176,8 @@ def material_is_fact_relevant(material: dict[str, Any]) -> bool:
     )
     return bool(
         re.search(
-            r"参数|机型|功率曲线|风资源|发电量|报价|容量|安全|场址|载荷|工程量|技术承诺|投标关键数据",
+            r"参数|机型|功率曲线|风资源|发电量|报价|容量|安全|场址|载荷|工程量|技术承诺|投标关键数据|"
+            r"弯矩|认证|承诺函|生产制造基地",
             text,
         )
     )

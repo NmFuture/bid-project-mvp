@@ -532,7 +532,7 @@ def infer_chapter_keywords(profile: dict[str, Any]) -> list[str]:
     )
 
 
-def collect_headings(item: dict[str, Any], limit: int = 8) -> list[str]:
+def collect_headings(item: dict[str, Any], limit: int | None = 8) -> list[str]:
     headings = item.get("headings") or []
     if not isinstance(headings, list):
         return []
@@ -543,23 +543,25 @@ def collect_headings(item: dict[str, Any], limit: int = 8) -> list[str]:
         title = str(entry.get("title") or "").strip()
         if title:
             values.append(title)
-        if len(values) >= limit:
+        if limit is not None and len(values) >= limit:
             break
     return values
 
 
-def collect_paragraphs(item: dict[str, Any], limit: int = 4) -> list[str]:
+def collect_paragraphs(item: dict[str, Any], limit: int | None = 4) -> list[str]:
     paragraphs = item.get("paragraphs") or []
     if not isinstance(paragraphs, list):
         return []
-    return [str(value).strip() for value in paragraphs[:limit] if str(value).strip()]
+    values = paragraphs if limit is None else paragraphs[:limit]
+    return [str(value).strip() for value in values if str(value).strip()]
 
 
-def collect_tables(item: dict[str, Any], limit: int = 2) -> list[str]:
+def collect_tables(item: dict[str, Any], limit: int | None = 2) -> list[str]:
     tables = item.get("tables") or []
     if not isinstance(tables, list):
         return []
-    return [str(value).strip() for value in tables[:limit] if str(value).strip()]
+    values = tables if limit is None else tables[:limit]
+    return [str(value).strip() for value in values if str(value).strip()]
 
 
 def stable_short_id(value: Any) -> str:
@@ -634,7 +636,7 @@ def collect_keywords(item: dict[str, Any], title: str, category: str, limit: int
         candidates = []
     candidates.extend(raw_tags(item, limit=20))
     candidates.extend([category, title])
-    for token in str(ocr_text(item)[:1000]).split():
+    for token in str(ocr_text(item)).split():
         if any(marker in token for marker in ("证书", "认证", "有效期", "机型", "部件", "编号")):
             candidates.append(token.strip(" ：:，,。；;"))
     for value in candidates:
@@ -884,7 +886,7 @@ def build_evidence_segments(profile: dict[str, Any]) -> list[dict[str, str]]:
         profile["summary"],
         profile["source_pages"],
     )
-    for index, heading in enumerate(collect_headings(profile["raw"], 10), start=1):
+    for index, heading in enumerate(collect_headings(profile["raw"], None), start=1):
         add_segment(
             f"heading-{index}",
             heading,
@@ -894,30 +896,31 @@ def build_evidence_segments(profile: dict[str, Any]) -> list[dict[str, str]]:
             "清洗稿标题/待页码定位",
             [heading],
         )
-    for index, table in enumerate(collect_tables(profile["raw"], 6), start=1):
+    for index, table in enumerate(collect_tables(profile["raw"], None), start=1):
         add_segment(
             f"table-{index}",
             f"{profile['title']} 表格片段{index}",
             "table_source",
             "cleaned_table",
-            table[:260],
+            table,
             "清洗稿表格/待页码定位",
             ["表格", "报价", "规格", "偏差", "供货范围"],
         )
     ocr_lines = [line.strip() for line in str(profile.get("ocr_text_excerpt") or "").splitlines() if line.strip()]
-    for index, line in enumerate(ocr_lines[:6], start=1):
+    # 证据片段全量放开：OCR 行数、单行长度与片段总数均不再截断。
+    for index, line in enumerate(ocr_lines, start=1):
         if len(line) < 4:
             continue
         add_segment(
             f"ocr-{index}",
-            line[:36],
+            line,
             "ocr_text",
             "ocr_excerpt",
-            line[:260],
+            line,
             profile["source_pages"],
             ["OCR", "证书", "编号", "有效期", "机型"],
         )
-    return segments[:18]
+    return segments
 
 
 def profile_material(item: dict[str, Any]) -> dict[str, Any]:
@@ -1006,7 +1009,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "ocr_status": ocr_status or ("not_required" if source_ext not in IMAGE_EXTS and source_ext != "pdf" else "required"),
         "ocr_source_type": str(item.get("ocrSourceType") or ocr_payload(item).get("sourceType") or ""),
         "ocr_confidence": ocr_confidence or ("n/a" if ext in IMAGE_EXTS else "1.00" if ext in {"doc", "docx", "wps", "rtf"} else "待OCR"),
-        "ocr_text_excerpt": ocr_text(item)[:500],
+        "ocr_text_excerpt": ocr_text(item),
         "turbine_models": [str(value) for value in (fields.get("turbineModels") or item.get("turbineModels") or []) if str(value).strip()][:8],
         "components": [str(value) for value in (fields.get("components") or item.get("components") or []) if str(value).strip()][:8],
         "is_final_version": final_version,
@@ -1022,7 +1025,7 @@ def profile_material(item: dict[str, Any]) -> dict[str, Any]:
         "search_text": text_blob,
         "ext": ext,
         "table_count": int(item.get("tableCount") or 0),
-        "heading_count": len(collect_headings(item, 20)),
+        "heading_count": len(collect_headings(item, None)),
         "raw": item,
     }
     profile["risk_notes"] = infer_risk_notes(item, ext, validity_status)

@@ -82,6 +82,13 @@ const normalizeNode = (node) => {
   }
 }
 
+// 后台 Wiki 生成任务的阶段标签（后端 on_progress 回报 preview → build → import）
+const WIKI_JOB_PHASE_LABELS = {
+  preview: '生成内容预览',
+  build: '构建目录树',
+  import: '导入 Wiki',
+}
+
 export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const activeBidType = TECHNICAL_BID_TYPE
   const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
@@ -91,6 +98,8 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   const [refreshingWiki, setRefreshingWiki] = useState(false)
   const [rebuildingWiki, setRebuildingWiki] = useState(false)
+  const [wikiJobActive, setWikiJobActive] = useState(false)
+  const [wikiJobPhase, setWikiJobPhase] = useState('')
   const [collapsedMap, setCollapsedMap] = useState({})
 
   const splitContainerRef = useRef(null)
@@ -177,6 +186,64 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     return () => clearTimeout(timer)
   }, [loadData])
 
+  // 挂载时探测后台 Wiki 生成任务：任务在跑则恢复轮询态（离开页面再回来可接上）。
+  // 恢复时无法区分触发方式，两个按钮同时置忙、禁用，避免重复触发。
+  useEffect(() => {
+    let cancelled = false
+    technicalMaterialsAPI.wiki.bootstrapStatus()
+      .then((status) => {
+        if (cancelled || status?.status !== 'running') return
+        setWikiJobPhase(String(status?.progress?.phase || ''))
+        setRefreshingWiki(true)
+        setRebuildingWiki(true)
+        setWikiJobActive(true)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  // 后台 Wiki 生成任务轮询：到达终态后应用结果或提示失败
+  useEffect(() => {
+    if (!wikiJobActive) return undefined
+    let stopped = false
+    const finish = () => {
+      setWikiJobActive(false)
+      setWikiJobPhase('')
+      setRefreshingWiki(false)
+      setRebuildingWiki(false)
+    }
+    const tick = async () => {
+      try {
+        const status = await technicalMaterialsAPI.wiki.bootstrapStatus()
+        if (stopped) return
+        if (status?.status === 'running') {
+          setWikiJobPhase(String(status?.progress?.phase || ''))
+          return
+        }
+        finish()
+        if (status?.status === 'succeeded') {
+          const payload = status?.result || {}
+          applyPayload(payload)
+          showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已更新`)
+        } else if (status?.status === 'failed') {
+          showToast(status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
+        } else {
+          // idle：后端重启丢了任务状态，AI 预览缓存已保留，提示重触续跑
+          showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')
+          loadData()
+        }
+      } catch {
+        // 单次轮询失败不影响任务本身，下一轮重试
+      }
+    }
+    const timer = setInterval(tick, 8000)
+    tick()
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [wikiJobActive, activeBidType, applyPayload, loadData, showToast])
+
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
   // 右侧只派生一个用户可读的状态小 tag，后端原始 tags 不再透出到界面。
@@ -226,22 +293,27 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     }
   }
 
+  const startWikiJob = async (mode) => {
+    // 后台任务：立即返回，离开页面不中断，终态由轮询 effect 接管
+    const status = await technicalMaterialsAPI.wiki.bootstrap({
+      mode,
+      bidType: activeBidType,
+    })
+    setWikiJobPhase(String(status?.progress?.phase || ''))
+    setWikiJobActive(true)
+    showToast('任务已在后台开始，可离开本页，完成后自动更新。')
+  }
+
   const handleRefreshWiki = async () => {
     const ok = window.confirm(`确认刷新${activeBidType} Wiki？系统会同步目录，并重新尝试“待重试”项；已成功解析的继续使用缓存。`)
     if (!ok) return
     setRefreshingWiki(true)
     try {
-      const payload = await technicalMaterialsAPI.wiki.bootstrap({
-        mode: 'refresh',
-        bidType: activeBidType,
-      })
-      applyPayload(payload)
-      showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已刷新`)
+      await startWikiJob('refresh')
     } catch (e) {
       console.error(e)
-      showToast(safeMessage(e, '刷新 Wiki 失败，请稍后重试。'), 'error')
-    } finally {
       setRefreshingWiki(false)
+      showToast(safeMessage(e, '刷新 Wiki 启动失败，请稍后重试。'), 'error')
     }
   }
 
@@ -250,17 +322,11 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     if (!ok) return
     setRebuildingWiki(true)
     try {
-      const payload = await technicalMaterialsAPI.wiki.bootstrap({
-        mode: 'replace',
-        bidType: activeBidType,
-      })
-      applyPayload(payload)
-      showToast(payload?.generation?.summary || payload?.message || `${activeBidType} Wiki 已重建`)
+      await startWikiJob('replace')
     } catch (e) {
       console.error(e)
-      showToast(safeMessage(e, '重建 Wiki 失败，请稍后重试。'), 'error')
-    } finally {
       setRebuildingWiki(false)
+      showToast(safeMessage(e, '重建 Wiki 启动失败，请稍后重试。'), 'error')
     }
   }
 
@@ -368,14 +434,18 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
               disabled={refreshingWiki || rebuildingWiki}
               className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-[13px] leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {refreshingWiki ? '刷新并重试中...' : '刷新并重试'}
+              {refreshingWiki
+                ? `刷新并重试中${WIKI_JOB_PHASE_LABELS[wikiJobPhase] ? `（${WIKI_JOB_PHASE_LABELS[wikiJobPhase]}）` : ''}...`
+                : '刷新并重试'}
             </button>
             <button
               onClick={handleRebuildWiki}
               disabled={refreshingWiki || rebuildingWiki}
               className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-[13px] leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {rebuildingWiki ? '重建中...' : '重建Wiki'}
+              {rebuildingWiki
+                ? `重建中${WIKI_JOB_PHASE_LABELS[wikiJobPhase] ? `（${WIKI_JOB_PHASE_LABELS[wikiJobPhase]}）` : ''}...`
+                : '重建Wiki'}
             </button>
           </div>
         )}

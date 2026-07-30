@@ -63,6 +63,9 @@ from app.services.technical_coverage import build_technical_coverage
 from app.services.technical_gap_planner import _allowed_technical_material_index
 from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
 from app.services.store import store
+from app.services.business_gap_fact_table import (
+    PROJECT_FACT_TABLE_SCHEMA_VERSION as BUSINESS_FACT_TABLE_SCHEMA_VERSION,
+)
 from app.services.technical_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
 from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import (
@@ -172,6 +175,27 @@ def _seed_technical_gap_project(plan: dict) -> str:
             "plan": plan,
             "items": copy.deepcopy(plan.get("items") or []),
             "integrity": {},
+            # build_facts 门控 seed：测试绕过实时表上传，直接注入小清单作为项目 specs
+            "factSpecs": {
+                "fileName": "测试实时表.xlsx",
+                "uploadedAt": "2026-07-27T00:00:00",
+                "specs": [
+                    {
+                        "seq": 1,
+                        "key": "招标编号",
+                        "label": "招标编号",
+                        "reviewLabel": "",
+                        "sourceFile": "",
+                        "placeholder": "",
+                        "note": "",
+                        "needsConfirmation": False,
+                        "referenceFile": "招标文件",
+                        "valueRequired": True,
+                        "sourceKind": "tender",
+                        "aliases": [],
+                    }
+                ],
+            },
         }
     )
     store._persist_project(record)
@@ -4004,7 +4028,7 @@ def test_business_gap_fact_table_lookup_stays_in_business_service() -> None:
     )
     record = store._require(project_id)
     record["business_gap_state"]["projectFactTable"] = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": project_id,
         "status": "draft",
         "fields": [{"label": "项目名称", "value": "商务标服务拆分测试项目"}],
@@ -4019,7 +4043,7 @@ def test_business_gap_fact_table_lookup_stays_in_business_service() -> None:
     ):
         payload = business_gap_service.facts(project_id)
 
-    assert payload["schemaVersion"] == PROJECT_FACT_TABLE_SCHEMA_VERSION
+    assert payload["schemaVersion"] == BUSINESS_FACT_TABLE_SCHEMA_VERSION
     assert payload["fields"][0]["label"] == "项目名称"
 
 
@@ -4040,7 +4064,7 @@ def test_business_gap_empty_fact_table_stays_in_fact_table_helper() -> None:
     ):
         payload = business_gap_service.facts(project_id)
 
-    assert payload["schemaVersion"] == PROJECT_FACT_TABLE_SCHEMA_VERSION
+    assert payload["schemaVersion"] == BUSINESS_FACT_TABLE_SCHEMA_VERSION
     assert payload["status"] == "empty"
     assert payload["summary"]["totalCount"] == 0
 
@@ -4055,7 +4079,7 @@ def test_business_gap_build_facts_stays_in_business_service() -> None:
         }
     )
     built_table = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": project_id,
         "status": "draft",
         "builtAt": now_iso(),
@@ -4101,7 +4125,7 @@ def test_business_gap_save_facts_allows_user_add_and_delete_fields() -> None:
     )
     record = store._require(project_id)
     record["business_gap_state"]["projectFactTable"] = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": project_id,
         "status": "draft",
         "builtAt": now_iso(),
@@ -4439,7 +4463,7 @@ def test_business_assembly_fact_table_stays_in_fact_table_helper(tmp_path) -> No
 
     source = Path("app/services/business_assembly.py").read_text(encoding="utf-8")
     built_table = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": "PRJ-BIZ-ASSEMBLY",
         "status": "draft",
         "fields": [{"label": "项目名称", "value": "商务标装配测试"}],
@@ -4471,7 +4495,7 @@ def test_business_gap_save_facts_stays_in_business_service() -> None:
     )
     record = store._require(project_id)
     record["business_gap_state"]["projectFactTable"] = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": project_id,
         "status": "draft",
         "builtAt": now_iso(),
@@ -4904,7 +4928,7 @@ def test_business_gap_ai_draft_stays_in_business_service() -> None:
     )
     record = store._require(project_id)
     record["business_gap_state"]["projectFactTable"] = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": project_id,
         "status": "confirmed",
         "builtAt": now_iso(),
@@ -4985,7 +5009,7 @@ def test_business_gap_table_fill_stays_in_business_service(tmp_path) -> None:
     )
     record = store._require(project_id)
     record["business_gap_state"]["projectFactTable"] = {
-        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "schemaVersion": BUSINESS_FACT_TABLE_SCHEMA_VERSION,
         "projectId": project_id,
         "status": "confirmed",
         "builtAt": now_iso(),

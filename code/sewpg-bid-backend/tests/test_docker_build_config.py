@@ -124,6 +124,20 @@ def test_compose_uses_separate_docling_worker_and_shared_volumes() -> None:
         assert all("docling-models" not in volume for volume in services[service_name]["volumes"])
 
 
+def test_compose_uses_one_opencode_service_for_parallel_chapter_sessions() -> None:
+    compose = yaml.safe_load((CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    assert sorted(name for name in services if name.startswith("opencode")) == ["opencode"]
+    for service_name in ("fastapi", "worker"):
+        assert services[service_name]["environment"]["OPENCODE_CHAPTER_BASE_URLS"] == (
+            "${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}"
+        )
+    assert sorted(
+        name for name in compose["volumes"] if name.startswith("opencode_")
+    ) == ["opencode_cache", "opencode_data"]
+
+
 def test_compose_overrides_include_docling_worker_and_bind_ocr_to_gpu_zero() -> None:
     second = yaml.safe_load((CODE_ROOT / "docker-compose.second.yml").read_text(encoding="utf-8"))
     airgap = yaml.safe_load((CODE_ROOT / "docker-compose.airgap.yml").read_text(encoding="utf-8"))

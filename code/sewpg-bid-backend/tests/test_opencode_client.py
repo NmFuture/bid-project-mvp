@@ -1206,6 +1206,62 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(response["_completionSource"], "s4gap")
         self.assertIn("bid-tech-gap-plan-v1", response["parts"][0]["text"])
 
+    def test_polling_waits_for_wait_file_before_early_completion(self) -> None:
+        """factcurate 脚本只产证据简报，建议文件由 LLM 后续写出：文件未落地不得提前返回。"""
+        client = OpencodeClient()
+
+        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+            time.sleep(1.2)
+            return {"parts": [{"type": "text", "text": '{"late":true}'}]}
+
+        messages = [
+            {
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "factcurate /tmp/fact_curate_input.json"},
+                            "exit": 0,
+                            "output": '{"schema":"bid-tech-fact-curate-v1","counts":{"fill":0}}',
+                        },
+                    }
+                ]
+            }
+        ]
+
+        with TemporaryDirectory() as tmp_dir:
+            wait_file = Path(tmp_dir) / "fact_curate_suggestions.json"
+            with (
+                patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+                patch.object(client, "list_session_messages", return_value=messages),
+            ):
+                # 建议文件未写出：脚本完成也不提前返回，走正常完成路径
+                started_at = time.monotonic()
+                response = client._send_prompt_with_session_polling(
+                    "ses-factcurate",
+                    "prompt",
+                    early_tool_command="factcurate",
+                    early_tool_wait_file=str(wait_file),
+                )
+                self.assertGreaterEqual(time.monotonic() - started_at, 1.0)
+                self.assertNotIn("_earlyCompletion", response)
+                self.assertIn('{"late":true}', response["parts"][0]["text"])
+
+                # 建议文件落地后：走原有提前返回路径
+                wait_file.write_text('{"suggestions":[]}', encoding="utf-8")
+                started_at = time.monotonic()
+                response = client._send_prompt_with_session_polling(
+                    "ses-factcurate",
+                    "prompt",
+                    early_tool_command="factcurate",
+                    early_tool_wait_file=str(wait_file),
+                )
+                self.assertLess(time.monotonic() - started_at, 1.2)
+                self.assertTrue(response["_earlyCompletion"])
+                self.assertEqual(response["_completionSource"], "factcurate")
+
     def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
         client = OpencodeClient()
         events: list[dict] = []

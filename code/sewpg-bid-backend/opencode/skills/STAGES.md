@@ -9,6 +9,7 @@
 | S3 缺口处理（识别） | bid-tech-gap-planner | `s4gap` | `s4_gap_workdir` |
 | S3 缺口处理（空副表填写） | bid-tech-table-filler | `s4fill` | `s4_gap_workdir/ai_fill/<gapId>` |
 | S3 缺口处理（待填写 Word） | bid-tech-word-placeholder-filler | `s4wordfill` | `s4_gap_workdir/ai_fill/<gapId>` |
+| S3 缺口处理（事实表维护） | bid-tech-fact-curator | `factcurate` | `s4_gap_workdir/fact_curate` |
 | S4 生成标书（正文组装） | bid-tech-assembler | `run_from_manifest.py` | `s7_assembly_workdir` |
 | 成稿后处理（格式清洗） | bid-tech-format-cleaner | `run_from_manifest.py` | `s5_format_switch_workdir`（目录 JSON 由 s2 产物转换） |
 | 素材库旁路（Wiki 索引） | bid-tech-wiki-material-builder | `run_from_manifest.py` | `_runtime/materials/technical_material_index.json` |

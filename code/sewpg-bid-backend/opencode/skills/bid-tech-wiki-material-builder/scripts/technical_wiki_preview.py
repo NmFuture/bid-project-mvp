@@ -35,17 +35,18 @@ PREVIEW_SCHEMA_VERSION = 3
 PREVIEW_BATCH_SIZE = 8
 
 
-def format_heading_tree(headings: list[dict[str, Any]], limit: int = 60) -> str:
+def format_heading_tree(headings: list[dict[str, Any]], limit: int | None = None) -> str:
     """把 docx heading 列表渲染成缩进树（从 wiki_blueprint_common 复制以保持本模块独立）。"""
     if not headings:
         return "未检测到 Word Heading 样式；该素材会按整篇材料挂载，后续应补充 Heading 样式审计。"
     min_level = min(int(item.get("level") or 1) for item in headings)
     lines: list[str] = []
-    for item in headings[:limit]:
+    # 默认全量渲染；limit 仅供调用方显式限制。
+    for item in headings if limit is None else headings[:limit]:
         level = int(item.get("level") or 1)
         indent = "  " * max(0, level - min_level)
         lines.append(f"{indent}- L{level} {item.get('title')}")
-    if len(headings) > limit:
+    if limit is not None and len(headings) > limit:
         lines.append(f"- ... 另有 {len(headings) - limit} 条 Heading")
     return "\n".join(lines)
 

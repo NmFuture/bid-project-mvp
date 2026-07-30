@@ -151,7 +151,7 @@ class SystemSettingsService:
                     "apiKey": settings.default_ocr_api_key,
                     "model": settings.default_ocr_model,
                     "timeoutMs": 60000,
-                    "maxTokens": 2048,
+                    "maxTokens": 16384,
                 },
             }
             for key, value in defaults.items():
@@ -230,7 +230,7 @@ class SystemSettingsService:
         else:
             config["model"] = str(settings.default_ocr_model or "").strip()
         config["timeoutMs"] = int(config.get("timeoutMs") or 60000)
-        config["maxTokens"] = int(config.get("maxTokens") or 2048)
+        config["maxTokens"] = int(config.get("maxTokens") or 16384)
         config["enabled"] = bool(config.get("enabled"))
         return config
 

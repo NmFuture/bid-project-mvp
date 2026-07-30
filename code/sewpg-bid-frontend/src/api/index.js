@@ -444,13 +444,19 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
   confirmReady: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
+  setParentCoverage: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/parent-coverage`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
   buildFacts: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
+  uploadFactSpecs: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
+  saveFactField: (projectId, fieldId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/${fieldId}`, { method: 'PATCH', body: data }),
   recheck: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>
@@ -531,6 +537,8 @@ export const technicalMaterialsAPI = {
       request('/technical/materials/raw/tag-import/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     tagImportCommit: (data) =>
       request('/technical/materials/raw/tag-import/commit', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    autoTags: (data) =>
+      request('/technical/materials/raw/auto-tags', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
     batchDelete: (data) => request('/technical/materials/raw/batch-delete', { method: 'POST', body: data }),
@@ -555,6 +563,7 @@ export const technicalMaterialsAPI = {
     },
     bootstrap: (data = {}) =>
       request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    bootstrapStatus: () => request('/technical/materials/wiki/bootstrap/status'),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
@@ -580,6 +589,7 @@ export const technicalMaterialsAPI = {
     saveScopes: (data) => request('/technical/materials/certificates/scopes', { method: 'PUT', body: data }),
     incremental: (data = {}) =>
       request('/technical/materials/certificates/incremental', { method: 'POST', body: data, timeoutMs: 20 * 60 * 1000 }),
+    incrementalStatus: () => request('/technical/materials/certificates/incremental/status'),
     recognize: (fileId) =>
       request(`/technical/materials/certificates/${fileId}/recognize`, { method: 'POST', timeoutMs: 10 * 60 * 1000 }),
     update: (fileId, data) =>
@@ -872,6 +882,9 @@ export const settingsAPI = {
     upload: (data) => request('/settings/default-templates', { method: 'POST', body: data }),
     activate: (id) => request(`/settings/default-templates/${id}/activate`, { method: 'POST' }),
     remove: (id) => request(`/settings/default-templates/${id}`, { method: 'DELETE' }),
+  },
+  technicalFactSpecs: {
+    upload: (data) => request('/settings/technical-fact-specs', { method: 'POST', body: data }),
   },
   health: () => request('/settings/health'),
 }

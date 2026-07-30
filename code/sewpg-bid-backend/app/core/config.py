@@ -156,6 +156,7 @@ class Settings:
     onlyoffice_download_max_bytes: int
     s2_toc_output_file_name: str
     s2_toc_evidence_file_name: str
+    fact_specs_override_path: Path
 
     # PostgreSQL
     database_url: str
@@ -208,18 +209,19 @@ _configured_default_llm_provider_id, _configured_default_llm_model_id = normaliz
     _first_env("DEFAULT_LLM_MODEL", default=_configured_opencode_model_id),
 )
 
+DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR", str(LOCAL_DATA_DIR / "documents")))
 
 settings = Settings(
     app_env=os.getenv("APP_ENV", "development"),
     uploads_dir=Path(os.getenv("UPLOADS_DIR", str(LOCAL_DATA_DIR / "uploads"))),
-    documents_dir=Path(os.getenv("DOCUMENTS_DIR", str(LOCAL_DATA_DIR / "documents"))),
+    documents_dir=DOCUMENTS_DIR,
     parsed_dir=Path(os.getenv("PARSED_DIR", str(LOCAL_DATA_DIR / "parsed"))),
     project_store_backend=os.getenv("APP_STORE_BACKEND", "postgres").strip().lower() or "postgres",
     opencode_base_url=os.getenv("OPENCODE_BASE_URL", "http://127.0.0.1:4096"),
     opencode_provider_id=_configured_opencode_provider_id,
     opencode_model_id=_configured_opencode_model_id,
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
-    opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 1),
+    opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 8),
     s1_parse_opencode_enabled=_bool_env(
         "S1_PARSE_OPENCODE_ENABLED",
         os.getenv("APP_ENV", "development") == "production",
@@ -259,6 +261,12 @@ settings = Settings(
     s2_toc_output_file_name=os.getenv("S2_TOC_OUTPUT_FILE_NAME", "toc.json").strip() or "toc.json",
     s2_toc_evidence_file_name=os.getenv("S2_TOC_EVIDENCE_FILE_NAME", "toc_evidence.json").strip()
     or "toc_evidence.json",
+    fact_specs_override_path=Path(
+        os.getenv(
+            "FACT_SPECS_OVERRIDE_PATH",
+            str(DOCUMENTS_DIR / "technical_fact_field_specs.override.json"),
+        )
+    ),
     database_url=os.getenv(
         "DATABASE_URL",
         "postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform",

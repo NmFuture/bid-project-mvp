@@ -19,7 +19,24 @@ from app.services.bid_outline_state import confirm_outline_state, save_generated
 from app.services.technical_gap_domain import aggregate_technical_gap_fill_quality
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
+from app.services.technical_fact_field_specs import fillable_specs
 from app.services.workspace_artifacts import technical_workspace_dir
+
+
+def _test_fact_specs() -> dict:
+    """build_facts 门控 seed：测试绕过实时表上传，直接注入全局字段清单作为项目 specs。"""
+    return {
+        "fileName": "测试实时表.xlsx",
+        "uploadedAt": "2026-07-27T00:00:00",
+        "specs": copy.deepcopy(fillable_specs()),
+    }
+
+
+def _seed_fact_specs(project_id: str) -> None:
+    """gaps-detection 等链路重建的 gap_state 没有 factSpecs，补 seed 后再 build。"""
+    project = store._require(project_id)
+    project.setdefault("gap_state", {})["factSpecs"] = _test_fact_specs()
+    store._persist_project(project)
 
 
 def minimal_gap_plan_from_manifest(manifest: dict) -> dict:
@@ -340,6 +357,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(json.loads(stale_toc.read_text(encoding="utf-8"))["items"]), 1)
 
     def _confirm_project_fact_table(self, project_id: str, extra_values: dict[str, str] | None = None) -> dict:
+        _seed_fact_specs(project_id)
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
         fields = build_response.json()["fields"]
@@ -762,6 +780,7 @@ class GapReviewFlowTests(unittest.TestCase):
         fill_item["fillTasks"][0]["blankSource"]["placeholderLabels"] = ["投标方案", "招标方", "未知保证值"]
         project = store._require(project_id)
         project["gap_state"]["plan"] = gap_plan
+        project["gap_state"]["factSpecs"] = _test_fact_specs()
         store._persist_project(project)
 
         response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
@@ -776,15 +795,18 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertIn("未知保证值", labels)
         owner = next(field for field in payload["fields"] if field["label"] == "招标方")
         self.assertEqual(owner["value"], "华能集团")
-        self.assertEqual(owner["status"], "candidate")
+        self.assertEqual(owner["status"], "extracted")
         self.assertTrue(owner["sourceRefs"])
         unknown = next(field for field in payload["fields"] if field["label"] == "未知保证值")
-        self.assertEqual(unknown["status"], "missing")
+        self.assertEqual(unknown["status"], "missing_source")
         self.assertEqual(payload["summary"]["missingCount"], 1)
 
         confirmed = self._confirm_project_fact_table(project_id, {"未知保证值": "按招标文件要求执行"})
 
-        self.assertEqual(confirmed["summary"]["confirmedCount"], confirmed["summary"]["totalCount"])
+        self.assertEqual(
+            confirmed["summary"]["confirmedCount"],
+            sum(1 for field in confirmed["fields"] if str(field.get("value") or "").strip()),
+        )
         self.assertTrue(confirmed["confirmedAt"])
         confirmed_unknown = next(field for field in confirmed["fields"] if field["label"] == "未知保证值")
         self.assertEqual(confirmed_unknown["status"], "confirmed")
@@ -794,6 +816,7 @@ class GapReviewFlowTests(unittest.TestCase):
         project_id = self._create_project_with_confirmed_directory_json()
         detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
+        _seed_fact_specs(project_id)
 
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
@@ -921,6 +944,7 @@ class GapReviewFlowTests(unittest.TestCase):
             },
             "planFile": "",
             "integrity": {},
+            "factSpecs": _test_fact_specs(),
         }
         store._persist_project(project)
 
@@ -1035,6 +1059,7 @@ class GapReviewFlowTests(unittest.TestCase):
             },
             "planFile": "",
             "integrity": {},
+            "factSpecs": _test_fact_specs(),
         }
         store._persist_project(project)
 
@@ -1051,7 +1076,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["空气密度"]["unit"], "kg/m3")
         self.assertEqual(by_label["湍流强度"]["value"], "0.10")
         self.assertEqual(by_label["极端风速"]["value"], "52.5m/s")
-        self.assertEqual(by_label["总装机容量"]["status"], "candidate")
+        self.assertEqual(by_label["总装机容量"]["status"], "extracted")
         self.assertEqual(by_label["总装机容量"]["sourceRefs"][0]["materialTier"], "project")
         self.assertEqual(by_label["设计寿命"]["sourceRefs"][0]["materialTier"], "project")
 
@@ -1106,6 +1131,7 @@ class GapReviewFlowTests(unittest.TestCase):
             },
             "planFile": "",
             "integrity": {},
+            "factSpecs": _test_fact_specs(),
         }
         store._persist_project(project)
 
@@ -1116,9 +1142,9 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["轮毂高度"]["value"], "125")
         self.assertEqual(by_label["年平均风速"]["value"], "7.20m/s")
         self.assertEqual(by_label["空气密度"]["value"], "1.16")
-        self.assertEqual(by_label["轮毂高度"]["status"], "candidate")
-        self.assertEqual(by_label["年平均风速"]["status"], "candidate")
-        self.assertEqual(by_label["空气密度"]["status"], "candidate")
+        self.assertEqual(by_label["轮毂高度"]["status"], "extracted")
+        self.assertEqual(by_label["年平均风速"]["status"], "extracted")
+        self.assertEqual(by_label["空气密度"]["status"], "extracted")
 
     def test_project_fact_table_derives_guarantee_values_from_wind_speed_matrix(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1171,6 +1197,7 @@ class GapReviewFlowTests(unittest.TestCase):
             },
             "planFile": "",
             "integrity": {},
+            "factSpecs": _test_fact_specs(),
         }
         store._persist_project(project)
 

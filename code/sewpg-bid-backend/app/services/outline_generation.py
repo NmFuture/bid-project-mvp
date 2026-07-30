@@ -32,6 +32,7 @@ from app.services.workspace_project_access import (
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
 )
+from app.services.turbine_models import project_turbine_model
 
 OUTLINE_SKILL_NAME = "bid-tech-outline-generator"
 BUSINESS_OUTLINE_SKILL_NAME = "bid-business-outline-generator"
@@ -47,6 +48,28 @@ PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 class _ChapterParallelUnsupported(RuntimeError):
     pass
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
+
+# 注入 S2 manifest 的事实表状态：已确认/已抽取/待人工确认的值可信可用；
+# 未提取/缺来源/冲突/不适用于不注入。
+MANIFEST_FACT_VALUE_STATUSES = {"confirmed", "extracted", "pending_confirmation"}
+
+
+def project_facts_for_manifest(project: dict[str, Any]) -> dict[str, str]:
+    """从 S3 项目事实表提取 label→value 映射，供 S2 manifest 注入。
+
+    S2 通常早于 S3 事实表构建，gap_state 无事实表时返回空映射（调用方不写该键）。
+    """
+    gap_state = project.get("gap_state") if isinstance(project.get("gap_state"), dict) else {}
+    fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+    facts: dict[str, str] = {}
+    for field in fact_table.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        label = str(field.get("label") or "").strip()
+        value = str(field.get("value") or "").strip()
+        if label and value and str(field.get("status") or "") in MANIFEST_FACT_VALUE_STATUSES:
+            facts.setdefault(label, value)
+    return facts
 
 
 def _load_technical_outline_runner() -> Any:
@@ -288,7 +311,6 @@ def _run_parallel_outline_chapters(
         with ThreadPoolExecutor(
             max_workers=min(
                 TECH_OUTLINE_CHAPTER_WORKERS,
-                len(chapter_base_urls),
                 max(1, len(chapters)),
             )
         ) as executor:
@@ -1424,6 +1446,14 @@ def _prepare_toc_skill_workspace(
         "attachFile": str(attach_path) if attach_path else "",
         "outputFile": str(output_file),
     }
+    # 下游对接：项目机型与 S3 事实表值注入 manifest（须在 _trustedManifest 快照之前）。
+    # S2 通常早于 S3 事实表构建，缺失时不写这两个键，不报错。
+    turbine_model = project_turbine_model(project)
+    if turbine_model:
+        manifest["turbineModel"] = turbine_model
+    project_facts = project_facts_for_manifest(project)
+    if project_facts:
+        manifest["projectFacts"] = project_facts
     if _is_business_bid(bid_type):
         manifest["evidenceFile"] = str(
             staging_work_dir / _safe_file_name(settings.s2_toc_evidence_file_name, "toc_evidence.json")

@@ -14,6 +14,7 @@ from app.services.material_certificate_time import (
     apply_certificate_validity_rules,
     classify_certificate_validity_rule,
     extract_certificate_time_fields,
+    resolve_follow_turbine_expiries,
 )
 
 
@@ -101,7 +102,7 @@ def test_rule_marks_follow_turbine_for_grid_reports() -> None:
         assert result["expiryDate"] == "", name
         assert result["longTerm"] is False, name
         assert result["validityBasis"] == "follow_turbine", name
-        assert result["validityNote"] == "跟随对应整机型式认证有效期", name
+        assert result["validityNote"] == "跟随整机证有效期(型式认证)", name
 
 
 def test_rule_marks_long_term_for_transient_model_reports() -> None:
@@ -184,3 +185,116 @@ def test_type_certificate_without_component_keyword_uses_folder_fallback() -> No
     assert info["certCategory"] == "整机型式认证"
     assert info["certGrade"] == "A"
     assert info["rule"]["years"] == 5
+
+
+# ---------- 跟随整机证有效期解析（机型 + 项目目录匹配） ----------
+
+
+def _ledger_row(**overrides) -> dict:
+    row = {
+        "fileId": "RAW-0001",
+        "name": "",
+        "folderPath": "",
+        "issueDate": "",
+        "expiryDate": "",
+        "longTerm": False,
+        "certCategory": "",
+        "validityBasis": "",
+        "validityNote": "跟随整机证有效期(型式认证)",
+        "followTurbineCertFileId": "",
+        "followTurbineCertName": "",
+    }
+    row.update(overrides)
+    return row
+
+
+def _type_cert_row(**overrides) -> dict:
+    base = {
+        "fileId": "RAW-0010",
+        "name": "EW6.7-202-115-CQC25030482430上海电气型式认证A-20250814.pdf",
+        "folderPath": "技术标/标准文件/EW6.7-202/认证证书",
+        "certCategory": "整机型式认证",
+        "expiryDate": "2030-08-13",
+    }
+    base.update(overrides)
+    return _ledger_row(**base)
+
+
+def test_follow_turbine_resolves_expiry_from_same_project_type_cert() -> None:
+    cert = _type_cert_row()
+    report = _ledger_row(
+        fileId="RAW-0020",
+        name="EW6.7-202-CEPRI26WT1010R01上海电气低电压穿越评估报告.pdf",
+        folderPath="技术标/标准文件/EW6.7-202/检测报告",
+        validityBasis="follow_turbine",
+    )
+
+    (resolved,) = [row for row in resolve_follow_turbine_expiries([cert, report]) if row["fileId"] == "RAW-0020"]
+
+    assert resolved["expiryDate"] == "2030-08-13"
+    assert resolved["validityBasis"] == "follow_turbine"
+    assert resolved["followTurbineCertFileId"] == "RAW-0010"
+    assert "有效期至2030-08-13" in resolved["validityNote"]
+
+
+def test_follow_turbine_not_resolved_across_project_dirs() -> None:
+    cert = _type_cert_row()
+    report = _ledger_row(
+        fileId="RAW-0020",
+        name="EW6.7-202低电压穿越评估报告.pdf",
+        folderPath="项目B/标准文件/EW6.7-202/检测报告",
+        validityBasis="follow_turbine",
+    )
+
+    (resolved,) = [row for row in resolve_follow_turbine_expiries([cert, report]) if row["fileId"] == "RAW-0020"]
+
+    assert resolved["expiryDate"] == ""
+    assert resolved["followTurbineCertFileId"] == ""
+
+
+def test_follow_turbine_picks_latest_expiry_among_multiple_certs() -> None:
+    older = _type_cert_row(fileId="RAW-0010", expiryDate="2030-08-13")
+    newer = _type_cert_row(
+        fileId="RAW-0011",
+        name="EW6.7-202-115-CQC25030482430上海电气型式认证A-20260108更新.pdf",
+        expiryDate="2031-01-07",
+    )
+    report = _ledger_row(
+        fileId="RAW-0020",
+        name="EW6.7-202电能质量评估报告.pdf",
+        folderPath="技术标/标准文件/EW6.7-202/检测报告",
+        validityBasis="follow_turbine",
+    )
+
+    (resolved,) = [row for row in resolve_follow_turbine_expiries([older, newer, report]) if row["fileId"] == "RAW-0020"]
+
+    assert resolved["expiryDate"] == "2031-01-07"
+    assert resolved["followTurbineCertFileId"] == "RAW-0011"
+
+
+def test_follow_turbine_not_resolved_when_cert_has_no_expiry() -> None:
+    cert = _type_cert_row(expiryDate="")
+    report = _ledger_row(
+        fileId="RAW-0020",
+        name="EW6.7-202电网适应性评估报告.pdf",
+        folderPath="技术标/标准文件/EW6.7-202/检测报告",
+        validityBasis="follow_turbine",
+    )
+
+    (resolved,) = [row for row in resolve_follow_turbine_expiries([cert, report]) if row["fileId"] == "RAW-0020"]
+
+    assert resolved["expiryDate"] == ""
+
+
+def test_follow_turbine_falls_back_to_model_in_file_name() -> None:
+    cert = _type_cert_row(folderPath="技术标/证书汇总")
+    report = _ledger_row(
+        fileId="RAW-0020",
+        name="EW6.7-202高压穿越评估报告.pdf",
+        folderPath="技术标/报告汇总",
+        validityBasis="follow_turbine",
+    )
+
+    (resolved,) = [row for row in resolve_follow_turbine_expiries([cert, report]) if row["fileId"] == "RAW-0020"]
+
+    assert resolved["expiryDate"] == "2030-08-13"

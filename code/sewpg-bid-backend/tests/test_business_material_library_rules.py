@@ -144,13 +144,14 @@ class BusinessMaterialLibraryRulesTests(unittest.TestCase):
         self.assertEqual(status, "original_only")
         self.assertIn("原件", message)
 
-    def test_cleanable_documents_still_queue_cleaning(self) -> None:
-        status, message = clean_status_for_new_file("授权书.docx")
-        self.assertEqual(status, "pending")
-        self.assertIn("清洗", message)
+    def test_word_documents_still_queue_cleaning(self) -> None:
+        for name in ["授权书.doc", "授权书.docx"]:
+            status, message = clean_status_for_new_file(name)
+            self.assertEqual(status, "pending", name)
+            self.assertIn("清洗", message)
 
-    def test_non_docx_documents_keep_original_without_cleaning(self) -> None:
-        for name in ["技术方案.pdf", "报价表.xlsx", "偏差表.xls", "参数表.xlsm", "旧版说明.doc", "说明.md"]:
+    def test_non_word_documents_keep_original_without_cleaning(self) -> None:
+        for name in ["技术方案.pdf", "报价表.xlsx", "偏差表.xls", "参数表.xlsm", "说明.md"]:
             status, message = clean_status_for_new_file(name)
             self.assertEqual(status, "original_only", name)
             self.assertIn("原件", message)

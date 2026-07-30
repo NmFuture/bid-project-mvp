@@ -523,6 +523,37 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def run_bid_tech_fact_curator_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        early_tool_command: str = "",
+        early_tool_wait_file: str = "",
+    ) -> dict[str, Any]:
+        session = self.create_session("S3 技术标事实表维护")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_tool_command=early_tool_command,
+            early_tool_wait_file=early_tool_wait_file,
+        )
+        parsed = self._extract_fact_curator_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def generate_wiki_blueprint_with_trace(
         self,
         prompt_text: str,
@@ -833,6 +864,20 @@ class OpencodeClient:
             raise RuntimeError("futurecode 返回的 AI 填写 JSON 结构不正确。")
         return parsed
 
+    def _extract_fact_curator_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回事实表维护结果。",
+            repair_kind="fact_curate",
+        )
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("suggestions"), list)
+            and not isinstance(parsed.get("suggestionsPath"), str)
+            and not isinstance(parsed.get("outputFile"), str)
+        ):
+            raise RuntimeError("futurecode 返回的事实表维护 JSON 结构不正确。")
+        return parsed
+
     def _extract_json_response(
         self,
         response: dict[str, Any],
@@ -882,6 +927,7 @@ class OpencodeClient:
         cancel_check: Callable[[], bool] | None = None,
         terminal_validator: Callable[[], dict[str, Any]] | None = None,
         assistant_stop_validator: Callable[[], dict[str, Any]] | None = None,
+        early_tool_wait_file: str = "",
     ) -> dict[str, Any]:
         if stream_callback is None and not early_tool_command:
             return self.send_prompt(session_id, prompt_text)
@@ -998,9 +1044,14 @@ class OpencodeClient:
                         stream_callback=stream_callback,
                         elapsed_seconds=time.monotonic() - progress_started_at,
                     )
-                if tool_output and not (
+                early_ready = bool(tool_output) and not (
                     early_tool_command == "s2outline-finalize" and terminal_validator is not None
-                ):
+                )
+                if early_ready and early_tool_wait_file and not Path(early_tool_wait_file).is_file():
+                    # 脚本只产出中间产物（如 factcurate 的证据简报），最终结果文件由 LLM 后续写出：
+                    # 文件未出现前不提前返回，继续轮询；始终不写则等同无提前返回，走正常完成/超时路径
+                    early_ready = False
+                if early_ready:
                     if early_tool_command in {"s2outline-finalize", "s2outline-decision-batch"}:
                         self._stop_s2_outline_session_after_finalize(
                             session_id,
@@ -2491,6 +2542,12 @@ class OpencodeClient:
                 '{"schema_version":"bid-tech-table-fill-v1","outputFile":'
                 '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/ai_fill/GAP-0001/AI填写.docx",'
                 '"unfilledFields":[],"evidenceRefs":[{"type":"material","id":"RAW-0001"}]}'
+            )
+        elif repair_kind == "fact_curate":
+            schema_hint = (
+                '{"schema":"bid-tech-fact-curate-v1","suggestionsPath":'
+                '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/fact_curate/fact_curate_suggestions.json",'
+                '"counts":{"fill":1,"fix":0,"confirmAdvice":0}}'
             )
         elif repair_kind == "business_format":
             schema_hint = (

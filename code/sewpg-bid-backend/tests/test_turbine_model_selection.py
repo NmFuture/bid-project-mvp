@@ -58,6 +58,32 @@ def _confirm_technical_review_for_tests(project_id: str) -> None:
     persist_technical_gap_project(project)
 
 
+def _seed_fact_specs(project_id: str) -> None:
+    """build_facts 门控 seed：测试绕过实时表上传，直接注入小清单作为项目 specs。"""
+    project = store._require(project_id)
+    project.setdefault("gap_state", {})["factSpecs"] = {
+        "fileName": "测试实时表.xlsx",
+        "uploadedAt": "2026-07-27T00:00:00",
+        "specs": [
+            {
+                "seq": 1,
+                "key": "招标编号",
+                "label": "招标编号",
+                "reviewLabel": "",
+                "sourceFile": "",
+                "placeholder": "",
+                "note": "",
+                "needsConfirmation": False,
+                "referenceFile": "招标文件",
+                "valueRequired": True,
+                "sourceKind": "tender",
+                "aliases": [],
+            }
+        ],
+    }
+    store._persist_project(project)
+
+
 def _save_generated_outline_for_tests(
     project_id: str,
     *,
@@ -253,6 +279,7 @@ class TurbineModelSelectionTests(unittest.TestCase):
         self.assertEqual(detection.status_code, 200, detection.text)
         self.assertEqual(gap_manifests[0]["projectTurbineModel"]["model"], "EW10.0-220下置")
         self.assertEqual(detection.json()["gapPlan"]["projectTurbineModel"]["platform"], "X2E-2")
+        _seed_fact_specs(project_id)
         facts = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(facts.status_code, 200, facts.text)
         confirm_facts = self.client.put(
