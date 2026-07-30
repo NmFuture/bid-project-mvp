@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   selectTechnicalParseProjectId,
@@ -9,7 +12,10 @@ import {
   technicalProjectParseResultRoute,
 } from './technicalProjectRoutes.js'
 
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
 test('technical parse result route points back to the parse page for the project', () => {
+  assert.equal(technicalProjectParseResultRoute(), '/parse/technical')
   assert.equal(
     technicalProjectParseResultRoute('PRJ-0088'),
     '/parse/technical?projectId=PRJ-0088',
@@ -93,4 +99,15 @@ test('technical parse route with projectId selects the exact project', () => {
     }),
     'PRJ-0088',
   )
+})
+
+test('技术标项目总览从解析入口新建项目', () => {
+  const source = readFileSync(resolve(__dirname, 'pages/TechnicalProjectList.jsx'), 'utf8')
+
+  assert.match(source, /onClick=\{\(\) => navigate\(technicalProjectParseResultRoute\(\)\)\}/)
+  assert.match(source, />\s*解析并新建项目\s*<\/button>/)
+  assert.match(source, /actionText="解析并新建项目"/)
+  assert.match(source, /showActionIcon=\{false\}/)
+  assert.match(source, /onAction=\{\(\) => navigate\(technicalProjectParseResultRoute\(\)\)\}/)
+  assert.doesNotMatch(source, /TechnicalProjectWizardModal/)
 })
