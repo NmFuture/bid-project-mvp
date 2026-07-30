@@ -444,6 +444,8 @@ class OcrTask(Base):
     max_retries = Column(Integer, default=2)
     input_path = Column(VARCHAR(500))
     locked_at = Column(DateTime(timezone=True))
+    locked_by = Column(VARCHAR(80))
+    fence_token = Column(BigInteger, default=0)
     audit_meta = Column(JSONB, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     created_by = Column(VARCHAR(100))

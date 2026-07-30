@@ -14,6 +14,7 @@ from app.services.job_queue import (
     clear_job_inflight,
     dequeue_generation_job,
     mark_job_inflight,
+    mark_job_progress,
     mark_job_status,
     reclaim_stale_inflight_jobs,
     recover_inflight_jobs,
@@ -208,6 +209,13 @@ def _run_job(job: dict[str, Any]) -> bool:
                 "status": "failed" if result.get("deepParseStatus") == "failed" else "success",
                 "summary": result.get("deepParseMessage") or "",
             }
+        elif job_type == "material_wiki_generation":
+            from app.services.material_wiki_jobs import execute_material_wiki_generation
+
+            final_state = execute_material_wiki_generation(
+                data,
+                progress_callback=lambda progress: mark_job_progress(job, progress),
+            )
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
@@ -307,7 +315,7 @@ def _run_job(job: dict[str, Any]) -> bool:
             elif final_status == "cancelled":
                 mark_job_status(job, "cancelled", str(final_state.get("summary") or "任务已取消。"))
             else:
-                mark_job_status(job, "succeeded")
+                mark_job_status(job, "succeeded", str(final_state.get("summary") or ""))
         if workflow_parent and workflow_terminal:
             if final_status == "failed":
                 mark_job_status(workflow_parent, "failed", str(final_state.get("summary") or "Job failed"))
@@ -330,7 +338,9 @@ def _run_job(job: dict[str, Any]) -> bool:
     return True
 
 
-def main() -> None:
+def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> None:
+    global _stop_requested
+    _stop_requested = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
@@ -339,7 +349,12 @@ def main() -> None:
         logger.error("REDIS_URL is not configured; worker cannot start.")
         return
 
-    logger.info("Redis worker started. Queue polling timeout=%ss", settings.redis_worker_poll_timeout_sec)
+    logger.info(
+        "%s worker started. Queue=%s polling timeout=%ss",
+        worker_name,
+        queue_key,
+        settings.redis_worker_poll_timeout_sec,
+    )
     next_reclaim_at = 0.0
     recovery_done = False
     while not _stop_requested:
@@ -348,16 +363,17 @@ def main() -> None:
             continue
 
         if not recovery_done:
-            recover_processing_jobs(QUEUE_KEY)
-            # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
-            recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)
+            recover_processing_jobs(queue_key)
+            if queue_key == QUEUE_KEY:
+                # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
+                recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)
             recovery_done = True
 
         if time.monotonic() >= next_reclaim_at:
-            reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec)
+            reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec, queue_key)
             next_reclaim_at = time.monotonic() + RECLAIM_INTERVAL_SEC
 
-        job = dequeue_generation_job()
+        job = dequeue_generation_job(queue_key=queue_key)
         if not job:
             continue
 
@@ -369,7 +385,11 @@ def main() -> None:
             recovery_done = False
             continue
 
-    logger.info("Redis worker stopped.")
+    logger.info("%s worker stopped.", worker_name)
+
+
+def main() -> None:
+    run_worker()
 
 
 if __name__ == "__main__":

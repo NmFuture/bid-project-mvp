@@ -20,7 +20,12 @@ from app.services.technical_audit_service import technical_audit_service
 from app.services.peripheral import PeripheralError
 from app.services.background_job_registry import get_job_status, start_job, update_job_progress
 from app.services.technical_material_store import technical_material_store
-from app.services.technical_wiki_generation import generate_technical_wiki
+from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.material_wiki_jobs import (
+    enqueue_material_wiki_generation,
+    latest_material_wiki_job_status,
+    material_wiki_job_status,
+)
 
 router = APIRouter()
 
@@ -965,7 +970,6 @@ async def technical_update_certificate_scopes(data: dict[str, Any] = Body(defaul
 
 
 CERTIFICATE_INCREMENTAL_JOB = "technical_certificate_incremental"
-TECHNICAL_WIKI_BOOTSTRAP_JOB = "technical_wiki_bootstrap"
 
 
 @router.post("/api/technical/materials/certificates/incremental")
@@ -1011,26 +1015,25 @@ async def technical_delete_certificate_ledger(file_id: str) -> dict[str, Any]:
 
 @router.post("/api/technical/materials/wiki/bootstrap")
 async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    """启动技术标 Wiki 生成后台任务并立即返回；运行中重复触发返回当前运行状态（幂等）。
-
-    任务在 web 进程后台持续运行，与请求生命周期解耦，离开页面不中断；
-    状态仅存内存，后端重启后需重新触发（AI 预览有签名缓存，可断点续跑）。
-    """
-    mode = str(data.get("mode") or "create")
-    return start_job(
-        TECHNICAL_WIKI_BOOTSTRAP_JOB,
-        lambda: generate_technical_wiki(
-            reference_path=str(data.get("referencePath") or ""),
-            mode=mode,
-            fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
-            on_progress=lambda progress: update_job_progress(TECHNICAL_WIKI_BOOTSTRAP_JOB, progress),
-        ),
+    return enqueue_material_wiki_generation(
+        TECHNICAL_BID_TYPE,
+        reference_path=str(data.get("referencePath") or ""),
+        mode=str(data.get("mode") or "create"),
+        fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
+
+
+@router.get("/api/technical/materials/wiki/jobs/{job_id}")
+async def technical_wiki_job_status(job_id: str) -> dict[str, Any]:
+    return material_wiki_job_status(job_id, TECHNICAL_BID_TYPE)
 
 
 @router.get("/api/technical/materials/wiki/bootstrap/status")
 async def technical_wiki_bootstrap_status() -> dict[str, Any]:
-    return get_job_status(TECHNICAL_WIKI_BOOTSTRAP_JOB)
+    status = latest_material_wiki_job_status(TECHNICAL_BID_TYPE)
+    if status.get("status") == "succeeded":
+        status["result"] = await technical_material_store.wiki_list("")
+    return status
 
 
 @router.post("/api/technical/materials/wiki")

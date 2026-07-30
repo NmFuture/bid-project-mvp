@@ -225,3 +225,43 @@ def test_dedupe_certificate_rows_uses_folder_path_and_name_as_unique_key() -> No
     assert primary["fileId"] == "RAW-0002"
     assert primary["duplicateCount"] == 2
     assert primary["duplicateFileIds"] == ["RAW-0001"]
+
+
+def test_suggest_certificate_time_scopes_reflects_live_library(monkeypatch) -> None:
+    """建议目录必须来自实时素材库，而不是可能滞后的三级目录索引快照。"""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.services import material_certificate_time as mct
+
+    cert_folder = SimpleNamespace(path="技术标/标准文件/资质证书库/2025年")
+    plain_folder = SimpleNamespace(path="技术标/标准文件/方案模板")
+    shallow_folder = SimpleNamespace(path="技术标/标准文件")
+    files = [
+        SimpleNamespace(name="整机型式认证证书.pdf", folder=cert_folder, ext_fields={}),
+        SimpleNamespace(name="证书扫描件.png", folder=cert_folder, ext_fields={}),
+        SimpleNamespace(name="说明.txt", folder=cert_folder, ext_fields={}),
+        SimpleNamespace(name="检测报告.pdf", folder=plain_folder, ext_fields={}),
+        SimpleNamespace(name="技术方案.docx", folder=plain_folder, ext_fields={}),
+        SimpleNamespace(name="合格证.pdf", folder=shallow_folder, ext_fields={}),
+    ]
+    monkeypatch.setattr(mct, "_load_raw_files", AsyncMock(return_value=files))
+    monkeypatch.setattr(
+        mct, "_configured_scope_paths",
+        lambda *, bid_type: ["技术标/标准文件/资质证书库/2025年"],
+    )
+
+    payload = asyncio.run(mct.suggest_certificate_time_scopes(bid_type="技术标"))
+
+    by_path = {item["path"]: item for item in payload["items"]}
+    # 目录自身命中证书关键词 → 建议到该目录；只有文件名命中 → 回落到三级目录；
+    # 不支持后缀与层级不足的目录不进建议。
+    assert set(by_path) == {"技术标/标准文件/资质证书库/2025年", "技术标/标准文件/方案模板"}
+    cert = by_path["技术标/标准文件/资质证书库/2025年"]
+    assert cert["candidateCount"] == 2
+    assert cert["selected"] is True
+    assert cert["examples"] == ["整机型式认证证书.pdf", "证书扫描件.png"]
+    plain = by_path["技术标/标准文件/方案模板"]
+    assert plain["candidateCount"] == 1
+    assert plain["selected"] is False
