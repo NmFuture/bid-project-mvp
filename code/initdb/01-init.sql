@@ -258,6 +258,8 @@ CREATE TABLE IF NOT EXISTS ocr_tasks (
     error_message    TEXT,
     page_count       INT DEFAULT 0,
     raw_response     JSONB DEFAULT '{}'::jsonb,
+    locked_by        VARCHAR(80),
+    fence_token      BIGINT DEFAULT 0,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
     created_by       VARCHAR(100),
     updated_at       TIMESTAMPTZ DEFAULT NOW()

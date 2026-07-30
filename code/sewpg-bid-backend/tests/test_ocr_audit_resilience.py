@@ -23,14 +23,19 @@ class _FakeSession:
         self.task = task
         self.events = events
         self.added: list[Any] = []
+        self.statements: list[Any] = []
 
-    async def execute(self, _statement: Any) -> _FakeResult:
+    async def execute(self, statement: Any) -> _FakeResult:
+        self.statements.append(statement)
         return _FakeResult(self.task)
 
     async def flush(self) -> None:
         return None
 
     async def refresh(self, _instance: Any) -> None:
+        return None
+
+    async def rollback(self) -> None:
         return None
 
     async def commit(self) -> None:
@@ -91,13 +96,15 @@ class OcrAuditResilienceTests(unittest.IsolatedAsyncioTestCase):
                 patch("app.services.ocr_service.audit_service.record", new=audit_record),
                 self.assertLogs("app.services.ocr_service", level="ERROR") as logs,
             ):
-                await service._process_task(task.id)
+                await service._process_task(task.id, "worker-test", 1)
 
             input_deleted = not input_path.exists()
 
-        self.assertEqual(task.status, "completed")
-        self.assertEqual(task.retry_count, 0)
-        self.assertEqual(task.error_message, "")
+        finalize_stmt = session.statements[1]
+        finalize_params = finalize_stmt.compile().params
+        self.assertEqual(finalize_params["status"], "completed")
+        self.assertEqual(finalize_params["error_message"], "")
+        self.assertEqual(finalize_params["page_count"], 1)
         self.assertTrue(input_deleted)
         self.assertEqual(len(session.added), 1)
         audit_record.assert_awaited_once()
@@ -143,11 +150,13 @@ class OcrAuditResilienceTests(unittest.IsolatedAsyncioTestCase):
                 patch("app.services.ocr_service.audit_service.record", new=fail_audit),
                 self.assertLogs("app.services.ocr_service", level="ERROR"),
             ):
-                await service._process_task(task.id)
+                await service._process_task(task.id, "worker-test", 1)
 
         self.assertEqual(events, ["commit", "audit"])
-        self.assertEqual(task.status, "failed")
-        self.assertEqual(task.error_message, "model unavailable")
+        finalize_stmt = session.statements[1]
+        finalize_params = finalize_stmt.compile().params
+        self.assertEqual(finalize_params["status"], "failed")
+        self.assertEqual(finalize_params["error_message"], "model unavailable")
 
     async def test_enqueued_task_is_returned_when_submission_audit_fails(self) -> None:
         service = OcrService()
