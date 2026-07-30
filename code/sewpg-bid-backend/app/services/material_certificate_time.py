@@ -207,6 +207,18 @@ def _certificate_item_unique_key(item: RawFile) -> str:
     )
 
 
+def _certificate_meta_version(ext_fields: Any) -> str:
+    """证书台账行版本快照：certificateMeta 的规范化 JSON，无记录时为空串。
+
+    后台批任务选入文件时记录版本，提交前比对；人工编辑、删除记录、
+    其他识别任务写入都会改变该值，从而被条件更新（CAS）拦截。
+    """
+    meta = ext_fields.get("certificateMeta") if isinstance(ext_fields, dict) else None
+    if not isinstance(meta, dict):
+        return ""
+    return json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str)
+
+
 def _is_retryable_stale_not_found_meta(meta: Any) -> bool:
     if not isinstance(meta, dict):
         return False
@@ -954,6 +966,7 @@ async def run_certificate_time_incremental(
         raise PeripheralError(400, "请先确认需要识别的证书目录。", "CERTIFICATE_SCOPE_REQUIRED")
     items = await _load_raw_files(bid_type=bid_type)
     selected_ids: list[str] = []
+    expected_versions: dict[str, str] = {}
     seen_keys: set[str] = set()
     for item in items:
         if not _file_in_scope(item, scope_paths):
@@ -976,7 +989,10 @@ async def run_certificate_time_incremental(
         if status == "failed" and not include_failed:
             continue
         seen_keys.add(unique_key)
-        selected_ids.append(_raw_file_id(item))
+        file_id = _raw_file_id(item)
+        # 选入即记录行版本，提交时据此做条件更新（CAS），不覆盖人工/其他任务的最新写入
+        expected_versions[file_id] = _certificate_meta_version(item.ext_fields)
+        selected_ids.append(file_id)
     if not selected_ids:
         return {
             "items": [],
@@ -984,12 +1000,14 @@ async def run_certificate_time_incremental(
             "processed": 0,
             "skipped": 0,
             "failed": [],
+            "conflicted": [],
             "message": "没有需要增量识别的证书文件",
         }
     return await run_certificate_time_batch(
         bid_type=bid_type,
         file_ids=selected_ids,
         limit=limit,
+        expected_versions=expected_versions,
         on_progress=on_progress,
     )
 
@@ -1076,16 +1094,24 @@ def _should_accept_text_without_ocr(*, suffix: str, text: str) -> bool:
     return True
 
 
+def _extract_text_candidate(file_name: str, suffix: str, content: bytes) -> tuple[str, dict[str, Any], bool]:
+    """同步解析候选文本并判定是否可接受；整体放线程执行，避免阻塞事件循环。"""
+    text, info = _extract_text_without_ocr(file_name, content)
+    return text, info, _should_accept_text_without_ocr(suffix=suffix, text=text)
+
+
 async def _extract_source_text(item: RawFile) -> tuple[str, dict[str, Any]]:
     suffix = Path(item.name).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise PeripheralError(400, "仅支持 PDF、DOCX 和图片证书。", "CERTIFICATE_FILE_TYPE_UNSUPPORTED")
 
-    content = minio_client.get_object(item.minio_bucket, item.minio_key)
+    # MinIO 同步下载与 PDF/DOCX 解析都是阻塞调用，放默认线程池执行：
+    # 批任务在 Web 事件循环后台跑，不能阻塞 /healthz 与其他请求。
+    content = await asyncio.to_thread(minio_client.get_object, item.minio_bucket, item.minio_key)
     if suffix in {".docx", ".pdf"}:
         try:
-            text, info = _extract_text_without_ocr(item.name, content)
-            if _should_accept_text_without_ocr(suffix=suffix, text=text):
+            text, info, accepted = await asyncio.to_thread(_extract_text_candidate, item.name, suffix, content)
+            if accepted:
                 return text, info
         except Exception:
             if suffix == ".docx":
@@ -1198,35 +1224,52 @@ def _merge_ai_certificate_result(rule_meta: dict[str, Any], ai_meta: dict[str, A
     return merged
 
 
+def _rule_extract_certificate_fields(text: str, *, file_name: str, folder_path: str) -> dict[str, Any]:
+    """规则链提取（纯 CPU 正则），放线程执行避免大文本阻塞事件循环。"""
+    extracted = extract_certificate_time_fields(text)
+    # 先按《证书报告有效期确认》规则表完善有效期识别与判断
+    return apply_certificate_validity_rules(
+        extracted,
+        text=text,
+        file_name=file_name,
+        folder_path=folder_path,
+    )
+
+
 async def run_certificate_time_batch(
     *,
     bid_type: str,
     folder_path: str = "",
     file_ids: list[str] | None = None,
     limit: int = 0,
+    expected_versions: dict[str, str] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     items = await _load_raw_files(bid_type=bid_type, folder_path=folder_path, file_ids=file_ids)
     # limit <= 0 表示处理全部待识别文件；limit > 0 时按顺序截取（如单文件重识别传 1）
     limit = int(limit or 0)
     selected = items if limit <= 0 else items[:limit]
+    # 选入文件时的行版本快照（CAS 期望值）：外部（增量任务选入时刻）传入的优先，
+    # 直接调用（单文件重识别、目录批处理）在任务启动此刻快照。
+    versions: dict[str, str] = dict(expected_versions or {})
+    for item in selected:
+        versions.setdefault(_raw_file_id(item), _certificate_meta_version(item.ext_fields))
     rows: list[dict[str, Any]] = []
 
     for item in selected:
         raw_id = _raw_file_id(item)
+        folder_path = item.folder.path if item.folder else ""
         suffix = Path(item.name).suffix.lower()
         meta: dict[str, Any]
         try:
             if suffix not in SUPPORTED_SUFFIXES:
                 raise PeripheralError(400, "仅支持 PDF、DOCX 和图片证书。", "CERTIFICATE_FILE_TYPE_UNSUPPORTED")
             text, source_info = await _extract_source_text(item)
-            extracted = extract_certificate_time_fields(text)
-            # 先按《证书报告有效期确认》规则表完善有效期识别与判断
-            extracted = apply_certificate_validity_rules(
-                extracted,
-                text=text,
+            extracted = await asyncio.to_thread(
+                _rule_extract_certificate_fields,
+                text,
                 file_name=item.name,
-                folder_path=item.folder.path if item.folder else "",
+                folder_path=folder_path,
             )
             source = str(source_info.get("source") or "")
             # 跟随整机型式证的报告不单独识别有效期，跳过 AI 兜底以免猜出日期
@@ -1267,21 +1310,45 @@ async def run_certificate_time_batch(
                 "errorMessage": getattr(exc, "detail", str(exc)),
             }
 
+        # 条件更新（CAS）：提交前重新读行并比对选入时的版本快照。
+        # 版本变化（人工编辑 status=manual、其他识别任务先提交）或记录被删除时跳过写入，
+        # 保留用户最新操作，行标记 conflicted 并进入冲突明细。
+        conflict_reason = ""
         async with async_session() as session:
             await ensure_material_runtime_tables(session)
             current = await session.get(RawFile, int(item.id))
-            if current is not None:
-                ext = dict(current.ext_fields or {})
-                ext["certificateMeta"] = meta
-                current.ext_fields = ext
-                await session.commit()
+            if current is None:
+                conflict_reason = "deleted"
+            else:
+                current_version = _certificate_meta_version(current.ext_fields)
+                expected_version = versions.get(raw_id, "")
+                if current_version != expected_version:
+                    # 快照时有记录、当前记录被删（删除台账只是摘掉 certificateMeta）记 deleted，
+                    # 其余版本变化（人工编辑、其他识别任务先提交）记 modified
+                    conflict_reason = "deleted" if expected_version and not current_version else "modified"
+                else:
+                    ext = dict(current.ext_fields or {})
+                    ext["certificateMeta"] = meta
+                    current.ext_fields = ext
+                    await session.commit()
 
-        rows.append({
-            "fileId": raw_id,
-            "name": item.name,
-            "folderPath": item.folder.path if item.folder else "",
-            **meta,
-        })
+        if conflict_reason:
+            rows.append({
+                "fileId": raw_id,
+                "name": item.name,
+                "folderPath": folder_path,
+                "status": "conflicted",
+                "conflictReason": conflict_reason,
+                "updatedAt": now_iso(),
+                "errorMessage": "",
+            })
+        else:
+            rows.append({
+                "fileId": raw_id,
+                "name": item.name,
+                "folderPath": folder_path,
+                **meta,
+            })
         if on_progress is not None:
             on_progress({
                 "processed": len(rows),
@@ -1289,14 +1356,25 @@ async def run_certificate_time_batch(
                 "failed": sum(1 for row in rows if row.get("status") in {"failed", "unsupported"}),
                 "currentFile": item.name,
             })
+        # 逐文件有界处理（串行、单文件解析在受限线程内），文件之间显式让出事件循环做背压
+        await asyncio.sleep(0)
 
     failed = [row for row in rows if row.get("status") in {"failed", "unsupported"}]
+    conflicted = [
+        {"fileId": row["fileId"], "name": row["name"], "reason": row["conflictReason"]}
+        for row in rows
+        if row.get("status") == "conflicted"
+    ]
     extracted_count = sum(1 for row in rows if row.get("status") == "extracted")
+    message = f"证书时间整理完成：识别 {extracted_count} 个，失败/不支持 {len(failed)} 个"
+    if conflicted:
+        message += f"，冲突跳过 {len(conflicted)} 个（保留人工或其他任务的最新修改）"
     return {
         "items": rows,
         "total": len(rows),
         "processed": len(rows),
         "skipped": max(0, len(items) - len(selected)),
         "failed": failed,
-        "message": f"证书时间整理完成：识别 {extracted_count} 个，失败/不支持 {len(failed)} 个",
+        "conflicted": conflicted,
+        "message": message,
     }
