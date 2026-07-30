@@ -314,6 +314,57 @@ const factFieldStatusOptions = [
   'not_applicable',
 ]
 
+// v1 遗留 missing 按 v2 missing_source 归一处理（统计、配色、筛选统一口径，不并列 option）
+const normalizeFactFieldStatus = (status) => {
+  const value = String(status || 'unextracted')
+  return value === 'missing' ? 'missing_source' : value
+}
+
+// 字段状态配色（统计 chip 与列表状态下拉共用）：confirmed 绿 / extracted 蓝 / pending_confirmation 青 /
+// missing_source 橙 / unextracted 浅琥珀 / conflict 红 / not_applicable 灰
+const factFieldStatusTone = (status) => {
+  switch (normalizeFactFieldStatus(status)) {
+    case 'confirmed':
+      return 'bg-secondary-container text-on-secondary-container'
+    case 'extracted':
+      return 'bg-primary-fixed text-on-primary-fixed-variant'
+    case 'pending_confirmation':
+      return 'bg-tertiary-fixed text-on-tertiary-fixed'
+    case 'missing_source':
+      return 'bg-orange-100 text-orange-900'
+    case 'unextracted':
+      return 'bg-amber-50 text-amber-800'
+    case 'conflict':
+      return 'bg-error/10 text-error'
+    default:
+      return 'bg-surface-container-high text-on-surface-variant'
+  }
+}
+
+// 统计条七态 chip 的展示顺序
+const factStatusChipOrder = [
+  'confirmed',
+  'pending_confirmation',
+  'extracted',
+  'unextracted',
+  'missing_source',
+  'conflict',
+  'not_applicable',
+]
+
+const hasFactSpecSeq = (field) =>
+  field?.specSeq !== null && field?.specSeq !== undefined && String(field.specSeq) !== ''
+
+// 清单进度分段，口径与后端 summary 的 spec*Count 一致：
+// confirmed=已确认；pending=待人工确认；unfilled=无值或未提取/缺来源；其余=已填未确认
+const factSpecSegment = (field) => {
+  const status = normalizeFactFieldStatus(field?.status)
+  if (status === 'confirmed') return 'confirmed'
+  if (status === 'pending_confirmation') return 'pending'
+  if (!String(field?.value || '').trim() || status === 'unextracted' || status === 'missing_source') return 'unfilled'
+  return 'filledUnconfirmed'
+}
+
 const factSourceKindLabels = {
   tender: '招标文件',
   material: '项目材料',
@@ -329,6 +380,29 @@ const formatConfirmedAt = (value) => {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
 }
 
+const normalizeMaterialTreePath = (value) => String(value || '').replace(/^\/+|\/+$/g, '')
+const normalizeMaterialTreeNodes = (nodes = []) =>
+  (Array.isArray(nodes) ? nodes : [])
+    .map((node) => {
+      const path = normalizeMaterialTreePath(node?.path || node?.name || '')
+      return {
+        path,
+        name: String(node?.name || node?.title || path.split('/').pop() || '未命名目录'),
+        fileCount: Number(node?.fileCount || 0),
+        children: normalizeMaterialTreeNodes(node?.children || []),
+      }
+    })
+    .filter((node) => node.path)
+const collectDefaultExpandedTreePaths = (nodes = [], depth = 0, result = new Set()) => {
+  nodes.forEach((node) => {
+    if (node.children.length) {
+      if (depth < 2) result.add(node.path)
+      collectDefaultExpandedTreePaths(node.children, depth + 1, result)
+    }
+  })
+  return result
+}
+
 const FactMaintenanceModal = ({
   open,
   factTable,
@@ -337,6 +411,9 @@ const FactMaintenanceModal = ({
   fieldBusy,
   specsImported,
   specsFileName,
+  materialPaths,
+  curateReport,
+  curating,
   onClose,
   onBuild,
   onConfirm,
@@ -344,10 +421,128 @@ const FactMaintenanceModal = ({
   onFieldChange,
   onAddField,
   onUploadSpecs,
+  onSaveMaterialPaths,
+  onCurate,
 }) => {
+  const [selectedPaths, setSelectedPaths] = useState(() => uniqueStrings(materialPaths || []))
+  const [pathsEditing, setPathsEditing] = useState(false)
+  const [treeNodes, setTreeNodes] = useState([])
+  const [treeLoading, setTreeLoading] = useState(false)
+  const [treeError, setTreeError] = useState('')
+  const [expandedTreePaths, setExpandedTreePaths] = useState(() => new Set())
+  // 统计条联动筛选：{ type: 'status' | 'spec', key, label }，null 表示全部
+  const [factFilter, setFactFilter] = useState(null)
+  const ignoredSuggestions = Array.isArray(curateReport?.ignored) ? curateReport.ignored : []
   if (!open) return null
-  const summary = factTable?.summary || {}
   const status = factTable?.status || 'empty'
+
+  // 统计口径：全部从本地 fields（factFields state）实时推导，与列表同一数据源，
+  // 新增字段、本地改状态后立即反映，不再依赖后端 summary 快照
+  const statusCounts = {}
+  fields.forEach((field) => {
+    const fieldStatus = normalizeFactFieldStatus(field.status)
+    statusCounts[fieldStatus] = (statusCounts[fieldStatus] || 0) + 1
+  })
+  const specSegments = { confirmed: 0, pending: 0, unfilled: 0, filledUnconfirmed: 0 }
+  const specTotal = fields.reduce((total, field) => {
+    if (!hasFactSpecSeq(field)) return total
+    specSegments[factSpecSegment(field)] += 1
+    return total + 1
+  }, 0)
+
+  const toggleFactFilter = (filter) => {
+    setFactFilter((current) => (current && current.type === filter.type && current.key === filter.key ? null : filter))
+  }
+  const matchesFactFilter = (field) => {
+    if (!factFilter) return true
+    if (factFilter.type === 'status') return normalizeFactFieldStatus(field.status) === factFilter.key
+    return hasFactSpecSeq(field) && factSpecSegment(field) === factFilter.key
+  }
+  // 保留原始下标：onFieldChange 按 factFields 下标回写，筛选后不能重排
+  const visibleRows = fields
+    .map((field, index) => ({ field, index }))
+    .filter(({ field }) => matchesFactFilter(field))
+
+  const factFilterChipClass = (active, tone, count) =>
+    `rounded-md px-2 py-0.5 text-[11px] font-semibold ${tone} ${
+      active ? 'ring-2 ring-primary/70' : 'hover:brightness-95'
+    } ${count ? '' : 'opacity-50'}`
+
+  const enterPathsEditing = async () => {
+    if (pathsEditing) {
+      // 收起时丢弃未保存的勾选，回退到已保存的参考路径
+      setSelectedPaths(uniqueStrings(materialPaths || []))
+      setPathsEditing(false)
+      return
+    }
+    setPathsEditing(true)
+    if (treeNodes.length || treeLoading) return
+    setTreeLoading(true)
+    setTreeError('')
+    try {
+      const payload = await technicalMaterialsAPI.raw.tree()
+      const nodes = normalizeMaterialTreeNodes(payload?.tree || payload?.items || payload?.nodes || [])
+      setTreeNodes(nodes)
+      setExpandedTreePaths(collectDefaultExpandedTreePaths(nodes))
+    } catch (e) {
+      setTreeError(e?.message || '素材目录树加载失败')
+    } finally {
+      setTreeLoading(false)
+    }
+  }
+
+  const togglePathSelected = (path) => {
+    setSelectedPaths((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]))
+  }
+
+  const toggleTreeExpand = (path) => {
+    setExpandedTreePaths((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  const renderPathTreeNode = (node, depth = 0) => {
+    const checked = selectedPaths.includes(node.path)
+    const hasChildren = node.children.length > 0
+    const expanded = expandedTreePaths.has(node.path)
+    return (
+      <div key={node.path}>
+        <div
+          className="flex items-center gap-1.5 rounded py-1 pr-1.5 text-xs hover:bg-surface-container-high/60"
+          style={{ paddingLeft: `${depth * 16 + 4}px` }}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={() => toggleTreeExpand(node.path)}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-container-high"
+              aria-label={expanded ? `收起 ${node.name}` : `展开 ${node.name}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">{expanded ? 'expand_more' : 'chevron_right'}</span>
+            </button>
+          ) : (
+            <span className="h-5 w-5 shrink-0" aria-hidden="true" />
+          )}
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={() => togglePathSelected(node.path)}
+            className="h-4 w-4 shrink-0 accent-primary"
+            aria-label={`选择参考目录 ${node.path}`}
+          />
+          <span className="min-w-0 flex-1 truncate text-on-surface" title={node.path}>{node.name}</span>
+          {node.fileCount > 0 && (
+            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] tabular-nums text-on-surface-variant">{node.fileCount}</span>
+          )}
+        </div>
+        {hasChildren && expanded ? node.children.map((child) => renderPathTreeNode(child, depth + 1)) : null}
+      </div>
+    )
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
       <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
@@ -359,12 +554,78 @@ const FactMaintenanceModal = ({
                 {factStatusLabels[status] || status}
               </span>
             </div>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              字段：{summary.totalCount || fields.length || 0} · 已确认：{summary.confirmedCount || 0} · 待人工确认：{summary.pendingConfirmationCount || 0} · 未提取：{summary.unextractedCount || 0} · 缺少来源：{summary.missingSourceCount ?? summary.missingCount ?? 0} · 冲突：{summary.conflictCount || 0}
-              {summary.specTotal ? ` · 清单覆盖：${summary.specMatched || 0}/${summary.specTotal}` : ''}
-            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="text-on-surface-variant">字段：{fields.length}</span>
+              <button
+                type="button"
+                onClick={() => setFactFilter(null)}
+                className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                  factFilter
+                    ? 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
+                    : 'bg-primary/10 text-primary ring-1 ring-primary/40'
+                }`}
+              >
+                全部
+              </button>
+              {factStatusChipOrder.map((statusKey) => {
+                const count = statusCounts[statusKey] || 0
+                const active = factFilter?.type === 'status' && factFilter.key === statusKey
+                const label = factStatusLabels[statusKey] || statusKey
+                return (
+                  <button
+                    key={statusKey}
+                    type="button"
+                    onClick={() => toggleFactFilter({ type: 'status', key: statusKey, label })}
+                    title={`筛选「${label}」字段${active ? '（再次点击取消）' : ''}`}
+                    className={factFilterChipClass(active, factFieldStatusTone(statusKey), count)}
+                  >
+                    {label}：{count}
+                  </button>
+                )
+              })}
+              {specTotal ? (
+                <>
+                  <span className="ml-1 text-on-surface-variant">清单进度：</span>
+                  {[
+                    ['confirmed', '已确认', 'confirmed'],
+                    ['pending', '待确认', 'pending_confirmation'],
+                    ['unfilled', '未填', 'unextracted'],
+                  ].map(([segmentKey, segmentLabel, toneStatus]) => {
+                    const count = specSegments[segmentKey]
+                    const active = factFilter?.type === 'spec' && factFilter.key === segmentKey
+                    return (
+                      <button
+                        key={segmentKey}
+                        type="button"
+                        onClick={() => toggleFactFilter({ type: 'spec', key: segmentKey, label: `清单·${segmentLabel}` })}
+                        title={`筛选清单中「${segmentLabel}」字段${active ? '（再次点击取消）' : ''}`}
+                        className={factFilterChipClass(active, factFieldStatusTone(toneStatus), count)}
+                      >
+                        {segmentLabel}：{count}
+                      </button>
+                    )
+                  })}
+                  <span
+                    className="text-on-surface-variant"
+                    title={`清单字段共 ${specTotal} 个：已确认 ${specSegments.confirmed} · 待确认 ${specSegments.pending} · 未填 ${specSegments.unfilled} · 已填未确认 ${specSegments.filledUnconfirmed}`}
+                  >
+                    / 共 {specTotal}
+                  </span>
+                </>
+              ) : null}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onCurate}
+              disabled={busy || !fields.length}
+              title="AI 匹配项目素材并填充字段值，结果置为待人工确认（耗时较长）"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-secondary px-3 text-xs font-semibold text-on-secondary hover:bg-secondary-container hover:text-on-secondary-container disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
+              {curating ? '匹配填充中...' : 'AI 匹配填充'}
+            </button>
             <button
               type="button"
               onClick={onBuild}
@@ -403,8 +664,130 @@ const FactMaintenanceModal = ({
           </div>
         </div>
 
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-surface-container-high bg-surface-container-lowest px-5 py-2.5 text-xs text-on-surface-variant">
+          <span className="inline-flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px]">description</span>
+            事实表清单：{specsImported ? (specsFileName || '已上传') : '未上传'}
+          </span>
+          <button
+            type="button"
+            onClick={onUploadSpecs}
+            disabled={busy}
+            className="inline-flex h-7 items-center gap-1 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[14px]">upload_file</span>
+            {specsImported ? '重新上传' : '上传事实表'}
+          </button>
+          <span className="inline-flex items-center gap-1">
+            <span className="material-symbols-outlined text-[14px]">folder_open</span>
+            参考路径：项目定制/本项目{materialPaths?.length ? ` + ${materialPaths.length} 个自定义目录` : ''}
+          </span>
+          <button
+            type="button"
+            onClick={enterPathsEditing}
+            disabled={busy}
+            className="inline-flex h-7 items-center gap-1 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[14px]">{pathsEditing ? 'expand_less' : 'edit'}</span>
+            {pathsEditing ? '收起参考路径' : '设置参考路径'}
+          </button>
+        </div>
+
+        {pathsEditing ? (
+          <div className="border-b border-surface-container-high bg-surface-container-lowest px-5 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-on-surface-variant">
+                从素材目录树勾选参考目录（「项目定制/本项目」始终参与，无需勾选）
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSaveMaterialPaths(selectedPaths)
+                    setPathsEditing(false)
+                  }}
+                  disabled={busy}
+                  className="inline-flex h-7 items-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+                >
+                  保存
+                </button>
+                <button
+                  type="button"
+                  onClick={enterPathsEditing}
+                  className="inline-flex h-7 items-center rounded-md bg-surface-container-high px-3 text-xs text-on-surface-variant hover:bg-surface-dim"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+            {selectedPaths.length ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {selectedPaths.map((path) => (
+                  <span
+                    key={path}
+                    className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
+                    title={path}
+                  >
+                    <span className="max-w-[320px] truncate">{path}</span>
+                    <button
+                      type="button"
+                      onClick={() => togglePathSelected(path)}
+                      className="flex h-4 w-4 items-center justify-center rounded hover:bg-primary/15"
+                      aria-label={`移除参考目录 ${path}`}
+                    >
+                      <span className="material-symbols-outlined text-[13px]">close</span>
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <div className="mt-2 max-h-56 overflow-y-auto rounded-md border border-surface-container-high bg-surface p-1.5">
+              {treeLoading ? (
+                <div className="flex h-24 items-center justify-center text-xs text-outline">正在加载素材目录树...</div>
+              ) : treeError ? (
+                <div className="flex h-24 items-center justify-center text-xs text-error">{treeError}</div>
+              ) : treeNodes.length ? (
+                treeNodes.map((node) => renderPathTreeNode(node, 0))
+              ) : (
+                <div className="flex h-24 items-center justify-center text-xs text-outline">素材目录树为空，请先在原始材料库中建立目录</div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {ignoredSuggestions.length ? (
+          <div className="border-b border-error/30 bg-error-container/35 px-5 py-3 text-xs text-on-error-container">
+            <p className="font-semibold">有 {ignoredSuggestions.length} 条 AI 建议未能写入事实表</p>
+            <ul className="mt-1 space-y-1">
+              {ignoredSuggestions.slice(0, 5).map((item, index) => (
+                <li key={`${typeof item === 'object' ? item?.fieldKey : item}-${index}`}>
+                  {typeof item === 'object'
+                    ? `${item?.fieldKey || '未知字段'}：${item?.reason || '未提供原因'}`
+                    : String(item)}
+                </li>
+              ))}
+            </ul>
+            {ignoredSuggestions.length > 5 ? <p className="mt-1">另有 {ignoredSuggestions.length - 5} 条未展示</p> : null}
+          </div>
+        ) : null}
+
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {fields.length ? (
+            <>
+              {factFilter ? (
+                <div className="mb-2 flex items-center gap-2 text-xs text-on-surface-variant">
+                  <span className="material-symbols-outlined text-[14px]">filter_alt</span>
+                  <span>筛选中：{factFilter.label}（{visibleRows.length} 条）</span>
+                  <button
+                    type="button"
+                    onClick={() => setFactFilter(null)}
+                    className="inline-flex h-6 items-center gap-0.5 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">close</span>
+                    清除筛选
+                  </button>
+                </div>
+              ) : null}
             <div className="overflow-hidden rounded-md border border-surface-container-high">
               <table className="w-full min-w-[880px] border-collapse bg-surface-container-lowest text-sm">
                 <thead className="bg-surface-container-low text-left text-xs text-outline">
@@ -417,16 +800,11 @@ const FactMaintenanceModal = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container-high">
-                  {fields.map((field, index) => {
+                  {visibleRows.map(({ field, index }) => {
                     const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
-                    const isEmptyStatus = ['missing', 'missing_source', 'unextracted'].includes(field.status)
-                    const statusTone = field.status === 'confirmed'
-                      ? 'bg-secondary-container text-on-secondary-container'
-                      : field.status === 'conflict'
-                        ? 'bg-error/10 text-error'
-                        : field.status === 'pending_confirmation' || field.status === 'missing' || field.status === 'missing_source'
-                          ? 'bg-tertiary-fixed text-on-tertiary-fixed'
-                          : 'bg-surface-container-high text-on-surface-variant'
+                    const normalizedStatus = normalizeFactFieldStatus(field.status)
+                    const isEmptyStatus = ['missing_source', 'unextracted'].includes(normalizedStatus)
+                    const statusTone = factFieldStatusTone(field.status)
                     const refs = asObjectArray(field.sourceRefs).slice(0, 2)
                     return (
                       <tr key={field.id || `${field.label}-${index}`} className="align-top">
@@ -473,15 +851,15 @@ const FactMaintenanceModal = ({
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1">
                             <select
-                              value={field.status || 'unextracted'}
+                              value={normalizedStatus}
                               onChange={(event) => onFieldChange(index, 'status', event.target.value)}
                               className={`h-7 min-w-0 flex-1 rounded-md border-0 px-1 text-[11px] font-semibold ${statusTone}`}
                             >
                               {factFieldStatusOptions.map((option) => (
                                 <option key={option} value={option}>{factStatusLabels[option] || option}</option>
                               ))}
-                              {field.status && !factFieldStatusOptions.includes(field.status) ? (
-                                <option value={field.status}>{factStatusLabels[field.status] || field.status}</option>
+                              {normalizedStatus && !factFieldStatusOptions.includes(normalizedStatus) ? (
+                                <option value={normalizedStatus}>{factStatusLabels[normalizedStatus] || normalizedStatus}</option>
                               ) : null}
                             </select>
                             {field.id ? (
@@ -515,9 +893,17 @@ const FactMaintenanceModal = ({
                       </tr>
                     )
                   })}
+                  {!visibleRows.length ? (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-8 text-center text-xs text-outline">
+                        没有符合「{factFilter?.label}」筛选条件的字段
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
+            </>
           ) : (
             <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
               <div>
@@ -525,7 +911,7 @@ const FactMaintenanceModal = ({
                 {specsImported ? (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      实时表「{specsFileName || '已上传'}」尚未生成事实表，点击下方按钮按清单提取字段。
+                      事实表「{specsFileName || '已上传'}」已解析，点击下方按钮按清单提取字段。
                     </p>
                     <button
                       type="button"
@@ -540,7 +926,7 @@ const FactMaintenanceModal = ({
                 ) : (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      还没有项目事实表。请先上传本项目的实时表 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
+                      还没有项目事实表。请先上传本项目的事实表 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
                     </p>
                     <button
                       type="button"
@@ -549,7 +935,7 @@ const FactMaintenanceModal = ({
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
                       <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                      上传实时表
+                      上传事实表
                     </button>
                   </>
                 )}
@@ -835,14 +1221,16 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factModalOpen, setFactModalOpen] = useState(false)
   const [factTable, setFactTable] = useState(null)
   const [factFields, setFactFields] = useState([])
+  const [factCurateReport, setFactCurateReport] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
-  // 实时表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
-  // 未上传的项目不出字段，仅引导上传。
+  // 事实表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
+  // 未上传的项目不出字段，仅引导上传。factMaterialPaths 是用户自定义的参考资料目录。
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
+  const [factMaterialPaths, setFactMaterialPaths] = useState([])
   const fillRuleInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
@@ -866,6 +1254,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         imported: Boolean(factsPayload?.specsImported),
         fileName: String(factsPayload?.specsFileName || ''),
       })
+      setFactMaterialPaths(Array.isArray(factsPayload?.materialPaths) ? factsPayload.materialPaths : [])
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
       if (!silent) setError(e?.message || '缺口识别与处理加载失败')
@@ -1201,6 +1590,13 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(payload)
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
+      if (build) {
+        setFactCurateReport(null)
+        const summary = payload?.summary || {}
+        showToast?.(
+          `刷新完成：已提取 ${summary.extractedCount ?? 0} · 待确认 ${summary.pendingConfirmationCount ?? 0} · 未提取 ${summary.unextractedCount ?? 0}（AI 匹配填充可继续补值）`
+        )
+      }
       return payload
     } catch (e) {
       showToast?.(e?.message || '项目事实表加载失败', 'error')
@@ -1212,10 +1608,10 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   const ensureFactTableReady = async () => {
     if (factTable?.status === 'confirmed') return true
-    // 未上传实时表的项目不出字段：引导上传，不再静默自动生成事实表
+    // 未上传事实表的项目不出字段：打开事实表弹窗引导上传，不再静默自动生成事实表
     if (!factSpecsMeta.imported && !factFields.length) {
-      showToast?.('请先上传本项目的实时表 Excel，系统才能提取要填写的字段', 'error')
-      fillRuleInputRef.current?.click()
+      showToast?.('请先上传本项目的事实表 Excel，系统才能提取要填写的字段', 'error')
+      setFactModalOpen(true)
       return false
     }
     if (busyAction) return false
@@ -1636,10 +2032,13 @@ export default function TechnicalGapRecognition({ showToast }) {
     event.target.value = ''
     if (!file) return
     if (!/\.xlsx$/i.test(file.name)) {
-      showToast?.('实时表仅支持 .xlsx 文件', 'error')
+      showToast?.('事实表仅支持 .xlsx 文件', 'error')
       return
     }
     if (busyAction) return
+    if (factFields.length && !window.confirm('重新上传会按新清单重建事实表；不再属于清单且未受保留规则保护的字段可能被移除。是否继续？')) {
+      return
+    }
     setBusyAction('fact-specs-upload')
     try {
       const formData = new FormData()
@@ -1650,11 +2049,64 @@ export default function TechnicalGapRecognition({ showToast }) {
       const table = await technicalGapsAPI.buildFacts(id)
       setFactTable(table)
       setFactFields(asObjectArray(table?.fields))
+      setFactCurateReport(null)
       setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      showToast?.(`实时表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
+      showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
       setFactModalOpen(true)
     } catch (e) {
-      showToast?.(e?.message || '实时表上传失败', 'error')
+      showToast?.(e?.message || '事实表上传失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
+  const handleSaveMaterialPaths = async (paths) => {
+    if (busyAction) return
+    setBusyAction('facts-material-sources')
+    try {
+      const payload = await technicalGapsAPI.saveMaterialSources(id, { paths })
+      setFactMaterialPaths(Array.isArray(payload?.paths) ? payload.paths : [])
+      showToast?.('参考路径已保存，下次生成/刷新事实表时生效')
+    } catch (e) {
+      showToast?.(e?.message || '参考路径保存失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
+  // AI 匹配填充：后端事实表维护 Skill 按素材给字段补值/修正/口径建议，结果落为待人工确认
+  const handleCurateFacts = async () => {
+    if (busyAction) return
+    const hasUnnamedManualValue = factFields.some((field) => {
+      const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+      return isManualField && String(field.value || '').trim() && !String(field.label || '').trim()
+    })
+    if (hasUnnamedManualValue) {
+      showToast?.('请先填写人工新增字段的字段名称', 'error')
+      return
+    }
+    setBusyAction('facts-curate')
+    try {
+      const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
+      const savedTable = await technicalGapsAPI.saveFacts(id, {
+        fields: fieldsToSave,
+        confirm: false,
+        operator: '当前用户',
+      })
+      setFactTable(savedTable)
+      setFactFields(asObjectArray(savedTable?.fields))
+      setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
+      const payload = await technicalGapsAPI.curateFacts(id, {})
+      const table = payload?.projectFactTable
+      setFactCurateReport(payload?.curateReport || null)
+      if (table?.schemaVersion) {
+        setFactTable(table)
+        setFactFields(asObjectArray(table.fields))
+        setData((current) => (current ? { ...current, projectFactTable: table } : current))
+      }
+      showToast?.(payload?.message || '匹配填充完成')
+    } catch (e) {
+      showToast?.(e?.message || '匹配填充失败，请稍后重试', 'error')
     } finally {
       setBusyAction('')
     }
@@ -1681,20 +2133,21 @@ export default function TechnicalGapRecognition({ showToast }) {
               type="button"
               onClick={() => fillRuleInputRef.current?.click()}
               disabled={Boolean(busyAction) || data?.status !== 'completed'}
-              title={factSpecsMeta.imported ? `已上传：${factSpecsMeta.fileName}（重新上传将覆盖字段清单并重建事实表）` : '上传本项目实时表 Excel，提取要填写的字段'}
+              title={factSpecsMeta.imported ? `已上传：${factSpecsMeta.fileName || '已上传'}，点击可重新上传` : '上传附表填写规则 Excel（事实表字段清单），用于提取要填写的字段'}
               size="stage"
               variant={factSpecsMeta.imported ? 'secondary' : 'quiet'}
             >
-              {busyAction === 'fact-specs-upload' ? '上传中...' : factSpecsMeta.imported ? '实时表（已上传）' : '上传实时表'}
+              {busyAction === 'fact-specs-upload' ? '上传中...' : factSpecsMeta.imported ? '附表填写规则（已上传）' : '附表填写规则'}
             </Button>
             <Button
               type="button"
               onClick={() => setFactModalOpen(true)}
               disabled={Boolean(busyAction) || data?.status !== 'completed'}
+              title={factSpecsMeta.imported ? `事实表清单：${factSpecsMeta.fileName}` : '尚未上传事实表，打开后按引导上传'}
               size="stage"
               variant={factConfirmed ? 'secondary' : 'quiet'}
             >
-              {factConfirmed ? '项目事实表已确认' : '维护项目事实表'}
+              {busyAction === 'fact-specs-upload' ? '上传中...' : factConfirmed ? '项目事实表已确认' : '项目事实表'}
             </Button>
             <Button
               type="button"
@@ -2098,22 +2551,29 @@ export default function TechnicalGapRecognition({ showToast }) {
           </div>
         )}
       </DataCard>
-      <FactMaintenanceModal
-        open={factModalOpen}
-        factTable={factTable}
-        fields={factFields}
-        busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload'].includes(busyAction)}
-        fieldBusy={busyAction === 'fact-field-confirm'}
-        specsImported={factSpecsMeta.imported}
-        specsFileName={factSpecsMeta.fileName}
-        onClose={() => setFactModalOpen(false)}
-        onBuild={() => loadFactTable({ build: true })}
-        onConfirm={handleConfirmFactTable}
-        onConfirmField={handleConfirmFactField}
-        onFieldChange={handleFactFieldChange}
-        onAddField={handleAddFactField}
-        onUploadSpecs={() => fillRuleInputRef.current?.click()}
-      />
+      {factModalOpen ? (
+        <FactMaintenanceModal
+          open
+          factTable={factTable}
+          fields={factFields}
+          busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
+          fieldBusy={busyAction === 'fact-field-confirm'}
+          specsImported={factSpecsMeta.imported}
+          specsFileName={factSpecsMeta.fileName}
+          materialPaths={factMaterialPaths}
+          curateReport={factCurateReport}
+          curating={busyAction === 'facts-curate'}
+          onClose={() => setFactModalOpen(false)}
+          onBuild={() => loadFactTable({ build: true })}
+          onConfirm={handleConfirmFactTable}
+          onConfirmField={handleConfirmFactField}
+          onFieldChange={handleFactFieldChange}
+          onAddField={handleAddFactField}
+          onUploadSpecs={() => fillRuleInputRef.current?.click()}
+          onSaveMaterialPaths={handleSaveMaterialPaths}
+          onCurate={handleCurateFacts}
+        />
+      ) : null}
       <TechnicalGenerationProgressModal
         open={generationModalOpen || generationRunning}
         status={generationStatus}

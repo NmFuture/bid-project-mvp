@@ -153,6 +153,61 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
 
 
+def test_manifest_uses_isolated_run_directory(workspace_dirs, monkeypatch) -> None:
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+
+    first, first_path = curator.build_fact_curator_manifest(_project(), gap_state, {})
+    second, second_path = curator.build_fact_curator_manifest(_project(), gap_state, {})
+
+    assert first_path.parent != second_path.parent
+    assert Path(first["briefFile"]).parent == first_path.parent
+    assert Path(first["outputFile"]).parent == first_path.parent
+    assert Path(second["briefFile"]).parent == second_path.parent
+    assert Path(second["outputFile"]).parent == second_path.parent
+
+
+def test_curate_targets_fill_covers_material_and_cert() -> None:
+    """补抽范围：招标/素材/证书类未提取字段都进 fill 桶；模板/平台/自动生成类不填。"""
+    fields = [
+        {"key": "f-tender", "status": "unextracted", "sourceKind": "tender"},
+        {"key": "f-material", "status": "unextracted", "sourceKind": "material"},
+        {"key": "f-cert", "status": "unextracted", "sourceKind": "cert"},
+        {"key": "x-platform", "status": "unextracted", "sourceKind": "platform"},
+        {"key": "x-derived", "status": "unextracted", "sourceKind": "derived"},
+        {"key": "x-template", "status": "unextracted", "sourceKind": "template"},
+    ]
+
+    targets = curator._curate_targets(fields)
+
+    assert targets["fill"] == ["f-tender", "f-material", "f-cert"]
+
+
+def test_apply_summary_preserves_project_spec_total_and_tracks_built_progress() -> None:
+    """Curator 刷新 summary 时不得把项目规则总数改成当前已构建骨架行数。"""
+    source_table = _table()
+    source_table["summary"] = {"specTotal": 10}
+    table, _ = curator.apply_fact_curator_suggestions(
+        source_table, [], operator="测试", saved_at="2026-07-27T00:00:00Z"
+    )
+
+    summary = table["summary"]
+    # 项目规则共 10 条，当前表只构建出 4 条；两个口径不能混用。
+    assert summary["specTotal"] == 10
+    assert summary["specBuiltTotal"] == 4
+    assert summary["specConfirmedCount"] == 1
+    assert summary["specPendingConfirmationCount"] == 1
+    assert summary["specUnfilledCount"] == 1
+    assert summary["specFilledUnconfirmedCount"] == 1
+    assert (
+        summary["specConfirmedCount"]
+        + summary["specPendingConfirmationCount"]
+        + summary["specUnfilledCount"]
+        + summary["specFilledUnconfirmedCount"]
+        == summary["specBuiltTotal"]
+    )
+
+
 def test_manifest_tender_sources_only_existing(workspace_dirs, monkeypatch) -> None:
     monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
     combined = settings.documents_dir / "P-CUR" / "technical-workspace" / "parse" / "combined.txt"
@@ -273,6 +328,29 @@ def test_confirm_advice_keeps_existing_value() -> None:
     assert report["advised"] == ["电量承诺函版本"]
 
 
+def test_confirm_advice_with_empty_suggested_value_keeps_evidence() -> None:
+    table, report = _apply(
+        [
+            {
+                "fieldKey": "电量承诺函版本",
+                "suggestedValue": "",
+                "unit": "",
+                "evidence": "现值 V2 保证值与承诺函原文口径一致",
+                "confidence": 0.88,
+                "action": "confirm-advice",
+            }
+        ]
+    )
+
+    field = table["fields"][2]
+    assert field["value"] == "V2 保证值"
+    assert field["status"] == "pending_confirmation"
+    assert field["sourceRefs"][-1]["evidence"] == "现值 V2 保证值与承诺函原文口径一致"
+    assert field["updatedBy"] == "测试用户"
+    assert report["advised"] == ["电量承诺函版本"]
+    assert report["ignored"] == []
+
+
 def test_confirmed_field_never_overwritten() -> None:
     table, report = _apply(
         [
@@ -353,6 +431,31 @@ def test_invalid_action_ignored_with_reason_not_downgraded() -> None:
     assert field["value"] == ""
     assert report["filled"] == []
     assert report["ignored"] == [{"fieldKey": "招标单机容量出口端mw", "reason": "非法 action：overwrite"}]
+
+
+def test_action_must_match_manifest_target_bucket() -> None:
+    table, report = curator.apply_fact_curator_suggestions(
+        _table(),
+        [
+            {
+                "fieldKey": "招标单机容量出口端mw",
+                "suggestedValue": "10",
+                "unit": "MW",
+                "evidence": "招标公告：单机容量不小于10MW",
+                "confidence": 0.9,
+                "action": "fix",
+            }
+        ],
+        operator="测试用户",
+        saved_at="2026-07-26T01:00:00Z",
+        targets={"fill": ["招标单机容量出口端mw"], "fix": [], "confirmAdvice": []},
+    )
+
+    assert table["fields"][0]["value"] == ""
+    assert table["fields"][0]["status"] == "unextracted"
+    assert report["ignored"] == [
+        {"fieldKey": "招标单机容量出口端mw", "reason": "action fix 与本轮目标桶不匹配"}
+    ]
 
 
 def test_real_world_key_forms_matched_by_normalization() -> None:
@@ -496,12 +599,12 @@ def test_load_suggestions_falls_back_to_inline(workspace_dirs) -> None:
     assert suggestions[0]["action"] == "fix"
 
 
-def test_run_skill_passes_output_file_as_early_tool_wait_file(tmp_path, monkeypatch) -> None:
-    """factcurate 脚本只产简报，提前返回必须等 LLM 写出的 outputFile 落地（竞态修复回归）。"""
-    output_file = tmp_path / "fact_curate_suggestions.json"
+def test_run_skill_supervises_factcurate_without_early_return(tmp_path, monkeypatch) -> None:
+    """factcurate 只传 early_tool_command 做轮询 idle 监管，不传等待文件：
+    建议文件由 LLM 多轮迭代写出（先草稿后填值），提前返回会回收草稿并孤儿化会话。"""
     manifest_path = tmp_path / "fact_curate_input.json"
     manifest_path.write_text(
-        json.dumps({"schemaVersion": "bid-tech-fact-curate-v1", "outputFile": str(output_file)}, ensure_ascii=False),
+        json.dumps({"schemaVersion": "bid-tech-fact-curate-v1", "outputFile": str(tmp_path / "out.json")}, ensure_ascii=False),
         encoding="utf-8",
     )
     calls: dict = {}
@@ -516,7 +619,30 @@ def test_run_skill_passes_output_file_as_early_tool_wait_file(tmp_path, monkeypa
     curator.run_technical_fact_curator_skill(manifest_path)
 
     assert calls["early_tool_command"] == "factcurate"
-    assert calls["early_tool_wait_file"] == str(output_file)
+    assert "early_tool_wait_file" not in calls
+
+
+def test_run_clears_stale_suggestions_before_skill(workspace_dirs, monkeypatch) -> None:
+    """上一轮残留的 suggestions 必须先清掉：会话未能写出新文件时，残留 outputFile
+    会被当作本轮结果回收（表现为建议数与上次完全相同）。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+    run_dir = curator._curator_work_dir(_project()) / "run-stale-test"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(curator, "_curator_run_dir", lambda project: run_dir)
+    stale_output = run_dir / "fact_curate_suggestions.json"
+    stale_output.write_text(json.dumps({"suggestions": [{"fieldKey": "STALE"}]}), encoding="utf-8")
+    seen: dict = {}
+
+    def fake_skill(manifest_path):
+        seen["output_existed_at_skill_start"] = stale_output.exists()
+        return {"schema": "bid-tech-fact-curate-v1", "suggestions": [], "opencodeOutput": {}}
+
+    monkeypatch.setattr(curator, "run_technical_fact_curator_skill", fake_skill)
+
+    curator.run_fact_curator_for_project(_project(), gap_state, {})
+
+    assert seen["output_existed_at_skill_start"] is False
 
 
 # ---------------------------------------------------------------- skill 脚本简报
@@ -707,6 +833,39 @@ class FactCurateApiTests(unittest.TestCase):
             [(field["key"], field["value"], field["status"]) for field in before["fields"]],
         )
 
+    def test_curate_endpoint_does_not_overwrite_concurrent_manual_edit(self) -> None:
+        project_id = self._create_project()
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+        target = build_response.json()["fields"][0]
+
+        def fake_run(project_snapshot, gap_state_snapshot, data):
+            latest = store._require(project_id)
+            latest_table = latest["gap_state"]["projectFactTable"]
+            latest_table["fields"][0]["value"] = "人工运行中修改"
+            latest_table["fields"][0]["status"] = "extracted"
+            latest_table["updatedAt"] = "2026-07-30T12:00:00Z"
+            store._persist_project(latest)
+
+            stale_result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
+            stale_result["fields"][0]["value"] = "AI 旧快照结果"
+            return stale_result, {"counts": {}, "ignored": []}
+
+        with patch(
+            "app.services.technical_gap_service.run_fact_curator_for_project",
+            side_effect=fake_run,
+        ):
+            response = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/facts/curate",
+                json={"operator": "测试用户"},
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("本次结果未覆盖保存", response.json()["detail"])
+        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
+        by_id = {field["id"]: field for field in after["fields"]}
+        self.assertEqual(by_id[target["id"]]["value"], "人工运行中修改")
+
 
 # ---------------------------------------------------------------- T3 定向增强
 
@@ -842,6 +1001,60 @@ def test_cross_project_candidates_yield_to_own_materials(workspace_dirs, monkeyp
     manifest, _ = curator.build_fact_curator_manifest(_project(), {"projectFactTable": _table()}, {})
 
     assert [item["id"] for item in manifest["materials"]] == ["RAW-OWN1", "RAW-OWN2"]
+
+
+def test_blank_templates_do_not_block_cross_project_candidates(workspace_dirs, monkeypatch) -> None:
+    """回归（PRJ-0007）：项目目录里全是「待填写」空白模板时，模板被索引过滤、
+    _CURATOR_MATERIAL_LIMIT 额度释放，缺失类别的跨项目候选能注入 manifest。"""
+    from app.services import technical_gap_fact_table as fact_table_module
+
+    # curator 侧接回真实索引（索引内部扫描用桩替代），验证模板在源头被过滤
+    monkeypatch.setattr(curator, "project_fact_material_index", fact_table_module.project_fact_material_index)
+    monkeypatch.setattr(
+        fact_table_module,
+        "build_project_material_scope",
+        lambda project: {
+            "readableScopes": [{"materialTier": "project", "path": "技术标/项目定制/事实表维护测试项目"}]
+        },
+    )
+    templates = [
+        {
+            "id": f"RAW-TPL{i}",
+            "name": f"待填写-附表{i}.docx",
+            "folderPath": "技术标/项目定制/事实表维护测试项目",
+            "materialTier": "project",
+        }
+        for i in range(50)  # 超过 _CURATOR_MATERIAL_LIMIT，修复前会占满额度
+    ]
+    monkeypatch.setattr(fact_table_module, "run_async_material_files", lambda **kwargs: {"items": templates})
+    monkeypatch.setattr(
+        curator,
+        "build_fact_material_check",
+        lambda project, gap_state: {
+            "classes": [
+                {
+                    "class": "wind_resource",
+                    "missing": True,
+                    "crossProjectCandidates": [
+                        {
+                            "id": "RAW-X0",
+                            "name": "乙项目风资源报告.docx",
+                            "folderPath": "技术标/项目定制/乙项目",
+                            "homeProject": "乙项目",
+                        }
+                    ],
+                },
+            ],
+            "summary": {"missingClasses": ["wind_resource"], "affectedFieldCount": 26},
+        },
+    )
+    _stub_prepare(workspace_dirs, monkeypatch)
+
+    manifest, _ = curator.build_fact_curator_manifest(_project(), {"projectFactTable": _table()}, {})
+
+    # 模板不进 manifest，缺失类别候选正常注入
+    assert [item["id"] for item in manifest["materials"]] == ["RAW-X0"]
+    assert manifest["materials"][0]["crossProject"] is True
 
 
 def test_cross_project_evidence_appends_source_note() -> None:

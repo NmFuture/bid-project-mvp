@@ -520,6 +520,15 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   uploadFactSpecs: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
+  saveMaterialSources: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
+  curateFacts: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/curate`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 30 * 60 * 1000,
+      retryCount: 0,
+    }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>

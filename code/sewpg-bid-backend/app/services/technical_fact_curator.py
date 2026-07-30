@@ -17,6 +17,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import BASE_DIR
 from app.services.opencode_client import OpencodeClient
@@ -80,6 +81,13 @@ def _curator_work_dir(project: dict[str, Any]) -> Path:
     work_dir = technical_workspace_dir(str(project.get("id") or "")) / "s4_gap_workdir" / "fact_curate"
     work_dir.mkdir(parents=True, exist_ok=True)
     return work_dir
+
+
+def _curator_run_dir(project: dict[str, Any]) -> Path:
+    """为单次维护任务创建隔离目录，避免同项目并发任务互相覆盖产物。"""
+    run_dir = _curator_work_dir(project) / f"run-{uuid4().hex}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir
 
 
 def _tender_sources(project: dict[str, Any]) -> list[dict[str, str]]:
@@ -179,6 +187,10 @@ def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> li
     return result
 
 
+# 不参与 AI 补抽的来源类别：模板占位（无需取值）、平台输入（人工录入）、自动生成（代码计算）
+_NO_FILL_SOURCE_KINDS = {"template", "platform", "derived"}
+
+
 def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
     """按方案 B 的三件事给字段分桶，桶内只放 fieldKey。"""
     targets: dict[str, list[str]] = {"fill": [], "fix": [], "confirmAdvice": []}
@@ -187,7 +199,8 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
         if not field_key:
             continue
         status = str(field.get("status") or "")
-        if status == FACT_STATUS_UNEXTRACTED and str(field.get("sourceKind") or "") == "tender":
+        # 补抽范围：招标类 + 素材/证书类未提取字段（模板/平台/自动生成类不交 AI 填）
+        if status == FACT_STATUS_UNEXTRACTED and str(field.get("sourceKind") or "") not in _NO_FILL_SOURCE_KINDS:
             targets["fill"].append(field_key)
         if status == FACT_STATUS_EXTRACTED:
             targets["fix"].append(field_key)
@@ -237,7 +250,7 @@ def build_fact_curator_manifest(
                 spec = None
         field["referenceFile"] = str(spec.get("referenceFile") or "") if spec else ""
         field["materialClass"] = material_class_of(spec) if spec else ""
-    work_dir = _curator_work_dir(project)
+    work_dir = _curator_run_dir(project)
     manifest = {
         "schemaVersion": FACT_CURATE_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),
@@ -273,26 +286,19 @@ manifest：{manifest_path}
 
 factcurate {manifest_path}
 
-然后按 SKILL.md 的流程阅读简报与原文，把逐字段建议写入 manifest 指定的 outputFile。最后只返回小型 JSON（schema、suggestionsPath、counts），不要返回解释文字，不要使用 Markdown 代码块。
+然后按 SKILL.md 的流程阅读简报与原文，把逐字段建议写入 manifest 指定的 outputFile。注意：本环境没有 read / write / edit 工具，绝对不要调用它们——读文件用 Bash（grep -n 定位、sed -n 或 cat 取内容）；写建议文件必须用 Bash heredoc 先写 outputFile.tmp（内容多时分段 cat >> 追加），确认 JSON 完整后再 mv -f 改名为 outputFile，绝对不要直接写 outputFile（后端检测到完整文件会立即回收，写一半会被截断收走）。最后只返回小型 JSON（schema、suggestionsPath、counts），不要返回解释文字，不要使用 Markdown 代码块。
 """.strip()
 
 
 def run_technical_fact_curator_skill(manifest_path: Path) -> dict[str, Any]:
     """opencode 调用隔离点：测试 patch 本函数即可mock 全链路。"""
     prompt = _build_fact_curator_prompt(manifest_path)
-    # factcurate 脚本只生成证据简报，建议文件 outputFile 由 LLM 后续写出：
-    # 脚本完成不等于建议就绪，提前返回必须等 outputFile 落地，否则回收 0 条（实测竞态）
-    output_file = ""
-    try:
-        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            output_file = str(payload.get("outputFile") or "")
-    except (OSError, json.JSONDecodeError):
-        output_file = ""
+    # early_tool_command 只用于轮询 idle 监管；factcurate 不走提前返回——
+    # 建议文件由 LLM 多轮迭代写出（先草稿后填值），「脚本完成/文件落地」都不代表终稿，
+    # 提前返回会回收草稿并把会话孤儿化（实测三轮三种竞态），必须等会话自然完成
     return OpencodeClient().run_bid_tech_fact_curator_with_trace(
         prompt,
         early_tool_command="factcurate",
-        early_tool_wait_file=output_file,
     )
 
 
@@ -358,6 +364,7 @@ def apply_fact_curator_suggestions(
     operator: str,
     saved_at: str,
     cross_materials: list[dict[str, Any]] | None = None,
+    targets: dict[str, list[str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """把 curator 建议落到事实表。返回 (更新后的表, 回收报告)。
 
@@ -391,6 +398,18 @@ def apply_fact_curator_suggestions(
             or by_key.get(fact_label_key(field_key))
         )
 
+    actions_by_target: dict[str, set[str]] = {}
+    if isinstance(targets, dict):
+        for bucket, action in (
+            ("fill", CURATE_ACTION_FILL),
+            ("fix", CURATE_ACTION_FIX),
+            ("confirmAdvice", CURATE_ACTION_CONFIRM_ADVICE),
+        ):
+            for target_key in targets.get(bucket) or []:
+                key = str(target_key or "").strip()
+                if key:
+                    actions_by_target.setdefault(key, set()).add(action)
+
     report: dict[str, Any] = {
         "filled": [],
         "fixed": [],
@@ -409,9 +428,16 @@ def apply_fact_curator_suggestions(
         if action not in CURATE_ACTIONS:
             report["ignored"].append({"fieldKey": field_key, "reason": f"非法 action：{action or '空'}"})
             continue
-        # 硬门禁：confirmed 字段的值和状态绝不被 AI 覆盖
+        # 硬门禁优先于目标桶校验：即使 agent 越界回传，也明确记录为已确认跳过。
         if str(field.get("status") or "") == FACT_STATUS_CONFIRMED:
             report["skippedConfirmed"].append(field_key)
+            continue
+        target_key = str(field.get("key") or "").strip()
+        allowed_actions = actions_by_target.get(target_key)
+        if targets is not None and (not allowed_actions or action not in allowed_actions):
+            report["ignored"].append(
+                {"fieldKey": field_key, "reason": f"action {action} 与本轮目标桶不匹配"}
+            )
             continue
         value = suggestion["suggestedValue"]
         ref = {
@@ -420,6 +446,19 @@ def apply_fact_curator_suggestions(
             "evidence": suggestion["evidence"],
             "confidence": suggestion["confidence"],
         }
+        if action == CURATE_ACTION_CONFIRM_ADVICE and str(field.get("value") or "").strip():
+            # 口径判断针对现值本身，SKILL 约定 suggestedValue 留空；仍须保存判断证据。
+            field["sourceRefs"] = normalize_fact_source_refs([*(field.get("sourceRefs") or []), ref])
+            origin_note = _cross_origin_note(suggestion, cross_materials)
+            if origin_note:
+                notes = str(field.get("notes") or "")
+                if origin_note not in notes:
+                    field["notes"] = f"{notes}；{origin_note}" if notes else origin_note
+            field["status"] = FACT_STATUS_PENDING_CONFIRMATION
+            field["updatedAt"] = saved_at
+            field["updatedBy"] = operator
+            report["advised"].append(field_key)
+            continue
         if not value:
             # 找不到值：保持 unextracted 并在 notes 写原因，不硬填
             if str(field.get("status") or "") == FACT_STATUS_UNEXTRACTED:
@@ -440,11 +479,6 @@ def apply_fact_curator_suggestions(
             notes = str(field.get("notes") or "")
             if origin_note not in notes:
                 field["notes"] = f"{notes}；{origin_note}" if notes else origin_note
-        if action == CURATE_ACTION_CONFIRM_ADVICE and str(field.get("value") or "").strip():
-            # 口径建议：字段已有值时只留证据不改值
-            field["status"] = FACT_STATUS_PENDING_CONFIRMATION
-            report["advised"].append(field_key)
-            continue
         old_value = str(field.get("value") or "").strip()
         if old_value and old_value != value:
             # 脏数据修正：旧值进 alternatives 留痕
@@ -491,6 +525,14 @@ def run_fact_curator_for_project(
     if not table.get("fields"):
         raise ValueError("项目事实表为空，请先构建事实表再运行维护 Skill。")
     manifest, manifest_path = build_fact_curator_manifest(project, gap_state, data)
+    # 清掉上一轮产物：会话未能写出新建议文件时，残留的上一轮回 outputFile 会被
+    # load_fact_curator_suggestions 当作本轮结果回收（表现为建议数与上次完全相同）
+    for artifact_key in ("outputFile", "briefFile"):
+        artifact_text = str(manifest.get(artifact_key) or "").strip()
+        if artifact_text:
+            artifact = Path(artifact_text)
+            if artifact.is_file():
+                artifact.unlink()
     result = run_technical_fact_curator_skill(manifest_path)
     suggestions = load_fact_curator_suggestions(result, manifest)
     saved_at = _now_iso()
@@ -501,7 +543,12 @@ def run_fact_curator_for_project(
         if isinstance(material, dict) and material.get("crossProject")
     ]
     updated_table, report = apply_fact_curator_suggestions(
-        table, suggestions, operator=operator, saved_at=saved_at, cross_materials=cross_materials
+        table,
+        suggestions,
+        operator=operator,
+        saved_at=saved_at,
+        cross_materials=cross_materials,
+        targets=manifest.get("targets") if isinstance(manifest.get("targets"), dict) else None,
     )
     report["manifestPath"] = str(manifest_path)
     report["suggestionCount"] = len(suggestions)

@@ -789,26 +789,28 @@ class GapReviewFlowTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "draft")
         labels = [field["label"] for field in payload["fields"]]
+        # 以清单为唯一骨架：匹配到 spec 的（投标机型、投标方案经 spec 100 别名）成行；
+        # 匹配不到的（招标方、缺口占位"未知保证值"）不再单独成行
         self.assertIn("投标机型", labels)
-        self.assertIn("招标方", labels)
         self.assertIn("投标方案", labels)
-        self.assertIn("未知保证值", labels)
-        owner = next(field for field in payload["fields"] if field["label"] == "招标方")
-        self.assertEqual(owner["value"], "华能集团")
-        self.assertEqual(owner["status"], "extracted")
-        self.assertTrue(owner["sourceRefs"])
-        unknown = next(field for field in payload["fields"] if field["label"] == "未知保证值")
-        self.assertEqual(unknown["status"], "missing_source")
-        self.assertEqual(payload["summary"]["missingCount"], 1)
+        self.assertNotIn("招标方", labels)
+        self.assertNotIn("未知保证值", labels)
+        model = next(field for field in payload["fields"] if field["label"] == "投标机型")
+        self.assertEqual(model["value"], "EW10.0-220下置")
+        self.assertEqual(model["status"], "extracted")
+        self.assertTrue(model["sourceRefs"])
+        # 未提取骨架计 unextracted，missingCount 只统计 missing_source
+        self.assertEqual(payload["summary"]["missingCount"], 0)
+        self.assertEqual(payload["summary"]["specTotal"], 128)
 
-        confirmed = self._confirm_project_fact_table(project_id, {"未知保证值": "按招标文件要求执行"})
+        confirmed = self._confirm_project_fact_table(project_id, {"承诺函致函对象全称": "按招标文件要求执行"})
 
         self.assertEqual(
             confirmed["summary"]["confirmedCount"],
             sum(1 for field in confirmed["fields"] if str(field.get("value") or "").strip()),
         )
         self.assertTrue(confirmed["confirmedAt"])
-        confirmed_unknown = next(field for field in confirmed["fields"] if field["label"] == "未知保证值")
+        confirmed_unknown = next(field for field in confirmed["fields"] if field["label"] == "承诺函致函对象全称")
         self.assertEqual(confirmed_unknown["status"], "confirmed")
         self.assertEqual(confirmed_unknown["value"], "按招标文件要求执行")
 
@@ -954,13 +956,13 @@ class GapReviewFlowTests(unittest.TestCase):
         fields = response.json()["fields"]
         by_label = {field["label"]: field for field in fields}
         self.assertEqual(by_label["项目名称"]["value"], "华能真实项目名称")
-        self.assertEqual(by_label["招标编号"]["value"], "HNZB2025-12-1-382-01")
-        self.assertEqual(by_label["招标人"]["value"], "测试业主")
-        self.assertNotEqual(by_label["招标人"]["status"], "conflict")
-        self.assertNotIn("技术承诺", by_label)
         self.assertIn("机组台数", by_label)
         self.assertIn("总装机容量", by_label)
         self.assertEqual(by_label["机组台数"]["category"], "待填写表格字段")
+        # 清单之外的字段不再成行：招标编号/招标人无匹配 spec，技术承诺仍是噪声
+        self.assertNotIn("招标编号", by_label)
+        self.assertNotIn("招标人", by_label)
+        self.assertNotIn("技术承诺", by_label)
 
     def test_project_fact_table_fills_core_facts_by_project_customer_standard_priority(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1072,13 +1074,13 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["轮毂高度"]["value"], "125")
         self.assertEqual(by_label["轮毂高度"]["unit"], "m")
         self.assertEqual(by_label["安全等级"]["value"], "IEC S")
-        self.assertEqual(by_label["空气密度"]["value"], "1.16")
-        self.assertEqual(by_label["空气密度"]["unit"], "kg/m3")
         self.assertEqual(by_label["湍流强度"]["value"], "0.10")
-        self.assertEqual(by_label["极端风速"]["value"], "52.5m/s")
         self.assertEqual(by_label["总装机容量"]["status"], "extracted")
         self.assertEqual(by_label["总装机容量"]["sourceRefs"][0]["materialTier"], "project")
-        self.assertEqual(by_label["设计寿命"]["sourceRefs"][0]["materialTier"], "project")
+        # 空气密度/极端风速/设计寿命匹配不到 spec，清单模式下不再成行
+        self.assertNotIn("空气密度", by_label)
+        self.assertNotIn("极端风速", by_label)
+        self.assertNotIn("设计寿命", by_label)
 
     def test_project_fact_table_rejects_header_and_author_noise_from_materials(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1141,10 +1143,10 @@ class GapReviewFlowTests(unittest.TestCase):
         by_label = {field["label"]: field for field in response.json()["fields"]}
         self.assertEqual(by_label["轮毂高度"]["value"], "125")
         self.assertEqual(by_label["年平均风速"]["value"], "7.20m/s")
-        self.assertEqual(by_label["空气密度"]["value"], "1.16")
         self.assertEqual(by_label["轮毂高度"]["status"], "extracted")
         self.assertEqual(by_label["年平均风速"]["status"], "extracted")
-        self.assertEqual(by_label["空气密度"]["status"], "extracted")
+        # 空气密度匹配不到 spec，清单模式下不再成行
+        self.assertNotIn("空气密度", by_label)
 
     def test_project_fact_table_derives_guarantee_values_from_wind_speed_matrix(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1207,11 +1209,11 @@ class GapReviewFlowTests(unittest.TestCase):
         by_label = {field["label"]: field for field in response.json()["fields"]}
         self.assertEqual(by_label["年平均风速"]["value"], "7.22")
         self.assertEqual(by_label["年平均风速"]["unit"], "m/s")
-        self.assertEqual(by_label["保证发电量"]["value"], "1701601")
-        self.assertEqual(by_label["保证发电量"]["unit"], "MWh")
         self.assertEqual(by_label["保证有效小时数"]["value"], "2836")
         self.assertEqual(by_label["保证有效小时数"]["unit"], "h")
-        self.assertEqual(by_label["保证发电量"]["sourceRefs"][0]["materialTier"], "project")
+        self.assertEqual(by_label["保证有效小时数"]["sourceRefs"][0]["materialTier"], "project")
+        # 保证发电量匹配不到 spec，清单模式下不再成行
+        self.assertNotIn("保证发电量", by_label)
 
     def test_gap_ai_fill_requires_confirmed_fact_table_and_manifest_carries_it(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -1255,7 +1257,8 @@ class GapReviewFlowTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(manifests[0]["projectFactTable"]["status"], "confirmed")
-        self.assertTrue([field for field in manifests[0]["projectFactTable"]["fields"] if field["label"] == "招标方"])
+        # 清单模式下事实表只含 spec 骨架行（招标方等清单外字段不再成行），用 spec 11 投标机型断言随单
+        self.assertTrue([field for field in manifests[0]["projectFactTable"]["fields"] if field["label"] == "投标机型"])
         artifact = response.json()["artifact"]
         self.assertEqual(artifact["qualityReport"]["status"], "passed")
         self.assertGreaterEqual(artifact["qualityReport"]["coverageRate"], 0.85)
