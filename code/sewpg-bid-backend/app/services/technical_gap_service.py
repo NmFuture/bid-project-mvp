@@ -540,7 +540,9 @@ class TechnicalGapService:
         # 项目级事实表上传状态：前端据此决定空态引导还是展示字段
         payload["specsImported"] = bool(specs)
         payload["specsFileName"] = str(fact_specs.get("fileName") or "")
-        payload["specTotal"] = len(specs)
+        # specTotal 与 summary 同口径（表内有 specSeq 的骨架行数），不再按上传清单条数另算
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        payload["specTotal"] = int(summary.get("specTotal") or 0)
         # 用户自定义的参考资料目录（素材库虚拟路径），事实表匹配时并入扫描
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
         payload["materialPaths"] = [str(path) for path in custom_paths if str(path or "").strip()]
@@ -650,8 +652,6 @@ class TechnicalGapService:
                 for index, field in enumerate(incoming_fields, start=1)
                 if isinstance(field, dict)
             ]
-            fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-            project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
             table = {
                 "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
                 "projectId": project_id,
@@ -661,9 +661,7 @@ class TechnicalGapService:
                 "confirmedAt": saved_at if confirm else str(current.get("confirmedAt") or ""),
                 "confirmedBy": operator if confirm else str(current.get("confirmedBy") or ""),
                 "fields": fields,
-                "summary": summarize_project_fact_fields(
-                    fields, spec_total=len(project_specs) if project_specs else None
-                ),
+                "summary": summarize_project_fact_fields(fields),
             }
             gap_state["projectFactTable"] = table
             project["updatedAt"] = saved_at
@@ -716,9 +714,7 @@ class TechnicalGapService:
                 saved_at=saved_at,
             )
             fields[target_index] = normalized
-            fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-            project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
-            summary = summarize_project_fact_fields(fields, spec_total=len(project_specs) if project_specs else None)
+            summary = summarize_project_fact_fields(fields)
             all_terminal = bool(fields) and all(
                 str(field.get("status") or "") in PROJECT_FACT_FIELD_TERMINAL_STATUSES for field in fields
             )

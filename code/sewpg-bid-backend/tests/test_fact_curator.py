@@ -169,13 +169,26 @@ def test_curate_targets_fill_covers_material_and_cert() -> None:
     assert targets["fill"] == ["f-tender", "f-material", "f-cert"]
 
 
-def test_apply_summary_spec_total_follows_project_specs() -> None:
-    """落表 summary 的清单口径用项目上传条数，不回退全局默认清单。"""
+def test_apply_summary_spec_progress_buckets_sum_to_spec_total() -> None:
+    """落表 summary 的清单口径取表内有 specSeq 的骨架行数，四段进度互斥穷尽。"""
     table, _ = curator.apply_fact_curator_suggestions(
-        _table(), [], operator="测试", saved_at="2026-07-27T00:00:00Z", spec_total=148
+        _table(), [], operator="测试", saved_at="2026-07-27T00:00:00Z"
     )
 
-    assert table["summary"]["specTotal"] == 148
+    summary = table["summary"]
+    # _table() 四个字段都带 specSeq：confirmed/pending/unextracted(无值)/extracted(有值) 各一
+    assert summary["specTotal"] == 4
+    assert summary["specConfirmedCount"] == 1
+    assert summary["specPendingConfirmationCount"] == 1
+    assert summary["specUnfilledCount"] == 1
+    assert summary["specFilledUnconfirmedCount"] == 1
+    assert (
+        summary["specConfirmedCount"]
+        + summary["specPendingConfirmationCount"]
+        + summary["specUnfilledCount"]
+        + summary["specFilledUnconfirmedCount"]
+        == summary["specTotal"]
+    )
 
 
 def test_manifest_tender_sources_only_existing(workspace_dirs, monkeypatch) -> None:
@@ -888,6 +901,60 @@ def test_cross_project_candidates_yield_to_own_materials(workspace_dirs, monkeyp
     manifest, _ = curator.build_fact_curator_manifest(_project(), {"projectFactTable": _table()}, {})
 
     assert [item["id"] for item in manifest["materials"]] == ["RAW-OWN1", "RAW-OWN2"]
+
+
+def test_blank_templates_do_not_block_cross_project_candidates(workspace_dirs, monkeypatch) -> None:
+    """回归（PRJ-0007）：项目目录里全是「待填写」空白模板时，模板被索引过滤、
+    _CURATOR_MATERIAL_LIMIT 额度释放，缺失类别的跨项目候选能注入 manifest。"""
+    from app.services import technical_gap_fact_table as fact_table_module
+
+    # curator 侧接回真实索引（索引内部扫描用桩替代），验证模板在源头被过滤
+    monkeypatch.setattr(curator, "project_fact_material_index", fact_table_module.project_fact_material_index)
+    monkeypatch.setattr(
+        fact_table_module,
+        "build_project_material_scope",
+        lambda project: {
+            "readableScopes": [{"materialTier": "project", "path": "技术标/项目定制/事实表维护测试项目"}]
+        },
+    )
+    templates = [
+        {
+            "id": f"RAW-TPL{i}",
+            "name": f"待填写-附表{i}.docx",
+            "folderPath": "技术标/项目定制/事实表维护测试项目",
+            "materialTier": "project",
+        }
+        for i in range(50)  # 超过 _CURATOR_MATERIAL_LIMIT，修复前会占满额度
+    ]
+    monkeypatch.setattr(fact_table_module, "run_async_material_files", lambda **kwargs: {"items": templates})
+    monkeypatch.setattr(
+        curator,
+        "build_fact_material_check",
+        lambda project, gap_state: {
+            "classes": [
+                {
+                    "class": "wind_resource",
+                    "missing": True,
+                    "crossProjectCandidates": [
+                        {
+                            "id": "RAW-X0",
+                            "name": "乙项目风资源报告.docx",
+                            "folderPath": "技术标/项目定制/乙项目",
+                            "homeProject": "乙项目",
+                        }
+                    ],
+                },
+            ],
+            "summary": {"missingClasses": ["wind_resource"], "affectedFieldCount": 26},
+        },
+    )
+    _stub_prepare(workspace_dirs, monkeypatch)
+
+    manifest, _ = curator.build_fact_curator_manifest(_project(), {"projectFactTable": _table()}, {})
+
+    # 模板不进 manifest，缺失类别候选正常注入
+    assert [item["id"] for item in manifest["materials"]] == ["RAW-X0"]
+    assert manifest["materials"][0]["crossProject"] is True
 
 
 def test_cross_project_evidence_appends_source_note() -> None:

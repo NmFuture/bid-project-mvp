@@ -353,7 +353,6 @@ def apply_fact_curator_suggestions(
     operator: str,
     saved_at: str,
     cross_materials: list[dict[str, Any]] | None = None,
-    spec_total: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """把 curator 建议落到事实表。返回 (更新后的表, 回收报告)。
 
@@ -460,7 +459,7 @@ def apply_fact_curator_suggestions(
         field["updatedBy"] = operator
 
     table["fields"] = fields
-    table["summary"] = summarize_project_fact_fields(fields, spec_total=spec_total)
+    table["summary"] = summarize_project_fact_fields(fields)
     table["updatedAt"] = saved_at
     # curator 绝不写 confirmed；已 confirmed 的表出现新的非终态字段时降回 draft 待人工
     if str(table.get("status") or "") == "confirmed" and not all(
@@ -482,8 +481,6 @@ def run_fact_curator_for_project(
     table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     if not table.get("fields"):
         raise ValueError("项目事实表为空，请先构建事实表再运行维护 Skill。")
-    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
     manifest, manifest_path = build_fact_curator_manifest(project, gap_state, data)
     # 清掉上一轮产物：会话未能写出新建议文件时，残留的上一轮回 outputFile 会被
     # load_fact_curator_suggestions 当作本轮结果回收（表现为建议数与上次完全相同）
@@ -508,8 +505,6 @@ def run_fact_curator_for_project(
         operator=operator,
         saved_at=saved_at,
         cross_materials=cross_materials,
-        # summary 的清单口径与项目上传的事实表对齐，不回退全局默认清单
-        spec_total=len(project_specs) if project_specs else None,
     )
     report["manifestPath"] = str(manifest_path)
     report["suggestionCount"] = len(suggestions)

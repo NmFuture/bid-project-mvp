@@ -5,7 +5,7 @@ from __future__ import annotations
 以 148 条清单 spec 的 `referenceFile` 列为唯一权威指路牌：
 - `material_class_of(spec)` 把 spec 归一到素材类别（注意清单原文 typo
   "基础弯矩表表" 靠"弯矩"子串归一到 bending_moment）；
-- `classify_material(material)` 按素材文件名/folderPath 归一到同一类别；
+- `classify_material(material)` 按素材文件名归一到同一类别（不看 folderPath，目录名不参与猜内容）；
 - `required_material_classes()` 从 fillable_specs() 聚合每类需取数字段；
 - `material_home_project(material)` 从 folderPath「技术标/项目定制/{项目名}/...」解析归属项目；
 - `build_fact_material_check(project, gap_state)` 齐备性预检（T2）：本项目素材按类别对账，
@@ -21,6 +21,7 @@ from typing import Any
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.technical_fact_field_specs import fillable_specs
 from app.services.technical_gap_fact_table import (
+    material_is_fill_template,
     project_fact_material_index,
     run_async_material_files,
 )
@@ -81,10 +82,13 @@ def material_class_of(spec: dict[str, Any]) -> str:
 
 
 def classify_material(material: dict[str, Any]) -> str | None:
-    """素材 → 类别：按文件名 + folderPath 关键词匹配，都不命中返回 None。"""
+    """素材 → 类别：只按文件名/清洗文件名关键词匹配（不看 folderPath，避免按目录名猜内容），
+    都不命中返回 None；待填目标表格模板一律不归类。"""
+    if material_is_fill_template(material):
+        return None
     text = " ".join(
         str(material.get(key) or "")
-        for key in ("name", "cleanedFileName", "folderPath")
+        for key in ("name", "cleanedFileName")
     )
     if not text.strip():
         return None

@@ -53,8 +53,7 @@ def test_classify_material_positive() -> None:
         ({"name": "发电小时数承诺函.docx"}, "hours_commitment"),
         ({"name": "项目生产制造基地专题.docx"}, "production_base"),
         ({"name": "机组型式认证证书.pdf"}, "cert"),
-        # 文件名不命中时按 folderPath 匹配
-        ({"name": "附件1.docx", "folderPath": "技术标/项目定制/甲项目/风资源报告"}, "wind_resource"),
+        # 文件名不命中时按清洗文件名匹配
         ({"name": "附件2.xlsx", "cleanedFileName": "工程量汇总.xlsx"}, "tower_quantity"),
     ]
     for material, expected in cases:
@@ -65,6 +64,19 @@ def test_classify_material_negative() -> None:
     assert classify_material({"name": "会议纪要.docx", "folderPath": "技术标/标准库/通用"}) is None
     assert classify_material({"name": ""}) is None
     assert classify_material({}) is None
+
+
+def test_classify_material_ignores_folder_path() -> None:
+    """folderPath 不参与类别匹配：项目名/目录名里的关键词（如「不含塔架」）不能替文件归类。"""
+    assert classify_material({"name": "附件1.docx", "folderPath": "技术标/项目定制/甲项目/风资源报告"}) is None
+    assert classify_material({"name": "附表1.docx", "folderPath": "技术标/项目定制/甲项目不含塔架"}) is None
+
+
+def test_classify_material_excludes_fill_templates() -> None:
+    """「待填写」前缀的附表模板是要填的目标表格，即使名字含类别关键词也不归类。"""
+    assert classify_material({"name": "待填写-附表1 塔架与基础工程量.docx"}) is None
+    assert classify_material({"name": "待填写-风资源数据表.docx"}) is None
+    assert classify_material({"name": "待填写、待用印-项目技术承诺函.docx"}) is None
 
 
 # ---------------------------------------------------------------- 归属项目解析

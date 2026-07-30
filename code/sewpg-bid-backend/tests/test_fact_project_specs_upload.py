@@ -153,9 +153,12 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
         self.assertEqual(build_response.status_code, 200, build_response.text)
         payload = build_response.json()
         labels = [field["label"] for field in payload["fields"]]
-        # 骨架只含上传清单的字段（+ 可能的启发式字段），不含全局 148 条清单独有字段
+        # 以清单为唯一字段骨架：字段行 == 上传清单的 2 条 spec，不含全局 148 条清单独有字段，
+        # 匹配不到 spec 的启发式候选（项目名称/招标方等）不再单独成行
         self.assertIn("招标编号", labels)
         self.assertIn("总装机容量", labels)
+        self.assertEqual(len(payload["fields"]), 2)
+        self.assertTrue(all(field.get("specSeq") for field in payload["fields"]))
         self.assertTrue(any(spec["label"] == GLOBAL_ONLY_LABEL for spec in fillable_specs()))
         self.assertNotIn(GLOBAL_ONLY_LABEL, labels)
         self.assertEqual(payload["summary"]["specTotal"], 2)
@@ -178,7 +181,9 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
         self.assertEqual(after.status_code, 200, after.text)
         self.assertTrue(after.json()["specsImported"])
         self.assertEqual(after.json()["specsFileName"], "实时表.xlsx")
-        self.assertEqual(after.json()["specTotal"], 2)
+        # specTotal 与 summary 同口径（表内有 specSeq 的骨架行数）：尚未构建事实表时为 0，
+        # 上传状态以 specsImported/specsFileName 表达
+        self.assertEqual(after.json()["specTotal"], 0)
 
 
     def test_material_sources_roundtrip(self) -> None:
@@ -279,7 +284,7 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
         self.assertEqual([material["id"] for material in materials], ["RAW-P1"])
 
     def test_fallback_scan_includes_custom_material_paths(self) -> None:
-        """用户自定义的参考资料目录并入回退扫描，按项目层素材发起查询。"""
+        """用户自定义的参考资料目录并入回退扫描；显式配置的目录不按 tier 过滤（空串）。"""
         scopes = [
             {"materialTier": "standard", "path": "技术标/标准素材"},
             {"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目"},
@@ -310,7 +315,88 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
             [call["folder_path"] for call in calls],
             ["技术标/项目定制/实时表上传测试项目", "技术标/项目定制/其他项目"],
         )
-        self.assertTrue(all(call["material_tier"] == "project" for call in calls))
+        # 项目定制默认目录仍按 project 层过滤；自定义参考目录不过滤 tier
+        self.assertEqual([call["material_tier"] for call in calls], ["project", ""])
+
+    def test_custom_material_paths_include_standard_tier_materials(self) -> None:
+        """自定义参考目录下 tier=standard 的真实数据素材也能进索引（回归：整目录被 tier 过滤误伤）。"""
+        scopes = [{"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目"}]
+
+        def fake_material_files(**kwargs):
+            if kwargs["folder_path"] == "技术标/项目定制/北区参考项目":
+                return {
+                    "items": [
+                        {
+                            "id": "RAW-N1",
+                            "name": "风资源评估报告.docx",
+                            "folderPath": "技术标/项目定制/北区参考项目",
+                            "materialTier": "standard",
+                        },
+                        {
+                            "id": "RAW-N2",
+                            "name": "基础弯矩表.xlsx",
+                            "folderPath": "技术标/项目定制/北区参考项目",
+                            "materialTier": "standard",
+                        },
+                    ]
+                }
+            return {"items": []}
+
+        with (
+            patch.object(
+                fact_table_module,
+                "build_project_material_scope",
+                lambda project: {"readableScopes": scopes},
+            ),
+            patch.object(
+                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+            ),
+        ):
+            materials = fact_table_module.project_fact_material_index(
+                {"id": "P-SCOPE", "name": "实时表上传测试项目"},
+                {"plan": {}, "factMaterialPaths": ["技术标/项目定制/北区参考项目"]},
+            )
+
+        self.assertEqual([material["id"] for material in materials], ["RAW-N1", "RAW-N2"])
+        self.assertTrue(all(material["materialTier"] == "standard" for material in materials))
+
+    def test_fill_templates_excluded_from_index(self) -> None:
+        """「待填写」前缀的附表模板不进索引（它们是要填的目标表格，不是取数素材）。"""
+        scopes = [{"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目"}]
+
+        def fake_material_files(**kwargs):
+            return {
+                "items": [
+                    {
+                        "id": "RAW-TPL",
+                        "name": "待填写-附表1 塔架与基础工程量.docx",
+                        "folderPath": "技术标/项目定制/实时表上传测试项目",
+                        "materialTier": "project",
+                    },
+                    {
+                        "id": "RAW-DATA",
+                        "name": "基础弯矩表.xlsx",
+                        "folderPath": "技术标/项目定制/实时表上传测试项目",
+                        "materialTier": "project",
+                    },
+                ]
+            }
+
+        with (
+            patch.object(
+                fact_table_module,
+                "build_project_material_scope",
+                lambda project: {"readableScopes": scopes},
+            ),
+            patch.object(
+                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+            ),
+        ):
+            materials = fact_table_module.project_fact_material_index(
+                {"id": "P-SCOPE", "name": "实时表上传测试项目"}, {"plan": {}}
+            )
+
+        self.assertEqual([material["id"] for material in materials], ["RAW-DATA"])
 
 
 if __name__ == "__main__":

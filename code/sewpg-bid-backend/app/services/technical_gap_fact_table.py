@@ -135,7 +135,13 @@ def empty_fact_summary() -> dict[str, int]:
         "conflictCount": 0,
         "notApplicableCount": 0,
         "specTotal": 0,
+        # deprecated：旧口径"有值的 spec 行数"，保留兼容，前端展示改用下方四段确认进度
         "specMatched": 0,
+        # 清单确认进度四段：互斥穷尽所有 spec 行，加总 == specTotal
+        "specConfirmedCount": 0,
+        "specPendingConfirmationCount": 0,
+        "specUnfilledCount": 0,
+        "specFilledUnconfirmedCount": 0,
         # v1 兼容别名：candidate=已自动提取，missing=缺少来源
         "candidateCount": 0,
         "missingCount": 0,
@@ -156,10 +162,24 @@ def empty_project_fact_table(project_id: str) -> dict[str, Any]:
     }
 
 
-def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int | None = None) -> dict[str, int]:
+def summarize_project_fact_fields(fields: list[dict[str, Any]]) -> dict[str, int]:
     def count(status: str) -> int:
         return sum(1 for field in fields if str(field.get("status") or "") == status)
 
+    # 清单进度口径：以表内有 specSeq 的骨架行为分母（specTotal），不再按上传清单条数另算
+    spec_rows = [field for field in fields if field.get("specSeq")]
+    spec_confirmed = sum(1 for field in spec_rows if str(field.get("status") or "") == FACT_STATUS_CONFIRMED)
+    spec_pending = sum(1 for field in spec_rows if str(field.get("status") or "") == FACT_STATUS_PENDING_CONFIRMATION)
+    # 「未填」：值为空，或状态仍属 unextracted/missing_source；confirmed/pending 已各自成段，不重复计
+    spec_unfilled = sum(
+        1
+        for field in spec_rows
+        if str(field.get("status") or "") not in {FACT_STATUS_CONFIRMED, FACT_STATUS_PENDING_CONFIRMATION}
+        and (
+            not str(field.get("value") or "").strip()
+            or str(field.get("status") or "") in {FACT_STATUS_UNEXTRACTED, FACT_STATUS_MISSING_SOURCE}
+        )
+    )
     summary = empty_fact_summary()
     summary.update(
         {
@@ -172,8 +192,13 @@ def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int 
             "missingSourceCount": count(FACT_STATUS_MISSING_SOURCE),
             "conflictCount": count(FACT_STATUS_CONFLICT),
             "notApplicableCount": count(FACT_STATUS_NOT_APPLICABLE),
-            "specTotal": len(fillable_specs()) if spec_total is None else spec_total,
-            "specMatched": sum(1 for field in fields if field.get("specSeq") and str(field.get("value") or "").strip()),
+            "specTotal": len(spec_rows),
+            "specMatched": sum(1 for field in spec_rows if str(field.get("value") or "").strip()),
+            "specConfirmedCount": spec_confirmed,
+            "specPendingConfirmationCount": spec_pending,
+            "specUnfilledCount": spec_unfilled,
+            # 剩余 spec 行（extracted/conflict 等有值但未确认）：四段加总 == specTotal
+            "specFilledUnconfirmedCount": len(spec_rows) - spec_confirmed - spec_pending - spec_unfilled,
         }
     )
     summary["candidateCount"] = summary["extractedCount"]
@@ -453,6 +478,12 @@ def reconcile_fact_fields_with_specs(
         matched_field_keys.add(key)
 
 
+def is_manual_fact_field(field: dict[str, Any]) -> bool:
+    """人工新增字段：sourceRefs 含 manualFact 来源。无 specSeq，不计入清单统计。"""
+    refs = field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else []
+    return any(isinstance(ref, dict) and str(ref.get("type") or "") == "manualFact" for ref in refs)
+
+
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
     built_at = _now_iso()
     existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
@@ -725,12 +756,21 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             )
 
     preserve_manual_fields()
-    # 字段骨架来自本项目上传的事实表 Excel（gap_state["factSpecs"]），不再用全局默认清单
+    # 字段骨架：项目上传的事实表 Excel（gap_state["factSpecs"]）优先，未上传时回退全局默认清单
     fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
     project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
-    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
+    effective_specs = project_specs or fillable_specs()
+    spec_mode = bool(effective_specs)
+    if not spec_mode:
+        # 极端兜底：项目未上传且全局清单也加载失败，维持来源并集行为
+        logger.warning("项目 %s 无可用事实表字段清单（未上传且全局默认清单加载失败），按来源并集构建", project.get("id"))
+    reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, effective_specs)
 
     fields = list(fields_by_key.values())
+    if spec_mode:
+        # 以清单为唯一字段骨架：匹配不到 spec 的来源字段不再单独成行，
+        # 只保留 spec 行（匹配并入抽取值的行 + 未提取骨架）和人工新增字段
+        fields = [field for field in fields if field.get("specSeq") or is_manual_fact_field(field)]
     for field in fields:
         source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
         field["sourceRefs"] = source_refs
@@ -758,14 +798,27 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     }
     fields.sort(
         key=lambda field: (
+            # 清单模式下人工新增字段追加在 spec 行之后
+            1 if spec_mode and is_manual_fact_field(field) else 0,
             category_order.get(str(field.get("category") or ""), 9),
             0 if field.get("required") else 1,
             int(field.get("specSeq") or 9999),
             field.get("label") or "",
         )
     )
+    # 补 id 时避开已有 id：骨架行按排序序号补 FACT-XXXX，可能与清单外候选自带的
+    # FACT-XXXX 撞号（清单模式下杂行被过滤后序号前移），撞号则顺延到未占用的序号
+    used_ids: set[str] = set()
     for index, field in enumerate(fields, start=1):
-        field["id"] = field.get("id") or f"FACT-{index:04d}"
+        field_id = str(field.get("id") or "")
+        if not field_id or field_id in used_ids:
+            serial = index
+            field_id = f"FACT-{serial:04d}"
+            while field_id in used_ids:
+                serial += 1
+                field_id = f"FACT-{serial:04d}"
+        field["id"] = field_id
+        used_ids.add(field_id)
     return {
         "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),
@@ -775,7 +828,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "confirmedAt": "",
         "confirmedBy": "",
         "fields": fields,
-        "summary": summarize_project_fact_fields(fields, spec_total=len(project_specs)),
+        "summary": summarize_project_fact_fields(fields),
     }
 
 
@@ -1171,14 +1224,29 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                 if folder_path and not folder_path.startswith(f"{TECHNICAL_BID_TYPE}/"):
                     folder_path = f"{TECHNICAL_BID_TYPE}/{folder_path}"
                 if folder_path:
-                    collect_scope_files(folder_path, "project")
+                    # 用户显式选定的参考目录不按 tier 过滤（空串=不过滤）：
+                    # 目录内素材 tier 标成 standard 也不应挡路，相关性由 material_is_fact_relevant 把守
+                    collect_scope_files(folder_path, "")
         except Exception:
             logger.exception("项目事实素材索引回退查询失败，按无素材继续构建")
             materials = []
     return [item for item in materials if material_is_fact_relevant(item)]
 
 
+# 业主待填目标表格模板的文件名前缀（「待填写-附表X….docx」「待填写、待用印-….docx」等，
+# 前缀取自业主下发的空白附表命名约定）：它们是要填的目标，不是取数素材，不进事实表素材体系
+FILL_TEMPLATE_NAME_PREFIX = "待填写"
+
+
+def material_is_fill_template(material: dict[str, Any]) -> bool:
+    """按文件名前缀识别待填目标表格模板（不看 folderPath，避免按目录名猜内容）。"""
+    name = str(material.get("name") or material.get("cleanedFileName") or "").strip()
+    return name.startswith(FILL_TEMPLATE_NAME_PREFIX)
+
+
 def material_is_fact_relevant(material: dict[str, Any]) -> bool:
+    if material_is_fill_template(material):
+        return False
     tier = str(material.get("materialTier") or "").strip()
     if tier == "project":
         return True
