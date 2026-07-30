@@ -23,11 +23,11 @@ s2outline prepare <manifest>
 ## 2. 通读模板结构和招标结构
 
 ```bash
-s2outline template-headings <manifest> [--cursor 0] [--page-size 40]
-s2outline headings <manifest> [--cursor 0] [--page-size 40] [--review]
+s2outline template-headings <manifest> [--cursor 0] [--page-size 200]
+s2outline headings <manifest> [--cursor 0] [--page-size 200] [--review]
 ```
 
-两个命令都按 `next_cursor` 只向后分页，直到 `complete=true`；成功读取过的 cursor 不再重复。先完整掌握模板结构，再掌握整本招标文件结构，后续每章不再读取全量目录。
+两个命令都按 `next_cursor` 只向后分页，直到 `complete=true`；成功读取过的 cursor 不再重复。用默认 page-size 200 即可，每页实际条目数由脚本按输出预算自动收缩，不要自行改小。先完整掌握模板结构，再掌握整本招标文件结构，后续每章不再读取全量目录。
 
 `template-headings` 返回模板一至三级目录：三级只用于理解每个二级节点的子树装了什么内容，决策时仍然只对一级章和二级节点表态。完整模板还用于识别跨章等价节点，不能把后续已有节点重复建议增加。
 
@@ -54,7 +54,7 @@ s2outline decision-batch <manifest> '<batch-json>'
 
 每个决策单元完成三件事，节奏由你把握：
 
-1. **读招标正文。** 用 `search` 定位，用 `section` 连续阅读与本章主题相关的招标章节，有分页就读到 `complete=true`。招标目录只用于定位，不能据标题判定覆盖；疑似独立成果必须逐项读原文。
+1. **读招标正文。** 用 `search` 定位，用 `section` 连续阅读与本章主题相关的招标章节，有分页就读到 `complete=true`。`section` 的 sectionId 必须使用 `headings` 返回的 `items[].section_id`。招标目录只用于定位，不能据标题判定覆盖；疑似独立成果必须逐项读原文。
 2. **找应当新增的节点。** 招标要求已构成完整响应单元，模板却没有语义等价且粒度相当的一级章或二级节点时，写进 `additions`。不要等招标明确写出"单独成章"才考虑新增。
 3. **对本批每个节点表态** `retain` 或 `suggest_delete`，一次提交。
 
@@ -103,7 +103,7 @@ s2outline appendix-next <manifest> --max-items 40
 s2outline appendix-decision-batch <manifest> '<batch-json>'
 ```
 
-按 `appendix-next.items` 原样逐项决策并严格保持返回顺序，不得重排、遗漏。每个候选只选 `include` 或 `exclude`：`source_status=missing` 必须 `exclude`（即 `missing`）；只有 `source_status=present`（即 `present`）才自主判断。附表只覆盖表格填写，不当然覆盖正文方案、说明、报告或承诺。首次 include 且没有唯一"技术附表"根时提交 `root_addition`，只写合同要求的 `node_id` 和 `reason`；根节点格式、表号和标题由程序生成或复制，不要改写。
+按 `appendix-next.items` 原样逐项决策并严格保持返回顺序，不得重排、遗漏。每个候选只选 `include` 或 `exclude`，且两者都必须提交 `reason`：`source_status=missing` 必须 `exclude`（即 `missing`）；只有 `source_status=present`（即 `present`）才自主判断。附表只覆盖表格填写，不当然覆盖正文方案、说明、报告或承诺。首次 include 且没有唯一"技术附表"根时提交 `root_addition`，只写合同要求的 `node_id` 和 `reason`；根节点格式、表号和标题由程序生成或复制，不要改写。根节点一旦建立，后续批次不得再提交 `root_addition`，include 直接引用已有根的 `node_id` 作为 `parent_id`。
 严格按 `appendix-next.submission_contract` 使用 include、exclude 和 `root_addition` 各自允许的字段，不要根据报错猜 JSON 结构。
 
 ## 5. 全局查漏

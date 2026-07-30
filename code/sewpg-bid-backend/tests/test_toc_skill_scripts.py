@@ -1273,7 +1273,7 @@ class TocSkillScriptTests(unittest.TestCase):
             {"headings", "decision-next", "appendix-next"},
         )
 
-    def test_bid_outline_headings_output_limit_rolls_back_state_and_can_retry(self) -> None:
+    def test_bid_outline_headings_page_auto_shrinks_below_output_limit(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1298,9 +1298,9 @@ class TocSkillScriptTests(unittest.TestCase):
             state_path.write_text(
                 json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
             )
-            state_before = state_path.read_bytes()
-
-            stdout = io.StringIO()
+            # 两条 14KB 级超长标题 + page-size 2：脚本按字节预算自动收缩为单条返回，
+            # 不再触发 24000 字节硬限回滚，按 next_cursor 连续读完。
+            first_stdout = io.StringIO()
             with patch.object(
                 sys,
                 "argv",
@@ -1311,16 +1311,14 @@ class TocSkillScriptTests(unittest.TestCase):
                     "--page-size",
                     "2",
                 ],
-            ), redirect_stdout(stdout), self.assertRaisesRegex(
-                SystemExit, r"command=headings, actual_bytes=\d+"
-            ) as raised:
+            ), redirect_stdout(first_stdout):
                 outline_runner.main()
+            first = json.loads(first_stdout.getvalue())
+            self.assertEqual(first["cursor"], "0")
+            self.assertEqual(first["next_cursor"], "1")
+            self.assertEqual(first["returned_heading_count"], 1)
 
-            self.assertEqual(stdout.getvalue(), "")
-            self.assertEqual(state_path.read_bytes(), state_before)
-            self.assertRegex(str(raised.exception), r"--page-size.*--cursor")
-
-            retry_stdout = io.StringIO()
+            second_stdout = io.StringIO()
             with patch.object(
                 sys,
                 "argv",
@@ -1329,17 +1327,82 @@ class TocSkillScriptTests(unittest.TestCase):
                     "headings",
                     str(manifest_path),
                     "--cursor",
-                    "0",
-                    "--page-size",
                     "1",
+                    "--page-size",
+                    "2",
                 ],
-            ), redirect_stdout(retry_stdout):
+            ), redirect_stdout(second_stdout):
                 outline_runner.main()
-            retry = json.loads(retry_stdout.getvalue())
+            second = json.loads(second_stdout.getvalue())
 
-        self.assertEqual(retry["cursor"], "0")
-        self.assertEqual(retry["next_cursor"], "1")
-        self.assertEqual(retry["returned_heading_count"], 1)
+        self.assertEqual(second["cursor"], "1")
+        self.assertEqual(second["next_cursor"], "")
+        self.assertTrue(second["complete"])
+        self.assertEqual(second["returned_heading_count"], 1)
+
+    def test_bid_outline_section_default_budget_stays_below_byte_limit_on_chinese_text(self) -> None:
+        outline_runner = load_outline_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "template.docx"
+            tender = root / "tender.docx"
+            manifest_path = root / "s2_input.json"
+            template_doc = Document()
+            template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
+            template_doc.save(template)
+            # 100 段密集中文正文：默认 --max-chars 12000 按字符算约 36KB，
+            # 字节预算必须在脚本内收缩，不能把超限弹回给 agent。
+            tender_doc = Document()
+            tender_doc.add_paragraph("1 技术要求", style="Heading 1")
+            for index in range(100):
+                tender_doc.add_paragraph(f"第{index}条 " + "招标技术条款正文" * 60)
+            tender_doc.save(tender)
+            manifest = {
+                "workDir": str(root),
+                "templateFile": str(template),
+                "tenderFiles": [{"id": "TEN-1", "name": tender.name, "path": str(tender)}],
+                "outputFile": str(root / "toc.json"),
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            outline_runner.write_template_structure(manifest, manifest_path)
+
+            headings = outline_runner.dispatch_command("headings", manifest, manifest_path, [])
+            section_id = headings["files"][0]["items"][0]["section_id"]
+            with self.assertRaisesRegex(SystemExit, r"items\[\]\.section_id"):
+                outline_runner.dispatch_command(
+                    "section", manifest, manifest_path, ["TEN-1:B000001"]
+                )
+
+            cursor = 0
+            rounds = 0
+            seen_records = 0
+            while True:
+                stdout = io.StringIO()
+                with patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_from_manifest.py",
+                        "section",
+                        str(manifest_path),
+                        section_id,
+                        "--cursor",
+                        str(cursor),
+                    ],
+                ), redirect_stdout(stdout):
+                    outline_runner.main()
+                output = stdout.getvalue()
+                self.assertLess(len(output.encode("utf-8")), 24000)
+                page = json.loads(output)
+                seen_records += len(page["records"])
+                rounds += 1
+                if page["complete"]:
+                    break
+                cursor = int(page["next_cursor"])
+                self.assertLess(rounds, 60)
+
+        self.assertGreaterEqual(seen_records, 100)
 
     def test_bid_outline_appendix_output_limit_rolls_back_state_and_can_retry(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -3163,9 +3226,11 @@ class TocSkillScriptTests(unittest.TestCase):
                         "reason",
                     ],
                     "include_parent_id": "必须引用本批 root_addition.node_id 或已有唯一技术附表根节点",
+                    "reason_required": "include 与 exclude 都必须提交 reason",
                     "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
                     "root_addition": {
                         "required_when": "首次 include 且尚无唯一的技术附表根节点",
+                        "omit_when": "根节点已建立后的所有后续批次禁止再提交 root_addition",
                         "fields": ["node_id", "reason"],
                         "generated_fields": {
                             "parent_id": None,

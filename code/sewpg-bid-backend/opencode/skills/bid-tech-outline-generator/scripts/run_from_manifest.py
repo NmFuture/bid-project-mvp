@@ -277,7 +277,7 @@ def dispatch_command(
         return write_template_structure(manifest, manifest_path)
     if command == "template-headings":
         cursor = int(_option_value(command_args, "--cursor", "0"))
-        page_size = int(_option_value(command_args, "--page-size", "40"))
+        page_size = int(_option_value(command_args, "--page-size", "200"))
         structure = load_json_dict(
             work_dir / "template_structure.json",
             "templateStructureFile",

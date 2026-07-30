@@ -221,7 +221,7 @@ def template_headings(
     structure: dict[str, Any],
     *,
     cursor: int = 0,
-    page_size: int = 40,
+    page_size: int = 200,
 ) -> dict[str, Any]:
     if cursor < 0:
         raise SystemExit("template-headings --cursor must be >= 0")
@@ -231,9 +231,23 @@ def template_headings(
     _, items = _annotated_items(structure, max_level=TEMPLATE_HEADINGS_MAX_LEVEL)
     if cursor > len(items):
         raise SystemExit("template-headings --cursor exceeds item count")
-    end = min(len(items), cursor + page_size)
     by_id = {str(item["template_id"]): item for item in items}
-    target_ids = [str(item["template_id"]) for item in items[cursor:end]]
+    # 按字节预算收缩本页条目数，保证大 page-size 也不会触发 24000 字节硬限。
+    page_items = _decision_items(
+        [str(item["template_id"]) for item in items[cursor : cursor + page_size]],
+        by_id,
+    )
+    item_budget = MAX_DECISION_RESPONSE_BYTES - 4_000
+    used_bytes = 0
+    kept = 0
+    for item in page_items:
+        item_bytes = _compact_json_bytes(item) + 1
+        if kept and used_bytes + item_bytes > item_budget:
+            break
+        used_bytes += item_bytes
+        kept += 1
+    page_items = page_items[: max(1, kept)] if page_items else page_items
+    end = cursor + len(page_items)
     complete = end >= len(items)
     return {
         "schema_version": "technical-template-headings.v1",
@@ -241,7 +255,7 @@ def template_headings(
         "next_cursor": "" if complete else str(end),
         "complete": complete,
         "item_count": len(items),
-        "items": _decision_items(target_ids, by_id),
+        "items": page_items,
     }
 
 
@@ -813,9 +827,11 @@ def next_appendix_batch(
             "reason",
         ],
         "include_parent_id": "必须引用本批 root_addition.node_id 或已有唯一技术附表根节点",
+        "reason_required": "include 与 exclude 都必须提交 reason",
         "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
         "root_addition": {
             "required_when": "首次 include 且尚无唯一的技术附表根节点",
+            "omit_when": "根节点已建立后的所有后续批次禁止再提交 root_addition",
             "fields": ["node_id", "reason"],
             "generated_fields": {
                 "parent_id": None,
