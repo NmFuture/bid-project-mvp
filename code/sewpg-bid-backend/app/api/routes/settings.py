@@ -161,7 +161,10 @@ async def settings_technical_fact_specs_upload(
     file: UploadFile = File(...),
     _: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    """上传技术标项目事实表填表规则清单（.xlsx），解析成功后覆盖运行时 spec。
+    """上传技术标事实表填表规则系统默认清单（.xlsx），解析成功后覆盖运行时默认 spec。
+
+    这是系统级默认规则（独立于项目专属规则管理）：只影响未上传本项目实时表、
+    未绑定专属规则版本的项目；已绑定项目始终读自己的规则快照（R06-B04-02）。
 
     契约：multipart 单文件字段 file；成功返回
     {"specTotal", "fillableTotal", "needsConfirmation", "template", "override": true}；

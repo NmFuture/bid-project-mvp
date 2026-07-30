@@ -21,6 +21,7 @@ from app.services.technical_fact_field_specs import (
     fillable_specs,
     spec_category,
 )
+from app.services.technical_fact_spec_versions import fact_specs_ref, resolve_project_specs
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 
@@ -462,6 +463,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if isinstance(field, dict) and fact_label_key(field.get("label"))
     }
     fields_by_key: dict[str, dict[str, Any]] = {}
+    # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
+    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
 
     def is_material_fact_ref(ref: dict[str, Any]) -> bool:
         return str(ref.get("type") or "") in {"materialFact", "derivedMaterialFact"}
@@ -657,7 +660,9 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             source_priority=260,
         )
 
-    for fact in project_material_fact_fields(project, gap_state, excluded_paths=blank_source_paths()):
+    for fact in project_material_fact_fields(
+        project, gap_state, excluded_paths=blank_source_paths(), specs=project_specs
+    ):
         if fact.get("internal"):
             continue
         add_candidate(
@@ -725,9 +730,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             )
 
     preserve_manual_fields()
-    # 字段骨架来自本项目上传的实时表 Excel（gap_state["factSpecs"]），不再用全局默认清单
-    fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-    project_specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+    # 字段骨架来自任务启动时固化的规则快照（项目绑定版本，无绑定回落系统默认清单）
     reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
 
     fields = list(fields_by_key.values())
@@ -776,6 +779,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "confirmedBy": "",
         "fields": fields,
         "summary": summarize_project_fact_fields(fields, spec_total=len(project_specs)),
+        # 本次构建实际使用的规则版本快照（审计：正式标书用了哪版规则）
+        "factSpecsRef": fact_specs_meta,
     }
 
 
@@ -1041,6 +1046,7 @@ def project_material_fact_fields(
     gap_state: dict[str, Any],
     *,
     excluded_paths: set[str] | None = None,
+    specs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     materials = project_fact_material_index(project, gap_state)
     if not materials:
@@ -1073,7 +1079,7 @@ def project_material_fact_fields(
             cert_materials.append((material, path))
             continue
         if kind:
-            special_facts = run_special_extractor(kind, path, material, project)
+            special_facts = run_special_extractor(kind, path, material, project, specs=specs)
             if special_facts is not None:
                 facts.extend(special_facts)
                 continue
@@ -1082,7 +1088,7 @@ def project_material_fact_fields(
             facts.extend(facts_from_docx_material(path, material))
         elif suffix in {".xlsx", ".xlsm"}:
             facts.extend(facts_from_xlsx_material(path, material, project))
-    facts.extend(facts_from_certificate_materials(cert_materials, project))
+    facts.extend(facts_from_certificate_materials(cert_materials, project, specs=specs))
     facts.extend(derived_material_fact_fields(project, facts))
     return facts
 
