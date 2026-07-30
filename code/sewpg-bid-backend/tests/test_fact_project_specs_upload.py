@@ -185,7 +185,7 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
         self.assertEqual(after.json()["specTotal"], 2)
 
     def test_draft_save_preserves_rule_reference_and_spec_total(self) -> None:
-        project_id = self._create_project()
+        project_id = self._create_project(recognition_completed=True)
         xlsx_path = _build_xlsx(
             Path(self.temp_dir.name) / "事实表.xlsx",
             [("招标编号", "招标文件/招标公告"), ("总装机容量", "项目定制/工程量清单")],

@@ -330,13 +330,17 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         project = {"id": "P-GLOBAL", "name": "全局清单项目", "parse_result": {}}
         table = build_project_fact_table(project, {})
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
-        self.assertEqual(len(spec_fields), 128)
-        self.assertEqual(table["summary"]["specTotal"], 128)
+        self.assertEqual(len(spec_fields), len(load_specs()))
+        self.assertEqual(table["summary"]["specTotal"], len(load_specs()))
 
     def test_build_keeps_union_behavior_when_no_specs_available(self) -> None:
         """极端兜底：项目未上传且全局清单加载失败，维持来源并集行为并记 warning。"""
         project = {"id": "P-NOSPEC", "name": "无清单项目", "parse_result": {}}
-        with patch.object(fact_table_module, "fillable_specs", return_value=[]):
+        with patch.object(
+            fact_table_module,
+            "resolve_project_specs",
+            return_value=([], {"source": "default"}),
+        ):
             with self.assertLogs(fact_table_module.logger, level="WARNING"):
                 table = build_project_fact_table(project, {})
         self.assertTrue(table["fields"])
