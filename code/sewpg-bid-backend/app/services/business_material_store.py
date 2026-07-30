@@ -295,6 +295,22 @@ class BusinessMaterialStore:
             content_path_prefix="/api/business/materials/raw",
         )
 
+    async def raw_original_preview(
+        self,
+        file_id: str,
+        *,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+    ) -> dict[str, Any]:
+        await self.ensure_raw_file(file_id)
+        return await material_store.raw_original_preview(
+            file_id,
+            bid_type=BUSINESS_BID_TYPE,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+            content_path_prefix="/api/business/materials/raw",
+        )
+
     async def raw_download_cleaned_content(self, file_id: str) -> dict[str, Any]:
         await self.ensure_raw_file(file_id)
         return await material_store.raw_download_cleaned_content(file_id, bid_type=BUSINESS_BID_TYPE)

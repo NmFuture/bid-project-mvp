@@ -111,9 +111,20 @@ const tagInputPreview = (committedTags, draftValue) => normalizeTagList([
 
 const canPreviewCleaned = (item) => item?.cleanStatus === 'cleaned' && Boolean(item?.hasCleanedWord)
 
+// 原件直预览：PDF/图片走浏览器内联渲染，Excel 走 OnlyOffice 直开原件
+const INLINE_PREVIEW_EXTS = ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff']
+const ONLYOFFICE_ORIGINAL_EXTS = ['xls', 'xlsx', 'xlsm']
+
+const canPreviewOriginal = (item) => {
+  const ext = extOf(item?.name)
+  return INLINE_PREVIEW_EXTS.includes(ext) || ONLYOFFICE_ORIGINAL_EXTS.includes(ext)
+}
+
+const canPreview = (item) => canPreviewCleaned(item) || canPreviewOriginal(item)
+
 const cleanedPreviewBlockedMessage = (item) => {
   if (!item) return '选择已清洗文件后预览。'
-  if (item.cleanStatus === 'original_only') return '该素材仅保留原件。'
+  if (item.cleanStatus === 'original_only') return '该类型暂不支持在线预览，可下载查看。'
   if (item.cleanStatus === 'failed') return '清洗失败，暂无预览。'
   if (item.cleanStatus === 'cleaning') return '清洗中，完成后可预览。'
   if (item.cleanStatus === 'pending') return '等待清洗，完成后可预览。'
@@ -791,7 +802,7 @@ function TreeNode({
                 {directFiles.map((item) => {
                   const fileSelected = selectedFileId === item.id
                   const bulkChecked = selectedFileIds.has(item.id)
-                  const previewable = canPreviewCleaned(item)
+                  const previewable = canPreview(item)
                   const canSplit = item.bidType === '技术标' && extOf(item.name) === 'docx'
                   const itemTags = normalizeTagList(item.tags)
                   return (
@@ -1060,11 +1071,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const filesByFolderPath = useMemo(() => groupFilesByFolderPath(fileItems), [fileItems])
   const previewTitle = previewSession?.fileName || previewItem?.cleanedFileName || previewItem?.name || '未选择清洗稿'
   const hasPreviewSession = Boolean(previewSession?.onlyoffice?.fileUrl) && !onlyofficePreviewError
+  const isInlinePreview = Boolean(previewItem) && INLINE_PREVIEW_EXTS.includes(extOf(previewItem?.name))
   const previewModeLabel = previewLoading
     ? '加载中'
     : onlyofficePreviewError
       ? '异常'
-      : hasPreviewSession
+      : hasPreviewSession || isInlinePreview
         ? '可预览'
         : previewItem
           ? '未开放'
@@ -1628,20 +1640,32 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     setPreviewSession(null)
     setOnlyofficePreviewError('')
 
-    if (!canPreviewCleaned(item)) {
+    const ext = extOf(item?.name)
+    const inlinePreview = INLINE_PREVIEW_EXTS.includes(ext)
+    const originalPreview = !inlinePreview && ONLYOFFICE_ORIGINAL_EXTS.includes(ext)
+
+    if (!canPreviewCleaned(item) && !inlinePreview && !originalPreview) {
       const message = cleanedPreviewBlockedMessage(item)
       setPreviewError(message)
       showToast(message, 'error')
       return
     }
 
+    if (inlinePreview) {
+      // PDF / 图片：浏览器内联直渲原件，无需预览会话
+      setPreviewError('')
+      return
+    }
+
     setPreviewLoading(true)
     setPreviewError('')
     try {
-      const payload = await technicalMaterialsAPI.raw.previewCleanedFile(item.id)
+      const payload = canPreviewCleaned(item)
+        ? await technicalMaterialsAPI.raw.previewCleanedFile(item.id)
+        : await technicalMaterialsAPI.raw.previewOriginalFile(item.id)
       setPreviewSession(payload)
     } catch (e) {
-      setPreviewError(safeMessage(e, '清洗稿预览加载失败'))
+      setPreviewError(safeMessage(e, canPreviewCleaned(item) ? '清洗稿预览加载失败' : '原件预览加载失败'))
     } finally {
       setPreviewLoading(false)
     }
@@ -1922,6 +1946,22 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
             <p className="mt-2 text-sm text-on-surface-variant">正在加载...</p>
           </div>
         </div>
+      ) : isInlinePreview ? (
+        extOf(previewItem?.name) === 'pdf' ? (
+          <iframe
+            src={technicalMaterialsAPI.raw.previewContentUrl(previewItem.id)}
+            title={`预览 ${previewItem.name}`}
+            className="h-full min-h-[520px] w-full flex-1 rounded-lg border border-surface-container-high bg-white"
+          />
+        ) : (
+          <div className="flex h-full min-h-[520px] w-full flex-1 items-center justify-center overflow-auto rounded-lg border border-surface-container-high bg-surface-container-lowest">
+            <img
+              src={technicalMaterialsAPI.raw.previewContentUrl(previewItem.id)}
+              alt={previewItem.name}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+        )
       ) : hasPreviewSession ? (
         <OnlyOfficeEmbed
           session={previewSession?.onlyoffice}
@@ -2104,7 +2144,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         ].join(' ')}>
           <div className="flex min-h-[52px] items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
-              <h3 className="truncate text-sm font-semibold text-on-surface">清洗稿预览</h3>
+              <h3 className="truncate text-sm font-semibold text-on-surface">素材预览</h3>
               {previewItem && (
                 <span
                   title={previewTitle}
@@ -2115,7 +2155,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <span className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${onlyofficePreviewError ? 'bg-error-container text-on-error-container' : hasPreviewSession ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
+              <span className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${onlyofficePreviewError ? 'bg-error-container text-on-error-container' : hasPreviewSession || isInlinePreview ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
                 {previewModeLabel}
               </span>
               <button
