@@ -168,7 +168,7 @@ manifest：{manifest_path}
 
 {startup}
 {mandatory_start}
-本会话只做模板正文目录的自主判断：循环调用 `decision-next`，每个决策单元都按 Skill 自主使用 `search` 和 `section` 阅读相关招标原文，再提交“保留 / 建议增加 / 建议删除”。最多完成 {TECH_OUTLINE_HANDOFF_DECISION_UNITS} 个成功提交的决策单元；不足时做到 `decision-next complete=true` 为止。
+本会话只做模板正文目录的自主判断：循环调用 `decision-next`，每个决策单元是一个一级章的章根加它下面的全部二级节点（三级节点跟随二级父节点，不单独判断）。按 Skill 自主使用 `search` 和 `section` 阅读相关招标原文，再提交“保留 / 建议增加 / 建议删除”。最多完成 {TECH_OUTLINE_HANDOFF_DECISION_UNITS} 个成功提交的决策单元；不足时做到 `decision-next complete=true` 为止。
 
 本会话不得执行 appendix-next、review-complete、decisions、compose 或 finalize。到达本会话边界后立即停止，不要继续读后续章节；只返回一个简短 JSON：{{"workflowStage":"decision_checkpoint"}}。
 """.strip()
@@ -185,7 +185,7 @@ Use the {OUTLINE_SKILL_NAME} skill.
 manifest：{manifest_path}
 
 准备产物已经由后端生成，不要执行 `s2outline prepare`。先用 `template-headings` 按 `next_cursor` 读完模板目录，再用 `headings` 按 `next_cursor` 读完整本招标目录，以便识别跨章等价项。
-然后循环执行 `decision-next`。每个决策单元都按 Skill 自主使用 `search`、`section`、`read` 阅读相关招标原文，完成“保留 / 建议增加 / 建议删除”三类判断并执行 `decision-batch`。同一章包含多个决策单元时继续处理，直到 `decision-next complete=true`。
+然后循环执行 `decision-next`。决策只到二级：`decision-next` 返回本章章根和它下面的全部二级节点，三级节点跟随二级父节点，不单独判断。按 Skill 自主使用 `search`、`section`、`read` 阅读相关招标原文，完成“保留 / 建议增加 / 建议删除”三类判断并执行 `decision-batch`，直到 `decision-next complete=true`。
 不要执行 `appendix-next`、`review-complete`、`decisions`、`compose` 或 `finalize`，也不要处理其他一级章。完成后只返回简短 JSON：{{"workflowStage":"chapter_complete"}}。
 """.strip()
 

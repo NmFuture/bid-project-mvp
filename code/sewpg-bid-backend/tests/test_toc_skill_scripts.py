@@ -200,9 +200,10 @@ def submit_outline_changes(outline_runner, manifest: dict, manifest_path: Path, 
         for change in changes
         if change.get("operation") == "suggest_delete"
     }
+    decision_max_level = outline_runner.outline_composer.DECISION_MAX_LEVEL
     template_decisions = []
     for item in annotated["items"]:
-        if int(item.get("level") or 1) > 3:
+        if int(item.get("level") or 1) > decision_max_level:
             continue
         target_id = item["template_id"]
         change = deleted.get(target_id)
@@ -972,6 +973,10 @@ class TocSkillScriptTests(unittest.TestCase):
         for principle in (
             "历史模板提供成熟投标经验",
             "当前招标文件决定本项目约束",
+            "决策只到二级",
+            "跟随其二级父节点",
+            "父节点保留则整个子树保留",
+            "父节点建议删除则整个子树建议删除",
             "一至三级目录",
             "s2outline prepare",
             "s2outline template-headings",
@@ -988,8 +993,7 @@ class TocSkillScriptTests(unittest.TestCase):
             "s2outline decision-next",
             "s2outline decision-batch",
             "一个完整决策单元",
-            "超过 50 个节点的超大章",
-            "每个完整二级小节子树",
+            "一个一级章的章根加它下面的全部二级节点",
             "不做章节复核",
             "retain",
             "suggest_delete",
@@ -1016,24 +1020,14 @@ class TocSkillScriptTests(unittest.TestCase):
             "不要检查脚本或包装器",
             "不要执行同功能的 `template`",
             "不要直接读取 `template_structure.json`",
-            "普通一级章整章返回",
-            "先做招标到模板的比较",
-            "再做模板到招标的比较",
-            "对剩余节点再判断保留",
             "内容有投标表达价值，不等于必须独立成章",
             "宽泛父节点不当然覆盖",
             "企业通用能力介绍与本项目专项响应",
             "不得改用 `reason` 规避校验",
             "从招标侧检查遗漏",
             "从模板侧检查不适用、重复或可合并节点",
-            "两个差异清单",
-            "保留是处理完差异后的剩余分类",
-            "有投标表达价值可以保留",
-            "不能因此跳过不适用、重复、可合并检查",
             "一个短关键词或短语",
             "不能把多个无关关键词拼成一次查询",
-            "不得为了通过门禁任意补读后原样提交原结论",
-            "遍历完整招标目录中与本章主题相关的所有标题",
             "疑似独立成果必须逐项读原文",
             "附表只覆盖表格填写",
             "不当然覆盖正文方案、说明、报告或承诺",
@@ -1043,11 +1037,13 @@ class TocSkillScriptTests(unittest.TestCase):
             "语义等价且粒度相当",
             "单独表达能够让评审人更清楚地看到",
             "父章节能够容纳内容，不等于目录已经覆盖",
-            "招标明确要求提供成果",
             "仅有营销属性不是删除理由",
             "招标目录只用于定位，不能据标题判定覆盖",
-            "每个二、三级招标章节",
-            "未读正文的相关章节不能判定已覆盖",
+            "把它的整个三级子树当成一个整体",
+            "不新增三级节点",
+            "`parent_id` 为 `null` 表示新增一级章",
+            "给了 `evidence_id`，前端就能点击跳转招标原文",
+            "会把每个二级决策下沉到它的三级子树",
         ):
             self.assertIn(principle, content)
 
@@ -1056,6 +1052,10 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertNotIn("模板是主骨架", content)
         self.assertNotIn("仅因招标未提及不能建议删除", content)
         self.assertNotIn("确认没有不适用证据后选择 `retain`", content)
+        # 已删除的程序性门禁不应再出现在指令里。
+        self.assertNotIn("新的受控正文阅读", content)
+        self.assertNotIn("超过 50 个节点的超大章", content)
+        self.assertNotIn("--max-items 50", content)
 
         for redundant_contract in (
             "required_status",
@@ -1243,7 +1243,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 return json.loads(output)
 
             invoke("headings", "--page-size", "80")
-            decision_batch = invoke("decision-next", "--max-items", "1")
+            decision_batch = invoke("decision-next")
             self.assertNotIn("comparison_context", decision_batch)
             outline_runner.dispatch_command(
                 "decision-batch",
@@ -1356,8 +1356,6 @@ class TocSkillScriptTests(unittest.TestCase):
                     "run_from_manifest.py",
                     "decision-next",
                     str(manifest_path),
-                    "--max-items",
-                    "1",
                 ],
             ), redirect_stdout(decision_stdout):
                 outline_runner.main()
@@ -2228,13 +2226,14 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(len(batch["items"]), 1)
         self.assertEqual(batch["remaining_count"], 50)
         self.assertNotIn("comparison_context", batch)
+        self.assertEqual(batch["decision_level"], 2)
         self.assertEqual(
             batch["decision_steps"],
             [
-                "定位本章相关的全部招标二、三级章节，即使与模板同名也逐个用 section 连续读到 complete=true；同名父节点或标题相似不等于响应粒度相当，search 只用于跨章节定位，关键词抽查不算完成",
-                "逐项提取正文中“提供、提交、编制、出具”指向的方案、报告、承诺、计算书、清单和交付物；只有完整模板存在语义等价且粒度相当的节点才算覆盖，未覆盖且值得独立表达的形成 additions",
-                "再从模板侧找出不适用、重复、可合并或没有独立成章价值的节点，形成 suggest_delete",
-                "最后把剩余节点 retain；不得用 reason 把招标直接要求伪装成历史模板经验",
+                "读本章相关的招标正文，判断本章主题在本项目还需要哪些响应",
+                "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions",
+                "模板侧不适用、重复、可合并或没有独立表达价值的二级节点，写 suggest_delete",
+                "其余节点 retain；每个判断覆盖该节点的整个三级子树",
             ],
         )
         self.assertEqual(
@@ -2243,7 +2242,8 @@ class TocSkillScriptTests(unittest.TestCase):
                 "required_fields": ["batch_token", "items", "additions"],
                 "items_must_match_batch": True,
                 "additions_must_be_explicit": True,
-                "new_controlled_read_required": True,
+                "decision_covers_subtree": "对二级节点的判断适用于其下全部三级节点",
+                "addition_levels": "parent_id=null 新增一级章；parent_id 为一级章新增二级节点；不新增三级节点",
             },
         )
 
@@ -2271,7 +2271,7 @@ class TocSkillScriptTests(unittest.TestCase):
             )
 
             first = outline_runner.dispatch_command(
-                "decision-next", manifest, manifest_path, ["--max-items", "1"]
+                "decision-next", manifest, manifest_path, []
             )
             outline_runner.dispatch_command(
                 "decision-batch",
@@ -2296,11 +2296,12 @@ class TocSkillScriptTests(unittest.TestCase):
             )
 
         self.assertEqual(first["chapter_id"], "TPL-0001")
-        self.assertEqual([item["target_id"] for item in first["items"]], ["TPL-0001", "TPL-0002", "TPL-0003"])
+        # TPL-0003 是三级节点，跟随二级父节点 TPL-0002，不进入决策批次。
+        self.assertEqual([item["target_id"] for item in first["items"]], ["TPL-0001", "TPL-0002"])
         self.assertEqual(second["chapter_id"], "TPL-0004")
         self.assertEqual([item["target_id"] for item in second["items"]], ["TPL-0004", "TPL-0005"])
 
-    def test_bid_outline_decision_next_splits_oversized_chapter_by_complete_level_two_sections(self) -> None:
+    def test_bid_outline_decision_next_keeps_one_batch_per_chapter_at_level_two(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2327,7 +2328,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            chapter_root = outline_runner.dispatch_command(
+            chapter = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
             )
             outline_runner.dispatch_command(
@@ -2337,13 +2338,14 @@ class TocSkillScriptTests(unittest.TestCase):
                 [
                     json.dumps(
                         {
-                            "batch_token": chapter_root["batch_token"],
+                            "batch_token": chapter["batch_token"],
                             "items": [
                                 {
-                                    "target_id": chapter_root["items"][0]["target_id"],
+                                    "target_id": item["target_id"],
                                     "decision": "retain",
-                                    "reason": "保留完整专题方案根章节。",
+                                    "reason": "保留完整专题方案章节。",
                                 }
+                                for item in chapter["items"]
                             ],
                             "additions": [],
                         },
@@ -2351,20 +2353,17 @@ class TocSkillScriptTests(unittest.TestCase):
                     )
                 ],
             )
-            first_section = outline_runner.dispatch_command(
+            after = outline_runner.dispatch_command(
                 "decision-next", manifest, manifest_path, []
             )
 
-        self.assertEqual(chapter_root["chapter_id"], "TPL-0001")
-        self.assertEqual(chapter_root["decision_unit_id"], "TPL-0001")
+        # 60 个三级节点跟随各自的二级父节点，整章只剩章根 + 3 个二级节点一批决完。
+        self.assertEqual(chapter["chapter_id"], "TPL-0001")
         self.assertEqual(
-            [item["target_id"] for item in chapter_root["items"]], ["TPL-0001"]
+            [item["number"] for item in chapter["items"]],
+            ["第1章", "1.1", "1.2", "1.3"],
         )
-        self.assertEqual(first_section["chapter_id"], "TPL-0001")
-        self.assertEqual(first_section["decision_unit_id"], "TPL-0002")
-        self.assertEqual(len(first_section["items"]), 21)
-        self.assertEqual(first_section["items"][0]["number"], "1.1")
-        self.assertEqual(first_section["items"][-1]["number"], "1.1.20")
+        self.assertTrue(after["complete"])
 
     def test_bid_outline_decision_next_uses_actual_first_page_size_for_large_chapter(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -2425,7 +2424,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     ],
                 )
 
-    def test_bid_outline_decision_batch_requires_expert_reason_or_read_tender_evidence(self) -> None:
+    def test_bid_outline_decision_batch_requires_reason_or_read_tender_evidence(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2475,28 +2474,6 @@ class TocSkillScriptTests(unittest.TestCase):
                 "search", manifest, manifest_path, ["运输安全"]
             )
             evidence_id = search["results"][0]["evidence_id"]
-            with self.assertRaisesRegex(SystemExit, "新的受控正文阅读"):
-                outline_runner.dispatch_command(
-                    "decision-batch",
-                    manifest,
-                    manifest_path,
-                    [
-                        json.dumps(
-                            {
-                                "batch_token": batch["batch_token"],
-                                "items": [
-                                    {
-                                        "target_id": batch["items"][0]["target_id"],
-                                        "decision": "retain",
-                                        "reason": "历史模板中的成熟技术方案章节。",
-                                    }
-                                ],
-                                "additions": [],
-                            },
-                            ensure_ascii=False,
-                        )
-                    ],
-                )
             payload = {
                 "batch_token": batch["batch_token"],
                 "items": [
@@ -2504,6 +2481,7 @@ class TocSkillScriptTests(unittest.TestCase):
                         "target_id": batch["items"][0]["target_id"],
                         "decision": "retain",
                         "evidence_id": evidence_id,
+                        "reason": "招标要求本章承接整体技术方案。",
                     }
                 ],
                 "additions": [
@@ -2539,10 +2517,10 @@ class TocSkillScriptTests(unittest.TestCase):
             state = json_load(root / "outline_decision_state.json")
 
         self.assertEqual(result["decided_count"], 1)
-        self.assertEqual(
-            state["template_decisions"][batch["items"][0]["target_id"]]["tender_basis"]["evidence_id"],
-            evidence_id,
-        )
+        # evidence_id 与 reason 是前端展示契约：有依据就能跳转原文，reason 同时作为说明保留。
+        retained = state["template_decisions"][batch["items"][0]["target_id"]]
+        self.assertEqual(retained["tender_basis"]["evidence_id"], evidence_id)
+        self.assertEqual(retained["reason"], "招标要求本章承接整体技术方案。")
         self.assertEqual(state["additions"][0]["tender_basis"]["evidence_id"], evidence_id)
 
     def test_bid_outline_appendix_candidates_keep_missing_source_status(self) -> None:
@@ -2616,7 +2594,7 @@ class TocSkillScriptTests(unittest.TestCase):
 
         self.assertTrue(reviewed["review_digest"])
 
-    def test_bid_outline_global_review_requires_new_controlled_read_after_all_decisions(self) -> None:
+    def test_bid_outline_global_review_completes_without_forced_extra_read(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2674,11 +2652,14 @@ class TocSkillScriptTests(unittest.TestCase):
                 {"review_summary": "已从招标侧完成全局查漏。", "issues": []},
                 ensure_ascii=False,
             )
-            with self.assertRaisesRegex(SystemExit, "新的正文阅读"):
+            # 查漏由 opencode 自主安排，不再用阅读次数基线当门禁；只有摘要缺失才拒绝。
+            with self.assertRaisesRegex(SystemExit, "review_summary is required"):
                 outline_runner.dispatch_command(
-                    "review-complete", manifest, manifest_path, [payload]
+                    "review-complete",
+                    manifest,
+                    manifest_path,
+                    [json.dumps({"review_summary": "", "issues": []})],
                 )
-            outline_runner.dispatch_command("section", manifest, manifest_path, [section_id])
             completed = outline_runner.dispatch_command(
                 "review-complete", manifest, manifest_path, [payload]
             )
@@ -2836,9 +2817,173 @@ class TocSkillScriptTests(unittest.TestCase):
                 "decisions", manifest, manifest_path, []
             )
 
-        self.assertEqual(first_result["decided_count"], 3)
-        self.assertEqual(finalized["templateDecisionCount"], 3)
+        # 一级章 + 二级节点各一次决策；三级 Legacy case 跟随二级父节点。
+        self.assertEqual(first_result["decided_count"], 2)
+        self.assertEqual(finalized["templateDecisionCount"], 2)
         self.assertEqual(finalized["remainingTemplateDecisionCount"], 0)
+
+    def test_bid_outline_level_two_decision_cascades_to_level_three_subtree(self) -> None:
+        outline_composer = load_outline_script("outline_composer")
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [
+                {"number": "第1章", "title": "总体方案", "level": 1},
+                {"number": "1.1", "title": "设计依据", "level": 2},
+                {"number": "1.1.1", "title": "采用标准", "level": 3},
+                {"number": "1.1.2", "title": "设计输入", "level": 3},
+                {"number": "1.2", "title": "重复小节", "level": 2},
+                {"number": "1.2.1", "title": "重复细项", "level": 3},
+                {"number": "第2章", "title": "其他分册内容", "level": 1},
+            ],
+        }
+        basis = {"evidence_id": "TEN-1:B000123", "file_id": "TEN-1", "search_text": "设计依据"}
+        decisions = {
+            "schema_version": "technical-outline-decisions.v1",
+            "input_fingerprint": outline_composer.annotate_template_structure(structure)[
+                "input_fingerprint"
+            ],
+            "template_decisions": [
+                {"target_id": "TPL-0001", "decision": "retain", "reason": "承接整体技术论证。"},
+                {"target_id": "TPL-0002", "decision": "retain", "tender_basis": basis},
+                {"target_id": "TPL-0005", "decision": "suggest_delete", "reason": "与 1.1 语义重复。"},
+                {"target_id": "TPL-0007", "decision": "suggest_delete", "reason": "属于商务分册。"},
+            ],
+            "changes": [],
+        }
+
+        outline, _ = outline_composer.build_composition(structure, decisions)
+
+        chapter, other = outline["nodes"]
+        design, duplicate = chapter["children"]
+        # 保留的二级节点：整个三级子树跟随标签与招标依据。
+        self.assertEqual([child["title"] for child in design["children"]], ["采用标准", "设计输入"])
+        for child in design["children"]:
+            self.assertEqual(child["suggestion_action"], "必要")
+            self.assertEqual(child["tender_basis"], basis)
+        # 建议删除的二级节点：子树全部建议删除，并复用父节点理由。
+        self.assertEqual(duplicate["suggestion_action"], "建议删除")
+        self.assertEqual(
+            [
+                (child["suggestion_action"], child["suggestion_reason"])
+                for child in duplicate["children"]
+            ],
+            [("建议删除", "与 1.1 语义重复。")],
+        )
+        # 整章删除同样成立，且一级章自身可以独立决策。
+        self.assertEqual(other["suggestion_action"], "建议删除")
+        self.assertEqual(other["suggestion_reason"], "属于商务分册。")
+
+    def test_bid_outline_additions_are_limited_to_chapter_and_section_levels(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [
+                {"number": "第1章", "title": "总体方案", "level": 1},
+                {"number": "1.1", "title": "设计依据", "level": 2},
+                {"number": "1.1.1", "title": "采用标准", "level": 3},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            batch = decision_workflow.next_decision_batch(root, structure)
+            self.assertEqual(
+                [item["target_id"] for item in batch["items"]], ["TPL-0001", "TPL-0002"]
+            )
+
+            def submit(additions: list[dict]) -> dict:
+                return decision_workflow.submit_decision_batch(
+                    root,
+                    structure,
+                    {
+                        "batch_token": batch["batch_token"],
+                        "items": [
+                            {"target_id": item["target_id"], "decision": "retain"}
+                            for item in batch["items"]
+                        ],
+                        "additions": additions,
+                    },
+                )
+
+            for parent_id in ("TPL-0002", "TPL-0003"):
+                with self.subTest(parent_id=parent_id), self.assertRaisesRegex(
+                    SystemExit, "只能新增一级章或二级节点"
+                ):
+                    submit(
+                        [
+                            {
+                                "node_id": "ADD-0001",
+                                "parent_id": parent_id,
+                                "number": "1.1.2",
+                                "title": "专项细项",
+                                "reason": "招标要求补充。",
+                            }
+                        ]
+                    )
+
+            result = submit(
+                [
+                    {
+                        "node_id": "ADD-CHAPTER",
+                        "parent_id": None,
+                        "number": "第2章",
+                        "title": "专项试验方案",
+                        "reason": "招标要求独立成章。",
+                    },
+                    {
+                        "node_id": "ADD-SECTION",
+                        "parent_id": "TPL-0001",
+                        "number": "1.2",
+                        "title": "海上运输安全专项方案",
+                        "reason": "招标要求独立提交。",
+                    },
+                ]
+            )
+
+        self.assertEqual(result["addition_count"], 2)
+
+    def test_bid_outline_added_chapter_keeps_technical_appendix_last(self) -> None:
+        outline_composer = load_outline_script("outline_composer")
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "第1章", "title": "总体方案", "level": 1}],
+        }
+        decisions = {
+            "schema_version": "technical-outline-decisions.v1",
+            "input_fingerprint": outline_composer.annotate_template_structure(structure)[
+                "input_fingerprint"
+            ],
+            "template_decisions": [
+                {"target_id": "TPL-0001", "decision": "retain", "reason": "承接整体技术论证。"}
+            ],
+            "changes": [
+                {
+                    "operation": "add",
+                    "node_id": "ADD-APPENDIX",
+                    "parent_id": None,
+                    "number": "附录",
+                    "title": "技术附表",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "招标文件包含独立附表。",
+                },
+                {
+                    "operation": "add",
+                    "node_id": "ADD-CHAPTER",
+                    "parent_id": None,
+                    "number": "第2章",
+                    "title": "专项试验方案",
+                    "suggestion_action": "建议增加",
+                    "suggestion_reason": "全局查漏发现的独立成章要求。",
+                },
+            ],
+        }
+
+        outline, _ = outline_composer.build_composition(structure, decisions)
+
+        self.assertEqual(
+            [node["title"] for node in outline["nodes"]],
+            ["总体方案", "专项试验方案", "技术附表"],
+        )
 
     def test_bid_outline_decision_batch_rejects_appendix_additions_outside_queue(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -3423,7 +3568,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 root, structure, appendix_items=inventory
             )
 
-        self.assertEqual(state["schema_version"], "technical-outline-decision-state.v6")
+        self.assertEqual(state["schema_version"], decision_workflow.STATE_SCHEMA)
         self.assertEqual(state["appendix_decisions"]["APP-0001"]["decision"], "include")
         self.assertEqual(state["appendix_decisions"]["APP-0001"]["reason"], "Tender requires the completed form.")
         self.assertEqual(state["appendix_decisions"]["APP-0002"]["decision"], "exclude")

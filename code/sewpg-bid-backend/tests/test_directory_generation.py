@@ -341,7 +341,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "decision-next",
                 manifest,
                 manifest_path,
-                ["--max-items", "50"],
+                [],
             )
             if batch["complete"]:
                 break

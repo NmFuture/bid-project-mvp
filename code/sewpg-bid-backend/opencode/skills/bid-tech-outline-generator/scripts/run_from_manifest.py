@@ -58,7 +58,7 @@ NAVIGATION_RETRY_HINTS = {
     "headings": "请减小 --page-size，并使用同一 --cursor 重试",
     "search": "请减小 --max-results 或 --max-chars，并使用同一 --cursor 重试",
     "section": "请减小 --max-chars，并使用同一 --cursor 重试",
-    "decision-next": "请减小 --max-items 或 --max-chars 后重试",
+    "decision-next": "请精简模板章节标题后重试",
     "appendix-next": "请减小 --max-items 后重试",
 }
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
@@ -226,18 +226,18 @@ def _resolve_decision_evidence(
             raise SystemExit(f"decision-batch items[{index}] must be an object")
         decision = str(item.get("decision") or "").strip()
         if decision == "retain":
-            has_evidence = bool(str(item.get("evidence_id") or "").strip())
-            has_reason = bool(str(item.get("reason") or "").strip())
-            if has_evidence == has_reason:
-                if not has_evidence and not (work_dir / "tender_evidence_access.json").is_file():
-                    item["reason"] = "历史兼容：保留模板节点。"
-                    continue
-                raise SystemExit(
-                    f"decision-batch items[{index}] retain requires exactly one of evidence_id or reason"
-                )
             allowed = {"target_id", "decision", "evidence_id", "reason"}
             if set(item) - allowed:
                 raise SystemExit(f"decision-batch items[{index}] retain has unsupported fields")
+            has_evidence = bool(str(item.get("evidence_id") or "").strip())
+            has_reason = bool(str(item.get("reason") or "").strip())
+            if not has_evidence and not has_reason:
+                if (work_dir / "tender_evidence_access.json").is_file():
+                    raise SystemExit(
+                        f"decision-batch items[{index}] retain requires evidence_id or reason"
+                    )
+                item["reason"] = "历史兼容：保留模板节点。"
+                continue
             if has_evidence:
                 item["tender_basis"] = review_workflow.resolve_tender_basis(
                     work_dir, str(item.pop("evidence_id"))
@@ -451,14 +451,11 @@ def dispatch_command(
                 workflow_binding=workflow_binding,
             )
         if command == "decision-next":
-            try:
-                max_items = int(_option_value(command_args, "--max-items", "50"))
-            except ValueError as exc:
-                raise SystemExit("decision-next --max-items must be an integer") from exc
+            if command_args:
+                raise SystemExit("decision-next usage: decision-next <manifest>")
             return decision_workflow.next_decision_batch(
                 work_dir,
                 structure,
-                max_items=max_items,
                 chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
                 workflow_binding=workflow_binding,
             )
@@ -530,7 +527,6 @@ def dispatch_command(
             work_dir,
             structure,
             normalized_batch,
-            appendix_items=appendix_items,
             chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
             workflow_binding=workflow_binding,
         )
