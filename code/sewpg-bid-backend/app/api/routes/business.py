@@ -602,6 +602,21 @@ async def business_raw_download_content(file_id: str) -> StreamingResponse:
     return minio_streaming_response(payload)
 
 
+@router.get("/api/business/materials/raw/{file_id}/preview")
+async def business_raw_preview_original_file(file_id: str, request: Request) -> dict[str, Any]:
+    return await business_material_store.raw_original_preview(
+        file_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
+
+
+@router.get("/api/business/materials/raw/{file_id}/preview-content")
+async def business_raw_preview_content(file_id: str) -> StreamingResponse:
+    payload = await business_material_store.raw_download_content(file_id)
+    return minio_streaming_response(payload, inline=True)
+
+
 @router.post("/api/business/materials/raw/move")
 async def business_raw_move_file(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     # 统一 fileId/id 优先级为 fileId 优先，与技术标一致（L4）

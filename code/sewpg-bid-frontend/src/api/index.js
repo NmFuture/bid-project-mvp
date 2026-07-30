@@ -550,6 +550,7 @@ export const technicalMaterialsAPI = {
     confirmTechnicalSplit: (id, data) =>
       request(`/technical/materials/raw/${id}/split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/technical/materials/raw/${id}/cleaned/preview`),
+    previewOriginalFile: (id) => request(`/technical/materials/raw/${id}/preview`),
     contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/content`),
     previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/preview-content`),
     cleanedContentUrl: (id, fileName) =>
@@ -818,7 +819,9 @@ export const businessMaterialsAPI = {
     confirmBusinessSplit: (id, data) =>
       request(`/business/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/business/materials/raw/${id}/cleaned/preview`),
+    previewOriginalFile: (id) => request(`/business/materials/raw/${id}/preview`),
     contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/content`),
+    previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/preview-content`),
     cleanedContentUrl: (id, fileName) =>
       joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/cleaned/content/${encodeURIComponent(fileName || 'cleaned.docx')}`),
     parseStatus: (projectId) => request(`/business/projects/${projectId}/materials/parse-status`),

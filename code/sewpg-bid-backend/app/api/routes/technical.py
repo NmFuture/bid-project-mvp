@@ -897,6 +897,15 @@ async def technical_raw_download_content(file_id: str) -> StreamingResponse:
     return minio_streaming_response(payload)
 
 
+@router.get("/api/technical/materials/raw/{file_id}/preview")
+async def technical_raw_preview_original_file(file_id: str, request: Request) -> dict[str, Any]:
+    return await technical_material_store.raw_original_preview(
+        file_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
+
+
 @router.get("/api/technical/materials/raw/{file_id}/preview-content")
 async def technical_raw_preview_content(file_id: str) -> StreamingResponse:
     payload = await technical_material_store.raw_download_content(file_id)
