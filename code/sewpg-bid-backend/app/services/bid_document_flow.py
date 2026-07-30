@@ -85,7 +85,7 @@ async def _convert_document_to_pdf_via_onlyoffice(source_url: str, source_path: 
     if not base_url:
         raise RuntimeError("OnlyOffice 内部服务地址未配置。")
     source_ext = source_path.suffix.lower().lstrip(".") or "docx"
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
         payload = {
             "async": False,
             "filetype": source_ext,

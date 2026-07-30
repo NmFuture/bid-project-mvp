@@ -59,7 +59,7 @@ class OpencodeClient:
         for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
             try:
                 with self._request_slots:
-                    with httpx.Client(timeout=self.timeout) as client:
+                    with httpx.Client(timeout=self.timeout, trust_env=False) as client:
                         response = client.post(
                             f"{self.base_url}/session",
                             json={"title": title},
@@ -123,7 +123,7 @@ class OpencodeClient:
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
             with self._request_slots:
-                with httpx.Client(timeout=self.timeout) as client:
+                with httpx.Client(timeout=self.timeout, trust_env=False) as client:
                     response = client.post(
                         f"{self.base_url}/session/{session_id}/message",
                         json=payload,
@@ -680,7 +680,7 @@ class OpencodeClient:
 
     def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
-            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
                 response = client.get(f"{self.base_url}/session/{session_id}/message")
                 response.raise_for_status()
                 payload = response.json()
@@ -696,7 +696,7 @@ class OpencodeClient:
         if not session_id:
             return False
         try:
-            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
                 response = client.post(f"{self.base_url}/session/{session_id}/abort")
                 response.raise_for_status()
                 if not response.text.strip():
