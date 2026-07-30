@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from docx import Document
 from fastapi.testclient import TestClient
+import openpyxl
 
 from app.main import app
 from app.core.config import settings
@@ -20,6 +21,7 @@ from app.services.technical_gap_domain import aggregate_technical_gap_fill_quali
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
 from app.services.technical_fact_field_specs import fillable_specs
+from app.services.technical_fact_spec_import import EXPECTED_HEADER
 from app.services.workspace_artifacts import technical_workspace_dir
 
 
@@ -848,6 +850,112 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["现场特殊要求"]["value"], "满足低温施工窗口要求")
         self.assertEqual(by_label["现场特殊要求"]["category"], "人工补充事实")
         self.assertEqual(by_label["现场特殊要求"]["sourceRefs"][0]["type"], "manualFact")
+
+    def test_fact_field_patch_unknown_id_returns_404_without_creating(self) -> None:
+        """R06-B07-08：普通 PATCH 不应隐式创建字段，未持久化的临时 id 必须 404 且不落库。"""
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200, detection_response.text)
+        _seed_fact_specs(project_id)
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+        field_total = len(build_response.json()["fields"])
+
+        patch_response = self.client.patch(
+            f"/api/technical/projects/{project_id}/gaps/facts/FACT-MANUAL-999",
+            json={"value": "张三", "confirm": True, "operator": "测试用户"},
+        )
+        self.assertEqual(patch_response.status_code, 404, patch_response.text)
+
+        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(facts_response.status_code, 200, facts_response.text)
+        self.assertEqual(len(facts_response.json()["fields"]), field_total)
+
+    def test_manual_fact_field_saved_then_patch_confirm_succeeds(self) -> None:
+        """R06-B07-08：人工新增字段整表持久化后保留 id，逐字段确认幂等且不产生重复字段。"""
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200, detection_response.text)
+        _seed_fact_specs(project_id)
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+        fields = build_response.json()["fields"]
+        field_total = len(fields)
+        fields.append(
+            {
+                "id": "FACT-MANUAL-1",
+                "label": "项目联系人",
+                "category": "人工补充事实",
+                "value": "张三",
+                "required": False,
+                "status": "extracted",
+                "confidence": 1,
+                "sourcePriority": 360,
+                "sourceRefs": [{"type": "manualFact", "title": "人工新增", "field": "项目联系人"}],
+            }
+        )
+        # 模拟前端"先整表持久化"：confirm 缺省为草稿保存
+        save_response = self.client.put(
+            f"/api/technical/projects/{project_id}/gaps/facts",
+            json={"fields": fields, "operator": "测试用户"},
+        )
+        self.assertEqual(save_response.status_code, 200, save_response.text)
+        saved_ids = [field["id"] for field in save_response.json()["fields"]]
+        self.assertIn("FACT-MANUAL-1", saved_ids)
+        self.assertEqual(len(saved_ids), field_total + 1)
+
+        for _ in range(2):
+            patch_response = self.client.patch(
+                f"/api/technical/projects/{project_id}/gaps/facts/FACT-MANUAL-1",
+                json={"value": "张三", "status": "extracted", "confirm": True, "operator": "测试用户"},
+            )
+            self.assertEqual(patch_response.status_code, 200, patch_response.text)
+            self.assertEqual(patch_response.json()["field"]["status"], "confirmed")
+
+        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(facts_response.status_code, 200, facts_response.text)
+        manual_fields = [field for field in facts_response.json()["fields"] if field["id"] == "FACT-MANUAL-1"]
+        self.assertEqual(len(manual_fields), 1)
+        self.assertEqual(manual_fields[0]["value"], "张三")
+        self.assertEqual(manual_fields[0]["status"], "confirmed")
+
+    def test_fact_specs_upload_accepts_xlsx(self) -> None:
+        """R06-B07-09：项目级实时表上传 .xlsx 成功用例。"""
+        project_id = self._create_project_with_confirmed_outline()
+        xlsx_path = Path(self.temp_dir.name) / "实时表.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append(EXPECTED_HEADER)
+        for index in range(1, 4):
+            sheet.append([index, "招标文件-技术规范书", "第一章 1.1", f"上传字段{index}", "说明", "", "招标文件/技术规范书"])
+        workbook.save(xlsx_path)
+
+        with xlsx_path.open("rb") as handle:
+            upload_response = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
+                files={"file": ("实时表.xlsx", handle, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+        self.assertEqual(upload_response.status_code, 200, upload_response.text)
+        self.assertEqual(upload_response.json()["specTotal"], 3)
+
+        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(facts_response.status_code, 200, facts_response.text)
+        self.assertTrue(facts_response.json()["specsImported"])
+        self.assertEqual(facts_response.json()["specTotal"], 3)
+
+    def test_fact_specs_upload_rejects_xls(self) -> None:
+        """R06-B07-09：.xls 与前后端规则一致地被 400 拒绝，且不写入项目清单。"""
+        project_id = self._create_project_with_confirmed_outline()
+        upload_response = self.client.post(
+            f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
+            files={"file": ("实时表.xls", b"not a real xls", "application/vnd.ms-excel")},
+        )
+        self.assertEqual(upload_response.status_code, 400, upload_response.text)
+        self.assertIn(".xlsx", upload_response.json()["detail"])
+
+        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(facts_response.status_code, 200, facts_response.text)
+        self.assertFalse(facts_response.json()["specsImported"])
 
     def test_project_fact_table_filters_noisy_parse_items_and_extracts_table_fields(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
