@@ -34,6 +34,12 @@ _stop_requested = False
 RECLAIM_INTERVAL_SEC = 300
 
 
+def _material_cleaning_final_state(result: dict[str, Any]) -> dict[str, str]:
+    clean_status = str(result.get("cleanStatus") or "")
+    status = "failed" if clean_status == "failed" else "cancelled" if clean_status == "stale" else "success"
+    return {"status": status, "summary": str(result.get("cleanMessage") or "")}
+
+
 def _request_stop(signum: int, _: Any) -> None:
     global _stop_requested
     logger.info("Received signal %s, stopping worker after current job.", signum)
@@ -193,11 +199,8 @@ def _run_job(job: dict[str, Any]) -> bool:
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
 
-            result = clean_material_file_sync(project_id, data)
-            final_state = {
-                "status": "failed" if result.get("cleanStatus") == "failed" else "success",
-                "summary": result.get("cleanMessage") or "",
-            }
+            result = clean_material_file_sync(str(data.get("fileId") or project_id), data)
+            final_state = _material_cleaning_final_state(result)
         elif job_type == "material_deep_parse":
             from app.services.material_deep_parse import deep_parse_material_file_sync
 
