@@ -298,6 +298,23 @@ def _write_multi_paragraph_toc_docx(path: Path) -> None:
     doc.save(path)
 
 
+def _write_toc_format_preservation_docx(path: Path) -> None:
+    doc = Document()
+    for index, style_name in enumerate(("TOC 1", "TOC 2"), start=1):
+        style = doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+        style.base_style = doc.styles["Normal"]
+        paragraph = doc.add_paragraph(f"目录 {index} ................ {index}", style=style_name)
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        paragraph.paragraph_format.left_indent = Cm(index)
+        paragraph.paragraph_format.space_before = Pt(index)
+        paragraph.paragraph_format.space_after = Pt(index + 1)
+        paragraph.paragraph_format.line_spacing = 1 + index / 10
+        paragraph.runs[0].font.name = "Calibri"
+        paragraph.runs[0].font.size = Pt(8 + index)
+    doc.add_paragraph("普通正文")
+    doc.save(path)
+
+
 def _page_break_count_after_toc_end(path: Path) -> int:
     doc = Document(str(path))
     for paragraph in doc.paragraphs:
@@ -761,6 +778,42 @@ class TechFormatCleanerTest(unittest.TestCase):
             self.assertEqual(_page_break_count_after_toc_end(output_docx), 1 if enabled else 0)
             self.assertTrue(_user_page_break_is_present(output_docx))
             current_input = output_docx
+
+    def test_preserves_toc_paragraph_format_while_cleaning_body(self):
+        input_docx = self.tmp_dir / "toc-format-input.docx"
+        outline_path = self.tmp_dir / "toc-format-outline.json"
+        style_path = self.tmp_dir / "toc-format-style.json"
+        output_docx = self.tmp_dir / "toc-format-output.docx"
+        manifest_path = self.tmp_dir / "toc-format-manifest.json"
+        _write_toc_format_preservation_docx(input_docx)
+        _write_empty_outline(outline_path)
+        _write_full_style(style_path, body_size=16, margin=2.54, insert_toc=False)
+        _write_manifest(
+            manifest_path,
+            input_docx=input_docx,
+            outline_path=outline_path,
+            output_docx=output_docx,
+            style_path=style_path,
+        )
+
+        _run_manifest(manifest_path)
+
+        output = Document(str(output_docx))
+        paragraphs = {paragraph.text: paragraph for paragraph in output.paragraphs}
+        for index in (1, 2):
+            paragraph = paragraphs[f"目录 {index} ................ {index}"]
+            self.assertEqual(paragraph.style.name, f"TOC {index}")
+            self.assertEqual(paragraph.alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+            self.assertAlmostEqual(paragraph.paragraph_format.left_indent.cm, index, places=3)
+            self.assertAlmostEqual(paragraph.paragraph_format.space_before.pt, index, places=3)
+            self.assertAlmostEqual(paragraph.paragraph_format.space_after.pt, index + 1, places=3)
+            self.assertAlmostEqual(paragraph.paragraph_format.line_spacing, 1 + index / 10, places=3)
+            self.assertEqual(paragraph.runs[0].font.name, "Calibri")
+            self.assertAlmostEqual(paragraph.runs[0].font.size.pt, 8 + index)
+
+        body = paragraphs["普通正文"]
+        self.assertEqual(body.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+        self.assertAlmostEqual(body.runs[0].font.size.pt, 16)
 
     def test_sdt_wrapped_toc_break_is_managed_outside_content_control(self):
         input_docx = self.tmp_dir / "sdt-toc-input.docx"
