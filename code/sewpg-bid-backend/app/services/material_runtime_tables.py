@@ -165,6 +165,32 @@ class MaterialRuntimeTables:
         await session.execute(
             text(
                 """
+                CREATE TABLE IF NOT EXISTS user_event_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id VARCHAR(100) NOT NULL,
+                    user_name VARCHAR(100),
+                    session_id VARCHAR(100) NOT NULL,
+                    bid_type VARCHAR(20) NOT NULL,
+                    event_type VARCHAR(20) NOT NULL,
+                    route VARCHAR(500),
+                    element VARCHAR(200),
+                    target VARCHAR(500),
+                    status VARCHAR(20),
+                    duration_ms INT,
+                    trace_id VARCHAR(100),
+                    meta JSONB,
+                    client_ts TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+        )
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_user_event_bid_time ON user_event_log(bid_type, created_at DESC)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_user_event_session_ts ON user_event_log(session_id, client_ts)"))
+        await session.execute(text("CREATE INDEX IF NOT EXISTS idx_user_event_user_time ON user_event_log(user_id, created_at DESC)"))
+        await session.execute(
+            text(
+                """
                 CREATE TABLE IF NOT EXISTS performance_records (
                     id BIGSERIAL PRIMARY KEY,
                     name VARCHAR(300) NOT NULL,

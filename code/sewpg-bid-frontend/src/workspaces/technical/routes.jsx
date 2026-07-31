@@ -10,7 +10,7 @@ import TechnicalCoCreationEditor from './pages/TechnicalCoCreationEditor'
 import TechnicalMaterialDB from './pages/TechnicalMaterialDB'
 import TechnicalMaterialWiki from './pages/TechnicalMaterialWiki'
 import TechnicalCertificateLedger from './pages/TechnicalCertificateLedger'
-import TechnicalAuditLog from './pages/TechnicalAuditLog'
+import AuditLogCenter from '../shared/pages/AuditLogCenter'
 
 const WORKSPACE = 'tech'
 
@@ -73,7 +73,7 @@ export function renderTechnicalRoutes({ user, showToast }) {
       />
       <Route
         path="/workspace/tech/logs"
-        element={withAccess(user, <TechnicalAuditLog showToast={showToast} />)}
+        element={withAccess(user, <AuditLogCenter showToast={showToast} />)}
       />
     </>
   )

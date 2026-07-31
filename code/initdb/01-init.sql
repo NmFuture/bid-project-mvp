@@ -287,6 +287,32 @@ CREATE INDEX idx_audit_user_time ON audit_log (user_id, created_at DESC);
 CREATE INDEX idx_audit_module_target ON audit_log (module_id, target);
 
 -- ============================================================
+-- 4.1 User Event Log (前端用户行为埋点)
+-- ============================================================
+
+CREATE TABLE user_event_log (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     VARCHAR(100) NOT NULL,
+    user_name   VARCHAR(100),
+    session_id  VARCHAR(100) NOT NULL,
+    bid_type    VARCHAR(20) NOT NULL,
+    event_type  VARCHAR(20) NOT NULL,
+    route       VARCHAR(500),
+    element     VARCHAR(200),
+    target      VARCHAR(500),
+    status      VARCHAR(20),
+    duration_ms INT,
+    trace_id    VARCHAR(100),
+    meta        JSONB,
+    client_ts   TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_user_event_bid_time ON user_event_log (bid_type, created_at DESC);
+CREATE INDEX idx_user_event_session_ts ON user_event_log (session_id, client_ts);
+CREATE INDEX idx_user_event_user_time ON user_event_log (user_id, created_at DESC);
+
+-- ============================================================
 -- 5. Seed Data (初始化示例数据)
 -- ============================================================
 

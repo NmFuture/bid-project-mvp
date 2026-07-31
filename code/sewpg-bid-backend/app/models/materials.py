@@ -428,6 +428,47 @@ class AuditLog(Base):
         }
 
 
+class UserEventLog(Base):
+    __tablename__ = "user_event_log"
+
+    id = Column(BigInteger, primary_key=True)
+    user_id = Column(VARCHAR(100), nullable=False)
+    user_name = Column(VARCHAR(100))
+    session_id = Column(VARCHAR(100), nullable=False)
+    bid_type = Column(VARCHAR(20), nullable=False)
+    event_type = Column(VARCHAR(20), nullable=False)
+    route = Column(VARCHAR(500))
+    element = Column(VARCHAR(200))
+    target = Column(VARCHAR(500))
+    status = Column(VARCHAR(20))
+    duration_ms = Column(Integer)
+    trace_id = Column(VARCHAR(100))
+    meta = Column(JSONB)
+    client_ts = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": f"EVT-{self.id:04d}",
+            "time": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else "",
+            "user": self.user_name or self.user_id,
+            "userId": self.user_id,
+            "userName": self.user_name or "",
+            "sessionId": self.session_id,
+            "bidType": self.bid_type,
+            "eventType": self.event_type,
+            "route": self.route or "",
+            "element": self.element or "",
+            "target": self.target or "",
+            "status": self.status or "",
+            "durationMs": self.duration_ms,
+            "traceId": self.trace_id or "",
+            "meta": self.meta or {},
+            "clientTs": self.client_ts.isoformat() if self.client_ts else "",
+            "createdAt": self.created_at.isoformat() if self.created_at else "",
+        }
+
+
 class OcrTask(Base):
     __tablename__ = "ocr_tasks"
 
