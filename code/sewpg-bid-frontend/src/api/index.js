@@ -261,6 +261,73 @@ async function request(path, options = {}) {
   })
 }
 
+const WIKI_API_PATHS = {
+  technical: {
+    bootstrap: '/technical/materials/wiki/bootstrap',
+    jobs: '/technical/materials/wiki/jobs',
+    wiki: '/technical/materials/wiki',
+  },
+  business: {
+    bootstrap: '/business/materials/wiki/bootstrap',
+    jobs: '/business/materials/wiki/jobs',
+    wiki: '/business/materials/wiki',
+  },
+}
+
+const runWikiBootstrap = async (scope, data = {}) => {
+  const paths = WIKI_API_PATHS[scope]
+  const queued = await request(paths.bootstrap, {
+    method: 'POST',
+    body: data,
+    retryCount: 0,
+  })
+  const jobId = String(queued?.jobId || '')
+  if (!jobId) {
+    throw new ApiError('Wiki 任务未返回任务编号。', {
+      code: 'WIKI_JOB_ID_MISSING',
+      payload: queued,
+    })
+  }
+
+  const deadline = Date.now() + 30 * 60 * 1000
+  while (Date.now() < deadline) {
+    let status
+    try {
+      status = await request(`${paths.jobs}/${encodeURIComponent(jobId)}`)
+    } catch (error) {
+      if (error?.status === 503 || error?.code === 'MATERIAL_QUEUE_UNAVAILABLE') {
+        await sleep(1000)
+        continue
+      }
+      throw error
+    }
+    const state = String(status?.status || '').toLowerCase()
+    if (state === 'succeeded') {
+      const qs = new URLSearchParams(cleanQuery({ bidType: data?.bidType })).toString()
+      const payload = await request(`${paths.wiki}${qs ? `?${qs}` : ''}`)
+      return {
+        ...payload,
+        generation: {
+          ...(payload?.generation || {}),
+          summary: status?.message || `${data?.bidType || ''} Wiki 已生成`,
+        },
+      }
+    }
+    if (state === 'failed' || state === 'cancelled') {
+      throw new ApiError(status?.message || 'Wiki 生成失败。', {
+        code: state === 'cancelled' ? 'WIKI_JOB_CANCELLED' : 'WIKI_JOB_FAILED',
+        payload: status,
+      })
+    }
+    await sleep(1000)
+  }
+
+  throw new ApiError('Wiki 生成超时，请稍后查看任务结果。', {
+    code: 'WIKI_JOB_TIMEOUT',
+    payload: queued,
+  })
+}
+
 // ===== Business Gap Handling =====
 export const businessGapsAPI = {
   list: (projectId) => request(`/business/projects/${projectId}/business-gaps`),
@@ -453,6 +520,15 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   uploadFactSpecs: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
+  saveMaterialSources: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
+  curateFacts: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/curate`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 30 * 60 * 1000,
+      retryCount: 0,
+    }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>
@@ -550,6 +626,7 @@ export const technicalMaterialsAPI = {
     confirmTechnicalSplit: (id, data) =>
       request(`/technical/materials/raw/${id}/split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/technical/materials/raw/${id}/cleaned/preview`),
+    previewOriginalFile: (id) => request(`/technical/materials/raw/${id}/preview`),
     contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/content`),
     previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/preview-content`),
     cleanedContentUrl: (id, fileName) =>
@@ -562,8 +639,9 @@ export const technicalMaterialsAPI = {
       return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`)
     },
     bootstrap: (data = {}) =>
-      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    bootstrapStatus: () => request('/technical/materials/wiki/bootstrap/status'),
+      request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, retryCount: 0 }),
+    bootstrapStatus: (jobId) =>
+      request(`/technical/materials/wiki/jobs/${encodeURIComponent(jobId)}`),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {
@@ -818,7 +896,9 @@ export const businessMaterialsAPI = {
     confirmBusinessSplit: (id, data) =>
       request(`/business/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/business/materials/raw/${id}/cleaned/preview`),
+    previewOriginalFile: (id) => request(`/business/materials/raw/${id}/preview`),
     contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/content`),
+    previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/preview-content`),
     cleanedContentUrl: (id, fileName) =>
       joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/cleaned/content/${encodeURIComponent(fileName || 'cleaned.docx')}`),
     parseStatus: (projectId) => request(`/business/projects/${projectId}/materials/parse-status`),
@@ -828,8 +908,7 @@ export const businessMaterialsAPI = {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/business/materials/wiki${qs ? `?${qs}` : ''}`)
     },
-    bootstrap: (data = {}) =>
-      request('/business/materials/wiki/bootstrap', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
+    bootstrap: (data = {}) => runWikiBootstrap('business', data),
     create: (data) => request('/business/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/business/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {

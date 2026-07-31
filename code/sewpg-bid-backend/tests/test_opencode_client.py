@@ -486,7 +486,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+        def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs) -> dict:
             release_worker.wait(timeout=5)
             return {"parts": []}
 
@@ -539,7 +539,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+        def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs) -> dict:
             release_worker.wait(timeout=5)
             return {"parts": []}
 
@@ -1166,7 +1166,7 @@ class OpencodeClientTests(unittest.TestCase):
     def test_polling_can_early_complete_without_stream_callback(self) -> None:
         client = OpencodeClient()
 
-        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+        def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(2)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 
@@ -1206,11 +1206,13 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(response["_completionSource"], "s4gap")
         self.assertIn("bid-tech-gap-plan-v1", response["parts"][0]["text"])
 
-    def test_polling_waits_for_wait_file_before_early_completion(self) -> None:
-        """factcurate 脚本只产证据简报，建议文件由 LLM 后续写出：文件未落地不得提前返回。"""
+    def test_factcurate_never_returns_early(self) -> None:
+        """factcurate 不提前返回：建议文件由 LLM 多轮迭代写出（先草稿后填值），
+        「脚本完成 / 文件已落地」都不代表终稿——提前返回会回收草稿并孤儿化会话
+        （实测三轮三种竞态）。必须等会话自然完成，走正常返回路径。"""
         client = OpencodeClient()
 
-        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+        def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(1.2)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 
@@ -1231,42 +1233,82 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        with TemporaryDirectory() as tmp_dir:
-            wait_file = Path(tmp_dir) / "fact_curate_suggestions.json"
-            with (
-                patch.object(client, "send_prompt", side_effect=slow_send_prompt),
-                patch.object(client, "list_session_messages", return_value=messages),
-            ):
-                # 建议文件未写出：脚本完成也不提前返回，走正常完成路径
-                started_at = time.monotonic()
-                response = client._send_prompt_with_session_polling(
-                    "ses-factcurate",
-                    "prompt",
-                    early_tool_command="factcurate",
-                    early_tool_wait_file=str(wait_file),
-                )
-                self.assertGreaterEqual(time.monotonic() - started_at, 1.0)
-                self.assertNotIn("_earlyCompletion", response)
-                self.assertIn('{"late":true}', response["parts"][0]["text"])
+        with (
+            patch.object(client, "send_prompt", side_effect=slow_send_prompt),
+            patch.object(client, "list_session_messages", return_value=messages),
+        ):
+            started_at = time.monotonic()
+            response = client._send_prompt_with_session_polling(
+                "ses-factcurate",
+                "prompt",
+                early_tool_command="factcurate",
+            )
+            self.assertGreaterEqual(time.monotonic() - started_at, 1.0)
+            self.assertNotIn("_earlyCompletion", response)
+            self.assertIn('{"late":true}', response["parts"][0]["text"])
 
-                # 建议文件落地后：走原有提前返回路径
-                wait_file.write_text('{"suggestions":[]}', encoding="utf-8")
-                started_at = time.monotonic()
-                response = client._send_prompt_with_session_polling(
-                    "ses-factcurate",
+    def test_polling_run_timeout_not_shorter_than_idle_supervision(self) -> None:
+        """系统设置 timeoutMs 较短（如默认 30s）时，轮询监管的长任务 HTTP 读超时
+        必须抬到 idle 监管时限以上，否则脚本/生成阶段请求先被 30s 读超时杀掉，
+        后端 400 而 futurecode 会话仍在后台运行（产物无人回收）。"""
+        client = OpencodeClient()
+        client.timeout = httpx.Timeout(30.0, connect=10.0)
+        captured: dict = {}
+
+        def capturing_send_prompt(session_id: str, prompt_text: str, **kwargs) -> dict:
+            captured.update(kwargs)
+            return {"parts": [{"type": "text", "text": '{"ok":true}'}]}
+
+        with (
+            patch.object(client, "send_prompt", side_effect=capturing_send_prompt),
+            patch.object(client, "list_session_messages", return_value=[]),
+        ):
+            client._send_prompt_with_session_polling(
+                "ses-timeout-floor",
+                "prompt",
+                early_tool_command="factcurate",
+            )
+
+        run_timeout = captured.get("timeout")
+        self.assertIsInstance(run_timeout, httpx.Timeout)
+        idle_timeout = client._session_polling_idle_timeout("factcurate")
+        self.assertGreaterEqual(run_timeout.read, idle_timeout)
+
+    def test_idle_timeout_aborts_session_and_joins_worker(self) -> None:
+        client = OpencodeClient()
+        release_worker = threading.Event()
+
+        def blocked_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
+            release_worker.wait(2.0)
+            return {"parts": []}
+
+        def abort_session(_session_id: str) -> bool:
+            release_worker.set()
+            return True
+
+        with (
+            patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
+            patch.object(client, "abort_session", side_effect=abort_session) as abort,
+            patch.object(client, "list_session_messages", return_value=[]),
+            patch.object(client, "_session_polling_idle_timeout", return_value=0.01),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "idle timeout"):
+                client._send_prompt_with_session_polling(
+                    "ses-idle-abort",
                     "prompt",
                     early_tool_command="factcurate",
-                    early_tool_wait_file=str(wait_file),
                 )
-                self.assertLess(time.monotonic() - started_at, 1.2)
-                self.assertTrue(response["_earlyCompletion"])
-                self.assertEqual(response["_completionSource"], "factcurate")
+
+        abort.assert_called_once_with("ses-idle-abort")
+        self.assertFalse(
+            any(thread.name == "opencode-message-ses-idle-abort" for thread in threading.enumerate())
+        )
 
     def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
         client = OpencodeClient()
         events: list[dict] = []
 
-        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+        def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(1.2)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 
@@ -1297,7 +1339,7 @@ class OpencodeClientTests(unittest.TestCase):
     def test_polling_aborts_session_when_cancel_requested(self) -> None:
         client = OpencodeClient()
 
-        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+        def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(2)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 
@@ -1338,7 +1380,7 @@ class OpencodeClientTests(unittest.TestCase):
     def test_s1_parse_does_not_complete_on_prepare_stdout(self) -> None:
         client = OpencodeClient()
 
-        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+        def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(1.0)
             return {
                 "parts": [
@@ -1623,7 +1665,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+        def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs) -> dict:
             release_worker.wait(timeout=5)
             worker_finished.set()
             return {"parts": [{"type": "text", "text": finalize_output}]}
@@ -1688,7 +1730,7 @@ class OpencodeClientTests(unittest.TestCase):
                     }
                 ]
 
-                def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+                def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs) -> dict:
                     release_worker.wait(timeout=5)
                     return {"parts": []}
 
@@ -1860,7 +1902,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        def blocked_send_prompt(_session_id: str, _prompt: str) -> dict:
+        def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs) -> dict:
             release_worker.wait(timeout=5)
             return {"parts": []}
 
@@ -1923,7 +1965,7 @@ class OpencodeClientTests(unittest.TestCase):
     def test_s1_parse_stalled_running_read_reports_trace(self) -> None:
         client = OpencodeClient()
 
-        def slow_send_prompt(session_id: str, prompt_text: str) -> dict:
+        def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(2.0)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 

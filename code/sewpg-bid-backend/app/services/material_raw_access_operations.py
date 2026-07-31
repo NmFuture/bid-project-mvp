@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.material_raw_file_filter import raw_file_matches_bid_type
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import INTERNAL_RAW_URL_PREFIX
@@ -87,7 +88,7 @@ async def raw_cleaned_preview_operation(
 
         ext = item.ext_fields or {}
         cleaned_key = str(ext.get("cleanedMinioKey") or "")
-        if str(ext.get("cleanStatus") or "") != "cleaned" or not cleaned_key:
+        if str(ext.get("cleanStatus") or "") != "cleaned" or not cleaned_artifact_is_current(item.version, ext):
             raise PeripheralError(
                 400,
                 "素材清洗完成后才可预览清洗稿。",
@@ -144,6 +145,94 @@ async def raw_cleaned_preview_operation(
         }
 
 
+# 原件直预览（OnlyOffice）支持的类型白名单：后缀 -> OnlyOffice documentType
+ORIGINAL_PREVIEW_SUFFIX_TYPES = {
+    ".pdf": "pdf",
+    ".xls": "cell",
+    ".xlsx": "cell",
+    ".xlsm": "cell",
+    ".csv": "cell",
+    ".ppt": "slide",
+    ".pptx": "slide",
+    ".doc": "word",
+    ".docx": "word",
+}
+
+
+async def raw_original_preview_operation(
+    *,
+    file_id: str,
+    bid_type: str,
+    browser_base_url: str = "",
+    onlyoffice_base_url: str = "",
+    content_path_prefix: str = INTERNAL_RAW_URL_PREFIX,
+    ensure_runtime_tables: EnsureRuntimeTables,
+) -> dict[str, Any]:
+    numeric_id = int(file_id.replace("RAW-", ""))
+    async with async_session() as session:
+        await ensure_runtime_tables(session)
+        result = await session.execute(select(RawFile).where(RawFile.id == numeric_id).options(selectinload(RawFile.folder)))
+        item = result.scalar_one_or_none()
+        if item is None:
+            raise PeripheralError(404, "文件不存在。", "RAW_FILE_NOT_FOUND")
+        if not raw_file_matches_bid_type(item, bid_type):
+            raise PeripheralError(400, "该文件不属于当前素材库。", "RAW_FILE_SCOPE")
+
+        suffix = PurePosixPath(item.name).suffix.lower()
+        document_type = ORIGINAL_PREVIEW_SUFFIX_TYPES.get(suffix)
+        if not document_type:
+            raise PeripheralError(
+                400,
+                "该文件类型暂不支持在线预览。",
+                "RAW_ORIGINAL_PREVIEW_UNSUPPORTED",
+            )
+        file_type = suffix.lstrip(".")
+
+        raw_id = f"RAW-{item.id:04d}"
+        file_path = f"{content_path_prefix.rstrip('/')}/{raw_id}/content"
+        browser_file_url = f"{browser_base_url.rstrip('/')}{file_path}" if browser_base_url else file_path
+        onlyoffice_file_url = (
+            f"{onlyoffice_base_url.rstrip('/')}{file_path}"
+            if onlyoffice_base_url
+            else browser_file_url
+        )
+        digest = hashlib.sha1(
+            "|".join(
+                [
+                    raw_id,
+                    str(item.minio_key or ""),
+                    str(item.version or 1),
+                    str(item.size_bytes or 0),
+                    item.updated_at.isoformat() if item.updated_at else "",
+                ]
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+        return {
+            "status": "ready",
+            "fileId": raw_id,
+            "sourceFileName": item.name,
+            "fileName": item.name,
+            "fileType": file_type,
+            "documentType": document_type,
+            "folderPath": item.folder.path if item.folder else "",
+            "version": item.version or 1,
+            "fileUrl": browser_file_url,
+            "onlyoffice": {
+                "documentKey": f"material-{raw_id}-original-v{item.version or 1}-{digest}",
+                "title": item.name,
+                "fileUrl": onlyoffice_file_url,
+                "browserFileUrl": browser_file_url,
+                "fileType": file_type,
+                "documentType": document_type,
+                "user": {
+                    "id": "user-1",
+                    "name": "当前用户",
+                },
+            },
+        }
+
+
 async def raw_download_cleaned_content_operation(
     *,
     file_id: str,
@@ -161,7 +250,7 @@ async def raw_download_cleaned_content_operation(
             raise PeripheralError(400, "该文件不属于当前素材库。", "RAW_FILE_SCOPE")
         ext = item.ext_fields or {}
         key = str(ext.get("cleanedMinioKey") or "")
-        if not key:
+        if not key or not cleaned_artifact_is_current(item.version, ext):
             raise PeripheralError(404, "清洗后的 Word 文件尚未生成。", "RAW_CLEANED_FILE_NOT_FOUND")
         return {
             "fileId": f"RAW-{item.id:04d}",

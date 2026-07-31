@@ -35,10 +35,18 @@ from app.services.technical_gap_fact_table import (
 SPECIAL_FACT_CONFIDENCE = 0.88
 
 
-def _spec_labels(reference_keyword: str, *, source_kind: str = "material") -> set[str]:
-    """按 referenceFile 关键词取目标 spec label 集合（与清单原文严格一致）。"""
+def _spec_labels(
+    reference_keyword: str,
+    *,
+    source_kind: str = "material",
+    specs: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+) -> set[str]:
+    """按 referenceFile 关键词取目标 spec label 集合（与清单原文严格一致）。
+
+    specs 为 None 时回落系统默认清单（load_specs）；项目构建链路显式传项目绑定版本。
+    """
     labels: set[str] = set()
-    for spec in load_specs():
+    for spec in (specs if specs is not None else load_specs()):
         if str(spec.get("sourceKind") or "") != source_kind:
             continue
         if reference_keyword and reference_keyword not in str(spec.get("referenceFile") or ""):
@@ -285,12 +293,12 @@ def _wind_tower_info_towers(rows: list[list[str]]) -> list[str]:
 
 
 def facts_from_wind_resource_docx(
-    path: Path, material: dict[str, Any], project: dict[str, Any]
+    path: Path, material: dict[str, Any], project: dict[str, Any], specs: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]] | None:
     """风资源评估报告专项抽取。非 docx 载体返回 None（回退通用启发式）。"""
     if path.suffix.lower() not in {".docx", ".doc"}:
         return None
-    sink = _SpecialFactSink(_spec_labels("风资源报告"), material)
+    sink = _SpecialFactSink(_spec_labels("风资源报告", specs=specs), material)
     try:
         document = Document(str(path))
     except Exception:
@@ -436,13 +444,13 @@ def _tower_rows_from_path(path: Path) -> list[tuple[str, list[str]]] | None:
 
 
 def facts_from_tower_quantity_docx(
-    path: Path, material: dict[str, Any], project: dict[str, Any]
+    path: Path, material: dict[str, Any], project: dict[str, Any], specs: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]] | None:
     """塔架与基础工程量专项抽取（钢塔 3 列大表 + 混塔变体）。"""
     rows = _tower_rows_from_path(path)
     if rows is None:
         return None
-    sink = _SpecialFactSink(_spec_labels("塔架与基础工程量"), material)
+    sink = _SpecialFactSink(_spec_labels("塔架与基础工程量", specs=specs), material)
     current_section = ""  # 钢塔：当前"第N段（顶/底）"
     mixed_mode = ""  # 混塔：concrete / steel / foundation
     for location, cells in rows:
@@ -526,12 +534,12 @@ def _moment_condition(text: str) -> str:
 
 
 def facts_from_foundation_moment_xlsx(
-    path: Path, material: dict[str, Any], project: dict[str, Any]
+    path: Path, material: dict[str, Any], project: dict[str, Any], specs: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]] | None:
     """基础弯矩表专项抽取：定位含 Mx 的表头行 + 单位行，按工况行取值。"""
     if path.suffix.lower() not in {".xlsx", ".xlsm"}:
         return None
-    sink = _SpecialFactSink(_spec_labels("弯矩"), material)
+    sink = _SpecialFactSink(_spec_labels("弯矩", specs=specs), material)
     try:
         workbook = load_workbook(path, data_only=True, read_only=True)
     except Exception:
@@ -692,10 +700,12 @@ def _certificate_rank(material: dict[str, Any]) -> int:
 
 
 def facts_from_certificate_materials(
-    cert_materials: list[tuple[dict[str, Any], Path]], project: dict[str, Any]
+    cert_materials: list[tuple[dict[str, Any], Path]],
+    project: dict[str, Any],
+    specs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """同项目多本证书按"型式认证 > 设计认证"排序，同字段先中先得。"""
-    sink_specs = _spec_labels("", source_kind="cert")
+    sink_specs = _spec_labels("", source_kind="cert", specs=specs)
     ordered = sorted(cert_materials, key=lambda item: _certificate_rank(item[0]))
     emitted: dict[str, dict[str, Any]] = {}
     for material, path in ordered:
@@ -745,7 +755,7 @@ def facts_from_certificate_materials(
 
 
 def facts_from_hours_commitment_docx(
-    path: Path, material: dict[str, Any], project: dict[str, Any]
+    path: Path, material: dict[str, Any], project: dict[str, Any], specs: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]] | None:
     """发电小时数承诺函：版本标识（承诺保证值/承诺考核值）+ 通用启发式（保证矩阵等）。"""
     if path.suffix.lower() not in {".docx", ".doc"}:
@@ -782,12 +792,12 @@ def facts_from_hours_commitment_docx(
 
 
 def facts_from_production_base_docx(
-    path: Path, material: dict[str, Any], project: dict[str, Any]
+    path: Path, material: dict[str, Any], project: dict[str, Any], specs: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]] | None:
     """生产制造基地专题：基地名称（标题"-"后缀）与基地介绍（概况段，截 200 字）。"""
     if path.suffix.lower() not in {".docx", ".doc"}:
         return None
-    sink = _SpecialFactSink(_spec_labels("生产制造基地"), material)
+    sink = _SpecialFactSink(_spec_labels("生产制造基地", specs=specs), material)
     try:
         document = Document(str(path))
     except Exception:
@@ -856,10 +866,17 @@ _SPECIAL_EXTRACTORS: dict[str, Callable[[Path, dict[str, Any], dict[str, Any]], 
 
 
 def run_special_extractor(
-    kind: str, path: Path, material: dict[str, Any], project: dict[str, Any]
+    kind: str,
+    path: Path,
+    material: dict[str, Any],
+    project: dict[str, Any],
+    specs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
-    """执行专项解析器；返回 None 表示该文件不适用（调用方回退通用启发式）。"""
+    """执行专项解析器；返回 None 表示该文件不适用（调用方回退通用启发式）。
+
+    specs 为项目绑定规则快照（None 时各抽取器内部回落系统默认清单）。
+    """
     extractor = _SPECIAL_EXTRACTORS.get(kind)
     if extractor is None:
         return None
-    return extractor(path, material, project)
+    return extractor(path, material, project, specs=specs)

@@ -33,6 +33,7 @@ from app.services.bid_type import BUSINESS_BID_TYPE, GENERAL_BID_TYPE, TECHNICAL
 from app.services.business_material_store import business_material_store
 from app.services.business_wiki_blueprint import build_business_wiki_blueprint
 from app.services.identity import canonical_customer, classify_material_path, material_identity
+from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.material_deep_parse import (
     deep_parse_profile_for,
     deep_parse_status_allows_enqueue,
@@ -518,7 +519,11 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
     folder_bid_type = str(item.folder.bid_type or "") if item.folder else ""
     file_name = str(item.name or "")
     source_ext = Path(file_name).suffix.lower().lstrip(".") or "file"
-    cleaned_minio_key = str(ext_fields.get("cleanedMinioKey") or "")
+    cleaned_minio_key = (
+        str(ext_fields.get("cleanedMinioKey") or "")
+        if cleaned_artifact_is_current(int(getattr(item, "version", 1) or 1), ext_fields)
+        else ""
+    )
     cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or item.minio_bucket or "")
     cleaned_file_name = str(ext_fields.get("cleanedFileName") or "")
     tags = normalize_material_tags(ext_fields.get("tags"))

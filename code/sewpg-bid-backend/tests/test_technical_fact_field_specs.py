@@ -3,7 +3,9 @@ from __future__ import annotations
 """技术标事实表 148 条字段 spec 与 spec 驱动骨架（reconcile）的测试。"""
 
 import unittest
+from unittest.mock import patch
 
+from app.services import technical_gap_fact_table as fact_table_module
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
 from app.services.technical_gap_fact_table import (
     FACT_STATUS_CONFIRMED,
@@ -16,6 +18,7 @@ from app.services.technical_gap_fact_table import (
     normalize_fact_status,
     normalize_project_fact_field,
     reconcile_fact_fields_with_specs,
+    summarize_project_fact_fields,
 )
 
 
@@ -176,8 +179,30 @@ class TestNormalizeProjectFactFieldV2(unittest.TestCase):
         self.assertEqual(field["specSeq"], 4)
         self.assertEqual(field["sourceKind"], "tender")
 
+    def test_out_of_spec_compatibility_marker_is_preserved(self) -> None:
+        field = self._normalize(
+            {
+                "label": "旧规则字段",
+                "value": "人工确认值",
+                "status": FACT_STATUS_CONFIRMED,
+                "outOfSpec": True,
+            }
+        )
+
+        self.assertTrue(field["outOfSpec"])
+
 
 class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
+    def _spec_gap_state(self) -> dict:
+        """字段骨架来自项目实时表（gap_state["factSpecs"]）；测试用全局清单做项目 specs。"""
+        return {
+            "factSpecs": {
+                "fileName": "测试实时表.xlsx",
+                "uploadedAt": "2026-07-27T00:00:00",
+                "specs": fillable_specs(),
+            }
+        }
+
     def test_build_contains_all_spec_fields_and_v2_schema(self) -> None:
         project = {
             "id": "P-SPEC",
@@ -186,14 +211,7 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
             "identity": {"owner": "华能集团"},
             "parse_result": {},
         }
-        # 字段骨架来自项目实时表（gap_state["factSpecs"]）；本测试用全局清单做项目 specs
-        gap_state = {
-            "factSpecs": {
-                "fileName": "测试实时表.xlsx",
-                "uploadedAt": "2026-07-27T00:00:00",
-                "specs": fillable_specs(),
-            }
-        }
+        gap_state = self._spec_gap_state()
         table = build_project_fact_table(project, gap_state)
         self.assertEqual(table["schemaVersion"], "bid-project-fact-table-v2")
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
@@ -207,6 +225,167 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         cert_field = next(field for field in spec_fields if field["specSeq"] == 1)
         self.assertEqual(cert_field["status"], FACT_STATUS_UNEXTRACTED)
         self.assertEqual(cert_field["value"], "")
+
+    def test_build_fields_are_spec_rows_only_and_merge_off_checklist_values(self) -> None:
+        """以清单为唯一骨架：字段数 == spec 条数；清单外来源的值并入匹配 spec 行的取值与
+        来源证据（sourceRefs），匹配不到 spec 的候选不再单独成行。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "翁牛特旗120万千瓦风电项目",
+            "customerName": "华能",
+            "identity": {"owner": "华能集团"},
+            "parse_result": {},
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+        self.assertEqual(len(table["fields"]), 128)
+        self.assertTrue(all(field.get("specSeq") for field in table["fields"]))
+        # 项目名称（硬编码候选，type=project）并入 spec 112 行
+        name_field = next(field for field in table["fields"] if field["specSeq"] == 112)
+        self.assertEqual(name_field["value"], "翁牛特旗120万千瓦风电项目")
+        self.assertTrue(any(ref.get("type") == "project" for ref in name_field["sourceRefs"]))
+        # 匹配不到任何 spec 的候选（招标方/客户名称）不成行
+        labels = {field["label"] for field in table["fields"]}
+        self.assertNotIn("招标方", labels)
+        self.assertNotIn("客户名称", labels)
+
+    def test_build_keeps_manual_fields_appended_after_spec_rows(self) -> None:
+        """人工新增字段（sourceRefs 含 manualFact）保留为行、追加在 spec 行之后，且不计入 spec 统计。"""
+        project = {"id": "P-SPEC", "name": "人工字段项目", "parse_result": {}}
+        gap_state = {
+            **self._spec_gap_state(),
+            "projectFactTable": {
+                "schemaVersion": "bid-project-fact-table-v2",
+                "fields": [
+                    {
+                        "id": "FACT-9001",
+                        "key": "业主特殊要求",
+                        "label": "业主特殊要求",
+                        "value": "按补充协议执行",
+                        "status": "confirmed",
+                        "sourceRefs": [{"type": "manualFact", "title": "人工新增", "field": "业主特殊要求"}],
+                    }
+                ],
+            },
+        }
+        table = build_project_fact_table(project, gap_state)
+        self.assertEqual(len(table["fields"]), 129)
+        manual = table["fields"][-1]
+        self.assertEqual(manual["label"], "业主特殊要求")
+        self.assertEqual(manual["value"], "按补充协议执行")
+        self.assertFalse(manual.get("specSeq"))
+        self.assertEqual(table["summary"]["specTotal"], 128)
+
+    def test_build_preserves_confirmed_field_removed_from_current_specs(self) -> None:
+        """规则换版后，旧规则下已确认字段保留为清单外历史事实，不污染新规则进度。"""
+        project = {"id": "P-SPEC", "name": "规则换版项目", "parse_result": {}}
+        gap_state = {
+            "projectFactTable": {
+                "schemaVersion": "bid-project-fact-table-v2",
+                "fields": [
+                    {
+                        "id": "FACT-9002",
+                        "key": "旧规则字段",
+                        "label": "旧规则字段",
+                        "value": "已人工确认的历史值",
+                        "status": FACT_STATUS_CONFIRMED,
+                        "specSeq": 88,
+                        "specKey": "legacy-field",
+                        "sourceRefs": [{"type": "project", "title": "旧项目资料"}],
+                    }
+                ],
+            }
+        }
+        current_specs = [
+            {
+                "seq": 0,
+                "key": "current-field",
+                "label": "当前规则字段",
+                "valueRequired": True,
+                "sourceKind": "tender",
+            }
+        ]
+
+        with (
+            patch.object(
+                fact_table_module,
+                "resolve_project_specs",
+                return_value=(current_specs, {"source": "project", "ruleId": "fsr-current"}),
+            ),
+            patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
+        ):
+            table = build_project_fact_table(project, gap_state)
+
+        self.assertEqual(table["summary"]["specTotal"], 1)
+        current = next(field for field in table["fields"] if field["label"] == "当前规则字段")
+        self.assertEqual(current["specSeq"], 0)
+        legacy = next(field for field in table["fields"] if field["label"] == "旧规则字段")
+        self.assertEqual(legacy["value"], "已人工确认的历史值")
+        self.assertEqual(legacy["status"], FACT_STATUS_CONFIRMED)
+        self.assertTrue(legacy["outOfSpec"])
+        self.assertNotIn("specSeq", legacy)
+        self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
+
+    def test_build_falls_back_to_global_specs_when_project_not_uploaded(self) -> None:
+        """项目未上传清单时以全局默认清单为骨架。"""
+        project = {"id": "P-GLOBAL", "name": "全局清单项目", "parse_result": {}}
+        table = build_project_fact_table(project, {})
+        spec_fields = [field for field in table["fields"] if field.get("specSeq")]
+        self.assertEqual(len(spec_fields), len(load_specs()))
+        self.assertEqual(table["summary"]["specTotal"], len(load_specs()))
+
+    def test_build_keeps_union_behavior_when_no_specs_available(self) -> None:
+        """极端兜底：项目未上传且全局清单加载失败，维持来源并集行为并记 warning。"""
+        project = {"id": "P-NOSPEC", "name": "无清单项目", "parse_result": {}}
+        with patch.object(
+            fact_table_module,
+            "resolve_project_specs",
+            return_value=([], {"source": "default"}),
+        ):
+            with self.assertLogs(fact_table_module.logger, level="WARNING"):
+                table = build_project_fact_table(project, {})
+        self.assertTrue(table["fields"])
+        self.assertTrue(all(not field.get("specSeq") for field in table["fields"]))
+        self.assertEqual(table["summary"]["specTotal"], 0)
+
+
+class TestSummarizeSpecProgressBuckets(unittest.TestCase):
+    def test_four_buckets_are_exclusive_and_sum_to_spec_total(self) -> None:
+        fields = [
+            {"label": "A", "specSeq": 1, "status": "confirmed", "value": "x"},
+            {"label": "B", "specSeq": 2, "status": "pending_confirmation", "value": "x"},
+            {"label": "C", "specSeq": 3, "status": "unextracted", "value": ""},
+            {"label": "D", "specSeq": 4, "status": "missing_source", "value": ""},
+            {"label": "E", "specSeq": 5, "status": "extracted", "value": "x"},
+            {"label": "F", "specSeq": 6, "status": "conflict", "value": "x"},
+            # 人工新增字段（无 specSeq）不计入清单统计
+            {"label": "G", "status": "confirmed", "value": "x", "sourceRefs": [{"type": "manualFact"}]},
+        ]
+        summary = summarize_project_fact_fields(fields)
+        self.assertEqual(summary["specTotal"], 6)
+        self.assertEqual(summary["specConfirmedCount"], 1)
+        self.assertEqual(summary["specPendingConfirmationCount"], 1)
+        self.assertEqual(summary["specUnfilledCount"], 2)
+        self.assertEqual(summary["specFilledUnconfirmedCount"], 2)
+        self.assertEqual(
+            summary["specConfirmedCount"]
+            + summary["specPendingConfirmationCount"]
+            + summary["specUnfilledCount"]
+            + summary["specFilledUnconfirmedCount"],
+            summary["specBuiltTotal"],
+        )
+        # 七态计数仍是全表口径（含人工行）
+        self.assertEqual(summary["totalCount"], 7)
+        self.assertEqual(summary["confirmedCount"], 2)
+
+    def test_spec_seq_zero_is_counted_with_stable_bound_total(self) -> None:
+        fields = [{"label": "A", "specSeq": 0, "status": "confirmed", "value": "x"}]
+
+        summary = summarize_project_fact_fields(fields, spec_total=2)
+
+        self.assertEqual(summary["specTotal"], 2)
+        self.assertEqual(summary["specBuiltTotal"], 1)
+        self.assertEqual(summary["specMatched"], 1)
+        self.assertEqual(summary["specConfirmedCount"], 1)
 
 
 if __name__ == "__main__":

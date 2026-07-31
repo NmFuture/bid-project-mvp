@@ -18,6 +18,7 @@ from app.services.material_raw_object_operations import (
     enqueue_cleaning_job,
     purge_raw_file_objects,
     raw_object_key,
+    raw_version_object_key,
     remove_cleaned_object_from_ext,
 )
 from app.services.material_raw_update_operations import update_raw_file
@@ -26,6 +27,7 @@ from app.services.material_raw_access_operations import (
     raw_download_cleaned_content_operation,
     raw_download_content_operation,
     raw_download_file_operation,
+    raw_original_preview_operation,
 )
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.material_raw_tree_operations import raw_tree_operation
@@ -200,6 +202,7 @@ class MaterialStore:
             ),
             remove_cleaned_object_from_ext=remove_cleaned_object_from_ext,
             raw_object_key=raw_object_key,
+            raw_version_object_key=raw_version_object_key,
             infer_material_tier_from_folder=infer_material_tier_from_raw_folder,
             enqueue_cleaning_job=enqueue_cleaning_job,
         )
@@ -262,6 +265,24 @@ class MaterialStore:
         content_path_prefix: str = INTERNAL_RAW_URL_PREFIX,
     ) -> dict[str, Any]:
         return await raw_cleaned_preview_operation(
+            file_id=file_id,
+            bid_type=bid_type,
+            browser_base_url=browser_base_url,
+            onlyoffice_base_url=onlyoffice_base_url,
+            content_path_prefix=content_path_prefix,
+            ensure_runtime_tables=ensure_material_runtime_tables,
+        )
+
+    async def raw_original_preview(
+        self,
+        file_id: str,
+        *,
+        bid_type: str,
+        browser_base_url: str = "",
+        onlyoffice_base_url: str = "",
+        content_path_prefix: str = INTERNAL_RAW_URL_PREFIX,
+    ) -> dict[str, Any]:
+        return await raw_original_preview_operation(
             file_id=file_id,
             bid_type=bid_type,
             browser_base_url=browser_base_url,

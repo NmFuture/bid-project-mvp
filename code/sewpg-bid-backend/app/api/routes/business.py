@@ -18,7 +18,7 @@ from app.services.bid_ocr_service import business_ocr_service
 from app.services.bid_parse_service import business_parse_service
 from app.services.bid_project_service import business_project_service
 from app.services.material_tags import normalize_material_tags
-from app.services.business_wiki_generation import generate_business_wiki
+from app.services.material_wiki_jobs import enqueue_material_wiki_generation, material_wiki_job_status
 
 router = APIRouter()
 
@@ -602,6 +602,21 @@ async def business_raw_download_content(file_id: str) -> StreamingResponse:
     return minio_streaming_response(payload)
 
 
+@router.get("/api/business/materials/raw/{file_id}/preview")
+async def business_raw_preview_original_file(file_id: str, request: Request) -> dict[str, Any]:
+    return await business_material_store.raw_original_preview(
+        file_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
+
+
+@router.get("/api/business/materials/raw/{file_id}/preview-content")
+async def business_raw_preview_content(file_id: str) -> StreamingResponse:
+    payload = await business_material_store.raw_download_content(file_id)
+    return minio_streaming_response(payload, inline=True)
+
+
 @router.post("/api/business/materials/raw/move")
 async def business_raw_move_file(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     # 统一 fileId/id 优先级为 fileId 优先，与技术标一致（L4）
@@ -697,11 +712,17 @@ async def business_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, A
 
 @router.post("/api/business/materials/wiki/bootstrap")
 async def business_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await generate_business_wiki(
+    return enqueue_material_wiki_generation(
+        BUSINESS_BID_TYPE,
         reference_path=str(data.get("referencePath") or ""),
         mode=str(data.get("mode") or "create"),
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
+
+
+@router.get("/api/business/materials/wiki/jobs/{job_id}")
+async def business_wiki_job_status(job_id: str) -> dict[str, Any]:
+    return material_wiki_job_status(job_id, BUSINESS_BID_TYPE)
 
 
 @router.post("/api/business/materials/wiki")

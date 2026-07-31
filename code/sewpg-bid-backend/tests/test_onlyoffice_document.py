@@ -423,6 +423,60 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], "RAW_CLEANED_PREVIEW_UNAVAILABLE")
 
+    def test_original_material_preview_route_returns_onlyoffice_session(self) -> None:
+        settings.onlyoffice_backend_base_url = "http://fastapi:8000"
+        preview_payload = {
+            "status": "ready",
+            "fileId": "RAW-0009",
+            "fileName": "业绩台账.xlsx",
+            "fileType": "xlsx",
+            "documentType": "cell",
+            "fileUrl": "http://127.0.0.1:8000/api/technical/materials/raw/RAW-0009/content",
+            "onlyoffice": {
+                "documentKey": "material-RAW-0009-original-v1",
+                "title": "业绩台账.xlsx",
+                "fileUrl": "http://fastapi:8000/api/technical/materials/raw/RAW-0009/content",
+                "browserFileUrl": "http://127.0.0.1:8000/api/technical/materials/raw/RAW-0009/content",
+                "fileType": "xlsx",
+                "documentType": "cell",
+                "user": {"id": "user-1", "name": "当前用户"},
+            },
+        }
+
+        with patch.object(
+            technical_material_store,
+            "raw_original_preview",
+            new=AsyncMock(return_value=preview_payload),
+            create=True,
+        ) as mocked:
+            response = self.client.get("/api/technical/materials/raw/RAW-0009/preview")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["fileType"], "xlsx")
+        self.assertEqual(payload["documentType"], "cell")
+        self.assertEqual(payload["onlyoffice"]["fileUrl"], preview_payload["onlyoffice"]["fileUrl"])
+        self.assertTrue(payload["onlyoffice"]["fileUrl"].endswith("/content"))
+        mocked.assert_awaited_once()
+
+    def test_original_material_preview_route_blocks_unsupported_type(self) -> None:
+        with patch.object(
+            technical_material_store,
+            "raw_original_preview",
+            new=AsyncMock(
+                side_effect=PeripheralError(
+                    400,
+                    "该文件类型暂不支持在线预览。",
+                    "RAW_ORIGINAL_PREVIEW_UNSUPPORTED",
+                )
+            ),
+            create=True,
+        ):
+            response = self.client.get("/api/technical/materials/raw/RAW-0010/preview")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "RAW_ORIGINAL_PREVIEW_UNSUPPORTED")
+
 
 if __name__ == "__main__":
     unittest.main()
