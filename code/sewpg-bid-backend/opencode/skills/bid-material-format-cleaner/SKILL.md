@@ -1,6 +1,6 @@
 ---
 name: bid-material-format-cleaner
-description: 当素材入库需要清洗 DOC/DOCX、剥离 Word 前序内容、规范真实标题或生成可检索清洗稿时使用。
+description: 当素材入库需要清洗 DOC/DOCX、深度解析链需要将 PDF/Excel 转换为 Word、剥离 Word 前序内容、规范真实标题或生成可检索清洗稿时使用。
 allowed-tools:
   - Read
   - Glob
@@ -18,8 +18,8 @@ allowed-tools:
 | --- | --- | --- |
 | `.doc` | 保留原件并进入清洗队列 | 入库服务调用 OnlyOffice 转为临时 DOCX，再交给 driver |
 | `.docx` | 保留原件并进入清洗队列 | driver 直接规范化 |
-| `.pdf` | 保留原件 | 不清洗、不转 Word、不进入深度转换 |
-| `.xlsx` / `.xls` / `.xlsm` | 保留原件 | 不清洗、不转 Word、不进入深度转换 |
+| `.pdf` | 保留原件 | 入库不清洗；技术标深度解析任务可通过 driver 转换为 Word |
+| `.xlsx` / `.xls` / `.xlsm` | 保留原件 | 入库不清洗；技术标深度解析任务可通过 driver 转换为 Word |
 | 图片及其他允许格式 | 保留原件 | 不进入本 Skill |
 
 阶段命名与历史工作目录统一引用 `../STAGES.md`。
@@ -50,16 +50,28 @@ allowed-tools:
 
 ### Skill driver
 
-`scripts/driver.py` 只处理已经准备好的 DOCX：
+`scripts/driver.py` 处理入库服务准备好的素材：
 
-- 递归扫描 `.docx`，忽略 DOC、PDF、Excel 和其他后缀。
-- 每个文件复制到独立临时目录后再修改。
-- 探测正文起点，最多执行一次常规 trim 和一次纠偏。
-- 规范真实 Heading，清除其前置数字编号。
-- 验证后一次性复制到输出目录。
+- 递归扫描 `.docx`、`.pdf`、`.xlsx`、`.xls`、`.xlsm`，忽略 DOC 和其他后缀。
+- `.docx` 复制到独立临时目录后再修改；探测正文起点，最多执行一次常规 trim 和一次纠偏。
+- 规范真实 Heading，清除其前置数字编号；验证后一次性复制到输出目录。
+- `.pdf` 经 `pdf_to_word.py`、`.xlsx` / `.xls` / `.xlsm` 经 `excel_to_word.py` 转换为 Word 后落到输出目录。
 - 写入 `cleaning_manifest.json`。
 
-不要把 DOC、PDF 或 Excel 直接交给 driver。DOC 的 URL 转换必须由掌握 MinIO 权限的入库服务编排。
+不要把 DOC 直接交给 driver，DOC 的 URL 转换必须由掌握 MinIO 权限的入库服务编排。PDF/Excel 转换分支仅供技术标深度解析任务（`material_cleaning.clean_material_file(..., allow_convert=True)`）使用；入库清洗主路径与商务标链路不调用它，PDF/Excel 在素材库中仍是 `original_only`。
+
+## PDF/Excel 转换数据流（深度解析链）
+
+```text
+MinIO raw/.../source.pdf（或 .xlsx/.xls/.xlsm）
+  -> 深度解析任务调用 clean_material_file(allow_convert=True)
+  -> 下载原件到临时目录
+  -> driver.py（pdf_to_word.py / excel_to_word.py）
+  -> 临时 Word 转换稿
+  -> MinIO cleaned/RAW-xxxx/...docx
+```
+
+原始 PDF/Excel 不覆盖、不删除；转换稿与 Word 清洗稿走同一套 cleaned 对象与状态约定。
 
 ## DOC 转换数据流
 
@@ -107,6 +119,12 @@ driver 运行依赖仅包括：
 "$VENV_PY" -m pip install python-docx lxml
 ```
 
+PDF/Excel 转换分支另需：
+
+```bash
+"$VENV_PY" -m pip install pymupdf pandas openpyxl
+```
+
 后端运行还需要可访问的 OnlyOffice 和 MinIO，但 driver 本身不访问这两个服务。
 
 ## 状态约定
@@ -119,7 +137,7 @@ driver 运行依赖仅包括：
 素材记录使用以下清洗状态：
 
 - `pending`：DOC/DOCX 已入库，等待清洗。
-- `cleaning`：正在转换 DOC 或清洗 DOCX。
+- `cleaning`：正在转换 DOC/PDF/Excel 或清洗 DOCX。
 - `cleaned`：清洗稿已上传，原件仍保留。
 - `failed`：本次转换或清洗失败，错误信息已保存，原件仍保留。
 - `original_only`：PDF、Excel、图片等格式只保留原件。
