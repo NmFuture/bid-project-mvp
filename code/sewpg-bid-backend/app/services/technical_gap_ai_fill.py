@@ -430,10 +430,72 @@ def _prepare_material_index_files(
                 if ocr_status == "generated":
                     ocr_generated += 1
             else:
-                ocr_status = "skipped: 本次运行 OCR 配额已用完，缓存后续运行补齐"
+                ocr_status = _OCR_BUDGET_SKIPPED_STATUS
             item["ocrStatus"] = ocr_status
         prepared.append(item)
     return prepared
+
+
+# 单轮 OCR 配额跳过的状态文案。填表任务内部按轮循环补齐（见
+# _prepare_fill_materials_with_ocr），一轮内仍受 ocr_budget 约束。
+_OCR_BUDGET_SKIPPED_STATUS = "skipped: 本次运行 OCR 配额已用完，缓存后续运行补齐"
+# 补齐循环兜底轮数：一轮三路最多各新 OCR ocr_budget 份，正常项目 2-3 轮内收敛。
+_AI_FILL_OCR_PREP_MAX_ROUNDS = 10
+
+
+def _prepare_fill_materials_with_ocr(
+    material_index: list[dict[str, Any]],
+    reference_materials: list[dict[str, Any]],
+    recommended_materials: list[dict[str, Any]],
+    work_dir: Path,
+    *,
+    cache_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """在本次填表任务内部循环补齐 PDF OCR sidecar，使一次点击即可用全量素材。
+
+    单轮准备仍受 ocr_budget 约束（排队与并发由 OcrTask worker 保证，配额只是
+    单轮时间封顶）；sidecar 落共享缓存跨轮/跨缺口复用，已就绪的素材秒过。
+    循环到没有"配额跳过"的 PDF 为止，之后填表只跑一次。
+    防死循环：限轮数，且某轮就绪数零增长即停止（OCR 失败为 failed 状态，
+    不计入跳过，不会导致空转）。
+    """
+    prev_ready = -1
+    for _round in range(_AI_FILL_OCR_PREP_MAX_ROUNDS):
+        material_index = _prepare_material_index_files(
+            material_index,
+            work_dir,
+            cache_dir=cache_dir,
+            ocr_pdf=True,
+        )
+        reference_materials = _prepare_material_index_files(
+            reference_materials,
+            work_dir,
+            cache_dir=cache_dir,
+            ocr_pdf=True,
+        )
+        recommended_materials = _prepare_material_index_files(
+            recommended_materials,
+            work_dir,
+            cache_dir=cache_dir,
+            ocr_pdf=True,
+        )
+        prepared_lists = (material_index, reference_materials, recommended_materials)
+        deferred = sum(
+            1
+            for prepared in prepared_lists
+            for item in prepared
+            if str(item.get("ocrStatus") or "") == _OCR_BUDGET_SKIPPED_STATUS
+        )
+        ready = sum(
+            1
+            for prepared in prepared_lists
+            for item in prepared
+            if str(item.get("ocrTextPath") or "").strip()
+        )
+        if deferred == 0 or ready <= prev_ready:
+            break
+        prev_ready = ready
+    return material_index, reference_materials, recommended_materials
 
 
 def _prepare_word_blank_source(blank_source: dict[str, Any], work_dir: Path) -> dict[str, Any]:
@@ -969,28 +1031,18 @@ def run_technical_ai_fill_for_gap(
     work_dir.mkdir(parents=True, exist_ok=True)
     shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
     # PDF 素材（认证证书等）三路都做 OCR sidecar：证书 PDF 通常只经 materialIndex
-    # 关键词选源进入填表。sidecar 落在共享缓存跨缺口复用，单次运行有 OCR 配额上限。
-    material_index = _prepare_material_index_files(
-        material_index,
-        work_dir,
-        cache_dir=shared_material_cache_dir,
-        ocr_pdf=True,
-    )
+    # 关键词选源进入填表。sidecar 落在共享缓存跨缺口复用。
     # referenceMaterials/recommendedMaterials 只带素材库虚拟目录路径（如
     # "技术标/通用素材/.../证书.pdf"），不是本地可读路径；只下载过 material_index，
     # 这两路（尤其是路由命中的认证证书 PDF）从未落地过，table-filler 拿到手时
     # material_path() 解析不出真实文件，会静默丢弃——即使上游路由完全正确。
-    reference_materials = _prepare_material_index_files(
+    # 单轮准备有 OCR 配额上限，这里在任务内部循环补齐，保证一次点击用全量素材。
+    material_index, reference_materials, recommended_materials = _prepare_fill_materials_with_ocr(
+        material_index,
         reference_materials,
-        work_dir,
-        cache_dir=shared_material_cache_dir,
-        ocr_pdf=True,
-    )
-    recommended_materials = _prepare_material_index_files(
         recommended_materials,
         work_dir,
         cache_dir=shared_material_cache_dir,
-        ocr_pdf=True,
     )
     artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
