@@ -251,6 +251,25 @@ test('目录标签：自动就绪也可人工撤销（产品反馈 2026-07-21：
   assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: true }), 'ready')
 })
 
+test('目录标签：甲方已填附表豁免确认自动就绪（2026-08-02，与 0.99 精确命中同级）', () => {
+  const clientProvidedTask = { id: 'APPX-1', sourceRouting: { status: 'client_provided' } }
+  const fillTask = { id: 'APPX-2', sourceRouting: {} }
+  // 全部附表任务命中甲方已填文件：豁免确认自动就绪。
+  assert.equal(
+    technicalGapTagOf({ id: 'G1', decision: 'ready', status: 'resolved', appendixTasks: [clientProvidedTask] }),
+    'ready',
+  )
+  // 部分覆盖：仍有待填写任务，不豁免。
+  assert.equal(
+    technicalGapTagOf({ id: 'G2', decision: 'fill_required', appendixTasks: [clientProvidedTask, fillTask] }),
+    'needs_fill',
+  )
+  // 人工撤销后回落到待填写，再次确认恢复已就绪。
+  const covered = { id: 'G3', decision: 'ready', status: 'resolved', appendixTasks: [clientProvidedTask] }
+  assert.equal(technicalGapTagOf({ ...covered, humanConfirmed: false }), 'needs_fill')
+  assert.equal(technicalGapTagOf({ ...covered, humanConfirmed: true }), 'ready')
+})
+
 test('目录标签：除精确命中外，人工点「确认」是变已就绪的唯一途径（产品裁决 2026-07-21）', () => {
   // 选用素材/上传产物本身不再翻绿：点确认之前标签不变。
   assert.equal(
