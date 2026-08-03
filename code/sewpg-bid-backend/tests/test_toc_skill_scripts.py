@@ -1041,7 +1041,7 @@ class TocSkillScriptTests(unittest.TestCase):
             "招标目录只用于定位，不能据标题判定覆盖",
             "把它的整个三级子树当成一个整体",
             "不新增三级节点",
-            "`parent_id` 为 `null` 表示新增一级章",
+            "并行章节会话中，`parent_id` 必须引用当前章根",
             "给了 `evidence_id`，前端就能点击跳转招标原文",
             "会把每个二级决策下沉到它的三级子树",
         ):
@@ -2309,7 +2309,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 "items_must_match_batch": True,
                 "additions_must_be_explicit": True,
                 "decision_covers_subtree": "对二级节点的判断适用于其下全部三级节点",
-                "addition_levels": "parent_id=null 新增一级章；parent_id 为一级章新增二级节点；不新增三级节点",
+                "addition_levels": "章节会话只能在当前一级章下新增二级节点，parent_id 必须引用当前章根；不新增一级章或三级节点",
             },
         )
 
@@ -3446,6 +3446,32 @@ class TocSkillScriptTests(unittest.TestCase):
                                         "number": "1.9",
                                         "title": "跨章新增",
                                         "reason": "不允许跨章挂载。",
+                                    }
+                                ],
+                            },
+                            chapter_id=chapter_id,
+                        )
+                    with self.assertRaisesRegex(SystemExit, "must stay under the active chapter"):
+                        decision_workflow.submit_decision_batch(
+                            chapter_dir,
+                            structure,
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": item["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板专家经验仍适用。",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                                "additions": [
+                                    {
+                                        "node_id": "ADD-ROOT",
+                                        "parent_id": None,
+                                        "number": "9",
+                                        "title": "跨章一级新增",
+                                        "reason": "章节会话不得创建无归属的一级章。",
                                     }
                                 ],
                             },

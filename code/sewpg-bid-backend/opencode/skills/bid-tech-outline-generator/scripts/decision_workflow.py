@@ -282,7 +282,12 @@ def _decision_batch_response(
         if sparse
         else [
             "读本章相关的招标正文，判断本章主题在本项目还需要哪些响应",
-            "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions",
+            (
+                "招标要求已构成完整响应单元、模板却没有粒度相当的二级节点时，"
+                "作为当前一级章的子节点写进 additions"
+                if chapter_id
+                else "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions"
+            ),
             "模板侧不适用、重复、可合并或没有独立表达价值的二级节点，写 suggest_delete",
             "其余节点 retain；每个判断覆盖该节点的整个三级子树",
         ]
@@ -299,7 +304,11 @@ def _decision_batch_response(
             "items_must_match_batch": True,
             "additions_must_be_explicit": True,
             "decision_covers_subtree": "对二级节点的判断适用于其下全部三级节点",
-            "addition_levels": "parent_id=null 新增一级章；parent_id 为一级章新增二级节点；不新增三级节点",
+            "addition_levels": (
+                "章节会话只能在当前一级章下新增二级节点，parent_id 必须引用当前章根；不新增一级章或三级节点"
+                if chapter_id
+                else "parent_id=null 新增一级章；parent_id 为一级章新增二级节点；不新增三级节点"
+            ),
         },
         "decided_count": decided_count,
         "remaining_count": item_count - decided_count,
@@ -539,7 +548,9 @@ def merge_chapter_decisions(
         for addition in chapter_additions:
             node_id = str(addition.get("node_id") or "")
             if addition.get("parent_id") is None:
-                continue
+                raise SystemExit(
+                    f"chapter addition must stay under the active chapter: {node_id}"
+                )
             parent_id = str(addition.get("parent_id") or "")
             if not parent_id or parent_id == node_id or parent_id not in allowed_parent_ids:
                 raise SystemExit(f"chapter addition parent_id is outside the active chapter: {node_id}")
@@ -679,7 +690,9 @@ def submit_decision_batch(
             node_id = str(addition.get("node_id") or "").strip()
             parent_id = addition.get("parent_id")
             if parent_id is None:
-                continue
+                raise SystemExit(
+                    f"decision-batch additions[{index}] must stay under the active chapter"
+                )
             parent_key = str(parent_id).strip()
             if not parent_key or parent_key == node_id or parent_key not in allowed_parent_ids:
                 raise SystemExit(

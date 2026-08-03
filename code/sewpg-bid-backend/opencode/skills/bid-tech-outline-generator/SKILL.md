@@ -57,7 +57,7 @@ s2outline decision-batch <manifest> '<batch-json>'
 每个决策单元完成三件事，节奏由你把握：
 
 1. **读招标正文。** 用 `search` 定位，用 `section` 连续阅读与本章主题相关的招标章节，有分页就读到 `complete=true`。`section` 的 sectionId 必须使用 `headings` 返回的 `items[].section_id`。招标目录只用于定位，不能据标题判定覆盖；疑似独立成果必须逐项读原文。
-2. **找应当新增的节点。** 招标要求已构成完整响应单元，模板却没有语义等价且粒度相当的一级章或二级节点时，写进 `additions`。不要等招标明确写出"单独成章"才考虑新增。
+2. **找应当新增的节点。** 招标要求已构成完整响应单元，模板却没有语义等价且粒度相当的节点时，写进 `additions`。并行章节会话只在当前一级章下新增二级节点，不能创建无归属的一级章；串行流程才可新增一级章。不要等招标明确写出"单独成章"才考虑新增。
 3. **对本批每个节点表态** `retain` 或 `suggest_delete`，一次提交。
 
 优先用 `section` 连续阅读成段原文；`search` 只用于定位不知道位置的内容，不要以"想到主题就搜"的方式驱动探索。`search` 每次查询一个短关键词或短语，不能把多个无关关键词拼成一次查询；零命中时改用更短的词或直接用 `section` 阅读，不能据此认定招标没有要求。`search` 不能直接作为证据，只有受控阅读真正返回过的 evidenceId 才能提交。
@@ -93,7 +93,7 @@ s2outline decision-batch <manifest> '<batch-json>'
 - `items` 必须与当前批次完全一致，`additions` 即使为空也必须写 `[]`。
 - `retain` 提交 `evidence_id`、`reason` 或两者：给了 `evidence_id`，前端就能点击跳转招标原文；只有 `reason` 时展示理由文字。结论依赖招标原文时优先给 `evidence_id`。
 - `suggest_delete` 只提交 `reason`，不提交 evidenceId。
-- 每个新增必须提交 `reason + evidence_id`。`parent_id` 为 `null` 表示新增一级章，`parent_id` 为某个一级章表示在该章下新增二级节点；不新增三级节点。编号由你结合整章结构确定。
+- 每个新增必须提交 `reason + evidence_id`。并行章节会话中，`parent_id` 必须引用当前章根，只新增本章二级节点；串行流程中 `parent_id` 为 `null` 才表示新增一级章。任何流程都不新增三级节点。编号由你结合整章结构确定。
 - 未读或无效 evidenceId 被拒后，必须补读相应原文并重新判断，不得改用 `reason` 规避校验。
 
 ## 4. 判断技术附表
