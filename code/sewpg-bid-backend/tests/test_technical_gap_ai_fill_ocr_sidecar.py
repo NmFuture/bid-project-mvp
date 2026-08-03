@@ -76,5 +76,75 @@ class EnsurePdfOcrSidecarTests(unittest.TestCase):
         self.assertTrue(status.startswith("failed"))
 
 
+class PrepareFillMaterialsWithOcrTests(unittest.TestCase):
+    """填表任务内部 OCR 循环补齐：循环到无配额跳过 / 零进展停止 / 轮数兜底。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _items(count: int) -> list[dict]:
+        return [{"id": f"MAT-{i}", "fileName": f"mat{i}.pdf"} for i in range(count)]
+
+    def _fake_prepare(self, per_call_budget: int):
+        calls = {"count": 0}
+
+        def fake(materials, work_dir, *, cache_dir=None, limit=240, ocr_pdf=False, ocr_budget=12):
+            calls["count"] += 1
+            remaining = per_call_budget
+            prepared = []
+            for item in materials:
+                item = dict(item)
+                if item.get("ocrTextPath"):
+                    item["ocrStatus"] = "cached"
+                elif remaining > 0:
+                    remaining -= 1
+                    item["ocrTextPath"] = str(self.work_dir / f"{item['id']}.ocr.txt")
+                    item["ocrStatus"] = "generated"
+                else:
+                    item["ocrStatus"] = ai_fill._OCR_BUDGET_SKIPPED_STATUS
+                prepared.append(item)
+            return prepared
+
+        return fake, calls
+
+    def test_loops_until_no_quota_skipped(self) -> None:
+        fake, calls = self._fake_prepare(per_call_budget=2)
+        with patch.object(ai_fill, "_prepare_material_index_files", side_effect=fake):
+            material_index, _refs, _recs = ai_fill._prepare_fill_materials_with_ocr(
+                self._items(3), [], [], self.work_dir, cache_dir=self.work_dir
+            )
+        # 第 1 轮就绪 2 份余 1 份跳过，第 2 轮补齐后退出：2 轮 × 3 路 = 6 次调用
+        self.assertEqual(calls["count"], 6)
+        self.assertTrue(all(item.get("ocrTextPath") for item in material_index))
+
+    def test_stops_when_no_progress(self) -> None:
+        fake, calls = self._fake_prepare(per_call_budget=0)
+        with patch.object(ai_fill, "_prepare_material_index_files", side_effect=fake):
+            material_index, _refs, _recs = ai_fill._prepare_fill_materials_with_ocr(
+                self._items(3), [], [], self.work_dir, cache_dir=self.work_dir
+            )
+        # 首轮 ready=0 > -1 继续，次轮零进展（0 <= 0）停止，避免死循环
+        self.assertEqual(calls["count"], 6)
+        self.assertTrue(all(not item.get("ocrTextPath") for item in material_index))
+
+    def test_respects_max_rounds(self) -> None:
+        fake, calls = self._fake_prepare(per_call_budget=1)
+        with patch.object(ai_fill, "_prepare_material_index_files", side_effect=fake):
+            ai_fill._prepare_fill_materials_with_ocr(
+                self._items(ai_fill._AI_FILL_OCR_PREP_MAX_ROUNDS + 5),
+                [],
+                [],
+                self.work_dir,
+                cache_dir=self.work_dir,
+            )
+        # 每轮都有进展但都补不完，触达兜底轮数上限退出
+        self.assertEqual(calls["count"], ai_fill._AI_FILL_OCR_PREP_MAX_ROUNDS * 3)
+
+
 if __name__ == "__main__":
     unittest.main()
