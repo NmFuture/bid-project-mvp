@@ -1044,7 +1044,9 @@ async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=d
     return enqueue_material_wiki_generation(
         TECHNICAL_BID_TYPE,
         reference_path=str(data.get("referencePath") or ""),
-        mode=str(data.get("mode") or "create"),
+        # 缺省按 refresh 处理：create 在根树已存在时直接保留旧树不同步，
+        # 缺省调用（脚本/手动触发）会看到过期 Wiki。
+        mode=str(data.get("mode") or "refresh"),
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
 
