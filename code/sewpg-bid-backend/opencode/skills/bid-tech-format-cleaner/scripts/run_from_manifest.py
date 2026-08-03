@@ -622,7 +622,13 @@ def _is_toc_result_paragraph(element) -> bool:
     p_pr = element.find(qn("w:pPr"))
     p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
     style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
-    return bool(re.match(r"^TOC\s*\d+$", style_id, flags=re.IGNORECASE))
+    return _is_toc_style_identifier(style_id)
+
+
+def _is_toc_style_identifier(value: Any) -> bool:
+    return bool(
+        re.fullmatch(r"(?:TOC|目录)\s*[1-9]", str(value or "").strip(), flags=re.IGNORECASE)
+    )
 
 
 def _make_cleaner_toc_break(doc: Document):
@@ -794,11 +800,29 @@ def _table_contains_visual(table) -> bool:
 
 
 def _is_preserved_layout_paragraph(paragraph) -> bool:
+    if _paragraph_uses_toc_style(paragraph):
+        return True
     style = getattr(paragraph, "style", None)
     style_name = str(getattr(style, "name", "") or "").strip().lower()
     if any(marker in style_name for marker in ("图片", "图注", "照片", "caption", "figure", "image")):
         return True
     return _looks_like_caption_or_table_title(paragraph.text)
+
+
+def _paragraph_uses_toc_style(paragraph) -> bool:
+    style = getattr(paragraph, "style", None)
+    visited: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", "") or "")
+        style_name = str(getattr(style, "name", "") or "")
+        marker = style_id or style_name
+        if marker in visited:
+            break
+        visited.add(marker)
+        if _is_toc_style_identifier(style_id) or _is_toc_style_identifier(style_name):
+            return True
+        style = getattr(style, "base_style", None)
+    return False
 
 
 def _clean_paragraph_text(text: str) -> str:
