@@ -126,8 +126,23 @@ class ClientAppendixInputMatchTests(unittest.TestCase):
         self.assertEqual(key, "")
 
 
+class ProjectAppendixFolderTests(unittest.TestCase):
+    def test_exact_segment_match(self) -> None:
+        blank = {"id": "RAW-7", "name": "附表B.5 培训内容和计划表.docx", "folderPath": "技术标/项目定制/华能/附表"}
+        self.assertTrue(planner.is_project_appendix_folder_material(blank))
+
+    def test_client_input_folder_not_misjudged(self) -> None:
+        # 技术附表输入文件是另一约定目录，不算空副表目录
+        self.assertFalse(planner.is_project_appendix_folder_material(_client_material("RAW-1", "附表B.5 x.docx")))
+
+    def test_body_folder_not_misjudged(self) -> None:
+        # 目录段精确匹配，不做子串误伤
+        body = {"id": "RAW-8", "name": "投标方案.docx", "folderPath": "技术标/项目定制/华能/附表模板参考"}
+        self.assertFalse(planner.is_project_appendix_folder_material(body))
+
+
 class ClientAppendixPlanIntegrationTests(unittest.TestCase):
-    def _build_plan(self) -> dict:
+    def _build_plan(self, extra_materials: list[dict] | None = None) -> dict:
         toc = {
             "items": [
                 {"id": "t1", "number": "1", "title": "投标方案", "level": 1},
@@ -154,6 +169,7 @@ class ClientAppendixPlanIntegrationTests(unittest.TestCase):
             "materialIndex": [
                 _client_material("RAW-2", "技术附H 包装、标志、运输、保管和交付的特殊要求.docx"),
                 _client_material("RAW-3", "附表C.8 升降机.docx"),
+                *(extra_materials or []),
             ],
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,6 +219,22 @@ class ClientAppendixPlanIntegrationTests(unittest.TestCase):
                     str(material.get("folderPath") or ""),
                     f"{item.get('number')} 候选池混入甲方附表输入文件",
                 )
+
+    def test_blank_appendix_folder_excluded_from_body_pool(self) -> None:
+        # 空副表约定目录（…/附表）里的素材即使文件名与正文目录项同名，也不进正文候选池
+        plan = self._build_plan(
+            extra_materials=[
+                {
+                    "id": "RAW-9",
+                    "name": "投标方案.docx",
+                    "folderPath": "技术标/项目定制/PRJ-TEST/附表",
+                    "materialTier": "project",
+                }
+            ]
+        )
+        for item in plan["items"]:
+            pool = (item.get("matchedMaterials") or []) + (item.get("candidateMaterials") or [])
+            self.assertNotIn("RAW-9", [str(m.get("id") or "") for m in pool], f"{item.get('number')} 候选池混入空副表目录素材")
 
 
 if __name__ == "__main__":

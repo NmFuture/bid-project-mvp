@@ -141,15 +141,16 @@ def _material_scope() -> dict:
 
 def _fake_material_items() -> list[dict]:
     return [
-        {"id": "RAW-OTHER", "name": "EW5.0-200 运维方案.docx", "folderPath": "技术标/通用素材"},
-        {"id": "RAW-MATCH", "name": "EW10.0-220 运维方案.docx", "folderPath": "技术标/通用素材"},
-        {"id": "RAW-GENERIC", "name": "通用运维方案.docx", "folderPath": "技术标/通用素材"},
+        {"id": "RAW-OTHER", "name": "EW5.0-200 运维方案.docx", "folderPath": "技术标/通用素材", "materialTier": "standard"},
+        {"id": "RAW-MATCH", "name": "EW10.0-220 运维方案.docx", "folderPath": "技术标/通用素材", "materialTier": "standard"},
+        {"id": "RAW-GENERIC", "name": "通用运维方案.docx", "folderPath": "技术标/通用素材", "materialTier": "standard"},
+        {"id": "RAW-CUST-GENERIC", "name": "客户通用服务承诺.docx", "folderPath": "技术标/客户定制/华能", "materialTier": "customer"},
     ]
 
 
 def _run_allowed_index(gap_state, turbine_model=None) -> list[dict]:
     async def fake_raw_files(**kwargs):
-        return {"items": [dict(item) for item in _fake_material_items()], "total": 3}
+        return {"items": [dict(item) for item in _fake_material_items()], "total": 4}
 
     with patch("app.services.technical_gap_planner.technical_material_store.raw_files", side_effect=fake_raw_files):
         return _allowed_technical_material_index(_material_scope(), turbine_model or {}, gap_state=gap_state)
@@ -158,20 +159,22 @@ def _run_allowed_index(gap_state, turbine_model=None) -> list[dict]:
 def test_material_index_tightened_by_fact_table_turbine_model() -> None:
     gap_state = {"projectFactTable": _fact_table()}
     items = _run_allowed_index(gap_state)
-    assert [item["id"] for item in items] == ["RAW-MATCH", "RAW-GENERIC"]
+    # 标准档严格 match 才保留（generic 剔除）；客户档保留机型无关素材
+    assert [item["id"] for item in items] == ["RAW-MATCH", "RAW-CUST-GENERIC"]
 
 
 def test_material_index_unchanged_without_fact_table() -> None:
-    assert [item["id"] for item in _run_allowed_index(None)] == ["RAW-OTHER", "RAW-MATCH", "RAW-GENERIC"]
-    assert [item["id"] for item in _run_allowed_index({})] == ["RAW-OTHER", "RAW-MATCH", "RAW-GENERIC"]
+    all_ids = ["RAW-OTHER", "RAW-MATCH", "RAW-GENERIC", "RAW-CUST-GENERIC"]
+    assert [item["id"] for item in _run_allowed_index(None)] == all_ids
+    assert [item["id"] for item in _run_allowed_index({})] == all_ids
     gap_state = {"projectFactTable": {"fields": [{"label": "投标机型", "value": "", "status": "unextracted"}]}}
-    assert [item["id"] for item in _run_allowed_index(gap_state)] == ["RAW-OTHER", "RAW-MATCH", "RAW-GENERIC"]
+    assert [item["id"] for item in _run_allowed_index(gap_state)] == all_ids
 
 
 def test_material_index_not_tightened_when_fact_model_matches_project_model() -> None:
     gap_state = {"projectFactTable": _fact_table()}
     items = _run_allowed_index(gap_state, turbine_model={"model": "EW10.0-220"})
-    assert [item["id"] for item in items] == ["RAW-MATCH", "RAW-GENERIC"]
+    assert [item["id"] for item in items] == ["RAW-MATCH", "RAW-CUST-GENERIC"]
 
 
 def test_filter_material_index_by_fact_table_unit() -> None:
@@ -181,7 +184,7 @@ def test_filter_material_index_by_fact_table_unit() -> None:
 
     gap_state = {"projectFactTable": _fact_table()}
     filtered = _filter_material_index_by_fact_table(items, gap_state)
-    assert [item["id"] for item in filtered] == ["RAW-MATCH", "RAW-GENERIC"]
+    assert [item["id"] for item in filtered] == ["RAW-MATCH", "RAW-CUST-GENERIC"]
 
 
 def test_fact_table_turbine_model_reads_value_and_tolerates_missing() -> None:
