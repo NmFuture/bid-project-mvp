@@ -19,7 +19,8 @@ LEGACY_STATE_SCHEMAS = {
     "technical-outline-decision-state.v6",
 }
 STATE_FILE_NAME = "outline_decision_state.json"
-MAX_DECISION_RESPONSE_BYTES = 24000
+# 与 run_from_manifest 的 45000 字符硬限对齐（opencode 按字符截断，上限 51200）。
+MAX_DECISION_RESPONSE_CHARS = 45_000
 # 决策只到二级；三级节点由 outline_composer 跟随二级父节点下沉。
 DECISION_MAX_LEVEL = outline_composer.DECISION_MAX_LEVEL
 TEMPLATE_HEADINGS_MAX_LEVEL = 3
@@ -30,10 +31,8 @@ def _payload_digest(payload: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _compact_json_bytes(payload: Any) -> int:
-    return len(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    )
+def _compact_json_chars(payload: Any) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -232,19 +231,19 @@ def template_headings(
     if cursor > len(items):
         raise SystemExit("template-headings --cursor exceeds item count")
     by_id = {str(item["template_id"]): item for item in items}
-    # 按字节预算收缩本页条目数，保证大 page-size 也不会触发 24000 字节硬限。
+    # 按字符预算收缩本页条目数，保证大 page-size 也不会触发 45000 字符硬限。
     page_items = _decision_items(
         [str(item["template_id"]) for item in items[cursor : cursor + page_size]],
         by_id,
     )
-    item_budget = MAX_DECISION_RESPONSE_BYTES - 4_000
-    used_bytes = 0
+    item_budget = MAX_DECISION_RESPONSE_CHARS - 4_000
+    used_chars = 0
     kept = 0
     for item in page_items:
-        item_bytes = _compact_json_bytes(item) + 1
-        if kept and used_bytes + item_bytes > item_budget:
+        item_chars = _compact_json_chars(item) + 1
+        if kept and used_chars + item_chars > item_budget:
             break
-        used_bytes += item_bytes
+        used_chars += item_chars
         kept += 1
     page_items = page_items[: max(1, kept)] if page_items else page_items
     end = cursor + len(page_items)
@@ -440,7 +439,7 @@ def next_decision_batch(
             item_count=len(scoped_ids),
             chapter_id=chapter_id,
         )
-        if _compact_json_bytes(selected_response) < MAX_DECISION_RESPONSE_BYTES:
+        if _compact_json_chars(selected_response) < MAX_DECISION_RESPONSE_CHARS:
             break
         target_ids = target_ids[:-1]
     if not target_ids:

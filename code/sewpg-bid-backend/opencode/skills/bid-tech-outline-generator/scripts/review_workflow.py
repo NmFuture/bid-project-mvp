@@ -16,9 +16,11 @@ LEDGER_SCHEMA_VERSION = "tender-requirement-ledger.v1"
 HEADINGS_STATE_SCHEMA_VERSION = "tender-headings-state.v1"
 EVIDENCE_ACCESS_SCHEMA_VERSION = "tender-evidence-access.v1"
 DEFAULT_CHUNK_CHAR_LIMIT = 12_000
-# 导航命令的序列化输出必须低于 run_from_manifest 的 24000 字节硬限；
+# 导航命令的序列化输出必须低于 run_from_manifest 的 45000 字符硬限
+# （opencode 按字符截断工具输出，上限 51200 字符；字节计量对中文会把预算
+# 收缩到约 1/3，导致长节被切成多页、逐页触发模型深思考）。
 # 分页和截断按这个安全预算收缩，让默认参数在中文语料下也不会触发硬限回滚。
-NAVIGATION_SAFE_OUTPUT_BYTES = 20_000
+NAVIGATION_SAFE_OUTPUT_CHARS = 41_000
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{WORD_NS}}}"
 STRUCTURAL_TITLE_PATTERN = re.compile(
@@ -59,15 +61,14 @@ def evidence_search_text(record: dict[str, Any]) -> str:
     return clean_text(record.get("text"))
 
 
-def _serialized_bytes(payload: Any) -> int:
-    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+def _serialized_chars(payload: Any) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
-def _truncate_text_utf8(text: str, max_bytes: int) -> str:
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
+def _truncate_text_chars(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
         return text
-    return encoded[: max(0, max_bytes - 3)].decode("utf-8", errors="ignore") + "…"
+    return text[: max(0, max_chars - 1)] + "…"
 
 
 def _payload_digest(payload: Any) -> str:
@@ -634,15 +635,15 @@ def _paged_heading_files(
         flattened.extend((file_entry, source, item) for item in selected)
 
     page = flattened[cursor : cursor + page_size]
-    # 按字节预算收缩本页条目数，保证大 page-size 也不会触发 24000 字节硬限。
-    item_budget = NAVIGATION_SAFE_OUTPUT_BYTES - 4_000
-    used_bytes = 0
+    # 按字符预算收缩本页条目数，保证大 page-size 也不会触发 45000 字符硬限。
+    item_budget = NAVIGATION_SAFE_OUTPUT_CHARS - 4_000
+    used_chars = 0
     kept = 0
     for _, _, item in page:
-        item_bytes = _serialized_bytes(item) + 1
-        if kept and used_bytes + item_bytes > item_budget:
+        item_chars = _serialized_chars(item) + 1
+        if kept and used_chars + item_chars > item_budget:
             break
-        used_bytes += item_bytes
+        used_chars += item_chars
         kept += 1
     page = page[: max(1, kept)] if page else page
     next_cursor = cursor + len(page)
@@ -1387,28 +1388,28 @@ def read_section(
         "complete": False,
         "records": [],
     }
-    byte_budget = NAVIGATION_SAFE_OUTPUT_BYTES - _serialized_bytes(response)
+    output_budget = NAVIGATION_SAFE_OUTPUT_CHARS - _serialized_chars(response)
     records: list[dict[str, Any]] = []
     used_chars = 0
-    used_bytes = 0
+    used_output_chars = 0
     index = cursor
     while index < len(all_records):
         record = all_records[index]
         text = clean_text(record.get("text"))
         public_record = deepcopy(record)
         public_record.pop("rows", None)
-        record_bytes = _serialized_bytes(public_record) + 1
-        if records and (used_chars + len(text) > max_chars or used_bytes + record_bytes > byte_budget):
+        record_chars = _serialized_chars(public_record) + 1
+        if records and (used_chars + len(text) > max_chars or used_output_chars + record_chars > output_budget):
             break
-        if not records and record_bytes > byte_budget:
-            # 单条正文超过字节预算：截断展示并标记，全文用 read/window 继续读。
-            overhead = record_bytes - len(text.encode("utf-8"))
-            public_record["text"] = _truncate_text_utf8(text, max(200, byte_budget - overhead))
+        if not records and record_chars > output_budget:
+            # 单条正文超过字符预算：截断展示并标记，全文用 read/window 继续读。
+            overhead = record_chars - len(text)
+            public_record["text"] = _truncate_text_chars(text, max(200, output_budget - overhead))
             public_record["text_truncated"] = True
-            record_bytes = _serialized_bytes(public_record) + 1
+            record_chars = _serialized_chars(public_record) + 1
         records.append(public_record)
         used_chars += len(text)
-        used_bytes += record_bytes
+        used_output_chars += record_chars
         index += 1
     evidence_ids = [clean_text(item.get("evidence_id")) for item in records]
     _record_evidence_access(work_dir, chunks, evidence_ids, command="section")
@@ -1467,24 +1468,24 @@ def search_tender(
         "complete": False,
         "results": [],
     }
-    byte_budget = NAVIGATION_SAFE_OUTPUT_BYTES - _serialized_bytes(response)
+    output_budget = NAVIGATION_SAFE_OUTPUT_CHARS - _serialized_chars(response)
     page: list[dict[str, Any]] = []
     used_chars = 0
-    used_bytes = 0
+    used_output_chars = 0
     index = cursor
     while index < len(matches) and len(page) < max_results:
         item = matches[index]
         item_chars = len(item["snippet"])
-        item_bytes = _serialized_bytes(item) + 1
-        if page and (used_chars + item_chars > max_chars or used_bytes + item_bytes > byte_budget):
+        item_output_chars = _serialized_chars(item) + 1
+        if page and (used_chars + item_chars > max_chars or used_output_chars + item_output_chars > output_budget):
             break
-        if not page and item_bytes > byte_budget:
-            overhead = item_bytes - len(item["snippet"].encode("utf-8"))
-            item = {**item, "snippet": _truncate_text_utf8(item["snippet"], max(200, byte_budget - overhead))}
-            item_bytes = _serialized_bytes(item) + 1
+        if not page and item_output_chars > output_budget:
+            overhead = item_output_chars - len(item["snippet"])
+            item = {**item, "snippet": _truncate_text_chars(item["snippet"], max(200, output_budget - overhead))}
+            item_output_chars = _serialized_chars(item) + 1
         page.append(item)
         used_chars += item_chars
-        used_bytes += item_bytes
+        used_output_chars += item_output_chars
         index += 1
     complete = index >= len(matches)
     response["next_cursor"] = "" if complete else str(index)

@@ -52,7 +52,9 @@ AGENTIC_COMMANDS = {
 NAVIGATION_COMMANDS = frozenset(
     {"template-headings", "headings", "search", "section", "decision-next", "appendix-next"}
 )
-NAVIGATION_OUTPUT_HARD_LIMIT_BYTES = 24000
+# opencode 对工具输出按字符截断（上限 51200）；预算必须按字符计量，
+# 字节计量会把中文预算压到约 1/3，长节被切成多页、逐页触发模型深思考。
+NAVIGATION_OUTPUT_HARD_LIMIT_CHARS = 45_000
 NAVIGATION_RETRY_HINTS = {
     "template-headings": "请减小 --page-size，并使用同一 --cursor 重试",
     "headings": "请减小 --page-size，并使用同一 --cursor 重试",
@@ -125,12 +127,12 @@ def _serialize_command_output(command: str, result: dict[str, Any]) -> str:
     if command not in NAVIGATION_COMMANDS:
         return json.dumps(result, ensure_ascii=False, indent=2)
     output = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-    output_bytes = len(f"{output}\n".encode("utf-8"))
-    if output_bytes >= NAVIGATION_OUTPUT_HARD_LIMIT_BYTES:
+    output_chars = len(f"{output}\n")
+    if output_chars >= NAVIGATION_OUTPUT_HARD_LIMIT_CHARS:
         raise NavigationOutputBudgetError(
             "导航输出内部协议错误: "
-            f"command={command}, actual_bytes={output_bytes}, "
-            f"required_bytes<{NAVIGATION_OUTPUT_HARD_LIMIT_BYTES}; "
+            f"command={command}, actual_chars={output_chars}, "
+            f"required_chars<{NAVIGATION_OUTPUT_HARD_LIMIT_CHARS}; "
             f"retry_hint={NAVIGATION_RETRY_HINTS[command]}"
         )
     return output

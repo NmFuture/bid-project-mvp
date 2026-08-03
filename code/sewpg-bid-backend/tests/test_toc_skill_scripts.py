@@ -1237,8 +1237,8 @@ class TocSkillScriptTests(unittest.TestCase):
                 ), redirect_stdout(stdout):
                     outline_runner.main()
                 output = stdout.getvalue()
-                stdout_sizes[command] = len(output.encode("utf-8"))
-                self.assertLess(stdout_sizes[command], 24000, stdout_sizes)
+                stdout_sizes[command] = len(output)
+                self.assertLess(stdout_sizes[command], 45000, stdout_sizes)
                 self.assertNotIn("output truncated", output.lower())
                 return json.loads(output)
 
@@ -1281,7 +1281,7 @@ class TocSkillScriptTests(unittest.TestCase):
             _, manifest_path = write_decision_context_fixture(
                 root,
                 heading_count=2,
-                heading_text="超长目录标题" * 800,
+                heading_text="超长目录标题" * 3400,
             )
             chunks = json_load(root / "tender_review_chunks.json")
             chunks["input_fingerprint"] = "headings-rollback-input"
@@ -1298,8 +1298,8 @@ class TocSkillScriptTests(unittest.TestCase):
             state_path.write_text(
                 json.dumps(headings_state, ensure_ascii=False), encoding="utf-8"
             )
-            # 两条 14KB 级超长标题 + page-size 2：脚本按字节预算自动收缩为单条返回，
-            # 不再触发 24000 字节硬限回滚，按 next_cursor 连续读完。
+            # 两条 2 万字符级超长标题 + page-size 2：脚本按字符预算自动收缩为单条返回，
+            # 不再触发 45000 字符硬限回滚，按 next_cursor 连续读完。
             first_stdout = io.StringIO()
             with patch.object(
                 sys,
@@ -1340,7 +1340,7 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertTrue(second["complete"])
         self.assertEqual(second["returned_heading_count"], 1)
 
-    def test_bid_outline_section_default_budget_stays_below_byte_limit_on_chinese_text(self) -> None:
+    def test_bid_outline_section_default_budget_stays_below_char_limit_on_chinese_text(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1351,8 +1351,8 @@ class TocSkillScriptTests(unittest.TestCase):
             template_doc = Document()
             template_doc.add_paragraph("第1章 技术方案", style="Heading 1")
             template_doc.save(template)
-            # 100 段密集中文正文：默认 --max-chars 12000 按字符算约 36KB，
-            # 字节预算必须在脚本内收缩，不能把超限弹回给 agent。
+            # 100 段密集中文正文：默认 --max-chars 12000 在字符预算下应整页承载，
+            # 每页真实携带 1.2 万字，不再被字节预算压缩成更小的页。
             tender_doc = Document()
             tender_doc.add_paragraph("1 技术要求", style="Heading 1")
             for index in range(100):
@@ -1393,7 +1393,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 ), redirect_stdout(stdout):
                     outline_runner.main()
                 output = stdout.getvalue()
-                self.assertLess(len(output.encode("utf-8")), 24000)
+                self.assertLess(len(output), 45000)
                 page = json.loads(output)
                 seen_records += len(page["records"])
                 rounds += 1
@@ -1403,6 +1403,9 @@ class TocSkillScriptTests(unittest.TestCase):
                 self.assertLess(rounds, 60)
 
         self.assertGreaterEqual(seen_records, 100)
+        # 约 4.9 万字正文按每页 1.2 万字（--max-chars 默认值）读完，页数不应超过 6；
+        # 若回退为字节预算，每页只能装约 6600 字，页数会膨胀到 8 页以上。
+        self.assertLessEqual(rounds, 6)
 
     def test_bid_outline_appendix_output_limit_rolls_back_state_and_can_retry(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
@@ -1448,7 +1451,7 @@ class TocSkillScriptTests(unittest.TestCase):
             ), redirect_stdout(io.StringIO()):
                 outline_runner.main()
 
-            long_title = "超长技术响应附表" * 500
+            long_title = "超长技术响应附表" * 3000
             (root / "tender_appendix_inventory.json").write_text(
                 json.dumps(
                     {
@@ -1482,7 +1485,7 @@ class TocSkillScriptTests(unittest.TestCase):
                     "2",
                 ],
             ), redirect_stdout(stdout), self.assertRaisesRegex(
-                SystemExit, r"command=appendix-next, actual_bytes=\d+"
+                SystemExit, r"command=appendix-next, actual_chars=\d+"
             ) as raised:
                 outline_runner.main()
 
@@ -1515,7 +1518,7 @@ class TocSkillScriptTests(unittest.TestCase):
             manifest_path = Path(tmp) / "s2_input.json"
             manifest_path.write_text("{}", encoding="utf-8")
 
-            below_limit = {"payload": "x" * 23984}
+            below_limit = {"payload": "x" * 44984}
             stdout = io.StringIO()
             with patch.object(
                 sys,
@@ -1525,11 +1528,11 @@ class TocSkillScriptTests(unittest.TestCase):
                 outline_runner, "dispatch_command", return_value=below_limit
             ), redirect_stdout(stdout):
                 outline_runner.main()
-            self.assertEqual(len(stdout.getvalue().encode("utf-8")), 23999)
+            self.assertEqual(len(stdout.getvalue()), 44999)
             self.assertTrue(stdout.getvalue().endswith("\n"))
             self.assertFalse(stdout.getvalue().endswith("\r\n"))
 
-            at_limit = {"payload": "x" * 23985}
+            at_limit = {"payload": "x" * 44985}
             decision_state_path = (
                 manifest_path.parent / outline_runner.decision_workflow.STATE_FILE_NAME
             )
@@ -1546,7 +1549,7 @@ class TocSkillScriptTests(unittest.TestCase):
                 ), patch.object(
                     outline_runner, "dispatch_command", side_effect=write_new_state
                 ), redirect_stdout(io.StringIO()), self.assertRaisesRegex(
-                    SystemExit, rf"command={command}, actual_bytes=24000"
+                    SystemExit, rf"command={command}, actual_chars=45000"
                 ):
                     outline_runner.main()
                 self.assertFalse(decision_state_path.exists())
@@ -2282,10 +2285,8 @@ class TocSkillScriptTests(unittest.TestCase):
                 "decision-next", manifest, manifest_path, []
             )
 
-        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        self.assertLess(len(compact), 24000)
+        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":"))
+        self.assertLess(len(compact), 45000)
         self.assertEqual(len(batch["items"]), 1)
         self.assertEqual(batch["remaining_count"], 50)
         self.assertNotIn("comparison_context", batch)
@@ -2454,10 +2455,10 @@ class TocSkillScriptTests(unittest.TestCase):
 
             batch = outline_runner.dispatch_command("decision-next", manifest, manifest_path, [])
 
-        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        compact = json.dumps(batch, ensure_ascii=False, separators=(",", ":"))
         self.assertEqual(len(batch["items"]), 30)
         self.assertNotIn("comparison_context", batch)
-        self.assertLess(len(compact), 24000)
+        self.assertLess(len(compact), 45000)
 
     def test_bid_outline_decision_batch_requires_explicit_additions(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")
