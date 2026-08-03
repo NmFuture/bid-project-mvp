@@ -141,6 +141,56 @@ class ProjectAppendixFolderTests(unittest.TestCase):
         self.assertFalse(planner.is_project_appendix_folder_material(body))
 
 
+class AppendixCodeDashTests(unittest.TestCase):
+    def test_dash_pure_digit_is_sub_number(self) -> None:
+        # 业主编号约定：附表F.5-2 是 F.5 下第 2 张表，归一为点号子编号，与 附表F.5 区分
+        self.assertEqual(planner.appendix_code("附表F.5-2 认证未完成或存在待解决项"), "F.5.2")
+        self.assertEqual(planner.appendix_code("附表F.5 项目投标机型生产工厂体系认证"), "F.5")
+
+    def test_dash_with_letter_keeps_range_semantics(self) -> None:
+        # 附表D.1-D.6 是区间（来源矩阵规则），语义不变
+        self.assertEqual(planner.appendix_code("附表D.1-D.6"), "D.1")
+        self.assertGreater(planner.appendix_rule_code_score("附表D.3 功率曲线", "附表D.1-D.6"), 0)
+
+    def test_f5_dash_2_matches_only_its_own_table(self) -> None:
+        appendices = [
+            {"id": "APPX-1", "title": "附表F.5 项目投标机型生产工厂体系认证"},
+            {"id": "APPX-2", "title": "附表F.5-2 认证未完成或存在待解决项"},
+            {"id": "APPX-3", "title": "附表F.5.1 生产工厂体系认证"},
+        ]
+        matched = planner.matching_appendices({"number": "附表F.5-2", "title": "认证未完成或存在待解决项"}, appendices)
+        self.assertEqual([a["id"] for a in matched], ["APPX-2"])
+
+
+class AppendixRecommendGateTests(unittest.TestCase):
+    def test_blank_self_and_templates_excluded(self) -> None:
+        # 空表自身与其他待填写模板不是填写参考，一律不推荐
+        appendix = {"title": "附表C.8 升降机"}
+        pool = [
+            {"id": "RAW-BLANK", "name": "待填写-附表C.8 升降机.docx", "folderPath": "技术标/项目定制/P/附表", "materialTier": "project"},
+            {"id": "RAW-TPL", "name": "待填写-升降机.docx", "folderPath": "技术标/客户定制/华能", "materialTier": "customer"},
+        ]
+        self.assertEqual(planner.recommended_materials_for_appendix(appendix, pool), [])
+
+    def test_noise_excluded_without_source_rule(self) -> None:
+        # 无来源矩阵规则时按相关分设门槛：无关素材不进推荐（此前全池放行退化成噪声）
+        appendix = {"title": "附表C.8 升降机"}
+        pool = [
+            {"id": "RAW-NOISE", "name": "变桨轴承场址校核报告.pdf", "folderPath": "技术标/项目定制/P/校核", "materialTier": "project"},
+            {"id": "RAW-XLSX", "name": "W10.0-220_空气密度1.16_湍流强度0.1.xlsx", "folderPath": "技术标/项目定制/P", "materialTier": "project"},
+        ]
+        self.assertEqual(planner.recommended_materials_for_appendix(appendix, pool), [])
+
+    def test_relevant_reference_kept_without_source_rule(self) -> None:
+        appendix = {"title": "附表C.1 总体技术参数与规格"}
+        pool = [
+            {"id": "RAW-PARAM", "name": "总体技术参数与规格一览表.docx", "folderPath": "技术标/标准文件/EW10.0-220上置", "materialTier": "standard"},
+            {"id": "RAW-NOISE", "name": "变桨轴承场址校核报告.pdf", "folderPath": "技术标/项目定制/P/校核", "materialTier": "project"},
+        ]
+        recs = planner.recommended_materials_for_appendix(appendix, pool)
+        self.assertEqual([m["id"] for m in recs], ["RAW-PARAM"])
+
+
 class ClientAppendixPlanIntegrationTests(unittest.TestCase):
     def _build_plan(self, extra_materials: list[dict] | None = None) -> dict:
         toc = {
@@ -235,6 +285,17 @@ class ClientAppendixPlanIntegrationTests(unittest.TestCase):
         for item in plan["items"]:
             pool = (item.get("matchedMaterials") or []) + (item.get("candidateMaterials") or [])
             self.assertNotIn("RAW-9", [str(m.get("id") or "") for m in pool], f"{item.get('number')} 候选池混入空副表目录素材")
+
+    def test_appendix_items_have_no_candidates(self) -> None:
+        # 附表是「一个目录项 ↔ 一张空表」，没有匹配概念：附表项不写 candidateMaterials
+        plan = self._build_plan()
+        for item in plan["items"]:
+            if item.get("appendixTasks"):
+                self.assertEqual(
+                    item.get("candidateMaterials") or [],
+                    [],
+                    f"{item.get('number')} 附表项不应有候选素材",
+                )
 
 
 if __name__ == "__main__":

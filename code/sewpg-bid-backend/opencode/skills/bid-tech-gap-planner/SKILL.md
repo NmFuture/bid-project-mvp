@@ -94,7 +94,8 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 招标解析生成的空副表/Word 是 S3 的填写任务来源：
 
 - 附表编号或空表目录项应作为 `fill_required`，不应被相似父章整章素材吞并。
-- 附表推荐素材可以使用相似整章素材作为填写参考，但只能出现在推荐/候选列表。
+- 附表是「一个目录项 ↔ 一张空表」，没有正文意义上的素材匹配：附表项不写 `candidateMaterials`。
+- 填写参考素材只放 `appendixTasks[].recommendedMaterials`，且有入围门槛：来源矩阵规则命中，或无规则时相关分不低于阈值；空表自身与待填写模板一律不推荐，无合格参考时置空，不塞噪声。
 - 每个 `appendixTask` 应包含空表来源、字段/行数信息、推荐素材和后续填写 Skill。
 
 ## 甲方已填附表（技术附表输入文件）
