@@ -341,32 +341,45 @@ def test_technical_gap_material_index_uses_technical_material_store() -> None:
             "items": [
                 {
                     "id": "RAW-TECH-0001",
-                    "name": "技术方案.docx",
-                    "folderPath": "技术标/通用素材",
+                    "name": "EW10.0-220 技术方案.docx",
+                    "folderPath": "技术标/标准文件/EW10.0-220上置",
                     "materialTier": "standard",
                     "cleanStatus": "cleaned",
                     "hasCleanedWord": True,
-                    "cleanedFileName": "技术方案.docx",
-                }
+                    "cleanedFileName": "EW10.0-220 技术方案.docx",
+                },
+                {
+                    "id": "RAW-TECH-0002",
+                    "name": "技术方案.docx",
+                    "folderPath": "技术标/标准文件/EW6.0-200上置",
+                    "materialTier": "standard",
+                },
+                {
+                    "id": "RAW-TECH-0003",
+                    "name": "通用技术方案.docx",
+                    "folderPath": "技术标/标准文件",
+                    "materialTier": "standard",
+                },
             ],
-            "total": 1,
+            "total": 3,
         }
 
     material_scope = {
         "bidType": "技术标",
         "readableScopes": [
             {
-                "path": "技术标/通用素材",
+                "path": "技术标/标准文件",
                 "materialTier": "standard",
             }
         ],
     }
 
     with patch("app.services.technical_gap_planner.technical_material_store.raw_files", side_effect=fake_raw_files) as raw_files:
-        items = _allowed_technical_material_index(material_scope, {"model": "WTG-1"})
+        items = _allowed_technical_material_index(material_scope, {"model": "EW10.0-220上置"})
 
     assert raw_files.call_count == 1
-    assert items[0]["id"] == "RAW-TECH-0001"
+    # 标准文件池严格 1:1 限定选中机型：其他机型（conflict）与机型无关（generic）都不进池
+    assert [item["id"] for item in items] == ["RAW-TECH-0001"]
 
 
 def test_technical_gap_material_index_scopes_customer_and_project_by_identity() -> None:
@@ -404,9 +417,21 @@ def test_technical_gap_material_index_scopes_customer_and_project_by_identity() 
                         "name": "项目风资源评估报告.docx",
                         "folderPath": "技术标/项目定制/项目全名/风资源评估报告",
                         "materialTier": "project",
-                    }
+                    },
+                    {
+                        "id": "RAW-PROJECT-APPENDIX",
+                        "name": "附表B.5 培训内容和计划表.docx",
+                        "folderPath": "技术标/项目定制/项目全名/附表",
+                        "materialTier": "project",
+                    },
+                    {
+                        "id": "RAW-CLIENT-INPUT",
+                        "name": "附表C.8 升降机.docx",
+                        "folderPath": "技术标/项目定制/项目全名/技术附表输入文件",
+                        "materialTier": "project",
+                    },
                 ],
-                "total": 1,
+                "total": 3,
             }
         return {"items": [], "total": 0}
 
@@ -436,7 +461,9 @@ def test_technical_gap_material_index_scopes_customer_and_project_by_identity() 
     ) as raw_files:
         items = _allowed_technical_material_index(material_scope, {"model": "EW10.0-220上置"})
 
-    assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT"]
+    # 项目定制/附表（空副表约定目录）不进正文素材池；
+    # 技术附表输入文件（甲方已填附表）保留在索引里，供附表查表替换。
+    assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT", "RAW-CLIENT-INPUT"]
     assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件"
     assert raw_files.call_args_list[1].kwargs["folder_path"] == "技术标/客户定制"
     assert raw_files.call_args_list[1].kwargs["customer_name"] == "华能集团"
