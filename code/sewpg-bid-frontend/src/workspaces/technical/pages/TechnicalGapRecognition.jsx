@@ -104,7 +104,7 @@ const materialTierLabels = {
   project: '项目素材',
 }
 
-// 合并清单条目的来源标签：resolvedArtifacts 的先后顺序即正文合并顺序。
+// 合并清单条目的来源标签。
 const artifactSourceLabels = {
   material_library: '选用素材',
   manual_upload: '人工上传',
@@ -1367,8 +1367,8 @@ export default function TechnicalGapRecognition({ showToast }) {
       : defaultAiFillReferenceMaterialIds(selected, [], task)
   }
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
-  // 本章合并清单（产品意见 2026-07-17 方案A）：全部已选用素材/上传/AI 产物按选用先后
-  // （即正文合并顺序）展示，替代只显示最新一条产物的旧结果行。
+  // 本章合并清单（产品意见 2026-07-17 方案A）：展示本章全部已选用素材/上传/AI 产物，
+  // 替代只显示最新一条产物的旧结果行。2026-08-02：每个目录项只定案一份素材，无合并顺序概念。
   const mergeArtifacts = asObjectArray(selected?.resolvedArtifacts)
   // 已选用素材 id 集合：选用产物 source=material_library，对齐商务标已选高亮。
   const selectedMaterialIdSet = new Set(
@@ -2329,11 +2329,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                             <div className="text-xs font-semibold text-on-surface">
                               {mergeArtifacts.length ? '本章合并清单' : '已选中素材'}
                             </div>
-                            {mergeArtifacts.length ? (
-                              <span className="text-[11px] text-outline">
-                                正文将按以下顺序合并 {mergeArtifacts.length} 份
-                              </span>
-                            ) : null}
                           </div>
                           {!mergeArtifacts.length && defaultSelection ? (
                             <div className="mt-2">
@@ -2352,8 +2347,9 @@ export default function TechnicalGapRecognition({ showToast }) {
                               />
                             </div>
                           ) : null}
-                          {/* 合并清单：每条产物按合并顺序编号，带来源标签与直达预览。
-                              「确认可合并」二次确认已移除（产品意见 2026-07-17：填写完成直接进入选中状态）。 */}
+                          {/* 合并清单：每条产物带来源标签与直达预览。
+                              「确认可合并」二次确认已移除（产品意见 2026-07-17：填写完成直接进入选中状态）。
+                              2026-08-02：每个目录项只定案一份素材，取消合并顺序编号与说明。 */}
                           {mergeArtifacts.length ? (
                             <div className="mt-2 space-y-1.5">
                               {mergeArtifacts.map((artifact, index) => (
@@ -2362,9 +2358,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                   className="flex items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2"
                                 >
                                   <div className="flex min-w-0 items-center gap-2 text-xs">
-                                    <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-on-surface-variant">
-                                      {index + 1}
-                                    </span>
                                     <span className="truncate font-medium text-on-surface" title={artifact.fileName || ''}>
                                       {artifact.fileName || artifact.title || artifact.id || '-'}
                                     </span>

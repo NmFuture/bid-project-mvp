@@ -97,6 +97,15 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 - 附表推荐素材可以使用相似整章素材作为填写参考，但只能出现在推荐/候选列表。
 - 每个 `appendixTask` 应包含空表来源、字段/行数信息、推荐素材和后续填写 Skill。
 
+## 甲方已填附表（技术附表输入文件）
+
+项目定制目录下的 `技术附表输入文件/` 是甲方已填写完成附表的约定目录（业主侧固定结构约定）：
+
+- 该目录素材不进正文匹配池，只参与附表查表替换，避免按标题打分误挂到正文章节。
+- 查表键严格按命名：文件 `附表C.8 …` 精确覆盖 C.8；`附表G.3 …` 覆盖 G.3 组全部子表（G.3.1/G.3.2/…）；`技术附H …`（含无「表」写法）覆盖 H 组全部。精确编号优先于组前缀。
+- 同编号/同字母命中多个不同文件时不自动定案，保持 `fill_required` 由人工选择。
+- 目录项附表全部被覆盖时：对应 `appendixTask.sourceRouting.status=client_provided`，不产生 `fillTasks`，写入非 ai_fill 的 `resolvedArtifacts`（`source=client_appendix_input`、`s7Ready`、带 `materialId`），经终审 recompute 判 `decision=ready`、`status=resolved`，S7 装配直接取甲方文件；部分覆盖时只标记已覆盖任务，目录项维持 `fill_required`。
+
 ## 运行方式
 
 收到后端 prompt 时，直接调用一次：
