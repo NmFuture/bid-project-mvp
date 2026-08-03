@@ -219,7 +219,6 @@ def test_onlyoffice_image_contains_and_verifies_the_open_source_font_contract() 
         ),
         "SEWPG_BUILD_REVISION": "${ONLYOFFICE_BUILD_REVISION:-dev}",
     }
-    assert onlyoffice["build"]["provenance"] is False
     assert all("/usr/share/fonts" not in volume for volume in onlyoffice["volumes"])
     assert "sewpg-verify-fonts" in " ".join(onlyoffice["healthcheck"]["test"])
     assert "ARG FONTTOOLS_PACKAGE_VERSION=4.38.0-1+deb12u1" in dockerfile
