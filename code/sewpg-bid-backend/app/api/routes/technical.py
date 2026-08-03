@@ -957,6 +957,13 @@ async def technical_raw_download_cleaned_content_by_name(file_id: str, filename:
     )
 
 
+@router.get("/api/technical/materials/raw/{file_id}/fulltext")
+async def technical_raw_fulltext(file_id: str) -> dict[str, Any]:
+    from app.services.material_deep_parse import pdf_fulltext_for_raw_file
+
+    return await pdf_fulltext_for_raw_file(file_id)
+
+
 @router.get("/api/technical/materials/wiki")
 async def technical_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, Any]:
     _ = bidType

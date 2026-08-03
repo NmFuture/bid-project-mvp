@@ -221,7 +221,7 @@ class BuildPreviewPlansCacheTests(unittest.IsolatedAsyncioTestCase):
                 return_value=_SingleExecuteSession([_raw_item(cached)]),
             ),
             patch(
-                "app.services.technical_wiki_preview_generation._docx_profile_for_raw_file",
+                "app.services.technical_wiki_preview_generation._profile_for_raw_file",
                 return_value=("docx", PROFILE),
             ),
         ):
