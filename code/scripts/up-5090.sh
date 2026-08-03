@@ -116,7 +116,7 @@ if [[ "${DEPLOY_MODE}" == "online" ]]; then
   export FASTAPI_IMAGE="sewpg-bid/fastapi:${RELEASE_TAG}"
   export DOCLING_IMAGE="sewpg-bid/docling-worker:${RELEASE_TAG}"
   export OPENCODE_IMAGE="sewpg-bid/opencode:${RELEASE_TAG}"
-  export ONLYOFFICE_IMAGE="onlyoffice/documentserver:9.3.1.2"
+  export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1"
 fi
 
 mkdir -p "${ROOT_DIR}/.localdata/ocr/huggingface"
@@ -169,7 +169,7 @@ fi
 
 if [[ "${DEPLOY_MODE}" == "online" ]]; then
   echo "Deploying Git SHA: ${CURRENT_SHA} (${RELEASE_TAG})"
-  docker compose "${compose_args[@]}" pull onlyoffice postgres redis minio ocr
+  docker compose "${compose_args[@]}" pull postgres redis minio ocr
   build_args=()
   if [[ "${REFRESH_BASE_IMAGES:-0}" == "1" ]]; then
     # --pull 会重新拉取基础镜像；基础镜像一旦更新，其后所有层的缓存链整体作废，
@@ -179,7 +179,7 @@ if [[ "${DEPLOY_MODE}" == "online" ]]; then
     echo "REFRESH_BASE_IMAGES=1: pulling base images, expect a full rebuild."
     build_args+=(--pull)
   fi
-  docker compose "${compose_args[@]}" build "${build_args[@]}" web fastapi docling-worker opencode
+  docker compose "${compose_args[@]}" build "${build_args[@]}" web fastapi docling-worker opencode onlyoffice
 fi
 
 docker compose "${compose_args[@]}" up -d --no-build

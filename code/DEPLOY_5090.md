@@ -106,7 +106,7 @@ Docker Hub 或模型源偶发失败时，可以重试失败的 pull/build；不�
 | `OCR_HF_CACHE_DIR` | 默认 `./.localdata/ocr/huggingface`；允许首次在线下载并持久化 |
 | `HF_ENDPOINT` | 5090 当前优先使用可达的 `https://hf-mirror.com` |
 
-在线脚本自动把四个应用镜像统一标记为 `main-<main前12位SHA>`，并使用官方 `onlyoffice/documentserver:9.3.1.2`；不需要手工修改模板里的离线镜像标签。其他外部服务使用仓库 Compose 声明的 tag，拉取后记录实际 digest。
+在线脚本自动把四个应用镜像统一标记为 `main-<main前12位SHA>`，并基于官方 `onlyoffice/documentserver:9.3.1.2` 构建项目字体镜像 `sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1`；不需要手工修改模板里的离线镜像标签。其他外部服务使用仓库 Compose 声明的 tag，拉取后记录实际 digest。
 
 ## 6. 预检和启动
 

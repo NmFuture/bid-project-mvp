@@ -1,25 +1,41 @@
 # OnlyOffice 目录说明
 
-这个目录现在只保留当前 Docker Compose 运行路径需要的 OnlyOffice 辅助文件。
+这个目录维护项目统一的 OnlyOffice 字体镜像。字体安装在镜像内，不依赖研发成员的宿主机字体。
 
 ## 当前保留内容
 
+- `Dockerfile`
+  - 基于 `onlyoffice/documentserver:9.3.1.2` 构建单一项目镜像
+  - 从 Debian 官方包复制 Noto CJK 与 Liberation 的 Regular、Bold 和许可证
+- `font-contract.json`
+  - 记录界面代表名称、实际字体族、字重和历史别名
+- `verify-fonts.sh`
+  - 启动与健康检查时验证字体族、字重和别名；缺失时容器直接失败
 - `docker-entrypoint.sh`
-  - 被 `code/docker-compose.yml` 挂载到 OnlyOffice Document Server 容器
-  - 启动时调整上传、下载、图片大小和 nginx body size 限制
+  - 调整上传限制，刷新字体缓存，验证字体契约并生成 OnlyOffice 字体清单
 - `fontconfig/99-sewpg-cjk-font-aliases.conf`
-  - 被 `code/docker-compose.yml` 挂载到 OnlyOffice 容器的 fontconfig 配置目录
-  - 将文档里常见的 `宋体`、`SimSun`、`NSimSun` 解析到当前随项目挂载的 `Songti.ttc` 字体族，避免预览时落到 DejaVu 等默认字体
-- `fonts/`
-  - 被 `code/docker-compose.yml` 挂载到 OnlyOffice 容器的 `/usr/share/fonts/truetype/custom`
-  - 当前包含 `Songti.ttc` 和 `ArialUnicode.ttf`
+  - 将旧文档中的等线、宋体、Times New Roman、Arial 等名称映射到项目开源字体
 - `README.md`
   - 说明本目录在当前项目里的定位
+
+## 字体包 v1
+
+| 界面代表名称 | DOCX 实际字体族 | 字重 |
+| --- | --- | --- |
+| 等线风格（开源） | `Noto Sans CJK SC` | Regular、Bold |
+| 宋体风格（开源） | `Noto Serif CJK SC` | Regular、Bold |
+| Times 风格（开源） | `Liberation Serif` | Regular、Bold |
+| Arial 风格（开源） | `Liberation Sans` | Regular、Bold |
+
+本地执行 `docker compose build onlyoffice` 即可重建字体镜像。字体来源、许可证和版本由 Docker 构建过程统一，不提交第三方字体二进制。
+
+已有工作副本如果在忽略文件 `.env` 中保留了旧的 `ONLYOFFICE_IMAGE=onlyoffice/documentserver:9.3.1.2`，需按 `.env.example` 更新为字体镜像名后再重建；新拉取的环境直接使用模板默认值。
 
 ## 已清理内容
 
 以下旧资产已经移除，不再作为当前项目的运行或联调入口：
 
+- 未附许可证的历史 `Songti.ttc`、`ArialUnicode.ttf`
 - 本地 FastAPI demo 后端
 - 独立 OnlyOffice smoke 页面
 - 固定样例 `sample.docx`

@@ -2569,8 +2569,8 @@ def set_cell(cell: Any, text: str, *, highlight: bool = False) -> None:
     cell.text = ""
     paragraph = cell.paragraphs[0]
     run = paragraph.add_run(text)
-    run.font.name = "宋体"
-    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    run.font.name = "Noto Serif CJK SC"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Noto Serif CJK SC")
     run.font.size = Pt(9)
     tc_pr = cell._tc.get_or_add_tcPr()
     shd = tc_pr.find(qn("w:shd"))

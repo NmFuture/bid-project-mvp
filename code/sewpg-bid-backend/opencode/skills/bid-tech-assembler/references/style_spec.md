@@ -1,5 +1,7 @@
 # 投标文件格式要求（华能为例 - WPS）
 
+字体执行开源映射：等线/等线 Light 使用 `Noto Sans CJK SC`，宋体使用 `Noto Serif CJK SC`，Times New Roman 使用 `Liberation Serif`。下文保留传统名称用于对应原始格式要求，实际写入值以 `heading_style.json` 为准。
+
 ---
 
 ## 一、页面整体格式

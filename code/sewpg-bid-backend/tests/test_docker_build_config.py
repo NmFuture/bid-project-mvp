@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import yaml
@@ -152,6 +153,32 @@ def test_compose_uses_separate_material_worker() -> None:
     airgap = yaml.safe_load((CODE_ROOT / "docker-compose.airgap.yml").read_text(encoding="utf-8"))
     assert second["services"]["material-worker"]["container_name"] == "sewpg_bid_second_material_worker"
     assert airgap["services"]["material-worker"]["pull_policy"] == "never"
+
+
+def test_onlyoffice_image_contains_and_verifies_the_open_source_font_contract() -> None:
+    compose = yaml.safe_load((CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    onlyoffice = compose["services"]["onlyoffice"]
+    font_root = BACKEND_ROOT / "onlyoffice"
+    dockerfile = (font_root / "Dockerfile").read_text(encoding="utf-8")
+    contract = json.loads((font_root / "font-contract.json").read_text(encoding="utf-8"))
+
+    assert onlyoffice["image"].endswith("9.3.1.2-fontpack-v1}")
+    assert onlyoffice["build"]["context"] == "./sewpg-bid-backend/onlyoffice"
+    assert all("/usr/share/fonts" not in volume for volume in onlyoffice["volumes"])
+    assert "sewpg-verify-fonts" in " ".join(onlyoffice["healthcheck"]["test"])
+    assert "fonts-noto-cjk" in dockerfile
+    assert "fonts-liberation2" in dockerfile
+    assert "extract-noto-sc.py" in dockerfile
+    assert "/usr/share/doc/fonts-noto-cjk/copyright" in dockerfile
+    assert "/usr/share/doc/fonts-liberation2/copyright" in dockerfile
+    assert {font["family"] for font in contract["fonts"]} == {
+        "Noto Sans CJK SC",
+        "Noto Serif CJK SC",
+        "Liberation Serif",
+        "Liberation Sans",
+    }
+    assert not (font_root / "fonts" / "Songti.ttc").exists()
+    assert not (font_root / "fonts" / "ArialUnicode.ttf").exists()
 
 
 def test_compose_uses_one_opencode_service_for_parallel_chapter_sessions() -> None:

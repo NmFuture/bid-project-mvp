@@ -7,8 +7,8 @@
   "title": {
     "text": "目 录",
     "style_name": "TOC Heading",
-    "zh_font": "宋体",
-    "en_font": "Times New Roman",
+    "zh_font": "Noto Serif CJK SC",
+    "en_font": "Liberation Serif",
     "size_pt": 16,
     "size_name": "三号",
     "bold": true,
@@ -27,8 +27,8 @@
   "entry_styles": {
     "1": {
       "style_name": "TOC 1",
-      "zh_font": "宋体",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Serif CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": false,
@@ -50,8 +50,8 @@
     },
     "2": {
       "style_name": "TOC 2",
-      "zh_font": "宋体",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Serif CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": false,
@@ -73,8 +73,8 @@
     },
     "3": {
       "style_name": "TOC 3",
-      "zh_font": "宋体",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Serif CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": false,
@@ -96,8 +96,8 @@
     },
     "4": {
       "style_name": "TOC 4",
-      "zh_font": "宋体",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Serif CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": false,

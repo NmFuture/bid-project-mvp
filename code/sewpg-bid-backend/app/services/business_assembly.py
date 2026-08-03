@@ -17,6 +17,7 @@ from app.services.business_gap_fact_table import build_project_fact_table
 from app.services.business_gap_planning import _business_template_index, _resolve_business_toc_json, _run_async
 from app.services.business_material_store import business_material_store
 from app.services.business_s1_handoff import business_s1_parse_result
+from app.services.font_policy import normalize_font_style_overrides
 from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
@@ -504,6 +505,7 @@ def apply_business_document_format_preset(
 
     preset_key = preset if preset in BUSINESS_FORMAT_PRESETS else "standard"
     preset_info = BUSINESS_FORMAT_PRESETS[preset_key]
+    normalized_overrides = normalize_font_style_overrides(style_overrides)
     source_path = document_path(project_id)
     if not source_path.exists():
         state = project.get("document_state") if isinstance(project.get("document_state"), dict) else {}
@@ -515,7 +517,7 @@ def apply_business_document_format_preset(
     outline_path = _prepare_business_format_outline(toc_json_path, work_dir)
     output_path = work_dir / f"{source_path.stem}.{preset_key}.formatted.docx"
     manifest_path = work_dir / f"business_format_{preset_key}_input.json"
-    style_spec_path = _prepare_business_format_style_spec(preset_key, style_overrides or {}, work_dir)
+    style_spec_path = _prepare_business_format_style_spec(preset_key, normalized_overrides, work_dir)
     manifest = {
         "inputFile": str(source_path),
         "outlineFile": str(outline_path),
@@ -536,7 +538,7 @@ def apply_business_document_format_preset(
         "preset": preset_key,
         "label": preset_info["label"],
         "description": preset_info["description"],
-        "styleOverrides": copy.deepcopy(style_overrides or {}),
+        "styleOverrides": copy.deepcopy(normalized_overrides),
         "manifestPath": str(manifest_path),
         "outputFile": str(formatted_path),
         "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},

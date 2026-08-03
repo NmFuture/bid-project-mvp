@@ -829,8 +829,8 @@ def set_paragraph_text(paragraph: Any, text: str, *, highlight: bool = False) ->
     for run in list(paragraph.runs):
         run._element.getparent().remove(run._element)
     run = paragraph.add_run(text)
-    run.font.name = "宋体"
-    run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+    run.font.name = "Noto Serif CJK SC"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Noto Serif CJK SC")
     run.font.size = Pt(10.5)
     if highlight:
         run.font.highlight_color = WD_COLOR_INDEX.YELLOW

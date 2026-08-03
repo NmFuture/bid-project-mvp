@@ -30,7 +30,8 @@ export WEB_IMAGE="sewpg-bid/web:${TAG}"
 export FASTAPI_IMAGE="sewpg-bid/fastapi:${TAG}"
 export DOCLING_IMAGE="sewpg-bid/docling-worker:${TAG}"
 export OPENCODE_IMAGE="sewpg-bid/opencode:${TAG}"
-export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:9.3.1.2"
+export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1"
+export ONLYOFFICE_BASE_IMAGE="${ONLYOFFICE_SOURCE_IMAGE}"
 export REDIS_IMAGE="${REDIS_SOURCE_IMAGE}"
 export OCR_IMAGE="${OCR_SOURCE_IMAGE}"
 
@@ -50,12 +51,8 @@ ensure_image() {
   fi
 }
 
-echo "==> Building application images..."
-docker compose "${compose_build_args[@]}" build web fastapi docling-worker opencode
-
-ensure_image "${ONLYOFFICE_SOURCE_IMAGE}" "OnlyOffice"
-echo "==> Retagging OnlyOffice image..."
-docker tag "${ONLYOFFICE_SOURCE_IMAGE}" "${ONLYOFFICE_IMAGE}"
+echo "==> Building application and OnlyOffice font images..."
+docker compose "${compose_build_args[@]}" build web fastapi docling-worker opencode onlyoffice
 ensure_image "${REDIS_SOURCE_IMAGE}" "Redis"
 ensure_image "${POSTGRES_SOURCE_IMAGE}" "PostgreSQL"
 ensure_image "${MINIO_SOURCE_IMAGE}" "MinIO"

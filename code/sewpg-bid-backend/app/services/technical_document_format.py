@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.config import BASE_DIR
 from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.font_policy import normalize_font_style_overrides
 from app.services.onlyoffice_documents import document_path
 from app.services.workspace_project_access import get_workspace_project_runtime_state
 from app.services.workspace_artifacts import technical_workspace_stage_dir
@@ -40,6 +41,7 @@ def apply_technical_document_format_preset(
 
     preset_key = preset if preset in TECH_FORMAT_PRESETS else "standard"
     preset_info = TECH_FORMAT_PRESETS[preset_key]
+    normalized_overrides = normalize_font_style_overrides(style_overrides)
     source_path = document_path(project_id)
     if not source_path.exists():
         state = copy.deepcopy(project.get("document_state") if isinstance(project.get("document_state"), dict) else {})
@@ -59,7 +61,7 @@ def apply_technical_document_format_preset(
     outline_path = _prepare_tech_format_outline(toc_json_path, work_dir)
     output_path = work_dir / f"{source_path.stem}.{preset_key}.formatted.docx"
     manifest_path = work_dir / f"tech_format_{preset_key}_input.json"
-    style_spec_path = _prepare_technical_format_style_spec(preset_key, style_overrides or {}, work_dir)
+    style_spec_path = _prepare_technical_format_style_spec(preset_key, normalized_overrides, work_dir)
     manifest = {
         "schemaVersion": "bid-tech-format-clean-manifest-v1",
         "inputFile": str(source_path),
@@ -80,7 +82,7 @@ def apply_technical_document_format_preset(
         "preset": preset_key,
         "label": preset_info["label"],
         "description": preset_info["description"],
-        "styleOverrides": copy.deepcopy(style_overrides or {}) if preset_key == "custom" else {},
+        "styleOverrides": copy.deepcopy(normalized_overrides) if preset_key == "custom" else {},
         "manifestPath": str(manifest_path),
         "outputFile": str(formatted_path),
         "summary": result.get("summary") if isinstance(result.get("summary"), dict) else {},

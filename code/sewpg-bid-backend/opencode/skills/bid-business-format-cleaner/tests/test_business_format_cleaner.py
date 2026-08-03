@@ -895,7 +895,7 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         style = json.loads((ROOT / "references" / "business_toc_style.json").read_text(encoding="utf-8"))
 
         self.assertEqual(style["title"]["text"], "目 录")
-        self.assertEqual(style["title"]["zh_font"], "宋体")
+        self.assertEqual(style["title"]["zh_font"], "Noto Serif CJK SC")
         self.assertEqual(style["title"]["size_pt"], 16)
         self.assertEqual(style["field"]["instruction"], " TOC \\o \"1-4\" \\h \\z \\u ")
         self.assertEqual(set(style["entry_styles"].keys()), {"1", "2", "3", "4"})
@@ -904,7 +904,7 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertEqual(style["entry_styles"]["3"]["left_indent_twips"], 840)
         self.assertEqual(style["entry_styles"]["4"]["left_indent_twips"], 1260)
         for entry in style["entry_styles"].values():
-            self.assertEqual(entry["zh_font"], "宋体")
+            self.assertEqual(entry["zh_font"], "Noto Serif CJK SC")
             self.assertEqual(entry["size_pt"], 12)
             self.assertEqual(entry["line_spacing"], 1.5)
             self.assertEqual(entry["line_spacing_rule"], "auto")

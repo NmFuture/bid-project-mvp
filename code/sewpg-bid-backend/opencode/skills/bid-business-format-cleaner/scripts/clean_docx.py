@@ -145,8 +145,28 @@ def clean_docx(
         "headerCleaned": header_result["header_cleaned"],
         "headerResidualFound": header_result["residual_found_before"],
         "pagination": pagination_result,
+        "fontFamilies": _style_font_families(style_spec, toc_style_spec),
         "formatRisks": risks,
     }
+
+
+def _style_font_families(*style_specs: dict[str, Any]) -> list[str]:
+    families: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in {"zh_font", "en_font"} and isinstance(nested, str) and nested not in families:
+                    families.append(nested)
+                else:
+                    collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+
+    for style_spec in style_specs:
+        collect(style_spec)
+    return families
 
 
 def document_has_toc(doc: Document) -> bool:

@@ -72,6 +72,10 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
             self.assertTrue(output_file.exists())
             self.assertEqual(result["reportFile"], "")
             self.assertIsInstance(result["summary"], dict)
+            self.assertEqual(
+                result["summary"]["fontFamilies"],
+                ["Noto Sans CJK SC", "Liberation Serif", "Noto Serif CJK SC"],
+            )
             self.assertIsInstance(result["warnings"], list)
             self.assertEqual(result["warnings"], result["summary"]["warnings"])
             self.assertTrue(all(set(item) == {"code", "message", "count"} for item in result["warnings"]))

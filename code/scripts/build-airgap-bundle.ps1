@@ -56,7 +56,7 @@ $webImage = "sewpg-bid/web:$Tag"
 $fastapiImage = "sewpg-bid/fastapi:$Tag"
 $doclingImage = "sewpg-bid/docling-worker:$Tag"
 $opencodeImage = "sewpg-bid/opencode:$Tag"
-$onlyofficeImage = "sewpg-bid/onlyoffice:9.3.1.2"
+$onlyofficeImage = "sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1"
 $redisImage = $RedisSourceImage
 $postgresImage = $PostgresSourceImage
 $minioImage = $MinioSourceImage
@@ -78,15 +78,12 @@ $env:FASTAPI_IMAGE = $fastapiImage
 $env:DOCLING_IMAGE = $doclingImage
 $env:OPENCODE_IMAGE = $opencodeImage
 $env:ONLYOFFICE_IMAGE = $onlyofficeImage
+$env:ONLYOFFICE_BASE_IMAGE = $OnlyOfficeSourceImage
 $env:REDIS_IMAGE = $redisImage
 $env:OCR_IMAGE = $ocrImage
 
-Write-Host "==> Building application images..."
-Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "web", "fastapi", "docling-worker", "opencode")
-
-Ensure-Image -Image $OnlyOfficeSourceImage -Label "OnlyOffice"
-Write-Host "==> Retagging OnlyOffice image..."
-Invoke-Checked -Command @("docker", "tag", $OnlyOfficeSourceImage, $onlyofficeImage)
+Write-Host "==> Building application and OnlyOffice font images..."
+Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "web", "fastapi", "docling-worker", "opencode", "onlyoffice")
 Ensure-Image -Image $RedisSourceImage -Label "Redis"
 Ensure-Image -Image $PostgresSourceImage -Label "PostgreSQL"
 Ensure-Image -Image $MinioSourceImage -Label "MinIO"

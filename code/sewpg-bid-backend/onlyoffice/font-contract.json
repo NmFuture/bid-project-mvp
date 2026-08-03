@@ -1,0 +1,37 @@
+{
+  "version": "fontpack-v1",
+  "fonts": [
+    {
+      "label": "等线风格（开源）",
+      "family": "Noto Sans CJK SC",
+      "source_package": "fonts-noto-cjk 1:20220127+repack1-1",
+      "license": "SIL Open Font License 1.1",
+      "styles": ["Regular", "Bold"],
+      "aliases": ["等线", "等线 Light", "微软雅黑", "黑体"]
+    },
+    {
+      "label": "宋体风格（开源）",
+      "family": "Noto Serif CJK SC",
+      "source_package": "fonts-noto-cjk 1:20220127+repack1-1",
+      "license": "SIL Open Font License 1.1",
+      "styles": ["Regular", "Bold"],
+      "aliases": ["宋体", "SimSun", "NSimSun"]
+    },
+    {
+      "label": "Times 风格（开源）",
+      "family": "Liberation Serif",
+      "source_package": "fonts-liberation2 2.1.5-1",
+      "license": "SIL Open Font License 1.1",
+      "styles": ["Regular", "Bold"],
+      "aliases": ["Times New Roman"]
+    },
+    {
+      "label": "Arial 风格（开源）",
+      "family": "Liberation Sans",
+      "source_package": "fonts-liberation2 2.1.5-1",
+      "license": "SIL Open Font License 1.1",
+      "styles": ["Regular", "Bold"],
+      "aliases": ["Arial"]
+    }
+  ]
+}

@@ -11,8 +11,8 @@
   },
   "heading": {
     "1": {
-      "zh_font": "等线 Light",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Sans CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 15,
       "size_name": "小三",
       "bold": true,
@@ -24,8 +24,8 @@
       "left_indent_cm": 0
     },
     "2": {
-      "zh_font": "等线 Light",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Sans CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 14,
       "size_name": "四号",
       "bold": true,
@@ -37,8 +37,8 @@
       "left_indent_cm": 0
     },
     "3": {
-      "zh_font": "等线",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Sans CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -50,8 +50,8 @@
       "left_indent_cm": 0
     },
     "4": {
-      "zh_font": "等线 Light",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Sans CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -63,8 +63,8 @@
       "left_indent_cm": 0
     },
     "5": {
-      "zh_font": "等线",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Sans CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -76,8 +76,8 @@
       "left_indent_cm": 0
     },
     "6": {
-      "zh_font": "等线 Light",
-      "en_font": "Times New Roman",
+      "zh_font": "Noto Sans CJK SC",
+      "en_font": "Liberation Serif",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -90,8 +90,8 @@
     }
   },
   "body": {
-    "zh_font": "等线",
-    "en_font": "Times New Roman",
+    "zh_font": "Noto Sans CJK SC",
+    "en_font": "Liberation Serif",
     "size_pt": 12,
     "size_name": "小四",
     "bold": false,
@@ -102,8 +102,8 @@
     "first_line_indent_chars": 2
   },
   "table_cell": {
-    "zh_font": "宋体",
-    "en_font": "宋体",
+    "zh_font": "Noto Serif CJK SC",
+    "en_font": "Noto Serif CJK SC",
     "size_pt": 10.5,
     "size_name": "五号",
     "bold": false,
@@ -112,8 +112,8 @@
     "table_align": "center"
   },
   "caption": {
-    "zh_font": "等线",
-    "en_font": "等线",
+    "zh_font": "Noto Sans CJK SC",
+    "en_font": "Noto Sans CJK SC",
     "size_pt": 12,
     "size_name": "小四",
     "bold": false,
@@ -125,8 +125,8 @@
     "page_break_after": true
   },
   "header": {
-    "zh_font": "宋体",
-    "en_font": "宋体",
+    "zh_font": "Noto Serif CJK SC",
+    "en_font": "Noto Serif CJK SC",
     "size_pt": 7.5,
     "size_name": "六号",
     "bold": false,
@@ -140,8 +140,8 @@
     }
   },
   "page_number": {
-    "zh_font": "Times New Roman",
-    "en_font": "Times New Roman",
+    "zh_font": "Liberation Serif",
+    "en_font": "Liberation Serif",
     "size_pt": 12,
     "size_name": "小四",
     "bold": false,

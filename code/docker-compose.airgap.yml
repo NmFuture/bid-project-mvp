@@ -24,7 +24,7 @@ services:
     pull_policy: never
 
   onlyoffice:
-    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:9.3.1.2}
+    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1}
     pull_policy: never
 
   redis:
