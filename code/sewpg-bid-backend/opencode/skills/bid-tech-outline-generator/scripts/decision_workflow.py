@@ -375,6 +375,29 @@ def chapter_decision_progress(
     }
 
 
+def appendix_decision_progress(
+    work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """只读返回附表决策进度，供后端校验附表会话是否完成；不发放批次令牌。"""
+    annotated, _ = _annotated_items(structure)
+    state = _load_state(work_dir, annotated["input_fingerprint"], workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    expected_ids = {str(item["appendix_id"]) for item in inventory}
+    decided_ids = expected_ids & set(state.get("appendix_decisions") or {})
+    active = state.get("active_appendix_batch") or {}
+    return {
+        "decidedCount": len(decided_ids),
+        "remainingCount": len(expected_ids - decided_ids),
+        "activeBatch": bool(active.get("appendix_ids")),
+        "complete": decided_ids == expected_ids and not active.get("appendix_ids"),
+    }
+
+
 def _invalidate_global_review(state: dict[str, Any]) -> None:
     state["global_review_digest"] = ""
     state["global_review_summary"] = ""

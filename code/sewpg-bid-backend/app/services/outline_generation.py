@@ -191,6 +191,95 @@ manifest：{manifest_path}
 """.strip()
 
 
+def _build_outline_appendix_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+这是 S2 技术标目录的附表决策会话。模板正文各章的三类判断已由并行章节会话全部完成并合并，本会话只做技术附表判断。
+manifest：{manifest_path}
+
+不要执行 `s2outline prepare`、`template-headings`、`headings`、`decision-next`、`decision-batch`、`review-corrections`、`review-complete`、`decisions`、`compose` 或 `finalize`，也不要改判正文章节。
+
+从 `s2outline appendix-next {manifest_path} --max-items 40` 开始，按 Skill 第 4 步循环判断并用 `appendix-decision-batch` 提交，直到 `appendix-next` 返回 `complete=true`。需要证据时用 `search`、`section` 阅读招标原文。完成后只返回简短 JSON：{{"workflowStage":"appendix_complete"}}。
+""".strip()
+
+
+def _run_outline_appendix_session(
+    manifest_path: Path,
+    *,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    runner = _load_technical_outline_runner()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    structure = json.loads(
+        (work_dir / "template_structure.json").read_text(encoding="utf-8")
+    )
+    appendix_items = runner.review_workflow.decision_appendix_items(work_dir)
+    if not appendix_items:
+        return {
+            "sessionId": "",
+            "state": {"complete": True, "decidedCount": 0, "remainingCount": 0},
+            "opencodeOutput": build_directory_opencode_output(status="received"),
+        }
+    binding = runner._strict_workflow_binding(manifest, work_dir)
+
+    def validate_complete() -> dict[str, Any]:
+        return runner.decision_workflow.appendix_decision_progress(
+            work_dir,
+            structure,
+            appendix_items,
+            workflow_binding=binding,
+        )
+
+    return OpencodeClient(
+        timeout_ms=int(settings.opencode_timeout_sec * 1000),
+    ).run_outline_decision_session(
+        _build_outline_appendix_prompt(manifest_path),
+        session_title="S2 附表决策",
+        completion_validator=validate_complete,
+        session_ready_callback=(
+            (lambda details: progress_callback("outline_session_ready", details))
+            if progress_callback
+            else None
+        ),
+        stream_callback=(
+            (lambda details: progress_callback("outline_delta", details))
+            if progress_callback
+            else None
+        ),
+        session_phase="appendix_decision",
+    )
+
+
+def _close_technical_outline_without_llm(manifest_path: Path) -> dict[str, Any]:
+    """并行章节与附表决策完成后，由后端直跑受控收口命令，替代串行 LLM 收口会话。
+
+    不再执行 LLM 全局复核：5 次实测复核仅 1 次改判且为重复既有章节的负价值
+    产出，历史重大缺陷（空章）也未被其捕获；质量兜底交给下游人工审核与
+    finalize 强校验。review-complete 仅在决策状态上盖全局复核章。
+    """
+    runner = _load_technical_outline_runner()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    review_payload = json.dumps(
+        {
+            "review_summary": (
+                "并行章节决策与附表决策已全部提交并通过受控合并；"
+                "按配置跳过 LLM 全局复核，由后端执行受控收口，质量由人工审核兜底。"
+            ),
+            "issues": [],
+        },
+        ensure_ascii=False,
+    )
+    try:
+        runner.dispatch_command("review-complete", manifest, manifest_path, [review_payload])
+        runner.dispatch_command("decisions", manifest, manifest_path, [])
+        runner.dispatch_command("compose", manifest, manifest_path, [])
+    except SystemExit as exc:
+        raise RuntimeError(f"技术标目录受控收口失败：{exc}") from exc
+    return _finalize_current_technical_outline(manifest_path)
+
+
 def _outline_chapter_base_urls() -> list[str]:
     configured = [
         item.strip().rstrip("/")
@@ -491,7 +580,6 @@ def _run_outline_skill(
     if _is_business_bid(bid_type):
         return _run_business_outline_skill(manifest_path, progress_callback=progress_callback)
 
-    prompt = _build_outline_finalize_prompt(manifest_path)
     try:
         trusted_input = _capture_trusted_technical_outline_input(manifest_path)
         chapter_session_ids: list[str] = []
@@ -522,24 +610,35 @@ def _run_outline_skill(
                 "handoff_state_callback": handoff_state,
             }
 
-        generated = OpencodeClient(
-            timeout_ms=int(settings.opencode_timeout_sec * 1000)
-        ).generate_outline_with_trace(
-                prompt,
-                session_ready_callback=(
-                    (lambda details: progress_callback("outline_session_ready", details))
-                    if progress_callback
-                    else None
-                ),
-                stream_callback=(
-                    (lambda details: progress_callback("outline_delta", details))
-                    if progress_callback
-                    else None
-                ),
-                early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
-                terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
-                **handoff_kwargs,
+        if chapter_session_ids and not settings.tech_outline_llm_finalize:
+            # 快路径：附表判断走独立会话，LLM 全局复核删除，compose/finalize 由后端受控直跑。
+            appendix_result = _run_outline_appendix_session(
+                manifest_path,
+                progress_callback=progress_callback,
             )
+            generated = {
+                **_close_technical_outline_without_llm(manifest_path),
+                "opencodeOutput": appendix_result.get("opencodeOutput") or {},
+            }
+        else:
+            generated = OpencodeClient(
+                timeout_ms=int(settings.opencode_timeout_sec * 1000)
+            ).generate_outline_with_trace(
+                    _build_outline_finalize_prompt(manifest_path),
+                    session_ready_callback=(
+                        (lambda details: progress_callback("outline_session_ready", details))
+                        if progress_callback
+                        else None
+                    ),
+                    stream_callback=(
+                        (lambda details: progress_callback("outline_delta", details))
+                        if progress_callback
+                        else None
+                    ),
+                    early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
+                    terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
+                    **handoff_kwargs,
+                )
         loaded = _load_outline_result(
             generated,
             manifest_path,

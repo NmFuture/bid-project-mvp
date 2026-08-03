@@ -1004,6 +1004,61 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("source_refs", prompt)
         self.assertLess(len(prompt), 1800)
 
+    def test_technical_outline_fast_path_closes_without_llm_finalize_session(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project
+
+        project_id = self._prepare_project_with_parse_result()
+        runner = load_technical_outline_runner()
+
+        def fake_parallel_chapters(manifest_path, structure, *, progress_callback=None):
+            # 模拟并行章节会话合并后的主工作区状态：机械完成全部模板章节决策
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            runner.write_template_structure(manifest, manifest_path)
+            headings = runner.dispatch_command("headings", manifest, manifest_path, [])
+            assert headings["complete"]
+            while True:
+                batch = runner.dispatch_command("decision-next", manifest, manifest_path, [])
+                if batch["complete"]:
+                    break
+                runner.dispatch_command(
+                    "decision-batch",
+                    manifest,
+                    manifest_path,
+                    [
+                        json.dumps(
+                            {
+                                "batch_token": batch["batch_token"],
+                                "items": [
+                                    {
+                                        "target_id": item["target_id"],
+                                        "decision": "retain",
+                                        "reason": "历史模板中的专业目录仍适用于本项目",
+                                    }
+                                    for item in batch["items"]
+                                ],
+                                "additions": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ],
+                )
+            return ["ses-chapter-1"]
+
+        with patch(
+            "app.services.outline_generation._run_parallel_outline_chapters",
+            side_effect=fake_parallel_chapters,
+        ), patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+        ) as mock_generate:
+            payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
+
+        # 快路径：不再启动串行 LLM 收口会话（含全局复核），由后端直跑受控收口
+        mock_generate.assert_not_called()
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["output"]["chapterCount"], 2)
+        self.assertEqual(payload["opencodeOutput"]["sessionIds"], ["ses-chapter-1"])
+        self.assertEqual(payload["opencodeOutput"]["chapterSessionCount"], 1)
+
     def test_technical_outline_chapter_prompt_explains_sparse_chapter_mode(self) -> None:
         from app.services.outline_generation import _build_outline_chapter_prompt
 

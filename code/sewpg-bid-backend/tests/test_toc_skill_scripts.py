@@ -3544,6 +3544,94 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(replay["batch_token"], sparse["batch_token"])
         self.assertEqual(replay["authoring_mode"], "sparse_chapter")
 
+    def test_bid_outline_appendix_decision_progress_is_read_only(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix B.1",
+                "title": "Guaranteed data sheet",
+                "raw_text": "Appendix B.1Guaranteed data sheet",
+                "following_table_count": 1,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = decision_workflow.next_decision_batch(root, structure)
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                            "reason": "历史模板专家经验仍适用。",
+                        }
+                    ],
+                    "additions": [],
+                },
+            )
+            pending = decision_workflow.appendix_decision_progress(
+                root, structure, inventory
+            )
+            state_before_batch = json_load(root / "outline_decision_state.json")
+            batch = decision_workflow.next_appendix_batch(root, structure, inventory)
+            in_flight = decision_workflow.appendix_decision_progress(
+                root, structure, inventory
+            )
+            decision_workflow.submit_appendix_batch(
+                root,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "node_id": "ADD-B1",
+                            "parent_id": "ADD-TECH-APPENDIX",
+                            "reason": "Tender requires the completed form.",
+                        }
+                    ],
+                    "root_addition": {
+                        "node_id": "ADD-TECH-APPENDIX",
+                        "reason": "Tender contains controlled appendices.",
+                    },
+                },
+                inventory,
+            )
+            done = decision_workflow.appendix_decision_progress(
+                root, structure, inventory
+            )
+
+        self.assertEqual(
+            pending,
+            {
+                "decidedCount": 0,
+                "remainingCount": 1,
+                "activeBatch": False,
+                "complete": False,
+            },
+        )
+        # 进度查询不得发放批次令牌或改动状态
+        self.assertEqual(
+            state_before_batch["active_appendix_batch"],
+            {"token": "", "appendix_ids": []},
+        )
+        self.assertFalse(in_flight["complete"])
+        self.assertTrue(in_flight["activeBatch"])
+        self.assertTrue(done["complete"])
+        self.assertEqual(done["decidedCount"], 1)
+        self.assertEqual(done["remainingCount"], 0)
+
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
         decision_workflow = load_outline_script("run_from_manifest").decision_workflow
         structure = {
