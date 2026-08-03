@@ -11,7 +11,11 @@ from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.material_cleaning import is_cleanable_material, is_deep_convertible_material
 from app.services.material_deep_parse import (
+    DEEP_PARSE_FAIL_COUNT_FIELD,
+    DEEP_PARSE_MESSAGE_FIELD,
     DEEP_PARSE_STATUS_FIELD,
+    PDF_EXTRACT_ENABLED,
+    PDF_EXTRACT_MAX_FAILURES,
     deep_parse_profile_for,
     deep_parse_status_allows_enqueue,
     enqueue_deep_parse_job,
@@ -58,6 +62,11 @@ def _preview_signature(name: str, profile: dict[str, Any], folder_path: str = ""
         "paragraphs": list(profile.get("paragraphs") or []),
         "tableCount": int(profile.get("tableCount") or 0),
     }
+    # 待后台解析/提取时把该标记并入签名（仅 pending 时加入，避免存量 completed 缓存全部失效）：
+    # 历史版本对 PDF 写的是终态 fallback 缓存（"非 docx"），签名不变会永远命中旧缓存、
+    # 堵死 extract 排队；extract 产物就绪后 headings/paragraphs 变化再次触发升级。
+    if profile.get("deepParsePending"):
+        basis["deepParsePending"] = True
     raw = json.dumps(basis, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -92,7 +101,7 @@ def _raw_numeric_id(file_id: str) -> int | None:
 
 
 def _should_generate_preview(ext: str, profile: dict[str, Any]) -> tuple[bool, str]:
-    if str(ext or "").lower() != "docx":
+    if str(ext or "").lower() not in {"docx", "pdf"}:
         return False, "非 docx，无可解析正文"
     if profile.get("parseError"):
         return False, str(profile.get("parseError"))
@@ -101,7 +110,7 @@ def _should_generate_preview(ext: str, profile: dict[str, Any]) -> tuple[bool, s
     return True, ""
 
 
-def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
+def _profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     from app.services.minio_client import minio_client
 
     ext_fields = item.ext_fields or {}
@@ -124,6 +133,14 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         "tableCount": 0,
         "parseError": "",
     }
+
+    # PDF：Wiki 链优先消费 extract 全文画像（文字层 + OCR 兜底）；convert 链
+    # 产出的图片 docx 无文本，仅作原件版式查看，不作预览依据（详见设计文档 §3.1）。
+    if source_ext == "pdf" and PDF_EXTRACT_ENABLED:
+        extract_profile = deep_parse_profile_for(ext_fields, str(item.minio_key or ""))
+        if extract_profile is not None:
+            return "pdf", {**empty, **extract_profile, "parseError": ""}
+        return "pdf", {**empty, "parseError": "PDF 待后台全文提取", "deepParsePending": True}
 
     # 后台深度解析产物优先：sourceKey 与当前 cleaned/原始对象一致时直接采用
     deep_profile = deep_parse_profile_for(ext_fields, cleaned_key or str(item.minio_key or ""))
@@ -350,7 +367,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
         if not meta:
             continue
         try:
-            ext, profile = await asyncio.to_thread(_docx_profile_for_raw_file, raw)
+            ext, profile = await asyncio.to_thread(_profile_for_raw_file, raw)
             signature = _preview_signature(
                 str(raw.name or ""), profile, raw.folder.path if raw.folder else ""
             )
@@ -387,21 +404,45 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 _safe_build_evidence_segments(file_id, str(raw.name or ""), file_path, profile),
                 document_outline,
             )
+            if profile.get("fulltextKey"):
+                # extract 产物信息随负载透传到 Wiki 文件卡片，供前端「查看全文」。
+                base["pdfFulltext"] = {
+                    "pageCount": int(profile.get("pageCount") or 0),
+                    "processedPages": int(profile.get("processedPages") or 0),
+                    "truncated": bool(profile.get("truncated")),
+                    "charCount": int(profile.get("charCount") or 0),
+                }
             should, skip_reason = _should_generate_preview(ext, profile)
             clean_status = str(ext_fields.get("cleanStatus") or "")
             if not should:
                 retryable = False
                 deep_status = str(ext_fields.get(DEEP_PARSE_STATUS_FIELD) or "")
                 if profile.get("deepParsePending"):
-                    # PDF/XLSX 待转换、超大 docx 待后台解析：排队深度解析，
-                    # 保持 retryable，产物就绪后下次刷新自动升级为正式预览。
-                    # allowConvert 标记只由技术标闸口下发，深度解析任务据此
-                    # 对 PDF/XLSX 走后台转 Word 分支。
-                    if deep_parse_status_allows_enqueue(ext_fields):
-                        enqueue_deep_parse_job(file_id, {"allowConvert": True})
-                        deep_status = deep_status or "queued"
-                    skip_reason = "已排队后台深度解析，完成后自动补全预览"
-                    retryable = True
+                    # extract 开启时 PDF 走全文提取；否则 PDF/XLSX 走 convert 链（上游 #130）。
+                    is_pdf_extract = ext == "pdf" and PDF_EXTRACT_ENABLED
+                    try:
+                        fail_count = int(ext_fields.get(DEEP_PARSE_FAIL_COUNT_FIELD) or 0)
+                    except (TypeError, ValueError):
+                        fail_count = 0
+                    if is_pdf_extract and deep_status == "failed" and fail_count >= PDF_EXTRACT_MAX_FAILURES:
+                        # extract 连续失败达上限：转终态，不再每次刷新都补排。
+                        skip_reason = (
+                            str(ext_fields.get(DEEP_PARSE_MESSAGE_FIELD) or "") or "PDF 全文提取多次失败"
+                        )
+                    else:
+                        # PDF(extract)/XLSX(convert)/超大 docx 待后台处理：排队深度解析，
+                        # 保持 retryable，产物就绪后下次刷新自动升级为正式预览。
+                        # allowConvert 标记只由技术标闸口下发；PDF 走 extract 不消费该标记，
+                        # XLSX 据此走后台转 Word 分支。
+                        if deep_parse_status_allows_enqueue(ext_fields):
+                            enqueue_deep_parse_job(file_id, {"allowConvert": True})
+                            deep_status = deep_status or "queued"
+                        skip_reason = (
+                            "已排队后台全文提取，完成后自动补全预览"
+                            if is_pdf_extract
+                            else "已排队后台深度解析，完成后自动补全预览"
+                        )
+                        retryable = True
                 preview = _local_preview_from_profile(
                     name=str(raw.name or ""),
                     path=file_path,
@@ -608,6 +649,11 @@ def _apply_preview_payloads(index_payload: dict[str, Any], payload_by_id: dict[s
                     file_item["documentOutline"] = document_outline
                 else:
                     file_item.pop("documentOutline", None)
+                pdf_fulltext = payload.get("pdfFulltext")
+                if isinstance(pdf_fulltext, dict) and pdf_fulltext:
+                    file_item["pdfFulltext"] = pdf_fulltext
+                else:
+                    file_item.pop("pdfFulltext", None)
 
 
 async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[str, Any]:

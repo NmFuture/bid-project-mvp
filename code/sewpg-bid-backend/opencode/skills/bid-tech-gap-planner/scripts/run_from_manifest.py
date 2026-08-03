@@ -1698,6 +1698,18 @@ def is_client_appendix_input_material(material: dict[str, Any]) -> bool:
     return CLIENT_APPENDIX_INPUT_FOLDER in parts
 
 
+# 空副表约定目录（项目定制/<项目>/附表）：解析阶段生成的待填空表/Word，
+# 消费通道是 appendixTasks/fillTasks（parseResult 空表），不进正文素材匹配池。
+PROJECT_APPENDIX_FOLDER = "附表"
+
+
+def is_project_appendix_folder_material(material: dict[str, Any]) -> bool:
+    """素材是否位于项目定制的空副表约定目录（…/附表，精确目录段匹配）。"""
+    folder = str(material.get("folderPath") or material.get("folder_path") or "")
+    parts = [part.strip() for part in folder.replace("\\", "/").split("/") if part.strip()]
+    return PROJECT_APPENDIX_FOLDER in parts
+
+
 def client_appendix_file_keys(material: dict[str, Any]) -> tuple[str, str]:
     """甲方已填附表文件的匹配键：(精确编号, 整组字母)，二者必居其一。
 
@@ -2298,9 +2310,14 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     project_turbine_model = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
     indexed_materials_all = material_index_from_manifest(manifest)
     # 甲方已填附表（…/技术附表输入文件）不进正文素材匹配池，只用于附表查表替换，
-    # 避免按标题打分被误挂到正文章节（如已填的「附表G.4 叶片…」挂到业绩章节）。
+    # 避免按标题打分被误挂到正文章节（如已填的「附表G.4 叶片…」挂到业绩章节）；
+    # 空副表约定目录（…/附表）同样不进正文池，其消费通道是 appendixTasks/fillTasks。
     client_input_index = client_appendix_input_index(indexed_materials_all)
-    indexed_materials = [m for m in indexed_materials_all if not is_client_appendix_input_material(m)]
+    indexed_materials = [
+        m
+        for m in indexed_materials_all
+        if not is_client_appendix_input_material(m) and not is_project_appendix_folder_material(m)
+    ]
     allowed_paths = material_scope_paths(manifest)
     toc_materials_all: list[dict[str, Any]] = []
     for toc_item in items:
