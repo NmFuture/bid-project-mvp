@@ -236,7 +236,16 @@ def chinese_number_to_int(value: str) -> int | None:
 
 def appendix_code(value: Any) -> str:
     match = APPENDIX_CODE_RE.search(str(value or "").strip())
-    return normalize_appendix_code(match.group(1)) if match else ""
+    if not match:
+        return ""
+    code = normalize_appendix_code(match.group(1))
+    suffix = normalize_appendix_code(match.group(2) or "")
+    # 横杠语义区分（业主编号约定）：横杠后纯数字是子序号（附表F.5-2 = F.5 下第 2 张表），
+    # 归一为点号子编号 F.5.2，与 附表F.5 区分开；横杠后带字母（附表D.1-D.6）是区间，
+    # 只取起点（区间匹配见 appendix_rule_code_score）。
+    if suffix and not re.search(r"[A-Z]", suffix):
+        code = f"{code}.{suffix}" if code else suffix
+    return code
 
 
 def _appendix_code_parts(value: Any) -> tuple[str, tuple[int, ...]] | None:
@@ -2056,18 +2065,32 @@ def source_routing_for_item(
     return source_routing_payload(source_rule, routed_materials), routed_materials[:5]
 
 
+# 附表推荐素材（无来源矩阵规则时）的入围门槛：appendix_material_score 内部排序分，
+# 文件名完整命中附表标题约 1.3+，术语命中约 0.4+/个，池内无关素材通常 <0.3。
+# 附表是「一个目录项 ↔ 一张空表」，参考素材是可选补充，宁可空也不塞噪声。
+APPENDIX_RECOMMEND_MIN_SCORE = 0.5
+
+
 def recommended_materials_for_appendix(
     appendix: dict[str, Any],
     materials: list[dict[str, Any]],
     *,
     source_rule: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    title = str(appendix.get("title") or "")
     ranked: list[dict[str, Any]] = []
     has_source_rule = bool(source_rule and any(source_matrix_rule_terms(source_rule).values()))
     for material in dedupe_materials(materials):
+        # 填写目标/待填模板不是填写参考：空表自身与其他待填写模板一律不推荐。
+        if material_requires_fill(material) or is_appendix_blank_for(material, title):
+            continue
         item = dict(material)
         rule_score, reasons = matrix_material_score(item, source_rule or {})
-        if has_source_rule and not rule_score:
+        if has_source_rule:
+            if not rule_score:
+                continue
+        elif appendix_material_score(item, appendix) < APPENDIX_RECOMMEND_MIN_SCORE:
+            # 无来源矩阵规则时按相关分设门槛，无关素材不进推荐（此前全池放行退化成噪声）。
             continue
         if rule_score:
             item["matchReason"] = "；".join([*(reasons or []), str(item.get("matchReason") or "")]).strip("；")
@@ -2465,17 +2488,9 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in uncovered_appendices]
             usage = "appendix_fill"
             matched_materials = []
-            alternative_materials = dedupe_materials(
-                [
-                    material
-                    for appendix in appendix_matches
-                    for material in recommended_materials_for_appendix(
-                        appendix,
-                        recommended_pool,
-                        source_rule=find_source_matrix_rule(manifest, appendix),
-                    )[:5]
-                ]
-            )
+            # 附表是「一个目录项 ↔ 一张空表」，没有正文意义上的素材匹配：不写 candidateMaterials。
+            # 填写参考只放 appendixTasks[].recommendedMaterials（有门槛，见 recommended_materials_for_appendix）。
+            alternative_materials = []
             if client_provided and not uncovered_appendices:
                 status = "resolved"
                 decision = "ready"
