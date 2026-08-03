@@ -42,6 +42,16 @@ def test_docling_worker_dependencies_lock_cpu_and_cuda_torch_separately() -> Non
     assert not any(line.startswith(("cuda-", "nvidia-", "triton==")) for line in docling_lock)
 
 
+def test_docling_worker_timing_import_stays_postgres_free() -> None:
+    worker_source = (BACKEND_ROOT / "app" / "workers" / "docling_worker.py").read_text(encoding="utf-8")
+    events_source = (BACKEND_ROOT / "app" / "services" / "job_timing_events.py").read_text(encoding="utf-8")
+
+    assert "from app.services.job_timing_events import track_job_timing" in worker_source
+    assert "app.services.job_timing import" not in worker_source
+    assert "psycopg" not in events_source
+    assert "DATABASE_URL" not in events_source
+
+
 def test_docxcompose_floor_supports_preserve_styles() -> None:
     expected = "docxcompose>=2.2.0"
     requirements = _requirement_lines(BACKEND_ROOT / "requirements.txt")
@@ -116,6 +126,7 @@ def test_compose_uses_separate_docling_worker_and_shared_volumes() -> None:
     assert docling_worker["environment"]["DOCUMENTS_DIR"] == "/data/documents"
     assert docling_worker["environment"]["OMP_NUM_THREADS"] == "${DOCLING_CPU_THREADS:-8}"
     assert docling_worker["environment"]["BID_DOCLING_ARTIFACTS_PATH"] == "/opt/docling-models"
+    assert "DATABASE_URL" not in docling_worker["environment"]
     assert "docling-worker-ready" in " ".join(docling_worker["healthcheck"]["test"])
     assert "docling_models" not in compose["volumes"]
 

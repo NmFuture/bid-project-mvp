@@ -980,4 +980,17 @@ export const dashboardAPI = {
   get: () => request('/dashboard'),
 }
 
+// ===== Monitoring =====
+export const monitoringAPI = {
+  listJobTimings: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/monitoring/job-timings${qs ? `?${qs}` : ''}`)
+  },
+  jobTimingSummary: (days = 7) => {
+    const qs = new URLSearchParams(cleanQuery({ days })).toString()
+    return request(`/monitoring/job-timings/summary${qs ? `?${qs}` : ''}`)
+  },
+  jobTimingDetail: (id) => request(`/monitoring/job-timings/${encodeURIComponent(id)}`),
+}
+
 export { ApiError }

@@ -30,6 +30,9 @@ services:
       APP_ENV: production
       APP_STORE_BACKEND: postgres
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
+      JOB_TIMING_DB_CONNECT_TIMEOUT_SEC: ${JOB_TIMING_DB_CONNECT_TIMEOUT_SEC:-2}
+      JOB_TIMING_DB_STATEMENT_TIMEOUT_MS: ${JOB_TIMING_DB_STATEMENT_TIMEOUT_MS:-5000}
+      JOB_TIMING_DB_LOCK_TIMEOUT_MS: ${JOB_TIMING_DB_LOCK_TIMEOUT_MS:-2000}
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed
@@ -115,6 +118,9 @@ services:
       APP_ENV: production
       APP_STORE_BACKEND: postgres
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
+      JOB_TIMING_DB_CONNECT_TIMEOUT_SEC: ${JOB_TIMING_DB_CONNECT_TIMEOUT_SEC:-2}
+      JOB_TIMING_DB_STATEMENT_TIMEOUT_MS: ${JOB_TIMING_DB_STATEMENT_TIMEOUT_MS:-5000}
+      JOB_TIMING_DB_LOCK_TIMEOUT_MS: ${JOB_TIMING_DB_LOCK_TIMEOUT_MS:-2000}
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed

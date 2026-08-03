@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useCallback, useEffect, useState } from 'react'
 import AppShell from './components/layout/AppShell'
 import Dashboard from './pages/Dashboard'
+import JobMonitor from './pages/JobMonitor'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
@@ -153,6 +154,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard currentUser={session?.user} />} />
+          <Route path="/monitoring" element={<JobMonitor />} />
           {renderTechnicalRoutes({ user: session?.user, showToast })}
           {renderBusinessRoutes({ user: session?.user, showToast })}
           {renderSharedRoutes({ user: session?.user, showToast })}

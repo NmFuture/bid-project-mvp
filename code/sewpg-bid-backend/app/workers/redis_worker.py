@@ -24,6 +24,8 @@ from app.services.job_queue import (
     requeue_processing_job,
     renew_generation_lock,
 )
+from app.services.job_timing import run_job_timing_writer
+from app.services.job_timing_events import track_job_timing
 from app.services.workspace_project_access import get_any_workspace_project_runtime_state
 
 logger = logging.getLogger(__name__)
@@ -116,6 +118,8 @@ def _finish_expired_s1_job(
     return True
 
 
+# 耗时监控：仅对跟踪的任务类型在终态时汇总写 job_timings，中间态（等待/重试）跳过。
+@track_job_timing(tracked_types={"s1_parse", "s1_parse_continue", "directory_generation"})
 def _run_job(job: dict[str, Any]) -> bool:
     job_type = str(job.get("type") or "")
     project_id = str(job.get("projectId") or "")
@@ -355,35 +359,59 @@ def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> Non
         queue_key,
         settings.redis_worker_poll_timeout_sec,
     )
+    timing_stop: threading.Event | None = None
+    timing_writer: threading.Thread | None = None
+    if queue_key == QUEUE_KEY:
+        timing_stop = threading.Event()
+        timing_writer = threading.Thread(
+            target=run_job_timing_writer,
+            args=(timing_stop,),
+            daemon=True,
+            name="job-timing-redis-writer",
+        )
+        timing_writer.start()
     next_reclaim_at = 0.0
     recovery_done = False
-    while not _stop_requested:
-        if not redis_is_available():
-            time.sleep(2)
-            continue
+    try:
+        while not _stop_requested:
+            if not redis_is_available():
+                time.sleep(2)
+                continue
 
-        if not recovery_done:
-            recover_processing_jobs(queue_key)
-            if queue_key == QUEUE_KEY:
-                # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
-                recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)
-            recovery_done = True
+            if not recovery_done:
+                recover_processing_jobs(queue_key)
+                if queue_key == QUEUE_KEY:
+                    # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
+                    recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)
+                recovery_done = True
 
-        if time.monotonic() >= next_reclaim_at:
-            reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec, queue_key)
-            next_reclaim_at = time.monotonic() + RECLAIM_INTERVAL_SEC
+            if time.monotonic() >= next_reclaim_at:
+                reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec, queue_key)
+                next_reclaim_at = time.monotonic() + RECLAIM_INTERVAL_SEC
 
-        job = dequeue_generation_job(queue_key=queue_key)
-        if not job:
-            continue
+            job = dequeue_generation_job(queue_key=queue_key)
+            if not job:
+                continue
 
-        try:
-            completed_or_deferred = _run_job(job)
-            if not completed_or_deferred:
-                time.sleep(1)
-        except Exception:
-            recovery_done = False
-            continue
+            try:
+                completed_or_deferred = _run_job(job)
+                if not completed_or_deferred:
+                    time.sleep(1)
+            except Exception:
+                recovery_done = False
+                continue
+    finally:
+        if timing_stop is not None and timing_writer is not None:
+            timing_stop.set()
+            timing_writer.join(
+                timeout=max(
+                    2,
+                    settings.job_timing_db_connect_timeout_sec
+                    + settings.job_timing_db_statement_timeout_ms / 1000
+                    + settings.job_timing_db_lock_timeout_ms / 1000
+                    + 1,
+                )
+            )
 
     logger.info("%s worker stopped.", worker_name)
 
