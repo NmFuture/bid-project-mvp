@@ -71,6 +71,12 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
     }))
   }, [detail])
 
+  // 行为事件等无 diff 的记录通过 meta 传递附加信息，扁平化后展示
+  const metaRows = useMemo(() => {
+    if (!detail?.meta || typeof detail.meta !== 'object' || Array.isArray(detail.meta)) return []
+    return Object.entries(flattenObject(detail.meta))
+  }, [detail])
+
   return (
     <div className="dialog-overlay" onClick={onClose}>
       <div className="dialog-content w-full max-w-5xl animate-fade-in" onClick={(e) => e.stopPropagation()}>
@@ -110,6 +116,7 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
                 </div>
               </div>
 
+              {detail?.diff && (
               <div className="rounded-xl border border-surface-container-high overflow-hidden">
                 <div className="grid grid-cols-12 bg-surface-container-low text-xs font-semibold text-on-surface-variant border-b border-surface-container-high">
                   <div className="col-span-3 px-3 py-2">字段</div>
@@ -139,6 +146,26 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
                   )}
                 </div>
               </div>
+              )}
+
+              {metaRows.length > 0 && (
+                <div className="rounded-xl border border-surface-container-high overflow-hidden">
+                  <div className="grid grid-cols-12 bg-surface-container-low text-xs font-semibold text-on-surface-variant border-b border-surface-container-high">
+                    <div className="col-span-3 px-3 py-2">附加信息（meta）</div>
+                    <div className="col-span-9 px-3 py-2">值</div>
+                  </div>
+                  <div className="max-h-[52vh] overflow-auto">
+                    {metaRows.map(([key, value]) => (
+                      <div key={key} className="grid grid-cols-12 border-b border-surface-container-high/60 text-xs">
+                        <div className="col-span-3 px-3 py-2 font-mono text-on-surface break-all">{key}</div>
+                        <div className="col-span-9 px-3 py-2 whitespace-pre-wrap break-all text-on-surface-variant">
+                          {toDisplay(value)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -7,6 +7,7 @@ import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
+import { initTracker } from './telemetry/tracker'
 import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
 import { renderTechnicalRoutes } from './workspaces/technical/routes'
 import { renderBusinessRoutes } from './workspaces/business/routes'
@@ -71,6 +72,11 @@ export default function App() {
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type })
     setTimeout(() => setToast(null), 3000)
+  }, [])
+
+  // 埋点采集器全局只挂载一次（内部有防重，StrictMode 双调用安全）
+  useEffect(() => {
+    initTracker()
   }, [])
 
   useEffect(() => {

@@ -10,6 +10,7 @@ from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
 from app.services.auth_service import current_user
 from app.services.bid_type import BUSINESS_BID_TYPE
 from app.services.business_audit_service import business_audit_service
+from app.services.business_event_service import business_event_service
 from app.services.business_directory_service import business_directory_service
 from app.services.business_document_service import business_document_service
 from app.services.business_generation_service import business_generation_service
@@ -19,6 +20,7 @@ from app.services.bid_parse_service import business_parse_service
 from app.services.bid_project_service import business_project_service
 from app.services.material_tags import normalize_material_tags
 from app.services.material_wiki_jobs import enqueue_material_wiki_generation, material_wiki_job_status
+from app.services.peripheral import PeripheralError
 
 router = APIRouter()
 
@@ -816,3 +818,32 @@ async def business_audit_export(request: Request, _: dict[str, Any] = Depends(cu
 @router.get("/api/business/audit/{audit_id}")
 async def business_audit_detail(audit_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     return await business_audit_service.detail(audit_id)
+
+
+@router.post("/api/business/events")
+async def business_event_ingest(
+    data: dict[str, Any] = Body(default_factory=dict),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    events = data.get("events") or []
+    if not isinstance(events, list) or len(events) > 100:
+        raise PeripheralError(422, "单次上报事件最多 100 条。", "EVENT_BATCH_TOO_LARGE")
+    accepted = await business_event_service.ingest(user, events)
+    return {"accepted": accepted}
+
+
+@router.get("/api/business/events")
+async def business_event_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return await business_event_service.list(dict(request.query_params))
+
+
+@router.get("/api/business/events/sessions")
+async def business_event_sessions(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return await business_event_service.sessions(dict(request.query_params))
+
+
+@router.get("/api/business/events/sessions/{session_id}")
+async def business_event_session_timeline(
+    session_id: str, _: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
+    return {"items": await business_event_service.session_timeline(session_id)}

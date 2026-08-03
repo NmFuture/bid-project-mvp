@@ -9,7 +9,7 @@ import BusinessGapRecognition from './pages/BusinessGapRecognition'
 import BusinessCoCreationEditor from './pages/BusinessCoCreationEditor'
 import BusinessMaterialDB from './pages/BusinessMaterialDB'
 import BusinessMaterialWiki from './pages/BusinessMaterialWiki'
-import BusinessAuditLog from './pages/BusinessAuditLog'
+import AuditLogCenter from '../shared/pages/AuditLogCenter'
 
 const WORKSPACE = 'business'
 
@@ -68,7 +68,7 @@ export function renderBusinessRoutes({ user, showToast }) {
       />
       <Route
         path="/workspace/business/logs"
-        element={withAccess(user, <BusinessAuditLog showToast={showToast} />)}
+        element={withAccess(user, <AuditLogCenter showToast={showToast} />)}
       />
     </>
   )
