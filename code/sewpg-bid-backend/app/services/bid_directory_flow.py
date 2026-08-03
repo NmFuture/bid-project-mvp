@@ -24,6 +24,7 @@ from app.services.bid_outline_state import (
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
+from app.services.job_timing import current_locked_job_id, record_phase
 from app.services.local_job_executor import submit_local_job
 from app.services.onlyoffice_documents import build_editor_session_key
 from app.services.outline_generation import generate_outline_for_project_with_progress
@@ -37,6 +38,16 @@ from app.services.workspace_project_access import (
 
 
 _OUTLINE_PREVIEW_EXTENSIONS = {".doc", ".docx", ".pdf"}
+
+# 目录生成阶段 → 中文标签（耗时监控 phases 展示用）。
+_DIRECTORY_STAGE_LABELS = {
+    "inputs_ready": "准备目录输入",
+    "outline_session_ready": "建立生成会话",
+    "outline_delta": "LLM 生成目录",
+    "normalizing_result": "整理保存结果",
+    "outline_failed": "生成失败",
+    "outline_fallback": "回退本地生成",
+}
 
 
 def _directory_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
@@ -84,6 +95,12 @@ def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[s
 
 
 def _handle_directory_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
+    # 耗时埋点：目录 state 无 runId，用项目级任务锁反查当前 directory_generation job_id。
+    record_phase(
+        current_locked_job_id("directory_generation", project_id),
+        stage,
+        _DIRECTORY_STAGE_LABELS.get(stage, stage),
+    )
     meta = details or {}
     if stage == "inputs_ready":
         tender_file_count = int(meta.get("tenderFileCount") or 0)
