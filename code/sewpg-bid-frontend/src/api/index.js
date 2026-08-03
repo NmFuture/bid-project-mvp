@@ -62,6 +62,31 @@ const createTraceId = () => {
   return `trace-${Date.now()}-${random}`
 }
 
+// ===== 埋点 API 事件回调 =====
+// 供 src/telemetry/tracker.js 注册，request() 完成/失败时回调一次；
+// path 含 /events 的请求不回调，避免埋点上报被递归采集
+const apiEventCallbacks = []
+
+export function onApiEvent(callback) {
+  if (typeof callback !== 'function') return () => {}
+  apiEventCallbacks.push(callback)
+  return () => {
+    const index = apiEventCallbacks.indexOf(callback)
+    if (index >= 0) apiEventCallbacks.splice(index, 1)
+  }
+}
+
+const emitApiEvent = (event) => {
+  if (String(event?.path || '').includes('/events')) return
+  apiEventCallbacks.forEach((callback) => {
+    try {
+      callback(event)
+    } catch (error) {
+      console.warn('[telemetry] api 事件回调异常', error)
+    }
+  })
+}
+
 const parseResponseBody = async (response) => {
   if (response.status === 204) return null
   const contentType = response.headers.get('content-type') || ''
@@ -171,6 +196,7 @@ async function request(path, options = {}) {
     options.retryCount ?? (method === 'GET' ? Math.max(0, ENV.API_RETRY_COUNT) : 0)
   const traceId = options.traceId || createTraceId()
   const requestUrl = joinUrl(ENV.API_BASE_URL, path)
+  const startedAt = Date.now()
 
   let attempt = 0
 
@@ -212,6 +238,13 @@ async function request(path, options = {}) {
         })
       }
 
+      emitApiEvent({
+        method,
+        path,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        traceId,
+      })
       return payload
     } catch (error) {
       let normalized = error
@@ -242,6 +275,13 @@ async function request(path, options = {}) {
             message: normalized.message || '登录已过期，请重新登录。',
           })
         }
+        emitApiEvent({
+          method,
+          path,
+          status: normalized.status || 0,
+          durationMs: Date.now() - startedAt,
+          traceId,
+        })
         throw normalized
       }
 
@@ -520,6 +560,15 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   uploadFactSpecs: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
+  saveMaterialSources: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
+  curateFacts: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/facts/curate`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 30 * 60 * 1000,
+      retryCount: 0,
+    }),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>
@@ -617,6 +666,7 @@ export const technicalMaterialsAPI = {
     confirmTechnicalSplit: (id, data) =>
       request(`/technical/materials/raw/${id}/split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/technical/materials/raw/${id}/cleaned/preview`),
+    previewOriginalFile: (id) => request(`/technical/materials/raw/${id}/preview`),
     contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/content`),
     previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/technical/materials/raw/${id}/preview-content`),
     cleanedContentUrl: (id, fileName) =>
@@ -886,7 +936,9 @@ export const businessMaterialsAPI = {
     confirmBusinessSplit: (id, data) =>
       request(`/business/materials/raw/${id}/business-split/confirm`, { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     previewCleanedFile: (id) => request(`/business/materials/raw/${id}/cleaned/preview`),
+    previewOriginalFile: (id) => request(`/business/materials/raw/${id}/preview`),
     contentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/content`),
+    previewContentUrl: (id) => joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/preview-content`),
     cleanedContentUrl: (id, fileName) =>
       joinUrl(ENV.API_BASE_URL, `/business/materials/raw/${id}/cleaned/content/${encodeURIComponent(fileName || 'cleaned.docx')}`),
     parseStatus: (projectId) => request(`/business/projects/${projectId}/materials/parse-status`),
@@ -925,6 +977,35 @@ export const businessAuditAPI = {
     const qs = new URLSearchParams(cleanQuery(params)).toString()
     return request(`/business/audit/export${qs ? `?${qs}` : ''}`)
   },
+}
+
+// ===== 用户行为埋点事件 =====
+// 注：埋点上报（POST /events）刻意不走 request()，由 src/telemetry/tracker.js 用
+// 原生 fetch/sendBeacon 直接上报，避免上报请求自身被递归采集；这里只封装看板查询接口
+export const technicalEventsAPI = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/technical/events${qs ? `?${qs}` : ''}`)
+  },
+  sessions: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/technical/events/sessions${qs ? `?${qs}` : ''}`)
+  },
+  sessionTimeline: (sessionId) =>
+    request(`/technical/events/sessions/${encodeURIComponent(sessionId)}`),
+}
+
+export const businessEventsAPI = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/business/events${qs ? `?${qs}` : ''}`)
+  },
+  sessions: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/business/events/sessions${qs ? `?${qs}` : ''}`)
+  },
+  sessionTimeline: (sessionId) =>
+    request(`/business/events/sessions/${encodeURIComponent(sessionId)}`),
 }
 
 // ===== Settings =====
@@ -966,6 +1047,19 @@ export const authAPI = {
 // ===== Dashboard =====
 export const dashboardAPI = {
   get: () => request('/dashboard'),
+}
+
+// ===== Monitoring =====
+export const monitoringAPI = {
+  listJobTimings: (params = {}) => {
+    const qs = new URLSearchParams(cleanQuery(params)).toString()
+    return request(`/monitoring/job-timings${qs ? `?${qs}` : ''}`)
+  },
+  jobTimingSummary: (days = 7) => {
+    const qs = new URLSearchParams(cleanQuery({ days })).toString()
+    return request(`/monitoring/job-timings/summary${qs ? `?${qs}` : ''}`)
+  },
+  jobTimingDetail: (id) => request(`/monitoring/job-timings/${encodeURIComponent(id)}`),
 }
 
 export { ApiError }

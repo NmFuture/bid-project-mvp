@@ -162,6 +162,9 @@ class Settings:
 
     # PostgreSQL
     database_url: str
+    job_timing_db_connect_timeout_sec: int
+    job_timing_db_statement_timeout_ms: int
+    job_timing_db_lock_timeout_ms: int
 
     # MinIO
     minio_endpoint: str
@@ -282,6 +285,9 @@ settings = Settings(
         "DATABASE_URL",
         "postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform",
     ),
+    job_timing_db_connect_timeout_sec=_int_env("JOB_TIMING_DB_CONNECT_TIMEOUT_SEC", 2),
+    job_timing_db_statement_timeout_ms=_int_env("JOB_TIMING_DB_STATEMENT_TIMEOUT_MS", 5000),
+    job_timing_db_lock_timeout_ms=_int_env("JOB_TIMING_DB_LOCK_TIMEOUT_MS", 2000),
     minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
     minio_access_key=os.getenv("MINIO_ROOT_USER", "minioadmin"),
     minio_secret_key=os.getenv("MINIO_ROOT_PASSWORD", "minioadmin"),

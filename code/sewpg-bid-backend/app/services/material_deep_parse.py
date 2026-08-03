@@ -1,13 +1,18 @@
-"""素材后台深度解析：超大 DOCX 后台解析画像。
+"""素材后台深度解析：PDF/XLSX 后台转 Word、超大 docx 后台解析画像。
 
 Wiki 整理请求内只做轻量同步解析（MAX_SYNC_DOCX_BYTES 上限）。以下素材过去
 在 Wiki 整理时被直接 fallback 跳过：
 
+- PDF/XLSX：清洗链路收束 Word-only 后永远没有清洗稿，"非 docx 无可解析正文"；
 - 超上限 docx（含清洗稿）：parseError 终态，只有索引卡片。
 
 本模块提供 ``material_deep_parse`` 后台任务（Redis 队列 + 本地线程兜底）：
 
-目标 docx 超上限时后台流式解析，画像写入 ``ext_fields["deepParseProfile"]``。
+1. PDF/XLSX 无清洗稿 → 复用 bid-material-format-cleaner driver 转出 cleaned docx；
+2. 目标 docx 仍超上限 → 后台流式解析，画像写入 ``ext_fields["deepParseProfile"]``。
+
+转换分支只响应带 ``allowConvert`` 标记的排队请求（技术标预览闸口）；
+商务标闸口不带该标记，非 Word 素材维持"暂不支持"终态。
 
 Wiki 预览/画像下次刷新时自动采用产物升级，不再终态跳过。
 """
@@ -29,7 +34,11 @@ from app.models.materials import RawFile
 from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.job_queue import enqueue_generation_job
 from app.services.local_job_executor import submit_local_job
-from app.services.material_cleaning import is_cleanable_material
+from app.services.material_cleaning import (
+    clean_material_file,
+    is_cleanable_material,
+    is_deep_convertible_material,
+)
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx_profile
@@ -64,11 +73,13 @@ def _numeric_raw_file_id(file_id: str) -> int:
 
 
 def raw_file_deep_parse_kind(name: str, ext_fields: dict[str, Any] | None) -> str:
-    """判断素材是否需要后台解析超大 DOCX。"""
+    """判断素材需要的后台处理：convert（PDF/XLSX 转 Word）/ parse（超大 docx 解析）/ ""。"""
 
     ext = ext_fields if isinstance(ext_fields, dict) else {}
     suffix = PurePosixPath(str(name or "")).suffix.lower()
-    has_cleaned = is_cleanable_material(name) and bool(str(ext.get("cleanedMinioKey") or ""))
+    has_cleaned = bool(str(ext.get("cleanedMinioKey") or ""))
+    if is_deep_convertible_material(name) and not has_cleaned:
+        return "convert"
     if suffix == ".docx" or has_cleaned:
         parse_size = (
             int(ext.get("cleanedSize") or 0) if has_cleaned else 0
@@ -193,16 +204,40 @@ async def deep_parse_material_file(file_id: str, data: dict[str, Any] | None = N
 
     try:
         suffix = PurePosixPath(source_name).suffix.lower()
-        source_is_word = is_cleanable_material(source_name)
         cleaned_key = (
             str(ext_fields.get("cleanedMinioKey") or "")
-            if source_is_word
+            if (is_cleanable_material(source_name) or is_deep_convertible_material(source_name))
             and cleaned_artifact_is_current(int(getattr(item, "version", 1) or 1), ext_fields)
             else ""
         )
         cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or source_bucket)
 
-        # 目标 DOCX 仍超同步上限时，后台解析画像写入 ext_fields。
+        # 1) PDF/XLSX 无清洗稿 → 后台转 Word（复用清洗 driver 与产物约定）。
+        # 仅技术标预览闸口排队时带 allowConvert 标记才走转换；商务侧排队不带
+        # 该标记，维持"暂不支持"终态，不改变商务标现有行为。
+        if suffix != ".docx" and not cleaned_key:
+            if not ((data or {}).get("allowConvert") and is_deep_convertible_material(source_name)):
+                message = f"暂不支持后台解析 {suffix or '未知'} 类型素材。"
+                await _write_deep_parse_status(numeric_id, "failed", message)
+                return {"deepParseStatus": "failed", "deepParseMessage": message}
+            convert_result = await clean_material_file(
+                file_id,
+                {**(data or {}), "convertNonWord": True},
+                allow_convert=True,
+            )
+            async with async_session() as session:
+                refreshed = await session.get(RawFile, numeric_id)
+                ext_fields = dict(refreshed.ext_fields or {}) if refreshed is not None else {}
+            cleaned_key = str(ext_fields.get("cleanedMinioKey") or "")
+            cleaned_bucket = str(ext_fields.get("cleanedMinioBucket") or source_bucket)
+            if not cleaned_key:
+                message = str(
+                    convert_result.get("cleanMessage") or "PDF/XLSX 后台转换未生成 Word 文件。"
+                )
+                await _write_deep_parse_status(numeric_id, "failed", message)
+                return {"deepParseStatus": "failed", "deepParseMessage": message}
+
+        # 2) 目标 DOCX 仍超同步上限时，后台解析画像写入 ext_fields。
         has_cleaned = bool(cleaned_key)
         if not has_cleaned and suffix != ".docx":
             message = f"暂不支持后台解析 {suffix or '未知'} 类型素材。"

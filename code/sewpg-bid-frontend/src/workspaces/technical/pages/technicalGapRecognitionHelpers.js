@@ -106,6 +106,9 @@ export const isStructuralItem = (item) => (
 // - 99 分专用于「文件名精确命中」（自动定案并默认选中），30~98 为同档启发式匹配。
 // - 变「已就绪」的唯一途径是人工点目录节点的「确认」（humanConfirmed）；仅文件名精确
 //   命中豁免确认自动就绪。选材/上传/AI填写只改内容，点确认之前标签不变。
+// - 甲方已填附表豁免（2026-08-02）：附表任务全部命中甲方已填文件（项目定制/…/技术附表输入文件，
+//   sourceRouting.status=client_provided）时与 0.99 精确命中同级，豁免确认自动就绪；
+//   人工撤销后同样回落，需再次点「确认」。
 // - 确认可撤销（产品反馈 2026-07-21）：humanConfirmed 是三态——未操作过/人工确认 true/
 //   人工撤销 false。撤销对文件名精确命中的自动就绪同样生效：撤销后跳过自动就绪判定，
 //   按候选分数回落到对应档位标签，需要再次点「确认」才能变回已就绪。
@@ -148,10 +151,20 @@ const hasFillMaterial = (item) => (
     || candidatePool(item).some(isFillTemplateMaterial)
 )
 
+// 甲方已填附表：附表任务全部命中甲方提供的填好文件（sourceRouting.status=client_provided）。
+const appendixAllClientProvided = (item) => {
+  const tasks = asObjectArray(item?.appendixTasks)
+  return tasks.length > 0 && tasks.every(
+    (task) => String(task?.sourceRouting?.status || '') === 'client_provided'
+  )
+}
+
 const ownTechnicalGapTag = (item) => {
   if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
   const confirmState = technicalGapHumanConfirmState(item)
   if (confirmState === 'confirmed') return 'ready'
+  // 甲方已填附表豁免：与 0.99 精确命中同级，人工撤销后回落到待填写。
+  if (confirmState !== 'revoked' && appendixAllClientProvided(item)) return 'ready'
   if (hasFillMaterial(item)) return 'needs_fill'
   const pool = candidatePool(item)
   const best = pool.reduce((max, material) => Math.max(max, technicalMatchScore(material)), 0)

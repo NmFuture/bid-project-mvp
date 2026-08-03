@@ -287,6 +287,32 @@ CREATE INDEX idx_audit_user_time ON audit_log (user_id, created_at DESC);
 CREATE INDEX idx_audit_module_target ON audit_log (module_id, target);
 
 -- ============================================================
+-- 4.1 User Event Log (前端用户行为埋点)
+-- ============================================================
+
+CREATE TABLE user_event_log (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     VARCHAR(100) NOT NULL,
+    user_name   VARCHAR(100),
+    session_id  VARCHAR(100) NOT NULL,
+    bid_type    VARCHAR(20) NOT NULL,
+    event_type  VARCHAR(20) NOT NULL,
+    route       VARCHAR(500),
+    element     VARCHAR(200),
+    target      VARCHAR(500),
+    status      VARCHAR(20),
+    duration_ms INT,
+    trace_id    VARCHAR(100),
+    meta        JSONB,
+    client_ts   TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_user_event_bid_time ON user_event_log (bid_type, created_at DESC);
+CREATE INDEX idx_user_event_session_ts ON user_event_log (session_id, client_ts);
+CREATE INDEX idx_user_event_user_time ON user_event_log (user_id, created_at DESC);
+
+-- ============================================================
 -- 5. Seed Data (初始化示例数据)
 -- ============================================================
 
@@ -316,3 +342,33 @@ SELECT setval('structured_tables_id_seq', 2);
 INSERT INTO audit_log (user_id, user_name, action, action_type, module_id, module_label, target, status, diff)
 VALUES
     ('system', '系统初始化', '系统初始化', 'config', 'system', '系统', 'material_db', '成功', '{}');
+
+-- ============================================================
+-- 6. Job Timings (任务耗时监控，与 app/services/job_timing.py 运行时 DDL 保持一致)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS job_timings (
+    id BIGSERIAL PRIMARY KEY,
+    job_id VARCHAR(80) NOT NULL,
+    run_id VARCHAR(80),
+    job_type VARCHAR(40) NOT NULL,          -- s1_parse/s1_parse_continue/docling_batch/directory_generation
+    bid_type VARCHAR(20),
+    project_id VARCHAR(50),
+    project_name VARCHAR(300),
+    triggered_by VARCHAR(100),
+    status VARCHAR(20),                     -- running/succeeded/failed/cancelled
+    queued_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    queue_wait_ms BIGINT,
+    duration_ms BIGINT,
+    error_message TEXT,
+    phases JSONB DEFAULT '[]'::jsonb,       -- [{step,label,startedAt,durationMs}]
+    meta JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_timings_job_id ON job_timings(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_timings_type_created ON job_timings(job_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_job_timings_project ON job_timings(project_id);

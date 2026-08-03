@@ -125,7 +125,30 @@ config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encodin
 PY
   export OPENCODE_CONFIG=/workspace/opencode.runtime.json
 else
-  export OPENCODE_CONFIG=/workspace/opencode.json
+  # 兼容回退：runtime 配置与 INTERNAL_LLM 均未配置时，基于 opencode.json 注入环境变量指定的默认模型。
+  # opencode.json 本身不落 model：opencode 的项目目录配置优先级高于 OPENCODE_CONFIG，
+  # 在 opencode.json 里写死 model 会覆盖 runtime 配置的模型，导致系统设置的模型重启后仍不生效。
+  python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+provider_id = os.getenv("OPENCODE_PROVIDER_ID", "deepseek").strip() or "deepseek"
+model_id = os.getenv("OPENCODE_MODEL_ID", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
+if (provider_id, model_id) == ("opencode", "big-pickle") or model_id == "opencode/big-pickle":
+    provider_id, model_id = "deepseek", "deepseek-v4-flash"
+if model_id == "deepseek/deepseek-v4-flash":
+    provider_id, model_id = "deepseek", "deepseek-v4-flash"
+qualified_prefix = f"{provider_id}/"
+if model_id.startswith(qualified_prefix):
+    model_id = model_id[len(qualified_prefix):]
+
+config = json.loads(Path("/workspace/opencode.json").read_text(encoding="utf-8"))
+config["model"] = f"{provider_id}/{model_id}"
+config_path = Path("/workspace/opencode.legacy.json")
+config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+  export OPENCODE_CONFIG=/workspace/opencode.legacy.json
 fi
 
 exec "$@"

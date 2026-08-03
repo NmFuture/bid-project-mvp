@@ -17,6 +17,7 @@ from app.services.technical_document_service import technical_document_service
 from app.services.technical_generation_service import technical_generation_service
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_audit_service import technical_audit_service
+from app.services.technical_event_service import technical_event_service
 from app.services.peripheral import PeripheralError
 from app.services.background_job_registry import get_job_status, start_job, update_job_progress
 from app.services.technical_material_store import technical_material_store
@@ -410,10 +411,19 @@ async def upload_technical_gap_fact_specs(
     project_id: str,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    """上传本项目实时表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
+    """上传本项目事实表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
     return await technical_gap_service.upload_fact_specs(
         project_id, str(file.filename or ""), await file.read()
     )
+
+
+@router.put("/api/technical/projects/{project_id}/gaps/facts/material-sources")
+async def save_technical_gap_fact_material_sources(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """配置本项目事实表匹配的参考资料目录（素材库虚拟路径列表），生成/刷新事实表时生效。"""
+    return await technical_gap_service.save_fact_material_sources(project_id, data)
 
 
 @router.put("/api/technical/projects/{project_id}/gaps/facts")
@@ -902,6 +912,15 @@ async def technical_raw_download_content(file_id: str) -> StreamingResponse:
     return minio_streaming_response(payload)
 
 
+@router.get("/api/technical/materials/raw/{file_id}/preview")
+async def technical_raw_preview_original_file(file_id: str, request: Request) -> dict[str, Any]:
+    return await technical_material_store.raw_original_preview(
+        file_id,
+        browser_base_url=str(request.base_url).rstrip("/"),
+        onlyoffice_base_url=onlyoffice_backend_base_url(request),
+    )
+
+
 @router.get("/api/technical/materials/raw/{file_id}/preview-content")
 async def technical_raw_preview_content(file_id: str) -> StreamingResponse:
     payload = await technical_material_store.raw_download_content(file_id)
@@ -1127,3 +1146,32 @@ async def technical_audit_export(request: Request, _: dict[str, Any] = Depends(c
 @router.get("/api/technical/audit/{audit_id}")
 async def technical_audit_detail(audit_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     return await technical_audit_service.detail(audit_id)
+
+
+@router.post("/api/technical/events")
+async def technical_event_ingest(
+    data: dict[str, Any] = Body(default_factory=dict),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    events = data.get("events") or []
+    if not isinstance(events, list) or len(events) > 100:
+        raise PeripheralError(422, "单次上报事件最多 100 条。", "EVENT_BATCH_TOO_LARGE")
+    accepted = await technical_event_service.ingest(user, events)
+    return {"accepted": accepted}
+
+
+@router.get("/api/technical/events")
+async def technical_event_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return await technical_event_service.list(dict(request.query_params))
+
+
+@router.get("/api/technical/events/sessions")
+async def technical_event_sessions(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    return await technical_event_service.sessions(dict(request.query_params))
+
+
+@router.get("/api/technical/events/sessions/{session_id}")
+async def technical_event_session_timeline(
+    session_id: str, _: dict[str, Any] = Depends(current_user)
+) -> dict[str, Any]:
+    return {"items": await technical_event_service.session_timeline(session_id)}

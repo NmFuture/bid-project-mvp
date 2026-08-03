@@ -15,7 +15,7 @@ import {
 import RoleChip from '../shared/RoleChip'
 import ParseRunningBanner from './ParseRunningBanner'
 
-// 一级导航：6 项，对所有角色一致；2-5 项的链接随当前 workspace 变化。
+// 一级导航：7 项，对所有角色一致；2-5 项的链接随当前 workspace 变化。
 const NAV_DEFINITIONS = [
   { key: 'dashboard', icon: 'dashboard', label: '工作台', match: /^\/dashboard/, path: () => '/dashboard' },
   {
@@ -46,6 +46,7 @@ const NAV_DEFINITIONS = [
     match: /^\/workspace\/(business|tech)\/logs/,
     path: (slug) => workspaceRoute(slug, '/logs'),
   },
+  { key: 'monitoring', icon: 'monitoring', label: '耗时监控', match: /^\/monitoring/, path: () => '/monitoring' },
   { key: 'settings', icon: 'settings', label: '设置', match: /^\/settings/, path: () => '/settings' },
 ]
 
@@ -271,7 +272,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
       </footer>
 
       {isWorkspaceExperience ? (
-        <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-6 border-t border-outline-variant/60 bg-white/95 px-1 pt-1 pb-[calc(env(safe-area-inset-bottom)+0.35rem)] shadow-[0_-12px_28px_-24px_rgba(13,33,55,0.35)] md:hidden">
+        <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-7 border-t border-outline-variant/60 bg-white/95 px-1 pt-1 pb-[calc(env(safe-area-inset-bottom)+0.35rem)] shadow-[0_-12px_28px_-24px_rgba(13,33,55,0.35)] md:hidden">
           {navItems.map((item) => {
             const active = isActive(item)
             return (

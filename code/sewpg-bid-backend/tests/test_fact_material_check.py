@@ -87,6 +87,28 @@ def test_missing_classes_report_cross_project_candidates(monkeypatch) -> None:
     assert check["summary"]["affectedFieldCount"] == 38 + 18 + 1 + 4 + 4
 
 
+def test_fill_templates_not_counted_as_matched(monkeypatch) -> None:
+    """回归：「待填写」空白模板（目录名含「不含塔架」/文件名含「风资源」）不计入类别已匹配，
+    缺失类别照常报缺失并给跨项目候选。"""
+    _stub_index(
+        monkeypatch,
+        materials=[
+            {"id": "RAW-TPL1", "name": "待填写-附表1.docx", "folderPath": "技术标/项目定制/本项目不含塔架"},
+            {"id": "RAW-TPL2", "name": "待填写-附表2 风资源数据.docx", "folderPath": "技术标/项目定制/本项目"},
+        ],
+        pool=[_pool_item("RAW-T1", "乙项目塔架与基础工程量.xlsx", "乙项目")],
+    )
+
+    check = material_classes.build_fact_material_check(_project(), {})
+
+    by_class = {item["class"]: item for item in check["classes"]}
+    assert by_class["tower_quantity"]["missing"] is True
+    assert by_class["tower_quantity"]["matched"] == []
+    assert [item["id"] for item in by_class["tower_quantity"]["crossProjectCandidates"]] == ["RAW-T1"]
+    assert by_class["wind_resource"]["missing"] is True
+    assert by_class["wind_resource"]["matched"] == []
+
+
 def test_all_classes_matched_skips_library_scan(monkeypatch) -> None:
     calls = _stub_index(
         monkeypatch,
