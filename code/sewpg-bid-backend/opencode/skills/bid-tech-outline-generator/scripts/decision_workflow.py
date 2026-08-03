@@ -24,6 +24,9 @@ MAX_DECISION_RESPONSE_CHARS = 45_000
 # 决策只到二级；三级节点由 outline_composer 跟随二级父节点下沉。
 DECISION_MAX_LEVEL = outline_composer.DECISION_MAX_LEVEL
 TEMPLATE_HEADINGS_MAX_LEVEL = 3
+# 二级节点数不超过该阈值的章视为稀疏章：需要从招标原文构建子目录，
+# 决策单元切换为"圈定上级章节 + 大页连续通读"纪律，抑制搜索式发散探索。
+SPARSE_CHAPTER_L2_THRESHOLD = 1
 
 
 def _payload_digest(payload: Any) -> str:
@@ -266,19 +269,31 @@ def _decision_batch_response(
     decided_count: int,
     item_count: int,
     chapter_id: str,
+    chapter_l2_count: int,
 ) -> dict[str, Any]:
-    return {
+    sparse = chapter_l2_count <= SPARSE_CHAPTER_L2_THRESHOLD
+    decision_steps = (
+        [
+            "本章模板二级节点稀疏，需要从招标原文构建子目录：先通读完整招标目录，再自主圈定与本章主题对应的少数上级章节",
+            "对圈定章节用 section --max-chars 30000 连续通读原文，不逐段跳读；search 全会话最多 2 次，仅用于跨章定位",
+            "从已读原文自主提炼响应单元并确定标题与粒度，一次性提交全部新增；每个新增 reason + evidence_id",
+            "章根与既有二级节点仍按 retain / suggest_delete 表态",
+        ]
+        if sparse
+        else [
+            "读本章相关的招标正文，判断本章主题在本项目还需要哪些响应",
+            "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions",
+            "模板侧不适用、重复、可合并或没有独立表达价值的二级节点，写 suggest_delete",
+            "其余节点 retain；每个判断覆盖该节点的整个三级子树",
+        ]
+    )
+    response = {
         "schema_version": STATE_SCHEMA,
         "batch_token": token,
         "chapter_id": chapter_id,
         "decision_level": DECISION_MAX_LEVEL,
         "items": _decision_items(target_ids, by_id),
-        "decision_steps": [
-            "读本章相关的招标正文，判断本章主题在本项目还需要哪些响应",
-            "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions",
-            "模板侧不适用、重复、可合并或没有独立表达价值的二级节点，写 suggest_delete",
-            "其余节点 retain；每个判断覆盖该节点的整个三级子树",
-        ],
+        "decision_steps": decision_steps,
         "submission_contract": {
             "required_fields": ["batch_token", "items", "additions"],
             "items_must_match_batch": True,
@@ -290,6 +305,9 @@ def _decision_batch_response(
         "remaining_count": item_count - decided_count,
         "complete": False,
     }
+    if sparse:
+        response["authoring_mode"] = "sparse_chapter"
+    return response
 
 
 def _chapter_groups(items: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
@@ -393,13 +411,15 @@ def next_decision_batch(
     active = state.get("active_batch") or {}
     active_ids = list(active.get("target_ids") or [])
     if active_ids:
+        active_chapter_id = str(active.get("chapter_id") or active_ids[0])
         return _decision_batch_response(
             token=str(active.get("token") or ""),
             target_ids=active_ids,
             by_id=by_id,
             decided_count=decided_count,
             item_count=len(scoped_ids),
-            chapter_id=str(active.get("chapter_id") or active_ids[0]),
+            chapter_id=active_chapter_id,
+            chapter_l2_count=max(0, len(chapter_groups.get(active_chapter_id) or []) - 1),
         )
 
     decided = set((state.get("template_decisions") or {}).keys())
@@ -428,6 +448,7 @@ def next_decision_batch(
         }
 
     # 一个决策单元就是一个一级章；只有超出响应预算时才裁剪，剩余节点下一轮继续。
+    chapter_l2_count = max(0, len(chapter_groups.get(chapter_id) or []) - 1)
     target_ids = pending_ids
     while target_ids:
         token = _batch_token(fingerprint, target_ids, workflow_binding)
@@ -438,6 +459,7 @@ def next_decision_batch(
             decided_count=decided_count,
             item_count=len(scoped_ids),
             chapter_id=chapter_id,
+            chapter_l2_count=chapter_l2_count,
         )
         if _compact_json_chars(selected_response) < MAX_DECISION_RESPONSE_CHARS:
             break

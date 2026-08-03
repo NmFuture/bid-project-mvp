@@ -186,6 +186,7 @@ manifest：{manifest_path}
 
 准备产物已经由后端生成，不要执行 `s2outline prepare`。先用 `template-headings` 按 `next_cursor` 读完模板目录，再用 `headings` 按 `next_cursor` 读完整本招标目录，以便识别跨章等价项。
 然后循环执行 `decision-next`。决策只到二级：`decision-next` 返回本章章根和它下面的全部二级节点，三级节点跟随二级父节点，不单独判断。按 Skill 自主使用 `search`、`section`、`read` 阅读相关招标原文，完成“保留 / 建议增加 / 建议删除”三类判断并执行 `decision-batch`，直到 `decision-next complete=true`。
+若 `decision-next` 返回 `authoring_mode=sparse_chapter`（本章模板二级节点稀疏），按其 `decision_steps` 执行：自主圈定本章对应的少数上级章节后，用 `section --max-chars 30000` 连续通读，不做搜索式发散（search 全会话最多 2 次），从已读原文提炼响应单元并一次提交全部新增。
 不要执行 `appendix-next`、`review-complete`、`decisions`、`compose` 或 `finalize`，也不要处理其他一级章。完成后只返回简短 JSON：{{"workflowStage":"chapter_complete"}}。
 """.strip()
 

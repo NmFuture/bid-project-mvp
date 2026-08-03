@@ -1004,6 +1004,19 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("source_refs", prompt)
         self.assertLess(len(prompt), 1800)
 
+    def test_technical_outline_chapter_prompt_explains_sparse_chapter_mode(self) -> None:
+        from app.services.outline_generation import _build_outline_chapter_prompt
+
+        prompt = _build_outline_chapter_prompt(
+            Path("C:/workspace/s2_input.json"),
+            {"chapter_id": "TPL-0001", "number": "2", "title": "技术规范响应"},
+        )
+
+        self.assertIn("authoring_mode=sparse_chapter", prompt)
+        self.assertIn("连续通读", prompt)
+        self.assertIn("search 全会话最多 2 次", prompt)
+        self.assertIn("一次提交全部新增", prompt)
+
     def test_technical_outline_finalize_prompt_resumes_after_template_decisions(self) -> None:
         from app.services.outline_generation import _build_outline_finalize_prompt
 

@@ -2291,13 +2291,15 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(batch["remaining_count"], 50)
         self.assertNotIn("comparison_context", batch)
         self.assertEqual(batch["decision_level"], 2)
+        # 该夹具的章只有章根（无二级节点），属稀疏章：切换为连续通读构建纪律
+        self.assertEqual(batch["authoring_mode"], "sparse_chapter")
         self.assertEqual(
             batch["decision_steps"],
             [
-                "读本章相关的招标正文，判断本章主题在本项目还需要哪些响应",
-                "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions",
-                "模板侧不适用、重复、可合并或没有独立表达价值的二级节点，写 suggest_delete",
-                "其余节点 retain；每个判断覆盖该节点的整个三级子树",
+                "本章模板二级节点稀疏，需要从招标原文构建子目录：先通读完整招标目录，再自主圈定与本章主题对应的少数上级章节",
+                "对圈定章节用 section --max-chars 30000 连续通读原文，不逐段跳读；search 全会话最多 2 次，仅用于跨章定位",
+                "从已读原文自主提炼响应单元并确定标题与粒度，一次性提交全部新增；每个新增 reason + evidence_id",
+                "章根与既有二级节点仍按 retain / suggest_delete 表态",
             ],
         )
         self.assertEqual(
@@ -3495,6 +3497,52 @@ class TocSkillScriptTests(unittest.TestCase):
         for addition in state["additions"]:
             owner = state["addition_chapters"][addition["node_id"]]
             self.assertEqual(addition["parent_id"], chapter_parent_ids[owner])
+
+    def test_bid_outline_sparse_chapter_unit_switches_to_contiguous_reading_mode(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [
+                {"number": "1", "title": "总体方案", "level": 1},
+                {"number": "1.1", "title": "实施组织", "level": 2},
+                {"number": "1.2", "title": "进度计划", "level": 2},
+                {"number": "2", "title": "技术规范响应", "level": 1},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normal = decision_workflow.next_decision_batch(root, structure)
+            self.assertNotIn("authoring_mode", normal)
+            self.assertFalse(any("连续通读" in step for step in normal["decision_steps"]))
+            decision_workflow.submit_decision_batch(
+                root,
+                structure,
+                {
+                    "batch_token": normal["batch_token"],
+                    "items": [
+                        {
+                            "target_id": item["target_id"],
+                            "decision": "retain",
+                            "reason": "历史模板专家经验仍适用。",
+                        }
+                        for item in normal["items"]
+                    ],
+                    "additions": [],
+                },
+            )
+            sparse = decision_workflow.next_decision_batch(root, structure)
+            replay = decision_workflow.next_decision_batch(root, structure)
+
+        # 有二级节点的章走默认判定流程；空章切换为"圈定上级章节 + 大页连续通读"纪律
+        self.assertEqual(len(sparse["items"]), 1)
+        self.assertEqual(sparse["authoring_mode"], "sparse_chapter")
+        self.assertTrue(any("连续通读" in step for step in sparse["decision_steps"]))
+        self.assertTrue(any("最多 2 次" in step for step in sparse["decision_steps"]))
+        self.assertTrue(any("--max-chars 30000" in step for step in sparse["decision_steps"]))
+        # 未提交前重复 decision-next 返回同一活动批次，模式标记保持
+        self.assertEqual(replay["batch_token"], sparse["batch_token"])
+        self.assertEqual(replay["authoring_mode"], "sparse_chapter")
 
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
         decision_workflow = load_outline_script("run_from_manifest").decision_workflow
