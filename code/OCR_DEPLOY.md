@@ -25,6 +25,8 @@ cd /path/to/code
 ./start-local.sh
 ```
 
+脚本会先校验 `.env` 中的 OnlyOffice 镜像策略并构建当前 `dev-fontpack-v1`。保留官方/旧固定镜像标签的 `.env` 会被阻断，需先按当前 `.env.example` 迁移。
+
 macOS 也可以在 Finder 中双击 `start-local.command`。
 
 如果需要 OCR 功能，有两个可行方式：
@@ -90,6 +92,8 @@ docker compose -f docker-compose.yml -f docker-compose.ocr.yml up -d --build
 ```bash
 ./scripts/up-ocr.sh
 ```
+
+该脚本会与其他应用镜像一起构建 `onlyoffice`，再用 `--no-build` 启动，避免干净 GPU 主机缺少项目字体镜像。
 
 ### 2. vLLM 独立容器
 

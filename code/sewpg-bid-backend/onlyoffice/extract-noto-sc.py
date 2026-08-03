@@ -22,7 +22,8 @@ def main() -> int:
     parser.add_argument("output")
     args = parser.parse_args()
 
-    matches = [font for font in TTCollection(args.source).fonts if args.family in family_names(font)]
+    collection = TTCollection(args.source, recalcTimestamp=False)
+    matches = [font for font in collection.fonts if args.family in family_names(font)]
     if len(matches) != 1:
         raise RuntimeError(f"{args.source}: expected one {args.family} face, found {len(matches)}")
 

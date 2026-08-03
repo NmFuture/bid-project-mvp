@@ -2,8 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ -f "${SCRIPT_DIR}/docker-compose.yml" ]]; then
+  REPO_ROOT="${SCRIPT_DIR}"
+else
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+fi
 ENV_FILE="${1:-${REPO_ROOT}/.env}"
+source "${REPO_ROOT}/sewpg-bid-backend/onlyoffice/image-policy.sh"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Missing env file: ${ENV_FILE}" >&2
@@ -32,5 +37,9 @@ COMPOSE_ARGS=(
   -f "${REPO_ROOT}/docker-compose.ocr.yml"
 )
 
-docker compose "${COMPOSE_ARGS[@]}" build fastapi docling-worker opencode web
+require_expected_onlyoffice_image \
+  "${ENV_FILE}" "${ONLYOFFICE_DEV_IMAGE_DEFAULT}" \
+  "ONLYOFFICE_IMAGE=${ONLYOFFICE_DEV_IMAGE_DEFAULT}" "${COMPOSE_ARGS[@]}"
+docker compose "${COMPOSE_ARGS[@]}" build --provenance=false \
+  fastapi docling-worker opencode web onlyoffice
 docker compose "${COMPOSE_ARGS[@]}" up -d --no-build

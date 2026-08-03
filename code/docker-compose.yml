@@ -325,11 +325,14 @@ services:
     restart: unless-stopped
 
   onlyoffice:
-    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1}
+    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:dev-fontpack-v1}
     build:
       context: ./sewpg-bid-backend/onlyoffice
       args:
-        ONLYOFFICE_BASE_IMAGE: ${ONLYOFFICE_BASE_IMAGE:-onlyoffice/documentserver:9.3.1.2}
+        ONLYOFFICE_BASE_IMAGE: ${ONLYOFFICE_BASE_IMAGE:-onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31}
+        ONLYOFFICE_FONT_BUILDER_IMAGE: ${ONLYOFFICE_FONT_BUILDER_IMAGE:-debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e}
+        SEWPG_BUILD_REVISION: ${ONLYOFFICE_BUILD_REVISION:-dev}
+      provenance: false
     platform: ${ONLYOFFICE_PLATFORM:-linux/amd64}
     container_name: sewpg_bid_onlyoffice
     environment:

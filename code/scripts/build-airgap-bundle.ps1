@@ -1,7 +1,8 @@
 param(
     [string]$BundleDir = "",
     [string]$Tag = "",
-    [string]$OnlyOfficeSourceImage = "onlyoffice/documentserver:9.3.1.2",
+    [string]$OnlyOfficeSourceImage = "onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31",
+    [string]$OnlyOfficeFontBuilderSourceImage = "debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e",
     [string]$RedisSourceImage = "redis:7-alpine",
     [string]$PostgresSourceImage = "pgvector/pgvector:pg16",
     [string]$MinioSourceImage = "minio/minio:RELEASE.2025-04-22T22-12-26Z",
@@ -41,6 +42,19 @@ function Ensure-Image {
     }
 }
 
+function Assert-DigestReference {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Image,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    if ($Image -notmatch "@sha256:[0-9a-f]{64}$") {
+        throw "$Label must be pinned by sha256 digest: $Image"
+    }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 if (-not $BundleDir) {
@@ -56,7 +70,7 @@ $webImage = "sewpg-bid/web:$Tag"
 $fastapiImage = "sewpg-bid/fastapi:$Tag"
 $doclingImage = "sewpg-bid/docling-worker:$Tag"
 $opencodeImage = "sewpg-bid/opencode:$Tag"
-$onlyofficeImage = "sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1"
+$onlyofficeImage = "sewpg-bid/onlyoffice:$Tag-fontpack-v1"
 $redisImage = $RedisSourceImage
 $postgresImage = $PostgresSourceImage
 $minioImage = $MinioSourceImage
@@ -69,6 +83,16 @@ $gitSha = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "Cannot resolve the release Git SHA."
 }
+$gitStatus = (& git -C $repoRoot status --porcelain) -join "`n"
+if ($LASTEXITCODE -ne 0) {
+    throw "Cannot inspect the release Git worktree."
+}
+if ($gitStatus) {
+    throw "Refusing to build a release bundle from a dirty worktree. Commit or remove tracked and untracked changes before retrying."
+}
+
+Assert-DigestReference -Image $OnlyOfficeSourceImage -Label "OnlyOffice base image"
+Assert-DigestReference -Image $OnlyOfficeFontBuilderSourceImage -Label "OnlyOffice font builder image"
 
 New-Item -ItemType Directory -Force -Path $imagesDir | Out-Null
 
@@ -79,11 +103,17 @@ $env:DOCLING_IMAGE = $doclingImage
 $env:OPENCODE_IMAGE = $opencodeImage
 $env:ONLYOFFICE_IMAGE = $onlyofficeImage
 $env:ONLYOFFICE_BASE_IMAGE = $OnlyOfficeSourceImage
+$env:ONLYOFFICE_FONT_BUILDER_IMAGE = $OnlyOfficeFontBuilderSourceImage
+$env:ONLYOFFICE_BUILD_REVISION = $gitSha
 $env:REDIS_IMAGE = $redisImage
 $env:OCR_IMAGE = $ocrImage
 
 Write-Host "==> Building application and OnlyOffice font images..."
-Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "web", "fastapi", "docling-worker", "opencode", "onlyoffice")
+Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "--provenance=false", "web", "fastapi", "docling-worker", "opencode", "onlyoffice")
+$onlyofficeImageId = (& docker image inspect --format "{{.Id}}" $onlyofficeImage).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $onlyofficeImageId) {
+    throw "Cannot resolve the built OnlyOffice image ID."
+}
 Ensure-Image -Image $RedisSourceImage -Label "Redis"
 Ensure-Image -Image $PostgresSourceImage -Label "PostgreSQL"
 Ensure-Image -Image $MinioSourceImage -Label "MinIO"
@@ -127,6 +157,7 @@ Get-Content (Join-Path $repoRoot ".env.airgap.example") | ForEach-Object {
     elseif ($_ -match "^FASTAPI_IMAGE=") { "FASTAPI_IMAGE=sewpg-bid/fastapi:$Tag" }
     elseif ($_ -match "^DOCLING_IMAGE=") { "DOCLING_IMAGE=sewpg-bid/docling-worker:$Tag" }
     elseif ($_ -match "^OPENCODE_IMAGE=") { "OPENCODE_IMAGE=sewpg-bid/opencode:$Tag" }
+    elseif ($_ -match "^ONLYOFFICE_IMAGE=") { "ONLYOFFICE_IMAGE=sewpg-bid/onlyoffice:$Tag-fontpack-v1" }
     else { $_ }
 } | Set-Content -Encoding UTF8 $envTemplatePath
 $onlyofficeConfigDir = Join-Path $BundleDir "sewpg-bid-backend\onlyoffice"
@@ -155,6 +186,7 @@ if ($IncludeOcr) {
 $manifest = @{
     createdAt = (Get-Date).ToString("s")
     gitSha = $gitSha
+    onlyofficeImageId = $onlyofficeImageId
     bundleFile = (Split-Path -Leaf $imageTar)
     images = $images
     composeFiles = @("docker-compose.yml", "docker-compose.airgap.yml", "docker-compose.ocr.yml", "docker-compose.ocr.airgap.yml")

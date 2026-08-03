@@ -106,7 +106,7 @@ Docker Hub 或模型源偶发失败时，可以重试失败的 pull/build；不�
 | `OCR_HF_CACHE_DIR` | 默认 `./.localdata/ocr/huggingface`；允许首次在线下载并持久化 |
 | `HF_ENDPOINT` | 5090 当前优先使用可达的 `https://hf-mirror.com` |
 
-在线脚本自动把四个应用镜像统一标记为 `main-<main前12位SHA>`，并基于官方 `onlyoffice/documentserver:9.3.1.2` 构建项目字体镜像 `sewpg-bid/onlyoffice:9.3.1.2-fontpack-v1`；不需要手工修改模板里的离线镜像标签。其他外部服务使用仓库 Compose 声明的 tag，拉取后记录实际 digest。
+在线脚本自动把四个应用镜像统一标记为 `main-<main前12位SHA>`，字体镜像标记为 `main-<main前12位SHA>-fontpack-v1`。OnlyOffice 与 Debian 构建镜像按 AMD64 manifest digest 锁定，字体包与 FontTools 版本也已锁定。在线脚本会输出字体镜像 ID；离线包会把该 ID 写入 `bundle-manifest.json`，加载时同时校验 `SHA256SUMS` 和实际镜像 ID，用于发布核对和回滚。
 
 ## 6. 预检和启动
 
@@ -129,7 +129,7 @@ Docker Hub 或模型源偶发失败时，可以重试失败的 pull/build；不�
 ./scripts/up-5090.sh ./.env
 ```
 
-脚本先 pull 外部镜像，再 build 四个应用镜像，最后执行 `up -d --no-build`，避免启动阶段隐式重建。OCR 首次下载权重可能较慢，不要把容器处于 `starting` 立即判为失败。
+脚本先 pull 外部镜像，再 build 四个应用镜像和发布专属 OnlyOffice 字体镜像，最后执行 `up -d --no-build`，避免启动阶段隐式重建。离线模式会拒绝旧固定标签，必须使用当前发布包生成的 `.env.airgap.example`。OCR 首次下载权重可能较慢，不要把容器处于 `starting` 立即判为失败。
 
 ## 7. 验收
 

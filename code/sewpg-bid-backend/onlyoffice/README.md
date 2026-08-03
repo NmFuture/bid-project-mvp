@@ -5,8 +5,10 @@
 ## 当前保留内容
 
 - `Dockerfile`
-  - 基于 `onlyoffice/documentserver:9.3.1.2` 构建单一项目镜像
-  - 从 Debian 官方包复制 Noto CJK 与 Liberation 的 Regular、Bold 和许可证
+  - 基于按 AMD64 manifest digest 锁定的 `onlyoffice/documentserver:9.3.1.2` 构建项目镜像
+  - 从按 digest 锁定的 Debian 镜像复制 Noto CJK 与 Liberation 的 Regular、Bold 和许可证
+  - 字体包与 `python3-fonttools` 锁定版本，抽取 OTF 时不重算时间戳
+  - 关闭会每次变化的 BuildKit provenance 附件，发布追踪由 revision、manifest 和 checksum 承担
 - `font-contract.json`
   - 记录界面代表名称、实际字体族、字重和历史别名
 - `verify-fonts.sh`
@@ -27,9 +29,9 @@
 | Times 风格（开源） | `Liberation Serif` | Regular、Bold |
 | Arial 风格（开源） | `Liberation Sans` | Regular、Bold |
 
-本地执行 `docker compose build onlyoffice` 即可重建字体镜像。字体来源、许可证和版本由 Docker 构建过程统一，不提交第三方字体二进制。
+本地 `start-local.sh` 和 `up-ocr.sh` 会先构建 `dev-fontpack-v1` 镜像。离线包使用 `<bundle-tag>-fontpack-v1`，5090 在线发布使用 `main-<SHA>-fontpack-v1`，并在 bundle manifest 中记录镜像 ID。字体来源、许可证和构建工具由 Docker 构建过程统一，不提交第三方字体二进制。
 
-已有工作副本如果在忽略文件 `.env` 中保留了旧的 `ONLYOFFICE_IMAGE=onlyoffice/documentserver:9.3.1.2`，需按 `.env.example` 更新为字体镜像名后再重建；新拉取的环境直接使用模板默认值。
+已有工作副本如果在忽略文件 `.env` 中保留官方镜像、旧离线标签或固定的 `9.3.1.2-fontpack-v1`，启动脚本会在创建容器前阻断并提示按当前 `.env.example`/离线包模板迁移，不会用旧镜像执行新 entrypoint。
 
 ## 已清理内容
 
