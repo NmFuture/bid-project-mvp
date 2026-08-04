@@ -266,3 +266,32 @@ def test_airgap_env_template_contains_required_5090_settings() -> None:
         "DEFAULT_LLM_MODEL=replace-with-your-internal-model",
     ):
         assert setting in env_template
+
+
+def test_compose_injects_tech_wiki_pdf_extract_env_into_fastapi_and_workers() -> None:
+    # R09-B10-01：material_deep_parse 在模块导入时读取这三个变量，
+    # fastapi / worker / material-worker 容器必须都能通过 .env 覆盖。
+    compose = yaml.safe_load((CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    expected = {
+        "TECH_WIKI_PDF_EXTRACT_ENABLED": "${TECH_WIKI_PDF_EXTRACT_ENABLED:-true}",
+        "TECH_WIKI_EXTRACT_MAX_PAGES": "${TECH_WIKI_EXTRACT_MAX_PAGES:-80}",
+        "TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY": "${TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY:-4}",
+    }
+    for service_name in ("fastapi", "worker", "material-worker"):
+        environment = services[service_name]["environment"]
+        for key, value in expected.items():
+            assert environment[key] == value
+
+
+def test_env_templates_contain_tech_wiki_pdf_extract_settings() -> None:
+    expected = (
+        "TECH_WIKI_PDF_EXTRACT_ENABLED=true",
+        "TECH_WIKI_EXTRACT_MAX_PAGES=80",
+        "TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY=4",
+    )
+    for template_name in (".env.example", ".env.airgap.example"):
+        env_template = (CODE_ROOT / template_name).read_text(encoding="utf-8")
+        for setting in expected:
+            assert setting in env_template
