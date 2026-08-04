@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 import {
+  aiFillComparisonPair,
   appendixTaskForFillTask,
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
@@ -27,6 +28,19 @@ test('生成完成提示展示 warning 数量且格式清洗失败时明确回�
   assert.equal(presentation.warningCount, 2)
   assert.equal(presentation.formatCleanFailed, true)
   assert.equal(presentation.formatCleanMessage, '格式清洗失败，当前使用组装稿')
+})
+
+test('AI 填写结果优先与待填写模板形成左右对比', () => {
+  const result = { key: 'artifact:A1', kind: 'artifact', artifact: { source: 'ai_fill' } }
+  const material = { key: 'material:M1', kind: 'material' }
+  const blank = { key: 'blank-material:B1', kind: 'blankMaterial' }
+
+  assert.deepEqual(aiFillComparisonPair([result, material, blank], result), {
+    reference: blank,
+    result,
+  })
+  assert.equal(aiFillComparisonPair([result], result), null)
+  assert.equal(aiFillComparisonPair([material, blank], material), null)
 })
 
 test('生成提示在 summary 未给数量时累计 warning count', () => {
