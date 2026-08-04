@@ -424,15 +424,10 @@ def _strip_numbered_heading_prefixes(doc) -> int:
             changed = _remove_paragraph_numpr(para) or changed
 
         style_level = _extract_heading_level_from_style(_get_para_style(para))
-        outline_level = _get_outline_level(para._element)
         style_chain_level = _style_chain_heading_level(para)
-        if (
-            had_visible_prefix
-            or had_numpr
-            or style_level is not None
-            or outline_level is not None
-            or style_chain_level is not None
-        ):
+        # 部分标书用 Normal + 直接 outlineLvl 表示目录层级，同时依赖原样式控制
+        # 图片和表格分页；强制套用内置 Heading 会改变段落间距并制造空白页。
+        if style_level is not None or style_chain_level is not None:
             _apply_heading_level(para, _resolve_heading_level(para, inferred_depth))
 
         if changed:
@@ -730,6 +725,13 @@ def _has_page_break(para_element) -> bool:
     return False
 
 
+def _has_manual_break(para_element) -> bool:
+    """段落是否承载手工换行或分页节点。"""
+    from docx.oxml.ns import qn
+
+    return next(para_element.iter(qn("w:br")), None) is not None
+
+
 def _has_sect_pr(para_element) -> bool:
     """段落 pPr 中是否含节属性（sectPr）。"""
     from docx.oxml.ns import qn
@@ -922,6 +924,36 @@ def _mark_preserved_blank_heading(para_element) -> None:
     bookmark_end.set(qn("w:id"), bookmark_id)
     para_element.append(bookmark_start)
     para_element.append(bookmark_end)
+
+
+def _remove_preserved_blank_heading_markers(para_element) -> bool:
+    """移除本工具写入的空白标题书签，不影响其他书签。"""
+    from docx.oxml.ns import qn
+
+    bookmark_starts = [
+        bookmark
+        for bookmark in para_element.iter(qn("w:bookmarkStart"))
+        if str(bookmark.get(qn("w:name")) or "").startswith(_BLANK_HEADING_BOOKMARK_PREFIX)
+    ]
+    bookmark_ids = {
+        bookmark.get(qn("w:id"))
+        for bookmark in bookmark_starts
+        if bookmark.get(qn("w:id")) is not None
+    }
+    if not bookmark_starts:
+        return False
+
+    for bookmark in bookmark_starts:
+        parent = bookmark.getparent()
+        if parent is not None:
+            parent.remove(bookmark)
+    for bookmark in list(para_element.iter(qn("w:bookmarkEnd"))):
+        if bookmark.get(qn("w:id")) not in bookmark_ids:
+            continue
+        parent = bookmark.getparent()
+        if parent is not None:
+            parent.remove(bookmark)
+    return True
 
 
 def _is_preserved_blank_heading(body_child) -> bool:
@@ -1401,12 +1433,16 @@ def cmd_normalize(docx_path: Path) -> None:
         if text:
             continue  # 有文字的段落不处理
 
+        if _is_preserved_blank_heading(para._element) and not _has_manual_break(para._element):
+            _remove_preserved_blank_heading_markers(para._element)
+
         para_outline_lvl = _get_outline_level(para._element)
         if not _looks_like_heading_para(para):
             continue
 
-        # 仅清除标题元数据；段落、换行符和分页符保持不变。
-        _mark_preserved_blank_heading(para._element)
+        # 仅对承载手工换行/分页的空标题加保留标记；纯空标题交给后续空行折叠。
+        if _has_manual_break(para._element):
+            _mark_preserved_blank_heading(para._element)
         para.style = doc.styles["Normal"]
 
         if para_outline_lvl is not None:
