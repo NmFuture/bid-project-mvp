@@ -163,9 +163,15 @@ def test_compose_uses_one_opencode_service_for_parallel_chapter_sessions() -> No
         assert services[service_name]["environment"]["OPENCODE_CHAPTER_BASE_URLS"] == (
             "${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}"
         )
+        assert services[service_name]["environment"]["TECH_OUTLINE_LLM_FINALIZE"] == (
+            "${TECH_OUTLINE_LLM_FINALIZE:-false}"
+        )
     assert sorted(
         name for name in compose["volumes"] if name.startswith("opencode_")
     ) == ["opencode_cache", "opencode_data"]
+
+    env_example = (CODE_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "TECH_OUTLINE_LLM_FINALIZE=false" in env_example
 
 
 def test_compose_overrides_include_docling_worker_and_bind_ocr_to_gpu_zero() -> None:

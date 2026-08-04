@@ -156,6 +156,7 @@ class Settings:
     onlyoffice_download_max_bytes: int
     s2_toc_output_file_name: str
     s2_toc_evidence_file_name: str
+    tech_outline_llm_finalize: bool
     fact_specs_override_path: Path
     fact_specs_versions_dir: Path
 
@@ -265,6 +266,9 @@ settings = Settings(
     s2_toc_output_file_name=os.getenv("S2_TOC_OUTPUT_FILE_NAME", "toc.json").strip() or "toc.json",
     s2_toc_evidence_file_name=os.getenv("S2_TOC_EVIDENCE_FILE_NAME", "toc_evidence.json").strip()
     or "toc_evidence.json",
+    # 置 1 恢复旧串行 LLM 收口会话（附表判断 + LLM 全局复核 + compose/finalize 由 LLM 驱动）。
+    # 默认关闭：5 次实测复核仅产出 1 次改判且为重复章节，质量兜底交给下游人工审核。
+    tech_outline_llm_finalize=_bool_env("TECH_OUTLINE_LLM_FINALIZE", False),
     fact_specs_override_path=Path(
         os.getenv(
             "FACT_SPECS_OVERRIDE_PATH",
