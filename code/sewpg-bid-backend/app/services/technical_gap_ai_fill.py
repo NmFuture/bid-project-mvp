@@ -381,6 +381,59 @@ def _ensure_pdf_ocr_sidecar(pdf_path: Path) -> tuple[str, str]:
     return str(sidecar_path), "generated"
 
 
+def _ensure_pdf_ocr_sidecars_batch(pending: list[tuple[dict[str, Any], Path]]) -> int:
+    """对本轮收集的待 OCR PDF 批量提交、统一等待并回填 sidecar 状态。
+
+    与 _ensure_pdf_ocr_sidecar 的单份状态语义一致（generated / skipped / failed），
+    区别在于全部任务一次性提交给 OCR worker 池并发执行，而不是逐份串行同步等待
+    （R09-B07-01）。OCR 未配置/失败不抛出，仅写入各 item 的 ocrStatus。
+    返回本轮新生成的 sidecar 数。
+    """
+    if not pending:
+        return 0
+
+    def _mark_all(status: str) -> int:
+        for item, _pdf_path in pending:
+            item["ocrStatus"] = status
+        return 0
+
+    try:
+        results = _run_async(
+            ocr_service.recognize_texts_for_parse_batch(
+                files=[(pdf_path.name, pdf_path.read_bytes(), "application/pdf") for _, pdf_path in pending]
+            )
+        )
+    except PeripheralError as exc:
+        if exc.code == "OCR_CONFIG_REQUIRED":
+            return _mark_all("skipped: OCR 模型未启用或未配置")
+        return _mark_all(f"failed: {exc.detail}")
+    except Exception as exc:
+        return _mark_all(f"failed: {exc}")
+
+    generated = 0
+    for (item, pdf_path), result in zip(pending, results, strict=True):
+        if isinstance(result, BaseException):
+            if isinstance(result, PeripheralError) and result.code == "OCR_CONFIG_REQUIRED":
+                item["ocrStatus"] = "skipped: OCR 模型未启用或未配置"
+            elif isinstance(result, PeripheralError):
+                item["ocrStatus"] = f"failed: {result.detail}"
+            else:
+                item["ocrStatus"] = f"failed: {result}"
+            continue
+        text, _meta = result
+        if not str(text or "").strip():
+            item["ocrStatus"] = "failed: OCR 识别结果为空"
+            continue
+        sidecar_path = pdf_path.with_suffix(".ocr.txt")
+        # 批量等待期间其他任务可能已补齐同一 sidecar，缓存优先不覆写
+        if not (sidecar_path.exists() and sidecar_path.stat().st_size > 0):
+            sidecar_path.write_text(str(text), encoding="utf-8")
+        item["ocrTextPath"] = str(sidecar_path)
+        item["ocrStatus"] = "generated"
+        generated += 1
+    return generated
+
+
 def _prepare_material_index_files(
     material_index: list[dict[str, Any]],
     work_dir: Path,
@@ -392,7 +445,9 @@ def _prepare_material_index_files(
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     cache_dir = cache_dir or (work_dir / "material_index")
-    ocr_generated = 0
+    # 两阶段：先逐份串行下载落地（缓存命中秒过），收集本轮需 OCR 的 PDF；
+    # 再对收集列表批量提交、统一等待回填，避免逐份同步阻塞 OCR worker 池。
+    pending_ocr: list[tuple[dict[str, Any], Path]] = []
     for material in material_index[:limit]:
         item = dict(material)
         material_id = str(item.get("id") or item.get("materialId") or "").strip()
@@ -423,16 +478,17 @@ def _prepare_material_index_files(
         )
         if ocr_pdf and target_path.suffix.lower() == ".pdf":
             has_cache = target_path.with_suffix(".ocr.txt").exists()
-            if has_cache or ocr_generated < ocr_budget:
+            if has_cache:
                 sidecar_path, ocr_status = _ensure_pdf_ocr_sidecar(target_path)
                 if sidecar_path:
                     item["ocrTextPath"] = sidecar_path
-                if ocr_status == "generated":
-                    ocr_generated += 1
+                item["ocrStatus"] = ocr_status
+            elif len(pending_ocr) < ocr_budget:
+                pending_ocr.append((item, target_path))
             else:
-                ocr_status = _OCR_BUDGET_SKIPPED_STATUS
-            item["ocrStatus"] = ocr_status
+                item["ocrStatus"] = _OCR_BUDGET_SKIPPED_STATUS
         prepared.append(item)
+    _ensure_pdf_ocr_sidecars_batch(pending_ocr)
     return prepared
 
 
