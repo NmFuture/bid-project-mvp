@@ -499,3 +499,168 @@ def test_stale_cleaning_job_is_reported_as_cancelled_instead_of_success() -> Non
         "status": "cancelled",
         "summary": "清洗任务对应的素材版本已过期。",
     }
+
+
+class _PurgeSession:
+    def __init__(self, versions: list[SimpleNamespace]) -> None:
+        self.versions = versions
+
+    async def execute(self, _statement: object) -> object:
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self.versions))
+
+
+def test_purge_raw_file_objects_removes_fulltext_and_parsed_history() -> None:
+    from app.services import material_raw_object_operations
+
+    item = SimpleNamespace(
+        id=7,
+        minio_bucket="bid-materials",
+        minio_key="raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf",
+        ext_fields={
+            "cleanedMinioBucket": "bid-materials",
+            "cleanedMinioKey": "cleaned/RAW-0007/v3/授权书.docx",
+            "deepParseProfile": {
+                "profile": {
+                    "fulltextBucket": "bid-materials",
+                    "fulltextKey": "parsed/RAW-0007/v3/fulltext.md",
+                }
+            },
+        },
+    )
+    session = _PurgeSession([SimpleNamespace(minio_key="raw-versions/RAW-0007/v2/授权书.pdf")])
+
+    with (
+        patch.object(material_raw_object_operations.minio_client, "remove_object") as remove_mock,
+        patch.object(
+            material_raw_object_operations.minio_client,
+            "list_object_keys",
+            return_value=["parsed/RAW-0007/v1/fulltext.md", "parsed/RAW-0007/v3/fulltext.md"],
+        ) as list_mock,
+    ):
+        asyncio.run(
+            material_raw_object_operations.purge_raw_file_objects(
+                session,
+                item,
+                ensure_runtime_tables=AsyncMock(),
+            )
+        )
+
+    list_mock.assert_called_once_with("bid-materials", "parsed/RAW-0007/")
+    removed = {(call.args[0], call.args[1]) for call in remove_mock.call_args_list}
+    assert removed == {
+        ("bid-materials", "raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf"),
+        ("bid-materials", "cleaned/RAW-0007/v3/授权书.docx"),
+        ("bid-materials", "raw-versions/RAW-0007/v2/授权书.pdf"),
+        ("bid-materials", "parsed/RAW-0007/v1/fulltext.md"),
+        ("bid-materials", "parsed/RAW-0007/v3/fulltext.md"),
+    }
+
+
+def test_purge_raw_file_objects_tolerates_parsed_listing_failure() -> None:
+    from app.services import material_raw_object_operations
+
+    item = SimpleNamespace(
+        id=7,
+        minio_bucket="bid-materials",
+        minio_key="raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf",
+        ext_fields={
+            "deepParseProfile": {
+                "profile": {
+                    "fulltextBucket": "bid-materials",
+                    "fulltextKey": "parsed/RAW-0007/v2/fulltext.md",
+                }
+            },
+        },
+    )
+    session = _PurgeSession([])
+
+    with (
+        patch.object(material_raw_object_operations.minio_client, "remove_object") as remove_mock,
+        patch.object(
+            material_raw_object_operations.minio_client,
+            "list_object_keys",
+            side_effect=RuntimeError("minio down"),
+        ),
+    ):
+        # 前缀列表失败只告警，不阻断删除事务，已收集的 key 照常清理
+        asyncio.run(
+            material_raw_object_operations.purge_raw_file_objects(
+                session,
+                item,
+                ensure_runtime_tables=AsyncMock(),
+            )
+        )
+
+    removed = {(call.args[0], call.args[1]) for call in remove_mock.call_args_list}
+    assert removed == {
+        ("bid-materials", "raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf"),
+        ("bid-materials", "parsed/RAW-0007/v2/fulltext.md"),
+    }
+
+
+def test_overwrite_upload_enqueues_stale_fulltext_removal() -> None:
+    from app.services import material_upload_operations
+    from app.services.material_raw_object_operations import raw_version_object_key
+
+    folder = SimpleNamespace(
+        id=11,
+        path="技术标/项目定制/PRJ-1/授权文件",
+        tier="project",
+        bid_type="技术标",
+        project_id="PRJ-1",
+        sort_order=0,
+        customer_name="",
+    )
+    existing = _UploadItem(
+        id=7,
+        name="授权书.pdf",
+        size_bytes=10,
+        minio_bucket="materials",
+        minio_key="raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf",
+        mime_type="application/pdf",
+        version=2,
+        ext_fields={
+            "cleanStatus": "cleaned",
+            "deepParseProfile": {
+                "profile": {
+                    "fulltextBucket": "bid-materials",
+                    "fulltextKey": "parsed/RAW-0007/v2/fulltext.md",
+                }
+            },
+        },
+        folder=folder,
+    )
+    session = _UploadSession(folder, existing)
+
+    with (
+        patch.object(material_upload_operations, "async_session", return_value=session),
+        patch.object(material_upload_operations.minio_client, "put_object", return_value="etag"),
+        patch.object(material_upload_operations.minio_client, "remove_object") as remove_mock,
+    ):
+        asyncio.run(
+            material_upload_operations.upload_raw_files(
+                target_path=folder.path,
+                bid_type="技术标",
+                on_conflict="overwrite",
+                files=[
+                    {
+                        "name": "授权书.pdf",
+                        "mimeType": "application/pdf",
+                        "data": b"version-b",
+                    }
+                ],
+                ensure_runtime_tables=AsyncMock(),
+                ensure_folder_path=AsyncMock(),
+                clear_default_folder_deletion=AsyncMock(),
+                ensure_nested_folder=AsyncMock(),
+                archive_raw_file_version=AsyncMock(),
+                remove_cleaned_object_from_ext=lambda _ext: None,
+                raw_object_key=lambda path, name: f"raw/{path}/{name}",
+                raw_version_object_key=raw_version_object_key,
+                infer_material_tier_from_folder=lambda _folder: "project",
+                enqueue_cleaning_job=MagicMock(return_value={"queued": True, "jobId": "job-v3"}),
+            )
+        )
+
+    removed = {(call.args[0], call.args[1]) for call in remove_mock.call_args_list}
+    assert ("bid-materials", "parsed/RAW-0007/v2/fulltext.md") in removed

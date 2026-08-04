@@ -137,6 +137,13 @@ class MinioClient:
         ttl = expires if isinstance(expires, timedelta) else timedelta(seconds=int(expires))
         return self.client.presigned_get_object(bucket, key, expires=ttl)
 
+    def list_object_keys(self, bucket: str, prefix: str) -> list[str]:
+        return [
+            str(obj.object_name)
+            for obj in self.client.list_objects(bucket, prefix=prefix, recursive=True)
+            if obj.object_name
+        ]
+
     def remove_object(self, bucket: str, key: str) -> None:
         try:
             self.client.remove_object(bucket, key)

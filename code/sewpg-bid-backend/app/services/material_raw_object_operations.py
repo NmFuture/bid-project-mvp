@@ -100,6 +100,22 @@ async def purge_raw_file_objects(
     cleaned_key = str(ext.get("cleanedMinioKey") or "")
     if cleaned_key:
         keys.add((str(ext.get("cleanedMinioBucket") or settings.minio_buckets["materials"]), cleaned_key))
+    # PDF 全文提取产物（material_deep_parse.fulltext_object_key 写入 parsed/RAW-xxxx/v<n>/fulltext.md）
+    # 也要随素材清掉：先清画像记录的当前 key，再按前缀清历史多版本，避免覆盖上传留下的孤儿（R09-B03-01）
+    deep_profile = ext.get("deepParseProfile")
+    profile = deep_profile.get("profile") if isinstance(deep_profile, dict) else None
+    fulltext_bucket = str(settings.minio_buckets["materials"])
+    if isinstance(profile, dict):
+        fulltext_bucket = str(profile.get("fulltextBucket") or fulltext_bucket)
+        fulltext_key = str(profile.get("fulltextKey") or "")
+        if fulltext_key:
+            keys.add((fulltext_bucket, fulltext_key))
+    parsed_prefix = f"parsed/RAW-{int(item.id):04d}/"
+    try:
+        for listed_key in minio_client.list_object_keys(fulltext_bucket, parsed_prefix):
+            keys.add((fulltext_bucket, listed_key))
+    except Exception as exc:  # 前缀列表失败仅告警，已收集的 key 照常逐条容错清理
+        logger.warning("purge 素材解析产物列表 %s/%s 失败：%s", fulltext_bucket, parsed_prefix, exc)
     keys.update(
         (str(item.minio_bucket or settings.minio_buckets["materials"]), str(version.minio_key or ""))
         for version in version_rows

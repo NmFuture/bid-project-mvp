@@ -359,6 +359,19 @@ async def upload_raw_files(
                                 "key": stale_cleaned_key,
                             }
                         )
+                    # 旧版本 PDF 全文提取产物一并登记待删，否则覆盖后成为孤儿（R09-B03-01）
+                    stale_deep = stale_cleaned.get("deepParseProfile")
+                    stale_profile = stale_deep.get("profile") if isinstance(stale_deep, dict) else None
+                    stale_fulltext_key = (
+                        str(stale_profile.get("fulltextKey") or "") if isinstance(stale_profile, dict) else ""
+                    )
+                    if stale_fulltext_key:
+                        pending_cleaned_removals.append(
+                            {
+                                "bucket": str(stale_profile.get("fulltextBucket") or materials_bucket),
+                                "key": stale_fulltext_key,
+                            }
+                        )
                     existing.size_bytes = size
                     existing.minio_key = minio_key
                     existing.mime_type = mime_type
