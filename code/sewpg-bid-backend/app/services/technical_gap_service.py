@@ -456,6 +456,43 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap not found")
 
+    def set_title_only(
+        self,
+        project_id: str,
+        gap_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # 目录节点「忽略」（S3 树状改造 2026-08-04）：本级仅保留标题骨架，不再匹配素材，
+        # 内容下放子级各自匹配；可取消。只落 titleOnly 标记，冻结/释放由前端按树派生。
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别。")
+            plan_item = find_technical_gap_plan_item(gap_state, gap_id)
+            if plan_item is None:
+                raise KeyError(gap_id)
+            payload = data or {}
+            enabled = payload.get("enabled", True) is not False
+            operator = str(payload.get("operator") or "当前用户")
+            timestamp = now_iso()
+            plan_item["titleOnly"] = enabled
+            plan_item["titleOnlyAt"] = timestamp if enabled else ""
+            plan_item["titleOnlyBy"] = operator if enabled else ""
+            plan_item.setdefault("reviewNotes", []).append(
+                f"人工忽略本级（仅保留标题）：{operator}" if enabled else f"取消忽略本级：{operator}"
+            )
+            self._refresh_gap_integrity(project, gap_state)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(gap_state.get("plan") or {})
+            persist_technical_gap_project(project)
+            return {
+                "message": "本级已忽略，仅保留标题，子级将各自匹配素材。" if enabled else "已取消忽略本级。",
+                "item": copy.deepcopy(plan_item),
+                "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap not found")
+
     async def select_material(
         self,
         project_id: str,

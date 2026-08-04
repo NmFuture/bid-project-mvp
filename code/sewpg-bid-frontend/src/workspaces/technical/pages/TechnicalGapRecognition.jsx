@@ -25,7 +25,7 @@ import {
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
   technicalGenerationPresentation,
-  technicalGapParentCoverageState,
+  technicalGapNumberKey,
   technicalGapTagOf,
   technicalMatchScore,
   uniqueStrings,
@@ -111,69 +111,65 @@ const artifactSourceLabels = {
   ai_fill: 'AI填写',
 }
 
-// 目录列表里的标签：纯展示，不带任何操作（产品反馈 2026-07-21：「确认」散落在左侧
-// 每一行太乱，只在右侧详情面板标题旁对当前选中项放一个「确认」）。
+// 目录列表里的标签：主五字加粗 + 括号注记小一号浅色（命名 v4，产品裁决 2026-08-04）。
 function TechnicalTocActionBadge({ item, items }) {
   const tag = technicalGapTagOf(item, items)
   const config = TECHNICAL_GAP_TAG_CONFIG[tag]
-  // 结构项/空章节无标签（v2 裁决 + 产品意见 2026-07-17：删除「空章节」等冗余提示）。
+  // 结构项/空章节无标签（产品意见 2026-07-17：删除「空章节」等冗余提示）。
   if (!config) return null
   return (
     <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant}>
       {config.label}
+      {config.note ? <span className="ml-1 text-[10px] font-normal opacity-70">{config.note}</span> : null}
     </Badge>
   )
 }
 
-// 就绪确认控件（产品反馈 2026-07-21）：只在右侧详情面板标题旁对当前选中目录项渲染，
-// 且只有一个可点击控件——不再是「标签 + 按钮」两个元素。
-// UI 统一性（产品反馈）：已就绪的目录项也保留这个按钮，展示成「已点击过」的样式，
-// 不因为是文件名精确命中自动就绪就把控件藏起来。
-// 按钮在「确认」与「已就绪（可再点撤销）」间切换，是变「已就绪」的唯一人工入口；
-// 对自动就绪（非人工确认）的项点撤销只是把 humanConfirmed 显式落为 false，不影响其
-// 已就绪的展示（因为分数命中不依赖这个标记），所以视觉上不会有变化，属预期行为。
-function TechnicalGapReadyControl({ item, items, busy, onConfirmReady }) {
+// 右侧详情面板标题旁的操作控件（产品裁决 2026-08-04 S3 树状改造）：
+// - 待确认素材/待确认模板：「确认」按钮，人工背书当前匹配（30~98 档唯一动作）；
+// - 已就绪素材/已就绪模板：展示定案态，可点撤销（回落分数档）；
+// - 待复核模板：「重新AI填写」+「复核通过」两个按钮，复核通过后收口为已就绪素材；
+// - 由父章覆盖/仅保留标题/待人工补充：不渲染确认控件（补素材经选材/上传即定案）。
+function TechnicalGapActionControls({ item, items, busy, onConfirmReady, onReviewPass, onRefill }) {
   const tag = technicalGapTagOf(item, items)
-  const config = TECHNICAL_GAP_TAG_CONFIG[tag]
-  if (!config) return null
-  const confirmed = tag === 'ready'
+  if (!tag || tag === 'parent_covered' || tag === 'title_only' || tag === 'manual_supplement') return null
+  if (tag === 'template_review') {
+    return (
+      <>
+        <Button
+          type="button"
+          onClick={() => onRefill(item)}
+          disabled={busy}
+          title="复核不通过时重新发起 AI 填写"
+          size="sm"
+          variant="secondary"
+        >
+          重新AI填写
+        </Button>
+        <Button
+          type="button"
+          onClick={() => onReviewPass(item)}
+          disabled={busy}
+          title="确认 AI 填写结果无误，本条定案"
+          size="sm"
+          variant="primary"
+        >
+          复核通过
+        </Button>
+      </>
+    )
+  }
+  const settled = tag === 'material_ready' || tag === 'template_ready'
   return (
     <Button
       type="button"
-      onClick={() => onConfirmReady(item, !confirmed)}
+      onClick={() => onConfirmReady(item, !settled)}
       disabled={busy}
-      title={confirmed ? '已就绪状态，点击撤销人工确认' : '人工确认本章已就绪'}
+      title={settled ? '已定案，点击撤销（回落到待确认）' : '人工确认当前匹配'}
       size="sm"
-      variant={confirmed ? 'secondary' : 'primary'}
+      variant={settled ? 'secondary' : 'primary'}
     >
-      {confirmed ? '已就绪' : '确认'}
-    </Button>
-  )
-}
-
-// 「父章节覆盖」控件（产品需求 2026-07-27）：放在「确认」左边，只对有下级目录的节点渲染。
-// 作用是把本节点选定的素材铺给它下面的所有小节——评审时人一眼能看出「这一章就是这份
-// 素材写的」，不用逐个小节再选一遍。本节点自己没选素材时禁用（覆盖源不能是空的）。
-// 已设置后按钮切成撤销态，与「确认/已就绪」的交互一致。
-function TechnicalGapParentCoverageControl({ item, items, busy, onSetParentCoverage }) {
-  const state = technicalGapParentCoverageState(item, items)
-  if (!state.descendantCount) return null
-  const disabled = busy || (!state.applied && !state.canApply)
-  const title = state.applied
-    ? `已把 ${state.coveredCount} 个下级目录设为父章节覆盖，点击撤销`
-    : state.hasMaterial
-      ? `把下面 ${state.descendantCount} 个目录项设为由本章素材覆盖`
-      : '本章还没有选用素材，选好素材后才能设置父章节覆盖'
-  return (
-    <Button
-      type="button"
-      onClick={() => onSetParentCoverage(item, !state.applied)}
-      disabled={disabled}
-      title={title}
-      size="sm"
-      variant="secondary"
-    >
-      {state.applied ? `已覆盖下级 ${state.coveredCount}` : '父章节覆盖'}
+      {settled ? '已定案' : '确认'}
     </Button>
   )
 }
@@ -1150,6 +1146,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [selectedId, setSelectedId] = useState('')
   // 目录标签筛选（产品意见 2026-07-17）：点顶部统计标签只看对应目录项，再点一次取消。
   const [tagFilter, setTagFilter] = useState('')
+  // 目录树展开态（key = 归一化目录号）；「忽略」父级时自动展开其子级。
+  const [expandedTocKeys, setExpandedTocKeys] = useState(() => new Set())
+  // 定案项的备选区默认收起，「更换素材」临时展开；切换目录项时复位。
+  const [materialSwapOpen, setMaterialSwapOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyAction, setBusyAction] = useState('')
@@ -1230,6 +1230,42 @@ export default function TechnicalGapRecognition({ showToast }) {
   const filteredItems = useMemo(() => (
     tagFilter ? items.filter((item) => technicalGapTagOf(item, items) === tagFilter) : items
   ), [items, tagFilter])
+  // 目录树（产品裁决 2026-08-04）：按目录号构建可折叠树，默认只展开一级章；
+  // 筛选态退化为平铺命中列表（跨层级命中在树里会被折叠遮住）。
+  const treeRows = useMemo(() => {
+    if (tagFilter) {
+      return filteredItems.map((item) => ({
+        item,
+        key: technicalGapNumberKey(item?.number),
+        depth: 0,
+        hasChildren: false,
+        expanded: false,
+      }))
+    }
+    const keys = new Set(items.map((item) => technicalGapNumberKey(item?.number)).filter(Boolean))
+    const childrenMap = new Map()
+    const roots = []
+    items.forEach((item) => {
+      const key = technicalGapNumberKey(item?.number)
+      const parentKey = key && key.includes('.') ? key.slice(0, key.lastIndexOf('.')) : ''
+      if (parentKey && keys.has(parentKey)) {
+        if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, [])
+        childrenMap.get(parentKey).push(item)
+      } else {
+        roots.push(item)
+      }
+    })
+    const rows = []
+    const walk = (item, depth) => {
+      const key = technicalGapNumberKey(item?.number)
+      const children = childrenMap.get(key) || []
+      const expanded = expandedTocKeys.has(key)
+      rows.push({ item, key, depth, hasChildren: children.length > 0, expanded })
+      if (children.length && expanded) children.forEach((child) => walk(child, depth + 1))
+    }
+    roots.forEach((item) => walk(item, 0))
+    return rows
+  }, [items, filteredItems, tagFilter, expandedTocKeys])
   const effectiveSelectedId = filteredItems.some((item) => item.id === selectedId)
     ? selectedId
     : (filteredItems[0]?.id || '')
@@ -1341,9 +1377,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
   // AI填写按钮统一打开参考素材选择弹窗（产品裁决：先选参考素材再执行）；
   // 仅用于已选区的卡片（产品裁决 2026-07-21：候选池/搜索结果不出现 AI填写）。
+  // 冻结（由父章覆盖/仅保留标题）的目录项只读，不给 AI填写 入口。
   const cardAiFillProps = (material) => ({
     fillable: materialFillable(material),
-    onAiFill: selectedFillTask ? () => setAiFillModalTask(selectedFillTask) : null,
+    onAiFill: selectedFillTask && !frozenSelected ? () => setAiFillModalTask(selectedFillTask) : null,
     aiFillBusy,
     aiFillCompleted: selectedAiFillCompleted,
   })
@@ -1428,15 +1465,26 @@ export default function TechnicalGapRecognition({ showToast }) {
     ...asArray(selectedBlankSource?.placeholderLabels),
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
   ], 10)
-  // 目录标签统计（v2 四标签口径）：标签由候选池 × 素材形态 × 人工操作派生，结构项不计入任务。
+  // 目录标签统计（v4 八标签口径）：只统计六个工作态；由父章覆盖/仅保留标题是旁路态不计入。
   const tagCounts = useMemo(() => {
-    const counts = { needs_material: 0, needs_refine: 0, needs_fill: 0, ready: 0 }
+    const counts = {
+      manual_supplement: 0,
+      template_confirm: 0,
+      material_confirm: 0,
+      template_ready: 0,
+      template_review: 0,
+      material_ready: 0,
+    }
     items.forEach((item) => {
       const tag = technicalGapTagOf(item, items)
-      if (tag) counts[tag] += 1
+      if (tag in counts) counts[tag] += 1
     })
     return counts
   }, [items])
+  // 当前选中项的派生态：冻结项操作全禁用（只读查看），定案项备选区默认收起。
+  const selectedTag = selected ? technicalGapTagOf(selected, items) : ''
+  const frozenSelected = selectedTag === 'parent_covered' || selectedTag === 'title_only'
+  const settledSelected = ['material_ready', 'template_ready', 'template_review'].includes(selectedTag)
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -1714,23 +1762,58 @@ export default function TechnicalGapRecognition({ showToast }) {
     setManualPreviewChoice(null)
     setPreviewOpen(false)
     setAiFillModalTask(null)
+    setMaterialSwapOpen(false)
   }
 
-  // 目录节点「确认」/撤销：把目录项翻成「已就绪」的唯一人工入口（文件名精确命中除外），
-  // 无前置条件，以人的判断为准（产品裁决 2026-07-21）。
+  const toggleTocKeyExpanded = (key) => {
+    if (!key) return
+    setExpandedTocKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  // 目录节点「确认」/撤销：人工背书系统匹配（30~98 档），撤销后回落分数档。
   const handleConfirmGapReady = (item, confirmed) => runAction(
     `confirm-ready:${item.id}`,
     () => technicalGapsAPI.confirmReady(id, item.id, { confirmed, operator: '当前用户' }),
-    (result) => result?.message || (confirmed ? '本章已确认就绪' : '已撤销就绪确认'),
+    (result) => result?.message || (confirmed ? '已确认当前匹配' : '已撤销确认'),
   )
 
-  // 人工设「父章节覆盖」：把本节点的素材铺给全部下级目录项，可撤销。
-  // 已自行选过素材的下级由后端跳过，跳过数量在返回消息里说明。
-  const handleSetParentCoverage = (item, covered) => runAction(
-    `parent-coverage:${item.id}`,
-    () => technicalGapsAPI.setParentCoverage(id, item.id, { covered, operator: '当前用户' }),
-    (result) => result?.message || (covered ? '已设为父章节覆盖' : '已撤销父章节覆盖'),
-  )
+  // 目录节点「忽略」/取消（产品裁决 2026-08-04）：本级仅保留标题，子级释放各自匹配；
+  // 忽略时自动展开子级，让下一层立即可处理。
+  const handleSetTitleOnly = (item, enabled) => {
+    if (enabled) {
+      const key = technicalGapNumberKey(item?.number)
+      if (key) setExpandedTocKeys((prev) => new Set(prev).add(key))
+    }
+    return runAction(
+      `title-only:${item.id}`,
+      () => technicalGapsAPI.setTitleOnly(id, item.id, { enabled, operator: '当前用户' }),
+      (result) => result?.message || (enabled ? '本级已忽略，仅保留标题' : '已取消忽略'),
+    )
+  }
+
+  // 「复核通过」（产品裁决 2026-08-04 行为①）：确认全部 AI 填写产物，本条收口为已就绪素材。
+  const handleReviewPassAiFill = (item) => {
+    const artifact = asObjectArray(item?.resolvedArtifacts)
+      .filter((entry) => String(entry?.source || '') === 'ai_fill')
+      .pop()
+    if (!artifact?.id) return null
+    return runAction(
+      `review-pass:${item.id}`,
+      () => technicalGapsAPI.confirmAiFillArtifact(id, item.id, artifact.id, { operator: '当前用户' }),
+      (result) => result?.message || '复核通过，本条已定案',
+    )
+  }
+
+  // 「重新AI填写」：复核不通过时原地重填（同任务产物替换）。
+  const handleRefillAiFill = (item) => {
+    const task = asObjectArray(item?.fillTasks)[0] || null
+    if (task) setAiFillModalTask(task)
+  }
 
   const handleSelectMaterial = async (material) => {
     const materialId = String(material?.id || material?.materialId || '').trim()
@@ -1808,24 +1891,9 @@ export default function TechnicalGapRecognition({ showToast }) {
       setPreviewSession(null)
       setPreviewError('')
       setManualPreviewChoice(null)
-      // 产品意见 2026-07-17：用户主动发起 AI 填写即视为人工操作，产物直接进入选中/就绪状态，
-      // 不再保留「确认可合并」二次确认；质检未通过的产物由前端自动确认补齐门禁。
-      const artifact = payload?.artifact
-      const artifactId = String(artifact?.id || '').trim()
-      const autoConfirmNeeded = artifactId
-        && String(artifact?.source || '') === 'ai_fill'
-        && String(artifact?.qualityGate || '') !== 'human_confirmed'
-        && String(artifact?.qualityReport?.status || '') !== 'passed'
-      if (autoConfirmNeeded) {
-        try {
-          const confirmed = await technicalGapsAPI.confirmAiFillArtifact(id, selected.id, artifactId, { operator: '当前用户' })
-          if (confirmed) updatePayload(confirmed)
-        } catch {
-          // 自动确认失败不阻塞：产物已生成，刷新后可重新发起 AI 填写。
-        }
-      }
-      // 产品意见 2026-07-17（二）：填写完成直接弹出结果预览——当场检查，有问题立刻重新填写，
-      // 弥补免二次确认后缺失的验收环节。
+      // 产品裁决 2026-08-04（行为①，推翻 2026-07-17 自动确认）：AI 填写完成后停在
+      // 「待复核模板」，由人点「复核通过」定案；这里只弹出结果预览方便当场检查。
+      const artifactId = String(payload?.artifact?.id || '').trim()
       if (artifactId) {
         setPreviewChoiceKey(`artifact:${artifactId}`)
         setPreviewOpen(true)
@@ -2074,8 +2142,8 @@ export default function TechnicalGapRecognition({ showToast }) {
         )}
       />
 
-      {/* 单条统计栏（产品意见 2026-07-17）：处理任务/待处理/已就绪卡片与四标签统计冗余，
-          仅保留目录节点总数 + 四标签明细（待处理 = 前三项之和，处理任务 = 四项之和）。 */}
+      {/* 单条统计栏：目录节点总数 + 六个工作态标签明细（v4，产品裁决 2026-08-04）。
+          排列即流水线顺序：红 → 紫/琥珀 → 蓝 → 青 → 绿。 */}
       {isCompleted ? (
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex min-h-7 flex-wrap items-center gap-3">
@@ -2083,8 +2151,8 @@ export default function TechnicalGapRecognition({ showToast }) {
               <span className="text-xs font-semibold text-on-surface-variant">目录节点</span>
               <span className="text-lg font-headline font-bold tabular-nums text-primary">{summary.totalTocItems ?? items.length}</span>
             </div>
-            <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5 text-center sm:grid-cols-4">
-              {['needs_material', 'needs_refine', 'needs_fill', 'ready'].map((key) => {
+            <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5 text-center sm:grid-cols-6">
+              {['manual_supplement', 'template_confirm', 'material_confirm', 'template_ready', 'template_review', 'material_ready'].map((key) => {
                 const active = tagFilter === key
                 return (
                   <button
@@ -2151,27 +2219,77 @@ export default function TechnicalGapRecognition({ showToast }) {
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
                 <div>
-                  {filteredItems.map((item) => {
+                  {/* 可折叠目录树（产品裁决 2026-08-04）：默认只展开一级章，第一波先定章级；
+                      被冻结的子级灰显、可点开查看、操作禁用；「忽略」只出现在未冻结的有子级节点上。 */}
+                  {treeRows.map(({ item, key, depth, hasChildren, expanded }) => {
                     const active = effectiveSelectedId === item.id
+                    const tag = technicalGapTagOf(item, items)
+                    const frozen = tag === 'parent_covered'
+                    const ignored = tag === 'title_only'
+                    const canIgnore = hasChildren && !frozen && !tagFilter
                     return (
-                      <button
+                      <div
                         key={item.id}
-                        type="button"
                         onClick={() => handleSelectTocItem(item.id)}
-                        className={`business-toc-item mb-2 block h-auto w-full rounded-md border px-3 py-3 text-left transition-colors ${active ? 'border-primary bg-primary-fixed shadow-sm' : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'}`}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') handleSelectTocItem(item.id)
+                        }}
+                        style={depth ? { marginLeft: `${depth * 16}px` } : undefined}
+                        className={`business-toc-item mb-2 block h-auto cursor-pointer rounded-md border px-3 py-3 text-left transition-colors ${
+                          active
+                            ? 'border-primary bg-primary-fixed shadow-sm'
+                            : frozen || ignored
+                              ? 'border-surface-container-high bg-surface-container-low opacity-60 hover:opacity-80'
+                              : 'border-surface-container-high bg-surface-container-lowest hover:bg-surface-container-low'
+                        }`}
                         data-active={active ? 'true' : 'false'}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[11px] font-medium text-outline">{item.number || item.section || '-'}</div>
-                            <div className="mt-1 line-clamp-2 text-sm font-semibold leading-snug text-on-surface">{item.title}</div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex min-w-0 items-start gap-1">
+                            {hasChildren && !tagFilter ? (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  toggleTocKeyExpanded(key)
+                                }}
+                                aria-label={expanded ? `收起 ${item.number || item.title}` : `展开 ${item.number || item.title}`}
+                                className="mt-0.5 -ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline transition-transform hover:bg-surface-container-high hover:text-on-surface"
+                              >
+                                <span className={`material-symbols-outlined text-[16px] transition-transform ${expanded ? 'rotate-90' : ''}`}>chevron_right</span>
+                              </button>
+                            ) : (
+                              <span className="w-4 shrink-0" />
+                            )}
+                            <div className="min-w-0">
+                              <div className={`text-[11px] font-medium ${frozen || ignored ? 'text-outline/70' : 'text-outline'}`}>{item.number || item.section || '-'}</div>
+                              <div className={`mt-1 line-clamp-2 text-sm font-semibold leading-snug ${frozen || ignored ? 'text-on-surface-variant' : 'text-on-surface'}`}>{item.title}</div>
+                            </div>
                           </div>
-                          <TechnicalTocActionBadge item={item} items={items} />
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {canIgnore ? (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  handleSetTitleOnly(item, !ignored)
+                                }}
+                                disabled={Boolean(busyAction)}
+                                title={ignored ? '取消忽略：本级恢复匹配素材，子级重新冻结' : '忽略本级：仅保留标题，下级各自匹配素材'}
+                                className="rounded px-1.5 py-0.5 text-[11px] font-medium text-outline transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:opacity-50"
+                              >
+                                {ignored ? '取消忽略' : '忽略'}
+                              </button>
+                            ) : null}
+                            <TechnicalTocActionBadge item={item} items={items} />
+                          </div>
                         </div>
-                      </button>
+                      </div>
                     )
                   })}
-                  {!filteredItems.length ? (
+                  {!treeRows.length ? (
                     <div className="px-5 py-10 text-center text-sm text-outline">
                       当前筛选下暂无目录项。
                     </div>
@@ -2189,17 +2307,13 @@ export default function TechnicalGapRecognition({ showToast }) {
                       <div className="mt-1 flex items-center justify-between gap-3">
                         <h3 className="min-w-0 truncate text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
                         <div className="flex shrink-0 items-center gap-2">
-                          <TechnicalGapParentCoverageControl
-                            item={selected}
-                            items={items}
-                            busy={Boolean(busyAction)}
-                            onSetParentCoverage={handleSetParentCoverage}
-                          />
-                          <TechnicalGapReadyControl
+                          <TechnicalGapActionControls
                             item={selected}
                             items={items}
                             busy={Boolean(busyAction)}
                             onConfirmReady={handleConfirmGapReady}
+                            onReviewPass={handleReviewPassAiFill}
+                            onRefill={handleRefillAiFill}
                           />
                         </div>
                       </div>
@@ -2327,9 +2441,25 @@ export default function TechnicalGapRecognition({ showToast }) {
                         </section>
                       ) : null}
 
+                      {/* 定案项（含 0.99 精确命中）的备选区默认收起，保留「更换素材」入口
+                          （产品裁决 2026-08-04：99 分不展示备选，但撤换通道必须留）。 */}
+                      {!frozenSelected && settledSelected && backupEntries.length && !materialSwapOpen ? (
+                        <div className="flex justify-end">
+                          <Button
+                            type="button"
+                            onClick={() => setMaterialSwapOpen(true)}
+                            disabled={Boolean(busyAction)}
+                            size="sm"
+                            variant="quiet"
+                          >
+                            更换素材（{backupEntries.length} 个备选）
+                          </Button>
+                        </div>
+                      ) : null}
                       {/* 备选素材：待填写素材与参考素材平级的统一候选池（已剔除选中项，无候选则整块不渲染）；
-                          被父章覆盖的子节不再单独展示匹配，避免重复匹配和重复拼接。 */}
-                      {!defaultSelection?.inherited && backupEntries.length ? (
+                          被冻结（由父章覆盖/仅保留标题）的子节不展示备选，避免重复匹配和重复拼接。 */}
+                      {!frozenSelected && !defaultSelection?.inherited && backupEntries.length
+                        && (!settledSelected || materialSwapOpen) ? (
                         <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="text-xs font-semibold text-on-surface">备选素材</div>
@@ -2373,8 +2503,9 @@ export default function TechnicalGapRecognition({ showToast }) {
                         </section>
                       ) : null}
 
-                      {/* 统一兜底入口（产品裁决）：所有目录项底部都可搜索限定素材库、或直接上传素材；
-                          上传成功即选用为本目录项的匹配素材（人工产物，终审直接就绪）。 */}
+                      {/* 统一兜底入口：搜索限定素材库或直接上传素材，选定即定案（行为② 2026-08-04）。
+                          冻结（由父章覆盖/仅保留标题）的目录项只读，不渲染兜底入口。 */}
+                      {frozenSelected ? null : (
                       <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -2435,6 +2566,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                           )}
                         </div>
                       </section>
+                      )}
                     </div>
                   </div>
                 </div>

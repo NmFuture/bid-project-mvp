@@ -2423,6 +2423,15 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
             # 覆盖锚点：本子节在整章素材内部对应的标题/片段，供 UI 预览与 S4 按节切分。
             source_anchor = outline_anchor_for_title(parent_coverage.get("material"), title)
+            # 释放预备（S3 树状改造）：被覆盖子级同样保留自身候选，父章被「忽略」后
+            # 前端直接按候选派生标签，无需重跑缺口识别；覆盖期间 matchedMaterials 仍为空。
+            own_pick, own_alternatives = pick_material(candidate_materials, title)
+            alternative_materials = dedupe_materials(
+                ([own_pick] if own_pick else []) + own_alternatives
+            )
+            alternative_materials = attach_recalled_segments(alternative_materials, title)
+            alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+            alternative_materials = alternative_materials[:4]
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             appendix_tasks = []

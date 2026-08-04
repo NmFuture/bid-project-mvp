@@ -87,6 +87,7 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 - 如果父章标题不完全出现在文件名中，但至少多个子节标题能被同一份素材解释，也可以作为整章候选。
 - 父章选中一份整章 Word 后，父章标记 `coverageRole=chapter_master`；所有子节标记 `coverageRole=covered_by_parent`、`coveredByParent=<父章 gap id>`。
 - 子节不要重复挂同一份整章素材，`matchedMaterials` 必须为空，避免一个目录项对应多份或重复素材。
+- 被覆盖子节仍保留自身 `candidateMaterials`（脚本自动完成）：S3 页面「忽略」父级后子节按候选就地派生标签，不重跑识别。覆盖字段只是初始提示，冻结/释放由前端按目录树派生。
 - 整章素材若是待填写模板，父章使用 `usage=chapter_fill` 并创建一个填写任务；子节继承 `fill_required`，但不重复创建填写任务。
 
 ## 空副表规则
