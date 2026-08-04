@@ -9,6 +9,7 @@ import {
   formatWikiJobElapsed,
   resolveWikiJobElapsedTimestamp,
 } from '../technicalWikiJobProgress'
+import { createFulltextRequestGuard } from './fulltextRequestGuard'
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
@@ -145,6 +146,8 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [wikiJobElapsedSeconds, setWikiJobElapsedSeconds] = useState(0)
   const [collapsedMap, setCollapsedMap] = useState({})
   const [fulltextState, setFulltextState] = useState({ open: false, loading: false, data: null, error: '' })
+  // 惰性初始化一次即可，守卫本身不随渲染变化。
+  const [fulltextGuard] = useState(createFulltextRequestGuard)
   const refreshingWiki = refreshingWikiPending || (wikiJobActive && wikiJobMode !== 'replace')
   const rebuildingWiki = rebuildingWikiPending || (wikiJobActive && wikiJobMode !== 'refresh')
 
@@ -306,17 +309,21 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   const handleOpenFulltext = async () => {
     if (!selectedMaterialId) return
+    const seq = fulltextGuard.begin()
     setFulltextState({ open: true, loading: true, data: null, error: '' })
     try {
       const payload = await technicalMaterialsAPI.raw.fulltext(selectedMaterialId)
+      if (!fulltextGuard.isCurrent(seq)) return
       setFulltextState({ open: true, loading: false, data: payload, error: '' })
     } catch (e) {
+      if (!fulltextGuard.isCurrent(seq)) return
       console.error(e)
       setFulltextState({ open: true, loading: false, data: null, error: safeMessage(e, '全文加载失败，请稍后重试。') })
     }
   }
 
   const handleCloseFulltext = () => {
+    fulltextGuard.invalidate()
     setFulltextState((prev) => ({ ...prev, open: false }))
   }
   const tree = data?.tree || []
