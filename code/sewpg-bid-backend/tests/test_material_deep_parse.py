@@ -842,6 +842,25 @@ class PdfFulltextServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertEqual(ctx.exception.code, "FULLTEXT_NOT_READY")
 
+    async def test_fulltext_ignores_tampered_bucket_and_key(self) -> None:
+        # 元数据 fulltextBucket/fulltextKey 可被 extFields 外部写入，不得作为读路径依据：
+        # 读取必须固定走 materials 桶 + 按素材 id/版本本地重算的规范 key。
+        from app.services.material_deep_parse import pdf_fulltext_for_raw_file
+
+        item = self._item_with_extract()
+        profile = item.ext_fields["deepParseProfile"]["profile"]
+        profile["fulltextBucket"] = "other-bucket"
+        profile["fulltextKey"] = "parsed/RAW-9999/v1/fulltext.md"
+        with (
+            patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
+        ):
+            minio_mock.get_object.return_value = "<!-- 第 1 页 -->\n\n正文".encode("utf-8")
+            payload = await pdf_fulltext_for_raw_file("RAW-0001")
+
+        self.assertIn("正文", payload["text"])
+        minio_mock.get_object.assert_called_once_with("bid-materials", "parsed/RAW-0001/v1/fulltext.md")
+
     async def test_fulltext_rejects_non_pdf(self) -> None:
         from app.services.material_deep_parse import pdf_fulltext_for_raw_file
 
