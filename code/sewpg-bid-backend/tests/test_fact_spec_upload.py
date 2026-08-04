@@ -14,7 +14,12 @@ from app.main import app
 from app.services import technical_fact_field_specs as specs_module
 from app.services.minio_client import minio_client
 from app.services.store import store
-from app.services.technical_fact_spec_import import EXPECTED_HEADER, FactSpecImportError, import_specs
+from app.services.technical_fact_spec_import import (
+    EXPECTED_HEADER,
+    LEGACY_HEADER,
+    FactSpecImportError,
+    import_specs,
+)
 
 
 @pytest.fixture()
@@ -168,6 +173,18 @@ def test_import_specs_writes_output_path(tmp_path) -> None:
 
     assert output_path.is_file()
     assert json.loads(output_path.read_text(encoding="utf-8")) == specs
+
+
+def test_import_specs_maps_new_and_legacy_source_headers(tmp_path) -> None:
+    new_path = _build_xlsx(tmp_path / "新表头.xlsx", rows=1)
+    legacy_path = _build_xlsx(tmp_path / "旧表头.xlsx", rows=1, header=LEGACY_HEADER)
+
+    for path in (new_path, legacy_path):
+        spec = import_specs(path)[0]
+        assert spec["targetFile"] == "招标文件-技术规范书"
+        assert spec["sourceFile"] == spec["targetFile"]
+        assert spec["referenceFile"] == "招标文件/技术规范书"
+        assert spec["sourceKind"] == "tender"
 
 
 def test_import_specs_rejects_bad_seq(tmp_path) -> None:
