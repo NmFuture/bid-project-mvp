@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFi
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
-from app.services.auth_service import current_user
+from app.services.auth_service import current_user, require_line_role
 from app.services.bid_type import BUSINESS_BID_TYPE
 from app.services.business_audit_service import business_audit_service
 from app.services.business_event_service import business_event_service
@@ -808,24 +808,30 @@ async def business_wiki_download_attachment_content(attachment_id: str) -> Strea
 
 
 @router.get("/api/business/audit")
-async def business_audit_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def business_audit_list(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("business"))
+) -> dict[str, Any]:
     return await business_audit_service.list(dict(request.query_params))
 
 
 @router.get("/api/business/audit/export")
-async def business_audit_export(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def business_audit_export(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("business"))
+) -> dict[str, Any]:
     return await business_audit_service.export(dict(request.query_params))
 
 
 @router.get("/api/business/audit/{audit_id}")
-async def business_audit_detail(audit_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def business_audit_detail(
+    audit_id: str, _: dict[str, Any] = Depends(require_line_role("business"))
+) -> dict[str, Any]:
     return await business_audit_service.detail(audit_id)
 
 
 @router.post("/api/business/events")
 async def business_event_ingest(
     data: dict[str, Any] = Body(default_factory=dict),
-    user: dict[str, Any] = Depends(current_user),
+    user: dict[str, Any] = Depends(require_line_role("business")),
 ) -> dict[str, Any]:
     events = data.get("events") or []
     if not isinstance(events, list) or len(events) > 100:
@@ -835,17 +841,21 @@ async def business_event_ingest(
 
 
 @router.get("/api/business/events")
-async def business_event_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def business_event_list(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("business"))
+) -> dict[str, Any]:
     return await business_event_service.list(dict(request.query_params))
 
 
 @router.get("/api/business/events/sessions")
-async def business_event_sessions(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def business_event_sessions(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("business"))
+) -> dict[str, Any]:
     return await business_event_service.sessions(dict(request.query_params))
 
 
 @router.get("/api/business/events/sessions/{session_id}")
 async def business_event_session_timeline(
-    session_id: str, _: dict[str, Any] = Depends(current_user)
+    session_id: str, _: dict[str, Any] = Depends(require_line_role("business"))
 ) -> dict[str, Any]:
     return {"items": await business_event_service.session_timeline(session_id)}

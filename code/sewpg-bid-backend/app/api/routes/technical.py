@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFi
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
-from app.services.auth_service import current_user
+from app.services.auth_service import current_user, require_line_role
 from app.services.bid_ocr_service import technical_ocr_service
 from app.services.bid_parse_service import technical_parse_service
 from app.services.bid_project_service import technical_project_service
@@ -1143,24 +1143,30 @@ async def technical_wiki_download_attachment_content(attachment_id: str) -> Stre
 
 
 @router.get("/api/technical/audit")
-async def technical_audit_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_audit_list(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_audit_service.list(dict(request.query_params))
 
 
 @router.get("/api/technical/audit/export")
-async def technical_audit_export(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_audit_export(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_audit_service.export(dict(request.query_params))
 
 
 @router.get("/api/technical/audit/{audit_id}")
-async def technical_audit_detail(audit_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_audit_detail(
+    audit_id: str, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_audit_service.detail(audit_id)
 
 
 @router.post("/api/technical/events")
 async def technical_event_ingest(
     data: dict[str, Any] = Body(default_factory=dict),
-    user: dict[str, Any] = Depends(current_user),
+    user: dict[str, Any] = Depends(require_line_role("technical")),
 ) -> dict[str, Any]:
     events = data.get("events") or []
     if not isinstance(events, list) or len(events) > 100:
@@ -1170,17 +1176,21 @@ async def technical_event_ingest(
 
 
 @router.get("/api/technical/events")
-async def technical_event_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_event_list(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_event_service.list(dict(request.query_params))
 
 
 @router.get("/api/technical/events/sessions")
-async def technical_event_sessions(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_event_sessions(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_event_service.sessions(dict(request.query_params))
 
 
 @router.get("/api/technical/events/sessions/{session_id}")
 async def technical_event_session_timeline(
-    session_id: str, _: dict[str, Any] = Depends(current_user)
+    session_id: str, _: dict[str, Any] = Depends(require_line_role("technical"))
 ) -> dict[str, Any]:
     return {"items": await technical_event_service.session_timeline(session_id)}
