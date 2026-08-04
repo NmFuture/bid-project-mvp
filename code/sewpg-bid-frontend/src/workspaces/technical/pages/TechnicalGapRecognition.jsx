@@ -304,16 +304,6 @@ const factStatusLabels = {
   missing: '待补充',
 }
 
-const factFieldStatusOptions = [
-  'unextracted',
-  'extracted',
-  'pending_confirmation',
-  'confirmed',
-  'missing_source',
-  'conflict',
-  'not_applicable',
-]
-
 // v1 遗留 missing 按 v2 missing_source 归一处理（统计、配色、筛选统一口径，不并列 option）
 const normalizeFactFieldStatus = (status) => {
   const value = String(status || 'unextracted')
@@ -365,19 +355,23 @@ const factSpecSegment = (field) => {
   return 'filledUnconfirmed'
 }
 
-const factSourceKindLabels = {
-  tender: '招标文件',
-  material: '项目材料',
-  cert: '认证证书',
-  platform: '平台输入',
-  derived: '自动生成',
-  template: '模板',
+// 来源素材路径展示（产品反馈 2026-08-03：事实表只保留 字段/确认值/来源路径 三列）：
+// 优先素材完整路径，其次解析来源文件，退回 目录/文件名 或素材名。
+const factRefPath = (ref) => {
+  const direct = String(ref?.path || ref?.sourceFile || '').trim()
+  if (direct) return direct
+  const folder = String(ref?.folderPath || '').trim().replace(/\/+$/, '')
+  const name = String(ref?.name || '').trim()
+  if (folder && name) return `${folder}/${name}`
+  return name || String(ref?.title || '').trim()
 }
 
-const formatConfirmedAt = (value) => {
-  if (!value) return ''
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+// 来源列只展示文件名降噪，完整路径放 tooltip（产品反馈 2026-08-03）
+const factRefFileName = (path) => String(path || '').split('/').filter(Boolean).pop() || String(path || '')
+
+// 固定三段最小宽度，避免原生 table 自动布局把“事实值”挤成竖条。
+const factRowGridStyle = {
+  gridTemplateColumns: 'minmax(180px, 0.75fr) minmax(320px, 1.25fr) minmax(300px, 1.5fr)',
 }
 
 const normalizeMaterialTreePath = (value) => String(value || '').replace(/^\/+|\/+$/g, '')
@@ -408,16 +402,14 @@ const FactMaintenanceModal = ({
   factTable,
   fields,
   busy,
-  fieldBusy,
   specsImported,
   specsFileName,
   materialPaths,
   curateReport,
   curating,
+  updatingScope,
   onClose,
-  onBuild,
   onConfirm,
-  onConfirmField,
   onFieldChange,
   onAddField,
   onUploadSpecs,
@@ -464,7 +456,7 @@ const FactMaintenanceModal = ({
     .filter(({ field }) => matchesFactFilter(field))
 
   const factFilterChipClass = (active, tone, count) =>
-    `rounded-md px-2 py-0.5 text-[11px] font-semibold ${tone} ${
+    `rounded-md px-2.5 py-1 text-xs font-semibold ${tone} ${
       active ? 'ring-2 ring-primary/70' : 'hover:brightness-95'
     } ${count ? '' : 'opacity-50'}`
 
@@ -544,153 +536,128 @@ const FactMaintenanceModal = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
-          <div className="min-w-0">
+    // 点弹窗外空白关闭（仅点遮罩本身生效，点弹窗内容不误关，产品反馈 2026-08-03）
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div className="flex h-[calc(100vh-64px)] max-h-[860px] w-full max-w-[1180px] flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
+        <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-headline font-bold text-on-surface">项目事实表维护</h3>
               <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${status === 'confirmed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-fixed text-on-tertiary-fixed'}`}>
                 {factStatusLabels[status] || status}
               </span>
             </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="text-on-surface-variant">字段：{fields.length}</span>
-              <button
+            <Toolbar>
+              <Button
                 type="button"
-                onClick={() => setFactFilter(null)}
-                className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
-                  factFilter
-                    ? 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
-                    : 'bg-primary/10 text-primary ring-1 ring-primary/40'
-                }`}
+                onClick={onCurate}
+                disabled={busy || !fields.length}
+                title="AI 匹配项目素材并填充字段值，结果置为待人工确认（耗时较长）"
+                icon="auto_fix_high"
+                size="md"
+                variant="success"
               >
-                全部
-              </button>
-              {factStatusChipOrder.map((statusKey) => {
-                const count = statusCounts[statusKey] || 0
-                const active = factFilter?.type === 'status' && factFilter.key === statusKey
-                const label = factStatusLabels[statusKey] || statusKey
-                return (
-                  <button
-                    key={statusKey}
-                    type="button"
-                    onClick={() => toggleFactFilter({ type: 'status', key: statusKey, label })}
-                    title={`筛选「${label}」字段${active ? '（再次点击取消）' : ''}`}
-                    className={factFilterChipClass(active, factFieldStatusTone(statusKey), count)}
-                  >
-                    {label}：{count}
-                  </button>
-                )
-              })}
-              {specTotal ? (
-                <>
-                  <span className="ml-1 text-on-surface-variant">清单进度：</span>
-                  {[
-                    ['confirmed', '已确认', 'confirmed'],
-                    ['pending', '待确认', 'pending_confirmation'],
-                    ['unfilled', '未填', 'unextracted'],
-                  ].map(([segmentKey, segmentLabel, toneStatus]) => {
-                    const count = specSegments[segmentKey]
-                    const active = factFilter?.type === 'spec' && factFilter.key === segmentKey
-                    return (
-                      <button
-                        key={segmentKey}
-                        type="button"
-                        onClick={() => toggleFactFilter({ type: 'spec', key: segmentKey, label: `清单·${segmentLabel}` })}
-                        title={`筛选清单中「${segmentLabel}」字段${active ? '（再次点击取消）' : ''}`}
-                        className={factFilterChipClass(active, factFieldStatusTone(toneStatus), count)}
-                      >
-                        {segmentLabel}：{count}
-                      </button>
-                    )
-                  })}
-                  <span
-                    className="text-on-surface-variant"
-                    title={`清单字段共 ${specTotal} 个：已确认 ${specSegments.confirmed} · 待确认 ${specSegments.pending} · 未填 ${specSegments.unfilled} · 已填未确认 ${specSegments.filledUnconfirmed}`}
-                  >
-                    / 共 {specTotal}
-                  </span>
-                </>
-              ) : null}
-            </div>
+                {curating ? '匹配填充中...' : 'AI 匹配填充'}
+              </Button>
+              <Button type="button" onClick={onAddField} disabled={busy} icon="add" size="md" variant="secondary">
+                新增字段
+              </Button>
+              <Button type="button" onClick={onConfirm} disabled={busy || !fields.length} icon="save" size="md" variant="primary">
+                保存
+              </Button>
+              <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="ghost" />
+            </Toolbar>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
-              onClick={onCurate}
-              disabled={busy || !fields.length}
-              title="AI 匹配项目素材并填充字段值，结果置为待人工确认（耗时较长）"
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-secondary px-3 text-xs font-semibold text-on-secondary hover:bg-secondary-container hover:text-on-secondary-container disabled:opacity-50"
+              onClick={() => setFactFilter(null)}
+              className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
+                factFilter
+                  ? 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
+                  : 'bg-primary/10 text-primary ring-1 ring-primary/40'
+              }`}
             >
-              <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
-              {curating ? '匹配填充中...' : 'AI 匹配填充'}
+              全部：{fields.length}
             </button>
-            <button
-              type="button"
-              onClick={onBuild}
-              disabled={busy}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-surface-container-high px-3 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-            >
-              <span className="material-symbols-outlined text-[16px]">sync</span>
-              {fields.length ? '刷新事实' : '生成事实表'}
-            </button>
-            <button
-              type="button"
-              onClick={onAddField}
-              disabled={busy}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-surface-container-high px-3 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-            >
-              <span className="material-symbols-outlined text-[16px]">add</span>
-              新增字段
-            </button>
-            <button
-              type="button"
-              onClick={onConfirm}
-              disabled={busy || !fields.length}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-            >
-              <span className="material-symbols-outlined text-[16px]">fact_check</span>
-              保存
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim"
-              aria-label="关闭"
-            >
-              <span className="material-symbols-outlined text-[18px]">close</span>
-            </button>
+            {factStatusChipOrder.map((statusKey) => {
+              const count = statusCounts[statusKey] || 0
+              const active = factFilter?.type === 'status' && factFilter.key === statusKey
+              const label = factStatusLabels[statusKey] || statusKey
+              return (
+                <button
+                  key={statusKey}
+                  type="button"
+                  onClick={() => toggleFactFilter({ type: 'status', key: statusKey, label })}
+                  title={`筛选「${label}」字段${active ? '（再次点击取消）' : ''}`}
+                  className={factFilterChipClass(active, factFieldStatusTone(statusKey), count)}
+                >
+                  {label}：{count}
+                </button>
+              )
+            })}
+            {specTotal ? (
+              <div
+                className="ml-1 flex items-center gap-2 border-l border-surface-container-high pl-3"
+                title={`清单字段共 ${specTotal} 个：已确认 ${specSegments.confirmed} · 待确认 ${specSegments.pending} · 未填 ${specSegments.unfilled} · 已填未确认 ${specSegments.filledUnconfirmed}`}
+              >
+                <span className="text-xs text-on-surface-variant">清单进度</span>
+                <div className="flex h-2 w-32 overflow-hidden rounded-full bg-surface-container-high">
+                  {[
+                    ['confirmed', 'bg-secondary', specSegments.confirmed],
+                    ['pending', 'bg-tertiary', specSegments.pending],
+                    ['filledUnconfirmed', 'bg-primary-fixed-dim', specSegments.filledUnconfirmed],
+                    ['unfilled', 'bg-amber-300', specSegments.unfilled],
+                  ].map(([segmentKey, barClass, count]) =>
+                    count ? (
+                      <span key={segmentKey} className={barClass} style={{ width: `${(count / specTotal) * 100}%` }} />
+                    ) : null
+                  )}
+                </div>
+                <span className="text-xs font-semibold tabular-nums text-on-surface">
+                  {specSegments.confirmed}/{specTotal} 已确认
+                </span>
+              </div>
+            ) : null}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-surface-container-high bg-surface-container-lowest px-5 py-2.5 text-xs text-on-surface-variant">
-          <span className="inline-flex items-center gap-1">
-            <span className="material-symbols-outlined text-[14px]">description</span>
-            事实表清单：{specsImported ? (specsFileName || '已上传') : '未上传'}
-          </span>
-          <button
-            type="button"
-            onClick={onUploadSpecs}
-            disabled={busy}
-            className="inline-flex h-7 items-center gap-1 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-          >
-            <span className="material-symbols-outlined text-[14px]">upload_file</span>
-            {specsImported ? '重新上传' : '上传事实表'}
-          </button>
-          <span className="inline-flex items-center gap-1">
-            <span className="material-symbols-outlined text-[14px]">folder_open</span>
-            参考路径：项目定制/本项目{materialPaths?.length ? ` + ${materialPaths.length} 个自定义目录` : ''}
-          </span>
-          <button
-            type="button"
-            onClick={enterPathsEditing}
-            disabled={busy}
-            className="inline-flex h-7 items-center gap-1 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-          >
-            <span className="material-symbols-outlined text-[14px]">{pathsEditing ? 'expand_less' : 'edit'}</span>
-            {pathsEditing ? '收起参考路径' : '设置参考路径'}
-          </button>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-container-high bg-surface-container-lowest px-5 py-2.5 text-xs text-on-surface-variant">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <span className="material-symbols-outlined shrink-0 text-[16px] text-outline">description</span>
+              <span className="truncate" title={specsFileName || ''}>
+                {specsImported ? (specsFileName || '事实表已上传') : '尚未上传事实表'}
+              </span>
+            </span>
+            <Button type="button" onClick={onUploadSpecs} disabled={busy} icon="upload_file" size="xs" variant="quiet">
+              {specsImported ? '重新上传' : '上传事实表'}
+            </Button>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <span className="material-symbols-outlined shrink-0 text-[16px] text-outline">folder_open</span>
+              <span className="truncate">
+                项目素材{materialPaths?.length ? ` + ${materialPaths.length} 个参考目录` : ''}
+              </span>
+            </span>
+            <Button
+              type="button"
+              onClick={enterPathsEditing}
+              disabled={busy}
+              icon={pathsEditing ? 'expand_less' : 'tune'}
+              size="xs"
+              variant="quiet"
+            >
+              {pathsEditing ? '收起' : '设置范围'}
+            </Button>
+          </div>
         </div>
 
         {pathsEditing ? (
@@ -702,19 +669,20 @@ const FactMaintenanceModal = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    onSaveMaterialPaths(selectedPaths)
-                    setPathsEditing(false)
+                  onClick={async () => {
+                    const saved = await onSaveMaterialPaths(selectedPaths)
+                    if (saved) setPathsEditing(false)
                   }}
                   disabled={busy}
                   className="inline-flex h-7 items-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                 >
-                  保存
+                  {updatingScope ? '更新中...' : '保存'}
                 </button>
                 <button
                   type="button"
                   onClick={enterPathsEditing}
-                  className="inline-flex h-7 items-center rounded-md bg-surface-container-high px-3 text-xs text-on-surface-variant hover:bg-surface-dim"
+                  disabled={busy}
+                  className="inline-flex h-7 items-center rounded-md bg-surface-container-high px-3 text-xs text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
                 >
                   取消
                 </button>
@@ -771,156 +739,133 @@ const FactMaintenanceModal = ({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-auto p-4">
+        <div className="flex min-h-0 flex-1 flex-col p-4">
           {fields.length ? (
             <>
-              {factFilter ? (
-                <div className="mb-2 flex items-center gap-2 text-xs text-on-surface-variant">
-                  <span className="material-symbols-outlined text-[14px]">filter_alt</span>
-                  <span>筛选中：{factFilter.label}（{visibleRows.length} 条）</span>
-                  <button
-                    type="button"
-                    onClick={() => setFactFilter(null)}
-                    className="inline-flex h-6 items-center gap-0.5 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">close</span>
-                    清除筛选
-                  </button>
-                </div>
-              ) : null}
-            <div className="overflow-hidden rounded-md border border-surface-container-high">
-              <table className="w-full min-w-[880px] border-collapse bg-surface-container-lowest text-sm">
-                <thead className="bg-surface-container-low text-left text-xs text-outline">
-                  <tr>
-                    <th className="w-36 px-3 py-2 font-semibold">字段</th>
-                    <th className="w-64 px-3 py-2 font-semibold">确认值</th>
-                    <th className="w-32 px-3 py-2 font-semibold">状态</th>
-                    <th className="w-28 px-3 py-2 font-semibold">置信度</th>
-                    <th className="px-3 py-2 font-semibold">来源素材/依据</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-surface-container-high">
-                  {visibleRows.map(({ field, index }) => {
-                    const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
-                    const normalizedStatus = normalizeFactFieldStatus(field.status)
-                    const isEmptyStatus = ['missing_source', 'unextracted'].includes(normalizedStatus)
-                    const statusTone = factFieldStatusTone(field.status)
-                    const refs = asObjectArray(field.sourceRefs).slice(0, 2)
-                    return (
-                      <tr key={field.id || `${field.label}-${index}`} className="align-top">
-                        <td className="px-3 py-2">
-                          {isManualField ? (
-                            <input
-                              value={field.label || ''}
-                              onChange={(event) => onFieldChange(index, 'label', event.target.value)}
-                              placeholder="字段名称"
-                              className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
-                            />
-                          ) : (
-                            <div className="font-semibold text-on-surface">
-                              {field.label}
-                              {field.needsConfirmation ? (
-                                <span className="ml-1.5 rounded bg-tertiary-fixed px-1 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径需人工确认'}>待确认口径</span>
-                              ) : null}
-                            </div>
-                          )}
-                          <div className="mt-1 text-[11px] text-outline">{field.category || '项目事实'}</div>
-                          {field.reviewLabel && field.reviewLabel !== field.label ? (
-                            <div className="mt-0.5 text-[11px] text-outline" title={field.reviewLabel}>复核：{field.reviewLabel}</div>
-                          ) : null}
-                          {field.sourceKind ? (
-                            <span
-                              className="mt-0.5 inline-block rounded bg-surface-container-high px-1 py-0.5 text-[10px] font-semibold text-on-surface-variant"
-                              title={field.sourceHint || ''}
-                            >
-                              {factSourceKindLabels[field.sourceKind] || field.sourceKind}
-                            </span>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-2">
-                          <input
-                            value={field.value || ''}
-                            onChange={(event) => onFieldChange(index, 'value', event.target.value)}
-                            className={`h-9 w-full rounded-md border px-2 text-sm text-on-surface ${
-                              isEmptyStatus
-                                ? 'border-tertiary bg-tertiary-fixed/40'
-                                : 'border-surface-container-high bg-surface'
-                            }`}
-                          />
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-1">
-                            <select
-                              value={normalizedStatus}
-                              onChange={(event) => onFieldChange(index, 'status', event.target.value)}
-                              className={`h-7 min-w-0 flex-1 rounded-md border-0 px-1 text-[11px] font-semibold ${statusTone}`}
-                            >
-                              {factFieldStatusOptions.map((option) => (
-                                <option key={option} value={option}>{factStatusLabels[option] || option}</option>
-                              ))}
-                              {normalizedStatus && !factFieldStatusOptions.includes(normalizedStatus) ? (
-                                <option value={normalizedStatus}>{factStatusLabels[normalizedStatus] || normalizedStatus}</option>
-                              ) : null}
-                            </select>
-                            {field.id ? (
-                              <button
-                                type="button"
-                                onClick={() => onConfirmField(field)}
-                                disabled={busy || fieldBusy}
-                                title="确认并保存该字段"
-                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-container-high text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-                              >
-                                <span className="material-symbols-outlined text-[16px]">check</span>
-                              </button>
-                            ) : null}
+              <div className="mb-2 flex h-6 shrink-0 items-center gap-2 text-xs text-on-surface-variant" aria-live="polite">
+                {factFilter ? (
+                  <>
+                    <span className="material-symbols-outlined text-[14px]">filter_alt</span>
+                    <span>筛选中：{factFilter.label}（{visibleRows.length} 条）</span>
+                    <button
+                      type="button"
+                      onClick={() => setFactFilter(null)}
+                      className="inline-flex h-6 items-center gap-0.5 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">close</span>
+                      清除筛选
+                    </button>
+                  </>
+                ) : null}
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest">
+                <div className="h-full overflow-auto [scrollbar-gutter:stable]" role="table" aria-label="项目事实字段">
+                  <div className="min-w-[840px]">
+                    <div
+                      className="sticky top-0 z-10 grid items-center border-b border-surface-container-high bg-surface-container-low text-xs font-semibold text-outline"
+                      style={factRowGridStyle}
+                      role="row"
+                    >
+                      <div className="px-4 py-2.5" role="columnheader">字段</div>
+                      <div className="px-4 py-2.5" role="columnheader">事实值</div>
+                      <div className="px-4 py-2.5" role="columnheader">来源素材</div>
+                    </div>
+                    <div className="divide-y divide-surface-container-high" role="rowgroup">
+                      {visibleRows.map(({ field, index }) => {
+                      const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+                      const normalizedStatus = normalizeFactFieldStatus(field.status)
+                      const isEmptyStatus = ['missing_source', 'unextracted'].includes(normalizedStatus)
+                      const fieldNames = new Set([field.label, field.reviewLabel].map((value) => String(value || '').trim()).filter(Boolean))
+                      const allRefPaths = uniqueStrings(asObjectArray(field.sourceRefs).map(factRefPath))
+                        .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
+                      const refPaths = allRefPaths.slice(0, 2)
+                      const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
+                      return (
+                        <div
+                          key={field.id || `${field.label}-${index}`}
+                          className="grid min-h-[60px] items-center transition-colors hover:bg-surface-container-low/60"
+                          style={factRowGridStyle}
+                          role="row"
+                        >
+                          <div className="min-w-0 px-4 py-3" role="cell">
+                            {isManualField ? (
+                              <input
+                                value={field.label || ''}
+                                onChange={(event) => onFieldChange(index, 'label', event.target.value)}
+                                placeholder="字段名称"
+                                className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-3 text-sm font-semibold text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+                              />
+                            ) : (
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
+                                {field.needsConfirmation ? (
+                                  <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径需人工确认'}>
+                                    待确认口径
+                                  </span>
+                                ) : null}
+                              </div>
+                            )}
                           </div>
-                          {field.status === 'confirmed' && (field.confirmedBy || formatConfirmedAt(field.confirmedAt)) ? (
-                            <div className="mt-1 text-[11px] text-outline">
-                              {[field.confirmedBy, formatConfirmedAt(field.confirmedAt)].filter(Boolean).join(' · ')}
-                            </div>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-on-surface-variant">
-                          {field.confidence ? `${Math.round(Number(field.confidence) * 100)}%` : '-'}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-on-surface-variant">
-                          {refs.length ? refs.map((ref) => (
-                            <div key={`${ref.type || ''}-${ref.field || ref.title || ''}`} className="mb-1 truncate" title={[ref.title, ref.field, ref.gapId].filter(Boolean).join(' · ')}>
-                              {[ref.title, ref.field, ref.gapId].filter(Boolean).join(' · ')}
-                            </div>
-                          )) : '-'}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {!visibleRows.length ? (
-                    <tr>
-                      <td colSpan={5} className="px-3 py-8 text-center text-xs text-outline">
-                        没有符合「{factFilter?.label}」筛选条件的字段
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
+                          <div className="px-4 py-3" role="cell">
+                            <input
+                              value={field.value || ''}
+                              onChange={(event) => onFieldChange(index, 'value', event.target.value)}
+                              placeholder="待填写"
+                              aria-label={`${field.label || '字段'}的事实值`}
+                              className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
+                                isEmptyStatus
+                                  ? 'border-tertiary bg-tertiary-fixed/35'
+                                  : 'border-surface-container-high bg-surface'
+                              }`}
+                            />
+                          </div>
+                          <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
+                            {refPaths.length ? (
+                              <div className="space-y-1">
+                                {refPaths.map((refPath) => (
+                                  <div key={refPath} className="flex min-w-0 items-center gap-1.5" title={refPath}>
+                                    <span className="material-symbols-outlined shrink-0 text-[15px] text-outline">description</span>
+                                    <span className="truncate">{factRefFileName(refPath)}</span>
+                                  </div>
+                                ))}
+                                {hiddenRefCount ? (
+                                  <div className="pl-[21px] text-[11px] text-outline">另有 {hiddenRefCount} 份素材</div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <span className="text-outline">暂无匹配素材</span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                      })}
+                      {!visibleRows.length ? (
+                        <div className="px-4 py-10 text-center text-xs text-outline" role="row">
+                          没有符合「{factFilter?.label}」筛选条件的字段
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </>
           ) : (
-            <div className="flex min-h-[260px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
+            <div className="flex min-h-[260px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
               <div>
                 <span className="material-symbols-outlined text-4xl text-primary">upload_file</span>
                 {specsImported ? (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      事实表「{specsFileName || '已上传'}」已解析，点击下方按钮按清单提取字段。
+                      事实表「{specsFileName || '已上传'}」尚未生成字段，请重新上传后重试。
                     </p>
                     <button
                       type="button"
-                      onClick={onBuild}
+                      onClick={onUploadSpecs}
                       disabled={busy}
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
-                      <span className="material-symbols-outlined text-[16px]">sync</span>
-                      生成事实表
+                      <span className="material-symbols-outlined text-[16px]">upload_file</span>
+                      重新上传
                     </button>
                   </>
                 ) : (
@@ -1582,30 +1527,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     (payload) => payload?.message || '缺口识别完成',
   )
 
-  const loadFactTable = async ({ build = false } = {}) => {
-    if (busyAction) return null
-    setBusyAction(build ? 'facts-build' : 'facts-load')
-    try {
-      const payload = build ? await technicalGapsAPI.buildFacts(id) : await technicalGapsAPI.facts(id)
-      setFactTable(payload)
-      setFactFields(asObjectArray(payload?.fields))
-      setData((current) => current ? { ...current, projectFactTable: payload } : current)
-      if (build) {
-        setFactCurateReport(null)
-        const summary = payload?.summary || {}
-        showToast?.(
-          `刷新完成：已提取 ${summary.extractedCount ?? 0} · 待确认 ${summary.pendingConfirmationCount ?? 0} · 未提取 ${summary.unextractedCount ?? 0}（AI 匹配填充可继续补值）`
-        )
-      }
-      return payload
-    } catch (e) {
-      showToast?.(e?.message || '项目事实表加载失败', 'error')
-      return null
-    } finally {
-      setBusyAction('')
-    }
-  }
-
   const ensureFactTableReady = async () => {
     if (factTable?.status === 'confirmed') return true
     // 未上传事实表的项目不出字段：打开事实表弹窗引导上传，不再静默自动生成事实表
@@ -1696,59 +1617,6 @@ export default function TechnicalGapRecognition({ showToast }) {
       return payload
     } catch (e) {
       showToast?.(e?.message || '项目事实表保存失败', 'error')
-      return null
-    } finally {
-      setBusyAction('')
-    }
-  }
-
-  const handleConfirmFactField = async (field) => {
-    if (busyAction) return null
-    const fieldId = String(field?.id || '').trim()
-    if (!fieldId) {
-      showToast?.('该字段缺少稳定标识，请先整表保存', 'error')
-      return null
-    }
-    setBusyAction('fact-field-confirm')
-    try {
-      // 人工新增字段尚未落库时直接 PATCH 会 404：先整表持久化（后端保留字段 id），
-      // 再用同一 id 逐字段确认。整表保存为整体替换，重试不会产生重复字段。
-      const persistedIds = new Set(asObjectArray(factTable?.fields).map((item) => String(item?.id || '')))
-      if (!persistedIds.has(fieldId)) {
-        const fieldsToSave = factFields.filter((item) => String(item.label || item.value || '').trim())
-        const savedTable = await technicalGapsAPI.saveFacts(id, { fields: fieldsToSave, operator: '当前用户' })
-        if (!asObjectArray(savedTable?.fields).some((item) => String(item?.id || '') === fieldId)) {
-          throw new Error('字段保存失败，请重试')
-        }
-        setFactTable(savedTable)
-        setFactFields(asObjectArray(savedTable?.fields))
-        setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
-      }
-      const payload = await technicalGapsAPI.saveFactField(id, fieldId, {
-        value: field.value || '',
-        status: field.status || 'unextracted',
-        confirm: true,
-        operator: '当前用户',
-      })
-      const savedField = payload?.field
-      if (savedField) {
-        // 仅替换当前行，保留其他行未保存的编辑
-        setFactFields((current) => current.map((item) => (String(item?.id || '') === fieldId ? savedField : item)))
-      }
-      const mergeTableMeta = (current) => {
-        const base = current && typeof current === 'object' ? current : {}
-        return {
-          ...base,
-          summary: payload?.summary || base.summary,
-          status: payload?.status || base.status,
-        }
-      }
-      setFactTable((current) => mergeTableMeta(current))
-      setData((current) => (current ? { ...current, projectFactTable: mergeTableMeta(current.projectFactTable) } : current))
-      showToast?.(`字段「${savedField?.label || field.label || fieldId}」已确认`)
-      return payload
-    } catch (e) {
-      showToast?.(e?.message || '字段确认失败', 'error')
       return null
     } finally {
       setBusyAction('')
@@ -2053,35 +1921,56 @@ export default function TechnicalGapRecognition({ showToast }) {
       return
     }
     setBusyAction('fact-specs-upload')
+    let specsUploaded = false
     try {
       const formData = new FormData()
       formData.append('file', file)
       const payload = await technicalGapsAPI.uploadFactSpecs(id, formData)
       setFactSpecsMeta({ imported: true, fileName: payload?.fileName || file.name })
+      specsUploaded = true
       // 上传成功后立即按新清单重建事实表字段
       const table = await technicalGapsAPI.buildFacts(id)
       setFactTable(table)
       setFactFields(asObjectArray(table?.fields))
       setFactCurateReport(null)
       setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，事实表已生成`)
+      showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，并已自动更新`)
       setFactModalOpen(true)
     } catch (e) {
-      showToast?.(e?.message || '事实表上传失败', 'error')
+      showToast?.(
+        specsUploaded
+          ? `事实表清单已上传，但自动更新失败：${e?.message || '请重新上传后重试'}`
+          : (e?.message || '事实表上传失败'),
+        'error',
+      )
     } finally {
       setBusyAction('')
     }
   }
 
   const handleSaveMaterialPaths = async (paths) => {
-    if (busyAction) return
+    if (busyAction) return false
     setBusyAction('facts-material-sources')
+    let pathsSaved = false
     try {
       const payload = await technicalGapsAPI.saveMaterialSources(id, { paths })
       setFactMaterialPaths(Array.isArray(payload?.paths) ? payload.paths : [])
-      showToast?.('参考路径已保存，下次生成/刷新事实表时生效')
+      pathsSaved = true
+      const table = await technicalGapsAPI.buildFacts(id)
+      setFactTable(table)
+      setFactFields(asObjectArray(table?.fields))
+      setFactCurateReport(null)
+      setData((current) => (current ? { ...current, projectFactTable: table } : current))
+      showToast?.('参考范围已保存，事实表已自动更新')
+      return true
     } catch (e) {
-      showToast?.(e?.message || '参考路径保存失败', 'error')
+      showToast?.(
+        pathsSaved
+          ? `参考范围已保存，但事实表自动更新失败：${e?.message || '请重试保存范围'}`
+          : (e?.message || '参考范围保存失败'),
+        'error',
+      )
+      return false
     } finally {
       setBusyAction('')
     }
@@ -2562,17 +2451,15 @@ export default function TechnicalGapRecognition({ showToast }) {
           open
           factTable={factTable}
           fields={factFields}
-          busy={['facts-build', 'facts-load', 'facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
-          fieldBusy={busyAction === 'fact-field-confirm'}
+          busy={['facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
           specsImported={factSpecsMeta.imported}
           specsFileName={factSpecsMeta.fileName}
           materialPaths={factMaterialPaths}
           curateReport={factCurateReport}
           curating={busyAction === 'facts-curate'}
+          updatingScope={busyAction === 'facts-material-sources'}
           onClose={() => setFactModalOpen(false)}
-          onBuild={() => loadFactTable({ build: true })}
           onConfirm={handleConfirmFactTable}
-          onConfirmField={handleConfirmFactField}
           onFieldChange={handleFactFieldChange}
           onAddField={handleAddFactField}
           onUploadSpecs={() => fillRuleInputRef.current?.click()}

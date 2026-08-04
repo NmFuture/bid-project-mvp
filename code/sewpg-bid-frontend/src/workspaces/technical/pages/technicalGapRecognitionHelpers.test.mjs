@@ -138,6 +138,29 @@ test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路
   assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
 })
 
+test('事实表清单和素材范围变更后自动重建，不保留手动刷新入口', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const uploadStart = source.indexOf('const handleFactSpecsUpload')
+  const scopeStart = source.indexOf('const handleSaveMaterialPaths')
+  const curateStart = source.indexOf('const handleCurateFacts')
+  const uploadFlow = source.slice(uploadStart, scopeStart)
+  const scopeFlow = source.slice(scopeStart, curateStart)
+
+  assert.ok(uploadStart >= 0 && scopeStart > uploadStart && curateStart > scopeStart)
+  assert.ok(uploadFlow.indexOf('uploadFactSpecs') < uploadFlow.indexOf('buildFacts'))
+  assert.ok(scopeFlow.indexOf('saveMaterialSources') < scopeFlow.indexOf('buildFacts'))
+  assert.doesNotMatch(source, /onBuild|刷新事实/)
+})
+
+test('事实表弹窗筛选时保持固定高度并只滚动表格区域', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  assert.match(source, /h-\[calc\(100vh-64px\)\] max-h-\[860px\]/)
+  assert.match(source, /mb-2 flex h-6 shrink-0 items-center/)
+  assert.match(source, /h-full overflow-auto \[scrollbar-gutter:stable\]/)
+  assert.match(source, /sticky top-0 z-10 grid items-center/)
+})
+
 test('技术标 AI 填表默认选中来源矩阵推荐素材', () => {
   const selected = {
     sourceRouting: { source: 'appendix_source_matrix' },
