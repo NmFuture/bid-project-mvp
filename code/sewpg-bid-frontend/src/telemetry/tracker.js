@@ -3,6 +3,7 @@
 // 所有采集逻辑只做旁观记录，任何异常都吞掉（最多 console.warn 一次），绝不影响业务
 import { ENV } from '../config/env'
 import { AUTH_STORAGE_KEY, onApiEvent } from '../api'
+import { splitEventsByLine, telemetryLineForRoute } from './eventLine'
 
 const SESSION_KEY = 'sewpg.telemetry.session'
 const FLUSH_INTERVAL_MS = 5000
@@ -73,10 +74,13 @@ const cssPath = (el) => {
 
 const enqueue = (event) => {
   try {
+    // 归线按事件自身 route 在入队时固化，避免 flush 时刻按当前页面路径改判整批归属
+    const route = event.route || window.location.pathname
     queue.push({
       sessionId: readSessionId(),
       eventType: event.eventType,
-      route: event.route || window.location.pathname,
+      route,
+      line: telemetryLineForRoute(route),
       element: event.element || '',
       target: event.target || '',
       status: event.status || 'info',
@@ -91,25 +95,10 @@ const enqueue = (event) => {
   }
 }
 
-// 上报端点按当前路径前缀归线：/workspace/business → business，其余统一 technical
-const eventsEndpoint = () => {
-  const line = window.location.pathname.startsWith('/workspace/business') ? 'business' : 'technical'
-  return `${ENV.API_BASE_URL}/${line}/events`
-}
-
 // fetch keepalive 在页面 unload/hidden 时同样可靠，且能携带 Authorization（sendBeacon 不行），统一走它
-const flush = () => {
-  if (!queue.length) return
-  const token = readAuthToken()
-  if (!token) {
-    // 未登录时丢弃队列，不上报
-    queue = []
-    return
-  }
-  const events = queue
-  queue = []
+const postEvents = (line, events, token) => {
+  const url = `${ENV.API_BASE_URL}/${line}/events`
   const body = JSON.stringify({ events })
-  const url = eventsEndpoint()
   try {
     window
       .fetch(url, {
@@ -124,6 +113,22 @@ const flush = () => {
       .catch((error) => warnOnce('事件上报失败', error))
   } catch (error) {
     warnOnce('事件上报失败', error)
+  }
+}
+
+const flush = () => {
+  if (!queue.length) return
+  const token = readAuthToken()
+  if (!token) {
+    // 未登录时丢弃队列，不上报
+    queue = []
+    return
+  }
+  const events = queue
+  queue = []
+  // 按入队时固化的归线拆组，分别 POST 到各自线的 /events，跨线切换不再互相带走事件
+  for (const [line, payloads] of splitEventsByLine(events)) {
+    postEvents(line, payloads, token)
   }
 }
 

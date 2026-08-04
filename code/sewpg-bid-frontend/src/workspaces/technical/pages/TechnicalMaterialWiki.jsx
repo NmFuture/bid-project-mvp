@@ -9,6 +9,7 @@ import {
   formatWikiJobElapsed,
   resolveWikiJobElapsedTimestamp,
 } from '../technicalWikiJobProgress'
+import { createFulltextRequestGuard } from './fulltextRequestGuard'
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
@@ -47,6 +48,19 @@ const PREVIEW_STATUS_META = {
 const normalizeTags = (tags) => (
   Array.isArray(tags) ? tags.map((tag) => String(tag || '').trim()).filter(Boolean) : []
 )
+
+// 后端在 PDF extract 产物就绪的文件卡片上打该 tag，作为「查看全文」入口的显示条件。
+const FULLTEXT_TAG = '全文已提取'
+
+// 文件卡片正文里的 material_id 行由后端 run_from_manifest 固定生成。
+const materialIdFromNode = (node) => {
+  const match = String(node?.markdownContent || '').match(/material_id:\s*(RAW-\d+)/)
+  return match ? match[1] : ''
+}
+
+// 全文提取产物里的页标记（HTML 注释）转成用户可读的分页标题。
+const formatFulltextForDisplay = (text) =>
+  String(text || '').replace(/<!--\s*第\s*(\d+)\s*页\s*-->/g, '—— 第 $1 页 ——')
 
 const previewStatusForTags = (tags) => {
   const normalized = normalizeTags(tags)
@@ -131,6 +145,9 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [wikiJobElapsedFrom, setWikiJobElapsedFrom] = useState('')
   const [wikiJobElapsedSeconds, setWikiJobElapsedSeconds] = useState(0)
   const [collapsedMap, setCollapsedMap] = useState({})
+  const [fulltextState, setFulltextState] = useState({ open: false, loading: false, data: null, error: '' })
+  // 惰性初始化一次即可，守卫本身不随渲染变化。
+  const [fulltextGuard] = useState(createFulltextRequestGuard)
   const refreshingWiki = refreshingWikiPending || (wikiJobActive && wikiJobMode !== 'replace')
   const rebuildingWiki = rebuildingWikiPending || (wikiJobActive && wikiJobMode !== 'refresh')
 
@@ -287,6 +304,28 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const selectedNodeId = selectedNode?.id || ''
   // 右侧只派生一个用户可读的状态小 tag，后端原始 tags 不再透出到界面。
   const selectedStatus = useMemo(() => previewStatusForTags(selectedNode?.tags), [selectedNode])
+  const selectedMaterialId = useMemo(() => materialIdFromNode(selectedNode), [selectedNode])
+  const selectedHasFulltext = Boolean(selectedMaterialId && selectedNode?.tags?.includes(FULLTEXT_TAG))
+
+  const handleOpenFulltext = async () => {
+    if (!selectedMaterialId) return
+    const seq = fulltextGuard.begin()
+    setFulltextState({ open: true, loading: true, data: null, error: '' })
+    try {
+      const payload = await technicalMaterialsAPI.raw.fulltext(selectedMaterialId)
+      if (!fulltextGuard.isCurrent(seq)) return
+      setFulltextState({ open: true, loading: false, data: payload, error: '' })
+    } catch (e) {
+      if (!fulltextGuard.isCurrent(seq)) return
+      console.error(e)
+      setFulltextState({ open: true, loading: false, data: null, error: safeMessage(e, '全文加载失败，请稍后重试。') })
+    }
+  }
+
+  const handleCloseFulltext = () => {
+    fulltextGuard.invalidate()
+    setFulltextState((prev) => ({ ...prev, open: false }))
+  }
   const tree = data?.tree || []
   const previewStatusCounts = useMemo(() => countPreviewStatuses(tree), [tree])
   const previewStatusItems = useMemo(
@@ -570,16 +609,29 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-[520px] max-h-[75vh] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:max-h-none">
-            {selectedStatus && (
-              <div className="flex shrink-0 items-center border-b border-surface-container-high px-5 py-3">
-                <span
-                  className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-xs ${selectedStatus.className}`}
-                >
-                  <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
-                    {selectedStatus.icon}
+            {(selectedStatus || selectedHasFulltext) && (
+              <div className="flex shrink-0 items-center gap-2 border-b border-surface-container-high px-5 py-3">
+                {selectedStatus && (
+                  <span
+                    className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-xs ${selectedStatus.className}`}
+                  >
+                    <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
+                      {selectedStatus.icon}
+                    </span>
+                    {selectedStatus.label}
                   </span>
-                  {selectedStatus.label}
-                </span>
+                )}
+                {selectedHasFulltext && (
+                  <button
+                    onClick={handleOpenFulltext}
+                    className="ml-auto inline-flex h-7 items-center gap-1 rounded border border-primary/30 bg-primary/5 px-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                  >
+                    <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
+                      article
+                    </span>
+                    查看全文
+                  </button>
+                )}
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
@@ -599,6 +651,61 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       </div>
       )}
     </div>
+    {fulltextState.open && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="提取全文"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        onClick={handleCloseFulltext}
+      >
+        <div
+          className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-outline-variant/45 bg-surface-container-lowest shadow-xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-surface-container-high px-5 py-4">
+            <div className="min-w-0">
+              <h3 className="truncate text-[15px] leading-[1.6] font-semibold text-on-surface">
+                {fulltextState.data?.name || '提取全文'}
+              </h3>
+              {fulltextState.data && (
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  共 {fulltextState.data.pageCount} 页 · 全文 {Number(fulltextState.data.charCount || 0).toLocaleString()} 字
+                  {fulltextState.data.truncated
+                    ? ` · 超页数护栏已截断（仅前 ${fulltextState.data.processedPages} 页）`
+                    : ' · 未截断'}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={handleCloseFulltext}
+              aria-label="关闭"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-on-surface-variant transition-colors hover:bg-surface-container-low"
+            >
+              <span aria-hidden="true" className="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto bg-white px-5 py-4">
+            {fulltextState.loading ? (
+              <div className="flex min-h-[200px] items-center justify-center gap-2 text-sm text-on-surface-variant">
+                <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[18px] text-primary">
+                  progress_activity
+                </span>
+                正在加载全文...
+              </div>
+            ) : fulltextState.error ? (
+              <div className="flex min-h-[200px] items-center justify-center text-sm text-rose-600">
+                {fulltextState.error}
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.8] text-on-surface">
+                {formatFulltextForDisplay(fulltextState.data?.text)}
+              </pre>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     </>
   )
 }

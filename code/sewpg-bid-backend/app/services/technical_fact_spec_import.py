@@ -7,10 +7,13 @@ app 包内：设置页上传接口（app/api/routes/settings.py）与
 scripts/import_technical_fact_specs.py CLI 共用本模块。
 
 清单列（Sheet1，首行表头）：
-    序号 / 来源文件 / 原占位符位置 / 实际要填写的字段 / 必要说明 / 复核 / 引用文件
+    序号 / 待填写文件 / 原占位符位置 / 实际要填写的字段 / 必要说明 / 复核 / 来源文件
+
+兼容历史表头：第 2 列“来源文件”、第 7 列“引用文件”。历史命名中的
+“来源文件”实际表示待填写目标文件，导入后仍保留 sourceFile 兼容字段。
 
 生成的 spec 字段：
-    seq, key, label, reviewLabel, sourceFile, placeholder, note,
+    seq, key, label, reviewLabel, targetFile, sourceFile, placeholder, note,
     needsConfirmation, referenceFile, valueRequired, sourceKind, aliases
 """
 
@@ -21,7 +24,13 @@ from typing import Any
 
 import openpyxl
 
-EXPECTED_HEADER = ["序号", "来源文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "引用文件"]
+EXPECTED_HEADER = ["序号", "待填写文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "来源文件"]
+LEGACY_HEADER = ["序号", "来源文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "引用文件"]
+
+HEADER_LAYOUTS = {
+    tuple(EXPECTED_HEADER): {"target_file": 1, "reference_file": 6},
+    tuple(LEGACY_HEADER): {"target_file": 1, "reference_file": 6},
+}
 
 # 引用文件 → 来源类别
 SOURCE_KIND_RULES = [
@@ -75,8 +84,12 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
     if not rows:
         raise FactSpecImportError(f"清单为空: {path.name}")
     header = [cell_text(c) for c in rows[0]]
-    if header[: len(EXPECTED_HEADER)] != EXPECTED_HEADER:
-        raise FactSpecImportError(f"表头不符，期望 {EXPECTED_HEADER}，实际 {header}")
+    header_key = tuple(header[: len(EXPECTED_HEADER)])
+    layout = HEADER_LAYOUTS.get(header_key)
+    if layout is None:
+        raise FactSpecImportError(
+            f"表头不符，期望 {EXPECTED_HEADER}（兼容历史表头 {LEGACY_HEADER}），实际 {header}"
+        )
 
     specs: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows[1:], start=2):
@@ -84,7 +97,8 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
         if not label:
             continue
         note = cell_text(row[4])
-        reference_file = cell_text(row[6])
+        target_file = cell_text(row[layout["target_file"]])
+        reference_file = cell_text(row[layout["reference_file"]])
         source_kind = classify_source(reference_file)
         try:
             seq = int(row[0])
@@ -96,7 +110,9 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
                 "key": normalize_key(label),
                 "label": label,
                 "reviewLabel": cell_text(row[5]),
-                "sourceFile": cell_text(row[1]),
+                "targetFile": target_file,
+                # 兼容既有 spec/产物字段；其语义一直是待填写目标文件，不是取数来源。
+                "sourceFile": target_file,
                 "placeholder": cell_text(row[2]),
                 "note": note,
                 "needsConfirmation": "需确认" in note,

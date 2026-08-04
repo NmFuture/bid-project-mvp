@@ -28,8 +28,8 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 - `parseResultPath`: S0/S1 招标解析结果，包含解析生成的空副表/Word。
 - `wikiDir`: 当前项目的技术标 Wiki 副本。
 - `materialScope`: 允许读取的素材边界，通常只包含技术标通用素材、该客户素材、该项目素材。
-- `materialIndex`: 已按 `materialScope` 和投标机型预过滤的素材索引。
-- `projectTurbineModel`: 已确认投标机型，用于判断素材是否适配。
+- `materialIndex`: 已按 `materialScope` 和投标机型预过滤的素材索引。正文匹配池在此基础上再排除两个约定目录：项目定制下的 `附表/`（解析生成的空副表，走 appendixTasks/fillTasks 消费）和 `技术附表输入文件/`（甲方已填附表，只参与附表查表替换）。
+- `projectTurbineModel`: 已确认投标机型，用于判断素材是否适配。标准文件档严格 1:1 限定选中机型文件夹（含上置/下置等布局后缀），其他机型与机型无关素材都不进正文池。
 
 不得跨项目、跨客户、跨标段读取素材。`tocJsonPath` 或 `wikiDir` 中的引用只能作为线索，必须能回到 manifest 的 `materialIndex` 或当前测试 manifest 明确给出的目录素材；不能因为旧目录引用就越过 `materialScope`。
 

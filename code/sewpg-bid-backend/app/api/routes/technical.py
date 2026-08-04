@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFi
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.api.utils import minio_streaming_response, onlyoffice_backend_base_url
-from app.services.auth_service import current_user
+from app.services.auth_service import current_user, require_line_role
 from app.services.bid_ocr_service import technical_ocr_service
 from app.services.bid_parse_service import technical_parse_service
 from app.services.bid_project_service import technical_project_service
@@ -957,6 +957,13 @@ async def technical_raw_download_cleaned_content_by_name(file_id: str, filename:
     )
 
 
+@router.get("/api/technical/materials/raw/{file_id}/fulltext")
+async def technical_raw_fulltext(file_id: str) -> dict[str, Any]:
+    from app.services.material_deep_parse import pdf_fulltext_for_raw_file
+
+    return await pdf_fulltext_for_raw_file(file_id)
+
+
 @router.get("/api/technical/materials/wiki")
 async def technical_wiki_list(nodeId: str = "", bidType: str = "") -> dict[str, Any]:
     _ = bidType
@@ -1037,7 +1044,9 @@ async def technical_wiki_bootstrap(data: dict[str, Any] = Body(default_factory=d
     return enqueue_material_wiki_generation(
         TECHNICAL_BID_TYPE,
         reference_path=str(data.get("referencePath") or ""),
-        mode=str(data.get("mode") or "create"),
+        # 缺省按 refresh 处理：create 在根树已存在时直接保留旧树不同步，
+        # 缺省调用（脚本/手动触发）会看到过期 Wiki。
+        mode=str(data.get("mode") or "refresh"),
         fallback_to_deterministic=bool(data.get("fallbackToDeterministic")),
     )
 
@@ -1134,24 +1143,30 @@ async def technical_wiki_download_attachment_content(attachment_id: str) -> Stre
 
 
 @router.get("/api/technical/audit")
-async def technical_audit_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_audit_list(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_audit_service.list(dict(request.query_params))
 
 
 @router.get("/api/technical/audit/export")
-async def technical_audit_export(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_audit_export(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_audit_service.export(dict(request.query_params))
 
 
 @router.get("/api/technical/audit/{audit_id}")
-async def technical_audit_detail(audit_id: str, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_audit_detail(
+    audit_id: str, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_audit_service.detail(audit_id)
 
 
 @router.post("/api/technical/events")
 async def technical_event_ingest(
     data: dict[str, Any] = Body(default_factory=dict),
-    user: dict[str, Any] = Depends(current_user),
+    user: dict[str, Any] = Depends(require_line_role("technical")),
 ) -> dict[str, Any]:
     events = data.get("events") or []
     if not isinstance(events, list) or len(events) > 100:
@@ -1161,17 +1176,21 @@ async def technical_event_ingest(
 
 
 @router.get("/api/technical/events")
-async def technical_event_list(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_event_list(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_event_service.list(dict(request.query_params))
 
 
 @router.get("/api/technical/events/sessions")
-async def technical_event_sessions(request: Request, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+async def technical_event_sessions(
+    request: Request, _: dict[str, Any] = Depends(require_line_role("technical"))
+) -> dict[str, Any]:
     return await technical_event_service.sessions(dict(request.query_params))
 
 
 @router.get("/api/technical/events/sessions/{session_id}")
 async def technical_event_session_timeline(
-    session_id: str, _: dict[str, Any] = Depends(current_user)
+    session_id: str, _: dict[str, Any] = Depends(require_line_role("technical"))
 ) -> dict[str, Any]:
     return {"items": await technical_event_service.session_timeline(session_id)}
