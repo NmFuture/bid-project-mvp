@@ -447,14 +447,17 @@ async def pdf_fulltext_for_raw_file(file_id: str) -> dict[str, Any]:
         name = str(item.name or "")
         ext_fields = dict(item.ext_fields or {})
         source_key = str(item.minio_key or "")
+        source_version = int(getattr(item, "version", 1) or 1)
 
     if PurePosixPath(name).suffix.lower() != ".pdf":
         raise PeripheralError(400, "仅 PDF 素材支持查看提取全文。", "FULLTEXT_FILE_TYPE_INVALID")
     profile = deep_parse_profile_for(ext_fields, source_key)
-    fulltext_key = str((profile or {}).get("fulltextKey") or "")
-    if not profile or not fulltext_key:
+    if not profile or not str(profile.get("fulltextKey") or ""):
         raise PeripheralError(404, "该素材尚未生成全文提取产物，请先触发 Wiki 刷新排队提取。", "FULLTEXT_NOT_READY")
-    bucket = str(profile.get("fulltextBucket") or settings.minio_buckets["materials"])
+    # 不信任元数据里的 fulltextBucket/fulltextKey（extFields 可被外部写入，越界读其他对象）：
+    # bucket 固定取配置里的 materials 桶，key 按素材 id+版本本地重算，profile 仅作存在性判断。
+    bucket = str(settings.minio_buckets["materials"])
+    fulltext_key = fulltext_object_key(numeric_id, source_version)
     data = await asyncio.to_thread(minio_client.get_object, bucket, fulltext_key)
     text = data.decode("utf-8", errors="replace")
     return {
