@@ -85,6 +85,15 @@ def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
 
 
 def source_terms(value: Any) -> list[str]:
+    if isinstance(value, list):
+        terms: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            for term in source_terms(item):
+                if term and term not in seen:
+                    seen.add(term)
+                    terms.append(term)
+        return terms
     text = clean_text(value)
     if not text:
         return []
@@ -254,3 +263,180 @@ def find_appendix_source_rule(
     if best is None:
         return {}
     return dict(best[1])
+
+
+# ---------------------------------------------------------------------------
+# 已生成 gap plan 的矩阵回写
+#
+# 以下三个函数镜像 bid-tech-gap-planner skill（run_from_manifest.py）里的
+# matrix_material_score / source_routing_payload / 推荐素材裁剪逻辑，
+# 用于「素材匹配完成后才上传规则」的场景：不必重跑整个缺口识别，
+# 直接把矩阵应用到现在 plan 的附表任务上。权重与 skill 保持一致，
+# 避免同一项目两次路由结果排序漂移。
+# ---------------------------------------------------------------------------
+
+MATERIAL_TEXT_KEYS = ("name", "path", "docx", "cleanedPath", "folderPath", "cleanedFileName", "matchReason")
+
+
+def _material_text(material: dict[str, Any]) -> str:
+    return " ".join(str(material.get(key) or "") for key in MATERIAL_TEXT_KEYS)
+
+
+def _tier_key(material: dict[str, Any]) -> str:
+    return normalize_match_text(material.get("materialTier") or material.get("materialScope") or "")
+
+
+def _tier_is_project(tier: str) -> bool:
+    return "project" in tier or "项目" in tier
+
+
+def _tier_is_standard(tier: str) -> bool:
+    return "standard" in tier or "标准" in tier or "通用" in tier
+
+
+def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tuple[float, list[str]]:
+    """规则来源词对单条素材打分（与 skill 的 matrix_material_score 同权重）。"""
+    terms = {
+        "project": source_terms(rule.get("projectSources")),
+        "standard": source_terms(rule.get("standardSources")),
+    }
+    if not any(terms.values()):
+        return 0.0, []
+    text = normalize_match_text(_material_text(material))
+    tier = _tier_key(material)
+    score = 0.0
+    reasons: list[str] = []
+    for scope, scope_terms in (("project", terms["project"]), ("standard", terms["standard"])):
+        scope_hit = _tier_is_project(tier) if scope == "project" else _tier_is_standard(tier)
+        for term in scope_terms:
+            term_key = normalize_match_text(term)
+            if not term_key:
+                continue
+            if term_key in text:
+                score += 420 if scope_hit else 260
+                reasons.append(f"{scope} 来源规定命中：{term}")
+            elif any(
+                part_key and len(part_key) >= 2 and part_key in text
+                for part in source_terms(term)
+                for part_key in [normalize_match_text(part)]
+            ):
+                score += 180 if scope_hit else 120
+                reasons.append(f"{scope} 来源规定部分命中：{term}")
+    if score and _tier_is_project(tier):
+        score += 30
+    elif score and _tier_is_standard(tier):
+        score += 20
+    return score, reasons[:6]
+
+
+def build_source_routing_payload(rule: dict[str, Any], matched_materials: list[dict[str, Any]]) -> dict[str, Any]:
+    """附表任务/目录项上的 sourceRouting 载荷（与 skill 的 source_routing_payload 同构）。"""
+    if not rule:
+        return {}
+    project_sources = source_terms(rule.get("projectSources"))
+    standard_sources = source_terms(rule.get("standardSources"))
+    other_sources = source_terms(rule.get("otherSources"))
+    matched = [
+        {
+            "id": str(material.get("id") or material.get("materialId") or ""),
+            "name": str(material.get("name") or material.get("cleanedFileName") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+            "matchReason": str(material.get("matchReason") or ""),
+        }
+        for material in matched_materials[:8]
+        if material.get("sourceRouting")
+    ]
+    manual_terms = [term for term in other_sources if any(token in term for token in ("人工", "收集", "项目定制收集"))]
+    tender_terms = [term for term in other_sources if any(token in term for token in ("招标", "响应招标"))]
+    status = "matched" if matched else ("manual_required" if manual_terms else ("tender_parse_fields" if tender_terms else "missing_source"))
+    return {
+        "status": status,
+        "source": "appendix_source_matrix",
+        "ruleId": str(rule.get("id") or ""),
+        "customer": str(rule.get("customer") or ""),
+        "tableTitle": str(rule.get("tableTitle") or ""),
+        "projectSources": project_sources,
+        "standardSources": standard_sources,
+        "otherSources": other_sources,
+        "matchedMaterials": matched,
+        "manualRequired": bool(manual_terms),
+        "useTenderParseFields": bool(tender_terms),
+    }
+
+
+def route_materials_for_rule(rule: dict[str, Any], materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按规则行给素材池打分、过滤、排序（与 skill 的 recommended_materials_for_appendix 同语义）。"""
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        score, reasons = matrix_material_score(material, rule)
+        if not score:
+            continue
+        item = dict(material)
+        item["matchReason"] = "；".join([*(reasons or []), str(item.get("matchReason") or "")]).strip("；")
+        item["sourceRouting"] = {
+            "source": "appendix_source_matrix",
+            "ruleId": str(rule.get("id") or ""),
+            "reasons": reasons,
+        }
+        ranked.append((score, item))
+    ranked.sort(key=lambda entry: entry[0], reverse=True)
+    return [item for _, item in ranked]
+
+
+def apply_appendix_source_matrix_to_plan(
+    plan: dict[str, Any],
+    matrix: dict[str, Any],
+    *,
+    customer_name: str,
+    materials: list[dict[str, Any]],
+) -> dict[str, int]:
+    """把来源矩阵回写到已生成的 gap plan：只更新附表任务的 sourceRouting 与推荐素材。
+
+    规则未命中的任务保持原样；命中的任务覆盖 sourceRouting/recommendedMaterials，
+    目录项同步 sourceRouting（取首个命中任务）与 sourceRoutedMaterials，与 skill
+    产出结构一致，前端弹窗与 AI 填写 manifest 直接可用。
+    """
+    stats = {"routedItems": 0, "matchedTasks": 0, "manualRequired": 0, "tenderFields": 0, "missingSource": 0}
+    rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    if not rows or not items:
+        return stats
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        appendix_tasks = item.get("appendixTasks") if isinstance(item.get("appendixTasks"), list) else []
+        item_payload: dict[str, Any] = {}
+        item_materials: list[dict[str, Any]] = []
+        for task in appendix_tasks:
+            if not isinstance(task, dict):
+                continue
+            title = str(task.get("title") or task.get("id") or "")
+            rule = find_appendix_source_rule(matrix, customer_name=customer_name, table_title=title)
+            if not rule:
+                continue
+            routed = route_materials_for_rule(rule, materials)
+            payload = build_source_routing_payload(rule, routed)
+            task["sourceRouting"] = payload
+            task["recommendedMaterials"] = [
+                {**dict(material), "usage": "table_source"} for material in routed[:5]
+            ]
+            if not item_payload:
+                item_payload = payload
+                item_materials = task["recommendedMaterials"]
+            status = str(payload.get("status") or "")
+            if status == "matched":
+                stats["matchedTasks"] += 1
+            elif status == "manual_required":
+                stats["manualRequired"] += 1
+            elif status == "tender_parse_fields":
+                stats["tenderFields"] += 1
+            else:
+                stats["missingSource"] += 1
+        if item_payload:
+            item["sourceRouting"] = item_payload
+            item["sourceRoutedMaterials"] = item_materials
+            stats["routedItems"] += 1
+    return stats

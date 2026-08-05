@@ -432,6 +432,17 @@ async def upload_technical_gap_fact_specs(
     )
 
 
+@router.post("/api/technical/projects/{project_id}/appendix-source-matrix")
+async def upload_technical_appendix_source_matrix(
+    project_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """上传本项目附表填写规则 Excel（客户×附表→素材来源矩阵），下次缺口识别时确定每张附表的取值来源。"""
+    return await technical_gap_service.upload_appendix_source_matrix(
+        project_id, str(file.filename or ""), await file.read()
+    )
+
+
 @router.put("/api/technical/projects/{project_id}/gaps/facts/material-sources")
 async def save_technical_gap_fact_material_sources(
     project_id: str,
