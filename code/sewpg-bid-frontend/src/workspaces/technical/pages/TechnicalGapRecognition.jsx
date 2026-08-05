@@ -14,6 +14,7 @@ import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
   asArray,
   asObjectArray,
+  aiFillComparisonPair,
   appendixTaskForFillTask,
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
@@ -1058,82 +1059,117 @@ function TechnicalGenerationProgressModal({
   )
 }
 
+function PreviewDocumentPane({
+  eyebrow,
+  title,
+  icon,
+  loading,
+  session,
+  error,
+}) {
+  return (
+    <section className="flex min-h-[560px] min-w-0 flex-col overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest">
+      <div className="flex min-h-[64px] shrink-0 items-center gap-3 border-b border-surface-container-high px-4 py-3">
+        <span className="material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-fixed text-[20px] text-primary">
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold text-primary">{eyebrow}</div>
+          <h4 className="mt-0.5 truncate text-sm font-semibold text-on-surface" title={title}>{title}</h4>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 bg-surface-container-low p-2">
+        {loading ? (
+          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md bg-surface-container-lowest px-6 text-center">
+            <div>
+              <span className="material-symbols-outlined text-3xl text-primary">hourglass_empty</span>
+              <p className="mt-2 text-sm text-on-surface-variant">正在加载预览...</p>
+            </div>
+          </div>
+        ) : session?.onlyoffice ? (
+          <OnlyOfficeEmbed
+            session={session.onlyoffice}
+            mode="view"
+            className="h-full min-h-[480px] w-full rounded-md border border-surface-container-high bg-white"
+            onError={() => {}}
+          />
+        ) : (
+          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
+            <p className="max-w-md text-sm text-on-surface-variant">
+              {error || '当前文档暂时无法预览，请检查素材是否已清洗为 Word。'}
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function TechnicalPreviewModal({
   open,
+  sectionTitle,
   selectedPreviewChoice,
-  visiblePreviewChoices,
+  comparison,
   previewLoading,
   previewSession,
   previewError,
-  onSelectPreviewChoice,
+  referencePreviewLoading,
+  referencePreviewSession,
+  referencePreviewError,
   onClose,
 }) {
   if (!open) return null
+  const comparing = Boolean(comparison)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-      <section className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
-        <div className="flex min-h-[58px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-3 py-4">
+      <section className="flex h-[min(94vh,980px)] w-[min(96vw,1800px)] flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
+        <div className="flex min-h-[68px] shrink-0 items-center justify-between gap-4 border-b border-surface-container-high bg-surface px-5 py-3">
           <div className="min-w-0">
-            <h4 className="truncate text-base font-semibold text-on-surface">
-              {selectedPreviewChoice?.title || '素材预览'}
-            </h4>
-            <p className="mt-1 truncate text-xs text-outline" title={selectedPreviewChoice?.subtitle || ''}>
-              {selectedPreviewChoice
-                ? `${previewKindLabels[selectedPreviewChoice.kind] || '预览'} · ${selectedPreviewChoice.subtitle || '-'}`
-                : '当前目录项还没有可预览的素材、空表或处理产物。'}
+            <h3 className="truncate text-base font-semibold text-on-surface">
+              {comparing ? 'AI 填写结果对比' : (selectedPreviewChoice?.title || '文档预览')}
+            </h3>
+            <p className="mt-1 truncate text-xs text-outline" title={sectionTitle || selectedPreviewChoice?.subtitle || ''}>
+              {comparing
+                ? (sectionTitle || '对照填写前参考稿与 AI 填写结果')
+                : `${previewKindLabels[selectedPreviewChoice?.kind] || '预览'} · ${selectedPreviewChoice?.subtitle || '-'}`}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {visiblePreviewChoices.length > 1 ? (
-              visiblePreviewChoices.map((choice) => {
-                const active = selectedPreviewChoice?.key === choice.key
-                return (
-                  <button
-                    key={choice.key}
-                    type="button"
-                    onClick={() => onSelectPreviewChoice(choice.key)}
-                    className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${
-                      active
-                        ? 'bg-primary text-on-primary'
-                        : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[15px]">{previewKindIcons[choice.kind] || 'description'}</span>
-                    {choice.label}
-                  </button>
-                )
-              })
-            ) : selectedPreviewChoice ? (
-              <span className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-semibold text-on-primary">
-                <span className="material-symbols-outlined text-[15px]">{previewKindIcons[selectedPreviewChoice.kind] || 'description'}</span>
-                {selectedPreviewChoice.label}
-              </span>
-            ) : null}
-            <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
-          </div>
+          <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
 
-        <div className="min-h-0 flex-1 p-4">
-          {previewLoading ? (
-            <div className="flex h-[min(76vh,760px)] min-h-[520px] items-center justify-center rounded-md border border-surface-container-high bg-surface-container-lowest px-6 text-center">
-              <div>
-                <span className="material-symbols-outlined text-4xl text-primary">hourglass_empty</span>
-                <p className="mt-3 text-sm text-on-surface-variant">正在加载预览...</p>
-              </div>
-            </div>
-          ) : previewSession?.onlyoffice ? (
-            <OnlyOfficeEmbed
-              session={previewSession.onlyoffice}
-              mode="view"
-              className="h-[min(76vh,760px)] min-h-[520px] w-full rounded-md border border-surface-container-high bg-white"
-              onError={() => {}}
+        <div className={`min-h-0 flex-1 overflow-auto bg-surface-container-low p-3 ${comparing ? 'grid gap-3 lg:grid-cols-2' : ''}`}>
+          {comparing ? (
+            <>
+              <PreviewDocumentPane
+                eyebrow="填写前 · 参考稿"
+                title={comparison.reference.title || '待填写文档'}
+                icon={previewKindIcons[comparison.reference.kind] || 'description'}
+                loading={referencePreviewLoading}
+                session={referencePreviewSession}
+                error={referencePreviewError}
+              />
+              <PreviewDocumentPane
+                eyebrow="填写后 · AI 结果"
+                title={comparison.result.title || 'AI 填写结果'}
+                icon="auto_awesome"
+                loading={previewLoading}
+                session={previewSession}
+                error={previewError}
+              />
+            </>
+          ) : selectedPreviewChoice ? (
+            <PreviewDocumentPane
+              eyebrow={previewKindLabels[selectedPreviewChoice.kind] || '文档预览'}
+              title={selectedPreviewChoice.title || '文档预览'}
+              icon={previewKindIcons[selectedPreviewChoice.kind] || 'description'}
+              loading={previewLoading}
+              session={previewSession}
+              error={previewError}
             />
           ) : (
-            <div className="flex h-[min(76vh,760px)] min-h-[520px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
-              <p className="max-w-md text-sm text-on-surface-variant">
-                {previewError || (selectedPreviewChoice ? '当前对象暂时无法预览，请检查素材是否已清洗为 Word。' : '当前目录项还没有可预览的素材、空表或处理产物。')}
-              </p>
+            <div className="flex h-full min-h-[520px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
+              <p className="max-w-md text-sm text-on-surface-variant">当前目录项还没有可预览的素材、空表或处理产物。</p>
             </div>
           )}
         </div>
@@ -1161,6 +1197,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [previewSession, setPreviewSession] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
+  const [referencePreviewSession, setReferencePreviewSession] = useState(null)
+  const [referencePreviewLoading, setReferencePreviewLoading] = useState(false)
+  const [referencePreviewError, setReferencePreviewError] = useState('')
   const [manualPreviewChoice, setManualPreviewChoice] = useState(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [factModalOpen, setFactModalOpen] = useState(false)
@@ -1276,6 +1315,10 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     return choices
   }, [manualPreviewActive, selectedPreviewChoices])
+  const previewComparison = useMemo(
+    () => aiFillComparisonPair(visiblePreviewChoices, selectedPreviewChoice),
+    [selectedPreviewChoice, visiblePreviewChoices],
+  )
   const selectedFillTasks = asObjectArray(selected?.fillTasks)
   const selectedFillTask = selectedFillTasks[0] || null
   const selectedAppendixTask = appendixTaskForFillTask(selected, selectedFillTask)
@@ -1358,6 +1401,11 @@ export default function TechnicalGapRecognition({ showToast }) {
       : null
     if (byBlank) return byBlank
     return isFillTemplateMaterial({ name: artifact?.fileName || '' }) ? selectedFillTask : null
+  }
+  const canCompareAiFillArtifact = (artifact) => {
+    const artifactKey = `artifact:${String(artifact?.id || '').trim()}`
+    const artifactChoice = selectedPreviewChoices.find((choice) => choice.key === artifactKey)
+    return Boolean(aiFillComparisonPair(selectedPreviewChoices, artifactChoice))
   }
   // 待填写素材（解析空表/待填写模板）与普通参考素材平级进入统一候选池（产品意见 2026-07-17），
   // 不再单独一套「待填写对象」区块；每张卡绑定各自的填写任务。
@@ -1445,43 +1493,60 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   useEffect(() => {
     let cancelled = false
-    const loadPreview = async () => {
-      setPreviewSession(null)
-      setPreviewError('')
-
-      if (!previewOpen || !selectedPreviewChoice) return
-
-      if (selectedPreviewChoice.kind === 'artifact') {
-        setPreviewSession({
-          onlyoffice: selectedPreviewChoice.artifact?.onlyoffice,
-          fileName: selectedPreviewChoice.title,
+    const sessionForChoice = async (choice) => {
+      if (choice.kind === 'artifact') {
+        return {
+          onlyoffice: choice.artifact?.onlyoffice,
+          fileName: choice.title,
           source: 'artifact',
-        })
-        return
+        }
       }
+      return choice.kind === 'appendix'
+        ? technicalParseAPI.appendixPreview(id, choice.blankSource.id)
+        : technicalMaterialsAPI.raw.previewCleanedFile(choice.material.id)
+    }
 
+    const loadSelectedPreview = async () => {
       setPreviewLoading(true)
       try {
-        const payload = selectedPreviewChoice.kind === 'appendix'
-          ? await technicalParseAPI.appendixPreview(id, selectedPreviewChoice.blankSource.id)
-          : await technicalMaterialsAPI.raw.previewCleanedFile(selectedPreviewChoice.material.id)
-        if (!cancelled) {
-          setPreviewSession(payload)
-        }
+        const payload = await sessionForChoice(selectedPreviewChoice)
+        if (!cancelled) setPreviewSession(payload)
       } catch (e) {
-        if (!cancelled) {
-          setPreviewError(e?.message || '预览加载失败')
-        }
+        if (!cancelled) setPreviewError(e?.message || '预览加载失败')
       } finally {
         if (!cancelled) setPreviewLoading(false)
       }
     }
 
-    loadPreview()
+    const loadReferencePreview = async () => {
+      if (!previewComparison?.reference) return
+      setReferencePreviewLoading(true)
+      try {
+        const payload = await sessionForChoice(previewComparison.reference)
+        if (!cancelled) setReferencePreviewSession(payload)
+      } catch (e) {
+        if (!cancelled) setReferencePreviewError(e?.message || '参考稿预览加载失败')
+      } finally {
+        if (!cancelled) setReferencePreviewLoading(false)
+      }
+    }
+
+    const loadPreviews = async () => {
+      setPreviewSession(null)
+      setPreviewLoading(false)
+      setPreviewError('')
+      setReferencePreviewSession(null)
+      setReferencePreviewLoading(false)
+      setReferencePreviewError('')
+      if (!previewOpen || !selectedPreviewChoice) return
+      await Promise.all([loadSelectedPreview(), loadReferencePreview()])
+    }
+
+    loadPreviews()
     return () => {
       cancelled = true
     }
-  }, [id, previewOpen, selectedPreviewChoice])
+  }, [id, previewComparison, previewOpen, selectedPreviewChoice])
 
   const updatePayload = (payload) => {
     const next = payload?.payload || payload
@@ -2241,50 +2306,84 @@ export default function TechnicalGapRecognition({ showToast }) {
                               2026-08-02：每个目录项只定案一份素材，取消合并顺序编号与说明。 */}
                           {mergeArtifacts.length ? (
                             <div className="mt-2 space-y-1.5">
-                              {mergeArtifacts.map((artifact, index) => (
-                                <div
-                                  key={artifact.id || `${artifact.fileName || ''}-${index}`}
-                                  className="flex items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2"
-                                >
-                                  <div className="flex min-w-0 items-center gap-2 text-xs">
-                                    <span className="truncate font-medium text-on-surface" title={artifact.fileName || ''}>
-                                      {artifact.fileName || artifact.title || artifact.id || '-'}
-                                    </span>
-                                    <Badge size="xs" variant={artifact.source === 'ai_fill' ? 'info' : 'done'}>
-                                      {artifactSourceLabels[artifact.source] || '产物'}
-                                    </Badge>
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-2">
-                                    <Button
-                                      type="button"
-                                      onClick={() => handlePreviewMergeArtifact(artifact)}
-                                      disabled={Boolean(busyAction)}
-                                      size="sm"
-                                      variant="quiet"
-                                    >
-                                      预览
-                                    </Button>
-                                    {(() => {
-                                      // 选用的「待填写-」模板在清单里保留 AI填写；其余产物只有预览。
-                                      const task = fillTaskForMergeArtifact(artifact)
-                                      if (!task) return null
-                                      const completed = String(task?.status || '') === 'completed'
-                                      return (
+                              {mergeArtifacts.map((artifact, index) => {
+                                const key = artifact.id || `${artifact.fileName || ''}-${index}`
+                                if (artifact.source === 'ai_fill') {
+                                  const canCompare = canCompareAiFillArtifact(artifact)
+                                  return (
+                                    <div key={key} className="rounded-md border border-primary/25 bg-primary-fixed/35 px-3 py-3">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="flex min-w-0 items-center gap-3">
+                                          <span className="material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-[19px] text-on-primary">
+                                            auto_awesome
+                                          </span>
+                                          <div className="min-w-0">
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-xs font-semibold text-primary">AI 填写结果</span>
+                                              <Badge size="xs" variant="done">已生成</Badge>
+                                            </div>
+                                            <div className="mt-1 truncate text-xs font-medium text-on-surface" title={artifact.fileName || ''}>
+                                              {artifact.fileName || artifact.title || artifact.id || '-'}
+                                            </div>
+                                          </div>
+                                        </div>
                                         <Button
                                           type="button"
-                                          onClick={() => setAiFillModalTask(task)}
+                                          onClick={() => handlePreviewMergeArtifact(artifact)}
                                           disabled={Boolean(busyAction)}
-                                          title={completed ? '已完成，可再次发起 AI 填写' : ''}
+                                          icon={canCompare ? 'compare' : 'visibility'}
                                           size="sm"
-                                          variant="secondary"
+                                          variant="primary"
                                         >
-                                          {aiFillBusy ? 'AI填写中...' : completed ? '已AI填写' : 'AI填写'}
+                                          {canCompare ? '对比预览' : '预览结果'}
                                         </Button>
-                                      )
-                                    })()}
+                                      </div>
+                                    </div>
+                                  )
+                                }
+
+                                return (
+                                  <div key={key} className="flex items-center justify-between gap-2 rounded-md bg-surface-container-low px-3 py-2">
+                                    <div className="flex min-w-0 items-center gap-2 text-xs">
+                                      <span className="truncate font-medium text-on-surface" title={artifact.fileName || ''}>
+                                        {artifact.fileName || artifact.title || artifact.id || '-'}
+                                      </span>
+                                      <Badge size="xs" variant="done">
+                                        {artifactSourceLabels[artifact.source] || '产物'}
+                                      </Badge>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-2">
+                                      <Button
+                                        type="button"
+                                        onClick={() => handlePreviewMergeArtifact(artifact)}
+                                        disabled={Boolean(busyAction)}
+                                        size="sm"
+                                        variant="quiet"
+                                      >
+                                        预览
+                                      </Button>
+                                      {(() => {
+                                        // 选用的「待填写-」模板在清单里保留 AI填写；其余产物只有预览。
+                                        const task = fillTaskForMergeArtifact(artifact)
+                                        if (!task) return null
+                                        const completed = String(task?.status || '') === 'completed'
+                                        return (
+                                          <Button
+                                            type="button"
+                                            onClick={() => setAiFillModalTask(task)}
+                                            disabled={Boolean(busyAction)}
+                                            title={completed ? '已完成，可再次发起 AI 填写' : ''}
+                                            size="sm"
+                                            variant="secondary"
+                                          >
+                                            {aiFillBusy ? 'AI填写中...' : completed ? '已AI填写' : 'AI填写'}
+                                          </Button>
+                                        )
+                                      })()}
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                )
+                              })}
                             </div>
                           ) : null}
                           {/* 解析空副表常驻已选区：预览 + AI填写（填写完成后仍可再次发起）。 */}
@@ -2491,12 +2590,15 @@ export default function TechnicalGapRecognition({ showToast }) {
       />
       <TechnicalPreviewModal
         open={previewOpen}
+        sectionTitle={selected?.title || ''}
         selectedPreviewChoice={selectedPreviewChoice}
-        visiblePreviewChoices={visiblePreviewChoices}
+        comparison={previewComparison}
         previewLoading={previewLoading}
         previewSession={previewSession}
         previewError={previewError}
-        onSelectPreviewChoice={(key) => setPreviewChoiceKey(key)}
+        referencePreviewLoading={referencePreviewLoading}
+        referencePreviewSession={referencePreviewSession}
+        referencePreviewError={referencePreviewError}
         onClose={() => setPreviewOpen(false)}
       />
     </div>

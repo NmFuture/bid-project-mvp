@@ -16,9 +16,9 @@ const shortHash = (value) => {
   return Math.abs(hash).toString(36)
 }
 
-const buildDocumentKey = (documentKey, fileUrl) => {
+const buildDocumentKey = (documentKey, fileUrl, runtimeScope = '') => {
   const baseKey = String(documentKey || 'document').replace(/[^A-Za-z0-9._=-]/g, '-')
-  const urlHash = shortHash(fileUrl)
+  const urlHash = shortHash(runtimeScope ? `${fileUrl}|${runtimeScope}` : fileUrl)
   return `${baseKey}-${urlHash}`.slice(0, 120)
 }
 
@@ -39,6 +39,7 @@ const OnlyOfficeEmbed = forwardRef(function OnlyOfficeEmbed({
     const documentKey = buildDocumentKey(
       `${session?.documentKey || ''}-${mode}-${enableSearchPlugin ? 'search' : 'plain'}-v3`,
       fileUrl,
+      import.meta.env.DEV ? window.location.origin : '',
     )
     const config = ONLYOFFICE_CONFIG.getEditorConfig({
       documentKey,

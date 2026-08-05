@@ -411,6 +411,20 @@ export const previewChoicesForItem = (selected, allItems = []) => {
   return choices
 }
 
+// AI 结果预览固定配成「填写前参考稿 + AI 填写结果」。填写前优先使用空表/待填写模板，
+// 没有模板时才退回匹配素材；普通素材或人工上传产物仍使用单文档预览。
+export const aiFillComparisonPair = (choices, selectedChoice) => {
+  if (
+    selectedChoice?.kind !== 'artifact'
+    || String(selectedChoice?.artifact?.source || '') !== 'ai_fill'
+  ) return null
+
+  const candidates = asObjectArray(choices).filter((choice) => choice?.key !== selectedChoice.key)
+  const reference = candidates.find((choice) => choice.kind === 'blankMaterial' || choice.kind === 'appendix')
+    || candidates.find((choice) => choice.kind === 'material')
+  return reference ? { reference, result: selectedChoice } : null
+}
+
 export const resultSummaryForItem = (selected, allItems = []) => {
   const artifact = latestResolvedArtifact(selected)
   if (artifact) {
