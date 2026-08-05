@@ -104,6 +104,51 @@
 - AI/Skill 输出必须可验证，关键结论要保留来源、证据或可追踪中间结果。
 - 不能按单个样本硬编码文件名、字段值或答案。判断边界：业主固定模板的**结构特征**（列名、附表编号、章节框架、同义词典）可以硬编码，但须在代码处注明模板来源；单个项目的**内容值**（数值、日期、项目名）不可以。
 
+### 本机 Dev 测试环境重置 Skill
+
+用户提出“同步/拉取上游 Dev”“干净开始新一轮测试”“重建 Docker 或数据卷”“判断素材、清洗结果、Wiki 是否复用”等要求时，必须读取并使用本机 Skill：
+
+```text
+/Users/wlb/.codex/skills/bid-dev-test-reset/SKILL.md
+```
+
+默认操作对象是独立测试运行目录 `/Users/wlb/Agent/bid-project-dev-runtime`。执行前先确认素材源属于以下哪种状态；用户已明确说明时不要重复询问：
+
+- `unchanged`：素材未变化，允许根据 Git diff 自动选择 `clean-test`、`wiki-refresh`、`reclean` 或 `full-reset`。
+- `incremental`：素材有增删，必须先确认新增/删除清单和增量导入方案，不能自动删除。
+- `full`：素材需要全量重构，必须先确认全量导入、清洗、Wiki 和数据卷策略。
+
+项目定制素材不纳入自动导入、素材基线或自动重构，由用户后续人工导入。标准文件、客户定制和业绩库才属于自动素材基线。
+
+常用调用如下，命令可从任意目录执行：
+
+```bash
+# 只读检查当前环境，不删除资源
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/reset_dev_test.sh --check
+
+# 只读比较当前 HEAD 与 origin/Dev，不 merge、不构建、不删除
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/smart_reset.sh --plan
+
+# 素材未变化时，按上游改动自动选择安全的重置模式
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/smart_reset.sh \
+  --auto --material-change unchanged
+
+# 显式模式
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/smart_reset.sh --clean-test
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/smart_reset.sh --wiki-refresh
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/smart_reset.sh --reclean
+bash /Users/wlb/.codex/skills/bid-dev-test-reset/scripts/reset_dev_test.sh --full-reset
+```
+
+模式边界：
+
+- `clean-test`：保留标准/客户素材、清洗结果、Wiki、业绩和系统配置，只清项目、任务、运行队列及项目工作文件。
+- `wiki-refresh`：先执行 `clean-test`，再只刷新技术标 Wiki。
+- `reclean`：先执行 `clean-test`，再使标准/客户 Word 的旧清洗结果失效，重新清洗并刷新 Wiki。
+- `full-reset`：删除并重建当前 Compose project 的全部容器、网络和数据卷；随后必须重新导入素材、清洗并生成 Wiki。
+
+安全要求：构建成功后才能停止旧环境并删除资源；遇到工作树不干净、非 `Dev`、同步/预检/build 失败或 `review-required` 时立即停止。只能按 Compose project 标签精确处理资源，不得执行 `docker system prune`、`docker builder prune`，也不得把卷数量写死。PyTorch wheelhouse 和 Docling 模型缓存位于 `/Users/wlb/.cache/bid-dev-test-reset/`，不属于业务数据卷，可以跨轮复用。
+
 ## 本地运行预检（必须）
 
 每次进入新的运行会话（启动项目、运行测试、运行 agent 工作流）之前，
