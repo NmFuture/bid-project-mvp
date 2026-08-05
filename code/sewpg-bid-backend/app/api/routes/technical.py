@@ -376,6 +376,15 @@ def set_technical_gap_parent_coverage(
     return technical_gap_service.set_parent_coverage(project_id, gap_id, data)
 
 
+@router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/title-only")
+def set_technical_gap_title_only(
+    project_id: str,
+    gap_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return technical_gap_service.set_title_only(project_id, gap_id, data)
+
+
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/select-material")
 async def select_technical_gap_material(
     project_id: str,
