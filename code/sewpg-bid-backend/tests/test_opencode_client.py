@@ -2019,11 +2019,18 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
+        # 停滞路径会调 abort_session 发真实 HTTP 请求，httpx 内部也会读 time.monotonic，
+        # 固定长度的 side_effect 会被多消耗一次而抛 StopIteration，这里给出可重复的尾值。
+        monotonic_values = iter([0.0, 0.0])
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values, 121.0)
+
         with (
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
             patch("app.services.opencode_client.settings.opencode_timeout_sec", 1),
-            patch("app.services.opencode_client.time.monotonic", side_effect=[0.0, 0.0, 121.0]),
+            patch("app.services.opencode_client.time.monotonic", side_effect=fake_monotonic),
         ):
             with self.assertRaises(RuntimeError) as context:
                 client._send_prompt_with_session_polling(
