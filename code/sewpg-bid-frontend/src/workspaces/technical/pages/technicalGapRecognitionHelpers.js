@@ -116,16 +116,17 @@ export const isStructuralItem = (item) => (
 export const TECHNICAL_GAP_READY_SCORE = 0.99
 export const TECHNICAL_GAP_WEAK_SCORE = 0.3
 
-// 主标签五字工整；note 为括号注记，渲染时用小一号浅色字。
+// 标签命名 v6（产品裁决 2026-08-04）：工作态统一三字「待/已 + 二字动作」，
+// 流水线 待补充 → 待确认 → 待填写 → 待审核 → 已就绪；旁路态四字一对。
+// 标签管状态、按钮管动作（AI填写/复核通过在右侧面板按钮上），tip 供 hover 提示。
 export const TECHNICAL_GAP_TAG_CONFIG = {
-  material_ready: { label: '已就绪素材', note: '', variant: 'done' },
-  material_confirm: { label: '待确认素材', note: '无需填写', variant: 'amber' },
-  template_confirm: { label: '待确认模板', note: '需AI填写', variant: 'purple' },
-  template_ready: { label: '已就绪模板', note: '需AI填写', variant: 'info' },
-  template_review: { label: '待复核模板', note: 'AI已填写', variant: 'cyan' },
-  manual_supplement: { label: '待人工补充', note: '', variant: 'error' },
-  parent_covered: { label: '由父章覆盖', note: '', variant: 'muted' },
-  title_only: { label: '仅保留标题', note: '', variant: 'muted' },
+  manual_supplement: { label: '待补充', tip: '系统没找到素材，请上传或从素材库挑选', variant: 'error' },
+  needs_choice: { label: '待确认', tip: '请从备选中确认用哪份素材', variant: 'amber' },
+  template_ready: { label: '待填写', tip: '模板已定，点击发起 AI 填写', variant: 'info' },
+  template_review: { label: '待审核', tip: 'AI 已填写完成，请检查结果', variant: 'cyan' },
+  material_ready: { label: '已就绪', tip: '素材已定案，无需处理', variant: 'done' },
+  parent_covered: { label: '父章覆盖', tip: '跟父章素材走，无需单独处理', variant: 'muted' },
+  title_only: { label: '仅留标题', tip: '本级已忽略，内容由下级承接', variant: 'muted' },
 }
 
 // 待填写素材：严格按命名纪律，文件名（或清洗稿名）前缀「待填写-」。
@@ -198,7 +199,7 @@ export const technicalGapOwnTag = (item) => {
   // 甲方已填附表：与 0.99 精确命中同级的定案豁免，人工撤销后回落。
   if (!revoked && appendixAllClientProvided(item)) return 'material_ready'
 
-  // AI 填写产物存在：待复核；复核通过（human_confirmed）收口为绿色终态。
+  // AI 填写产物存在：待审核；复核通过（human_confirmed）收口为绿色终态。
   if (hasAiFillArtifact(item)) {
     return String(item?.qualityStatus || '') === 'human_confirmed' ? 'material_ready' : 'template_review'
   }
@@ -208,19 +209,23 @@ export const technicalGapOwnTag = (item) => {
 
   if (isTemplateTrackItem(item)) {
     // 解析空表来源天生确定；模板被人工定案或文件名精确命中同样算已定。
+    // 填写轨的实体证据由任务（blankSource/空表）或最佳候选模板天然保证。
     if (asObjectArray(item?.appendixTasks).length > 0 || confirmed || exact) return 'template_ready'
-    if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'template_confirm'
+    if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
     return 'manual_supplement'
   }
 
-  if (confirmed || exact) return 'material_ready'
+  // 空确认防御（产品反馈 2026-08-04）：变绿必须有素材实体证据——人工确认只对
+  // 系统预选素材（matchedMaterials）生效，空项确认不产生任何定案。
+  const hasSelectedMaterial = asObjectArray(item?.matchedMaterials).length > 0
+  if ((confirmed && hasSelectedMaterial) || exact) return 'material_ready'
   // 初判 ready 且无候选无产物的空骨架不算任务（decision 可能被终审改写，仅用于识别空骨架）。
   if (
     String(item?.decision || '') === 'ready'
     && !candidatePool(item).length
     && !asObjectArray(item?.resolvedArtifacts).length
   ) return ''
-  if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'material_confirm'
+  if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
   return 'manual_supplement'
 }
 

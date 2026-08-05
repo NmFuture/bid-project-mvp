@@ -228,22 +228,23 @@ test('目录标签v4：无候选或全部低于30%判待人工补充', () => {
   )
 })
 
-test('目录标签v4：30~98分按最佳素材形态分轨——直用判待确认素材，模板判待确认模板', () => {
+test('目录标签v6：30~98分统一为待确认（needs_choice），确认后按所选素材形态分流', () => {
   assert.equal(
     technicalGapTagOf({ id: 'G1', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] }),
-    'material_confirm',
+    'needs_choice',
   )
   assert.equal(
     technicalGapTagOf({ id: 'G2', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.98 }] }),
-    'material_confirm',
+    'needs_choice',
   )
+  // 填写模板候选同样是待确认；确认后进「待填写」而不是「已就绪」（后续用例覆盖）。
   assert.equal(
     technicalGapTagOf({
       id: 'G3',
       decision: 'review_required',
       candidateMaterials: [{ id: 'M1', name: '待填写-附表F31部件参数表.docx', matchScore: 0.5 }],
     }),
-    'template_confirm',
+    'needs_choice',
   )
   // 形态跟最佳素材走：最佳是直用素材时，低分待填写候选不改轨。
   assert.equal(
@@ -285,10 +286,10 @@ test('目录标签v4：解析生成的附表空表来源确定，直接判已就
   )
 })
 
-test('目录标签v4：99分（文件名精确命中）自动定案，人工撤销后回落分数档', () => {
+test('目录标签v6：99分（文件名精确命中）自动定案，人工撤销后回落待确认', () => {
   const autoReady = { id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
   assert.equal(technicalGapTagOf(autoReady), 'material_ready')
-  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: false }), 'material_confirm')
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: false }), 'needs_choice')
   assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: true }), 'material_ready')
 })
 
@@ -324,7 +325,7 @@ test('目录标签v4：AI填写完成变待复核模板，复核通过收口已�
   assert.equal(technicalGapTagOf({ ...filled, qualityStatus: 'passed' }), 'template_review')
 })
 
-test('目录标签v4：选定即定案——人工选材/上传直接变已就绪素材（行为改动② 2026-08-04）', () => {
+test('目录标签v6：选定即定案——人工选材/上传直接变已就绪（行为改动② 2026-08-04）', () => {
   // 后端 register 已在人工选材/上传时落 humanConfirmed + resolvedArtifacts。
   assert.equal(
     technicalGapTagOf({
@@ -345,16 +346,21 @@ test('目录标签v4：选定即定案——人工选材/上传直接变已就�
     }),
     'material_ready',
   )
-  // 「确认」动作依旧无前置条件；撤销后回派生标签。
+  // 「确认」确认的是系统预选素材（matchedMaterials），确认即定案。
   assert.equal(
-    technicalGapTagOf({ id: 'G3', decision: 'material_required', humanConfirmed: true }),
+    technicalGapTagOf({
+      id: 'G3',
+      decision: 'review_required',
+      matchedMaterials: [{ id: 'M1', matchScore: 0.6 }],
+      humanConfirmed: true,
+    }),
     'material_ready',
   )
   assert.equal(
     technicalGapTagOf({ id: 'G4', decision: 'material_required', humanConfirmed: false }),
     'manual_supplement',
   )
-  // 人工定案的是待填写模板：进入蓝色已就绪模板，不是绿色。
+  // 人工定案的是待填写模板：进入蓝色待填写，不是绿色。
   assert.equal(
     technicalGapTagOf({
       id: 'G5',
@@ -363,6 +369,24 @@ test('目录标签v4：选定即定案——人工选材/上传直接变已就�
       humanConfirmed: true,
     }),
     'template_ready',
+  )
+})
+
+test('目录标签v6：空确认防御——没有素材实体证据时确认不变绿（产品反馈 2026-08-04）', () => {
+  // 空项（无预选/无候选/无产物）即使 humanConfirmed 也不变绿，维持待补充。
+  assert.equal(
+    technicalGapTagOf({ id: 'G1', decision: 'material_required', humanConfirmed: true }),
+    'manual_supplement',
+  )
+  // 只有候选、没有系统预选（matchedMaterials 为空）：确认标记不生效，仍是待确认。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G2',
+      decision: 'review_required',
+      candidateMaterials: [{ id: 'M1', matchScore: 0.6 }],
+      humanConfirmed: true,
+    }),
+    'needs_choice',
   )
 })
 
@@ -394,7 +418,7 @@ test('目录标签v4：忽略（仅保留标题）释放子级，逐级递归', 
   // 忽略的父章自己显示仅保留标题。
   assert.equal(technicalGapTagOf(chapter, items), 'title_only')
   // 一级忽略后二级释放、按自身候选派生；二级活动继续冻结三级。
-  assert.equal(technicalGapTagOf(mid, items), 'material_confirm')
+  assert.equal(technicalGapTagOf(mid, items), 'needs_choice')
   assert.equal(technicalGapTagOf(leaf, items), 'parent_covered')
   // 二级也忽略：三级释放（0.99 自动定案）。
   const midIgnored = { ...mid, titleOnly: true }
@@ -404,7 +428,7 @@ test('目录标签v4：忽略（仅保留标题）释放子级，逐级递归', 
   // 结构性祖先不冻结子级。
   const structuralRoot = { id: 'P9', number: '第9章', usage: 'structural', decision: 'ready' }
   const structuralChild = { id: 'C9', number: '9.1', candidateMaterials: [{ id: 'M9', matchScore: 0.6 }] }
-  assert.equal(technicalGapTagOf(structuralChild, [structuralRoot, structuralChild]), 'material_confirm')
+  assert.equal(technicalGapTagOf(structuralChild, [structuralRoot, structuralChild]), 'needs_choice')
 })
 
 test('目录标签v4：冻结子级继承冻结源素材（树派生优先于 coveredByParent 提示）', () => {
