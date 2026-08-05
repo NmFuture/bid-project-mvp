@@ -129,6 +129,88 @@ class MaterialCleanerBlankHeadingTests(unittest.TestCase):
         self.assertIsNotNone(p_pr)
         self.assertIsNone(p_pr.find(qn("w:outlineLvl")))
 
+    def test_normalize_collapses_blank_headings_without_manual_breaks(self) -> None:
+        word_cleaner = _load_word_cleaner()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "blank-heading-run.docx"
+            document = Document()
+            document.add_paragraph("before")
+            for _ in range(30):
+                document.add_paragraph(style="Heading 2")
+            document.add_paragraph("after")
+            document.save(path)
+
+            word_cleaner.cmd_normalize(path)
+
+            cleaned = Document(path)
+            preserved_blank_headings = [
+                bookmark
+                for paragraph in cleaned.paragraphs
+                for bookmark in paragraph._p.iter(qn("w:bookmarkStart"))
+                if str(bookmark.get(qn("w:name")) or "").startswith(
+                    word_cleaner._BLANK_HEADING_BOOKMARK_PREFIX
+                )
+            ]
+            page_break_paragraphs = [
+                paragraph
+                for paragraph in cleaned.paragraphs
+                if any(
+                    br.get(qn("w:type"), "") == "page"
+                    for br in paragraph._p.iter(qn("w:br"))
+                )
+            ]
+
+        self.assertEqual(preserved_blank_headings, [])
+        self.assertEqual(len(page_break_paragraphs), 1)
+        self.assertEqual(len(cleaned.paragraphs), 3)
+
+    def test_normalize_removes_legacy_blank_heading_markers_without_breaks(self) -> None:
+        word_cleaner = _load_word_cleaner()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy-blank-heading-run.docx"
+            document = Document()
+            document.add_paragraph("before")
+            for _ in range(30):
+                paragraph = document.add_paragraph()
+                word_cleaner._mark_preserved_blank_heading(paragraph._p)
+            document.add_paragraph("after")
+            document.save(path)
+
+            word_cleaner.cmd_normalize(path)
+
+            cleaned = Document(path)
+            preserved_blank_headings = [
+                bookmark
+                for paragraph in cleaned.paragraphs
+                for bookmark in paragraph._p.iter(qn("w:bookmarkStart"))
+                if str(bookmark.get(qn("w:name")) or "").startswith(
+                    word_cleaner._BLANK_HEADING_BOOKMARK_PREFIX
+                )
+            ]
+
+        self.assertEqual(preserved_blank_headings, [])
+        self.assertEqual(len(cleaned.paragraphs), 3)
+
+    def test_numbered_outline_only_heading_preserves_normal_style(self) -> None:
+        word_cleaner = _load_word_cleaner()
+
+        document = Document()
+        heading = document.add_paragraph("1.7 项目业绩")
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), "3")
+        heading._p.get_or_add_pPr().append(outline)
+
+        normalized = word_cleaner._strip_numbered_heading_prefixes(document)
+
+        self.assertEqual(normalized, 1)
+        self.assertEqual(heading.text, "项目业绩")
+        self.assertEqual(heading.style.name, "Normal")
+        preserved_outline = heading._p.get_or_add_pPr().find(qn("w:outlineLvl"))
+        self.assertIsNotNone(preserved_outline)
+        self.assertEqual(preserved_outline.get(qn("w:val")), "3")
+
 
 if __name__ == "__main__":
     unittest.main()
