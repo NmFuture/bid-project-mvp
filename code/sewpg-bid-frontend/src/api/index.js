@@ -562,6 +562,8 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   uploadFactSpecs: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
+  uploadAppendixSourceMatrix: (projectId, data) =>
+    request(`/technical/projects/${projectId}/appendix-source-matrix`, { method: 'POST', body: data }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
   curateFacts: (projectId, data) =>

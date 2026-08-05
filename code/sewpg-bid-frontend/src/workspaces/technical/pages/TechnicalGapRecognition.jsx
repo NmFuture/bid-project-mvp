@@ -1254,8 +1254,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 事实表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
   // 未上传的项目不出字段，仅引导上传。factMaterialPaths 是用户自定义的参考资料目录。
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
+  const [sourceMatrixMeta, setSourceMatrixMeta] = useState({ imported: false, fileName: '' })
   const [factMaterialPaths, setFactMaterialPaths] = useState([])
   const fillRuleInputRef = useRef(null)
+  const sourceMatrixInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -1279,6 +1281,11 @@ export default function TechnicalGapRecognition({ showToast }) {
         fileName: String(factsPayload?.specsFileName || ''),
       })
       setFactMaterialPaths(Array.isArray(factsPayload?.materialPaths) ? factsPayload.materialPaths : [])
+      const matrixMeta = factsPayload?.appendixSourceMatrix
+      setSourceMatrixMeta({
+        imported: Boolean(matrixMeta?.path),
+        fileName: String(matrixMeta?.fileName || ''),
+      })
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
       if (!silent) setError(e?.message || '缺口识别与处理加载失败')
@@ -2205,6 +2212,36 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
+  const handleSourceMatrixUpload = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!/\.xlsx$/i.test(file.name)) {
+      showToast?.('附表填写规则仅支持 .xlsx 文件', 'error')
+      return
+    }
+    if (busyAction) return
+    if (sourceMatrixMeta.imported && !window.confirm('重新上传会覆盖当前附表填写规则，并重新应用到当前附表任务。是否继续？')) {
+      return
+    }
+    setBusyAction('source-matrix-upload')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const payload = await technicalGapsAPI.uploadAppendixSourceMatrix(id, formData)
+      setSourceMatrixMeta({ imported: true, fileName: payload?.fileName || file.name })
+      const applied = payload?.applied || {}
+      showToast?.(applied.routedItems
+        ? `已解析 ${payload?.rowCount ?? 0} 条附表来源规则，已应用到 ${applied.routedItems} 个目录项的附表任务`
+        : `已解析 ${payload?.rowCount ?? 0} 条附表来源规则，将在下次缺口识别时生效`)
+      await loadData({ silent: true })
+    } catch (e) {
+      showToast?.(e?.message || '附表填写规则上传失败', 'error')
+    } finally {
+      setBusyAction('')
+    }
+  }
+
   if (loading) return <PageLoading title="正在加载素材匹配..." />
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
 
@@ -2222,15 +2259,22 @@ export default function TechnicalGapRecognition({ showToast }) {
               className="hidden"
               onChange={handleFactSpecsUpload}
             />
+            <input
+              ref={sourceMatrixInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={handleSourceMatrixUpload}
+            />
             <Button
               type="button"
-              onClick={() => fillRuleInputRef.current?.click()}
+              onClick={() => sourceMatrixInputRef.current?.click()}
               disabled={Boolean(busyAction) || data?.status !== 'completed'}
-              title={factSpecsMeta.imported ? `已上传：${factSpecsMeta.fileName || '已上传'}，点击可重新上传` : '上传附表填写规则 Excel（事实表字段清单），用于提取要填写的字段'}
+              title={sourceMatrixMeta.imported ? `已上传：${sourceMatrixMeta.fileName || '已上传'}，点击可重新上传` : '上传附表填写规则 Excel（客户×附表→素材来源），缺口识别时确定每张附表的取值来源'}
               size="stage"
-              variant={factSpecsMeta.imported ? 'secondary' : 'quiet'}
+              variant={sourceMatrixMeta.imported ? 'secondary' : 'quiet'}
             >
-              {busyAction === 'fact-specs-upload' ? '上传中...' : factSpecsMeta.imported ? '附表填写规则（已上传）' : '附表填写规则'}
+              {busyAction === 'source-matrix-upload' ? '上传中...' : sourceMatrixMeta.imported ? '附表填写规则（已上传）' : '附表填写规则'}
             </Button>
             <Button
               type="button"
