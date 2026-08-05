@@ -14,6 +14,7 @@ from app.services.bid_parse_service import technical_parse_service
 from app.services.bid_project_service import technical_project_service
 from app.services.technical_delivery_service import technical_coverage_service, technical_export_service
 from app.services.technical_directory_service import technical_directory_service
+from app.services.technical_chat_service import technical_chat_service
 from app.services.technical_document_service import technical_document_service
 from app.services.technical_generation_service import technical_generation_service
 from app.services.technical_gap_service import technical_gap_service
@@ -588,6 +589,15 @@ async def technical_onlyoffice_callback(
 @router.post("/api/technical/projects/{project_id}/document/force-save")
 async def force_save_technical_document(project_id: str, request: Request) -> dict[str, Any]:
     return await technical_document_service.force_save_document(project_id, request)
+
+
+@router.post("/api/technical/projects/{project_id}/document/technical-chat")
+async def technical_document_chat(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    return await technical_chat_service.chat(project_id, data, user)
 
 
 @router.post("/api/technical/projects/{project_id}/document/technical-format")

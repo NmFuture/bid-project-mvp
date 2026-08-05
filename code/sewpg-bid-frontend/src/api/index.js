@@ -621,6 +621,8 @@ export const technicalDocumentAPI = {
     request(`/technical/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
   forceSave: (projectId) =>
     request(`/technical/projects/${projectId}/document/force-save`, { method: 'POST' }),
+  technicalChat: (projectId, data) =>
+    request(`/technical/projects/${projectId}/document/technical-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
   technicalFormat: (projectId, data) =>
     request(`/technical/projects/${projectId}/document/technical-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
   final: (projectId) => request(`/technical/projects/${projectId}/final-document`),

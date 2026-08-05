@@ -608,6 +608,17 @@ def test_business_assembly_does_not_own_technical_formatting() -> None:
     assert "OpencodeClient" not in technical_document_source
 
 
+def test_technical_chat_is_owned_by_technical_chat_service() -> None:
+    technical_document_source = Path("app/services/technical_document_service.py").read_text(encoding="utf-8")
+    technical_chat_source = Path("app/services/technical_chat_service.py").read_text(encoding="utf-8")
+    technical_route_source = Path("app/api/routes/technical.py").read_text(encoding="utf-8")
+
+    assert "OpencodeClient" not in technical_document_source
+    assert "OpencodeClient" in technical_chat_source
+    assert "app.services.technical_chat_service" in technical_route_source
+    assert "technical_chat_service.chat" in technical_route_source
+
+
 def test_business_and_technical_document_format_state_rules_are_split() -> None:
     business_project = {
         "id": "BIZ-DOC",
