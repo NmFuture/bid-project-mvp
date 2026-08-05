@@ -35,12 +35,16 @@ def _isolate_test_database_url() -> str:
 
 TEST_DATABASE_URL = _isolate_test_database_url()
 
-import pytest
 
+def _ensure_test_database() -> None:
+    """按 initdb/01-init.sql 建出测试库。
 
-async def _ensure_test_database() -> None:
+    必须在 conftest 导入阶段完成：部分测试模块在收集阶段就连库，
+    放进 fixture 会晚于收集，导致 "database does not exist" 的集体报错。
+    """
+
     try:
-        import asyncpg
+        import psycopg
     except ModuleNotFoundError:
         return
 
@@ -51,31 +55,26 @@ async def _ensure_test_database() -> None:
 
     admin_dsn = urlunsplit(parts._replace(scheme="postgresql", path="/postgres"))
     try:
-        conn = await asyncpg.connect(admin_dsn)
-    except Exception as exc:  # Postgres 不可用时留给真正用到库的用例报错
+        with psycopg.connect(admin_dsn, autocommit=True, connect_timeout=10) as conn:
+            if conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
+            ).fetchone():
+                return
+            conn.execute(f'CREATE DATABASE "{db_name}"')
+    except psycopg.OperationalError as exc:  # Postgres 不可用时留给真正用到库的用例报错
         print(f"[conftest] 跳过测试库准备，无法连接 Postgres：{exc}")
         return
-    try:
-        if await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name):
-            return
-        await conn.execute(f'CREATE DATABASE "{db_name}"')
-    finally:
-        await conn.close()
 
     init_sql = Path(__file__).resolve().parents[2] / "initdb" / "01-init.sql"
-    conn = await asyncpg.connect(urlunsplit(parts._replace(scheme="postgresql")))
-    try:
-        await conn.execute(init_sql.read_text(encoding="utf-8"))
-    finally:
-        await conn.close()
+    with psycopg.connect(
+        urlunsplit(parts._replace(scheme="postgresql")), autocommit=True
+    ) as conn:
+        conn.execute(init_sql.read_text(encoding="utf-8"))
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _provision_test_database():
-    import asyncio
+_ensure_test_database()
 
-    asyncio.run(_ensure_test_database())
-    yield
+import pytest
 
 
 @pytest.fixture(autouse=True)
