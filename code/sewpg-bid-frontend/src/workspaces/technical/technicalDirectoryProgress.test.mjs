@@ -51,6 +51,25 @@ test('labels appendix decision counts distinctly', () => {
   assert.equal(summary.summary, '已判定技术附表 3/12 项')
 })
 
+test('shows chapter and appendix counts together while decisions run in parallel', () => {
+  const summary = summarizeDirectoryProgress({
+    status: 'running',
+    percentage: 52,
+    decisionProgress: {
+      phase: 'parallel',
+      decided: 203,
+      total: 323,
+      chapterDecided: 120,
+      chapterTotal: 240,
+      appendixDecided: 83,
+      appendixTotal: 83,
+    },
+    tasks: runningTasks,
+  })
+
+  assert.equal(summary.summary, '已判定目录条款 120/240 项 · 技术附表 83/83 项')
+})
+
 test('falls back to phase copy when decision counts are unavailable', () => {
   const preparing = summarizeDirectoryProgress({
     status: 'running',
@@ -160,6 +179,40 @@ test('keeps decision counts and start time from moving backwards', () => {
   )
   assert.equal(phaseSwitch.decisionProgress.phase, 'appendix')
   assert.equal(phaseSwitch.decisionProgress.decided, 0)
+})
+
+test('clears decision counts when generation advances to merging and saving', () => {
+  const previous = {
+    status: 'running',
+    percentage: 88,
+    decisionProgress: {
+      phase: 'parallel',
+      decided: 323,
+      total: 323,
+      chapterDecided: 240,
+      chapterTotal: 240,
+      appendixDecided: 83,
+      appendixTotal: 83,
+    },
+    tasks: runningTasks,
+  }
+  const incomingSummary = '目录判断已完成，正在合并校验并保存结果。'
+  const merged = mergeMonotonicDirectoryProgress(previous, {
+    status: 'running',
+    percentage: 90,
+    summary: incomingSummary,
+    decisionProgress: {},
+    tasks: [
+      { id: 'task-1', status: 'done' },
+      { id: 'task-2', status: 'done' },
+      { id: 'task-3', status: 'running' },
+    ],
+  })
+  const summary = summarizeDirectoryProgress(merged)
+
+  assert.equal(normalizeDecisionProgress(merged), null)
+  assert.equal(summary.summary, incomingSummary)
+  assert.doesNotMatch(summary.summary, /已判定/)
 })
 
 test('keeps terminal directory state when a delayed running response arrives', () => {

@@ -68,15 +68,19 @@ class _ChapterDecisionAggregator:
         self,
         chapters: list[dict[str, Any]],
         progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
+        *,
+        appendix_total: int = 0,
     ) -> None:
         self._totals = {
             str(chapter["chapter_id"]): int(chapter.get("item_count") or 0)
             for chapter in chapters
         }
         self._decided = {chapter_id: 0 for chapter_id in self._totals}
+        self._appendix_total = max(0, int(appendix_total))
+        self._appendix_decided = 0
         self._done: set[str] = set()
         self._last_read = {chapter_id: 0.0 for chapter_id in self._totals}
-        self._last_reported: tuple[int, int] | None = None
+        self._last_reported: tuple[int, int, int] | None = None
         self._lock = threading.Lock()
         self._callback = progress_callback
 
@@ -96,30 +100,53 @@ class _ChapterDecisionAggregator:
             current = self._decided.get(chapter_id, 0)
             self._decided[chapter_id] = max(current, min(decided_count, total))
             payload = self._changed_payload_locked()
-        self._emit(payload)
+            self._emit(payload)
+
+    def update_appendix(self, decided_count: int) -> None:
+        with self._lock:
+            self._appendix_decided = max(
+                self._appendix_decided,
+                min(max(0, decided_count), self._appendix_total),
+            )
+            payload = self._changed_payload_locked()
+            self._emit(payload)
 
     def mark_done(self, chapter_id: str) -> None:
         with self._lock:
             self._done.add(chapter_id)
             self._decided[chapter_id] = self._totals.get(chapter_id, 0)
             payload = self._changed_payload_locked()
-        self._emit(payload)
+            self._emit(payload)
 
     def emit_initial(self) -> None:
         with self._lock:
             payload = self._changed_payload_locked(force=True)
-        self._emit(payload)
+            self._emit(payload)
 
     def _changed_payload_locked(self, force: bool = False) -> dict[str, Any] | None:
-        decided = sum(self._decided.values())
+        chapter_decided = sum(self._decided.values())
+        chapter_total = sum(self._totals.values())
         chapters_done = len(self._done)
-        if not force and self._last_reported == (decided, chapters_done):
+        signature = (chapter_decided, self._appendix_decided, chapters_done)
+        if not force and self._last_reported == signature:
             return None
-        self._last_reported = (decided, chapters_done)
+        self._last_reported = signature
+        if self._appendix_total <= 0:
+            return {
+                "phase": "chapters",
+                "decided": chapter_decided,
+                "total": chapter_total,
+                "chaptersDone": chapters_done,
+                "chaptersTotal": len(self._totals),
+            }
         return {
-            "phase": "chapters",
-            "decided": decided,
-            "total": sum(self._totals.values()),
+            "phase": "parallel",
+            "decided": chapter_decided + self._appendix_decided,
+            "total": chapter_total + self._appendix_total,
+            "chapterDecided": chapter_decided,
+            "chapterTotal": chapter_total,
+            "appendixDecided": self._appendix_decided,
+            "appendixTotal": self._appendix_total,
             "chaptersDone": chapters_done,
             "chaptersTotal": len(self._totals),
         }
@@ -509,7 +536,11 @@ def _run_parallel_outline_chapters(
     chapter_indexes = {
         str(chapter["chapter_id"]): index for index, chapter in enumerate(chapters)
     }
-    aggregator = _ChapterDecisionAggregator(chapters, progress_callback)
+    aggregator = _ChapterDecisionAggregator(
+        chapters,
+        progress_callback,
+        appendix_total=len(appendix_items),
+    )
 
     def run_chapter(chapter: dict[str, Any]) -> tuple[str, str]:
         chapter_id = str(chapter["chapter_id"])
@@ -587,21 +618,9 @@ def _run_parallel_outline_chapters(
                 snapshot = validate_complete()
             except (Exception, SystemExit):
                 return
-            if progress_callback:
-                progress_callback(
-                    "decision_progress",
-                    {
-                        "phase": "appendix",
-                        "decided": int(snapshot.get("decidedCount") or 0),
-                        "total": len(appendix_items),
-                    },
-                )
+            aggregator.update_appendix(int(snapshot.get("decidedCount") or 0))
 
-        if progress_callback:
-            progress_callback(
-                "decision_progress",
-                {"phase": "appendix", "decided": 0, "total": len(appendix_items)},
-            )
+        aggregator.update_appendix(0)
         result = OpencodeClient(
             base_url=chapter_base_urls[len(chapters) % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
@@ -615,15 +634,7 @@ def _run_parallel_outline_chapters(
             stream_callback=stream_delta if progress_callback else None,
             session_phase="appendix_predecision",
         )
-        if progress_callback:
-            progress_callback(
-                "decision_progress",
-                {
-                    "phase": "appendix",
-                    "decided": len(appendix_items),
-                    "total": len(appendix_items),
-                },
-            )
+        aggregator.update_appendix(len(appendix_items))
         return result
 
     appendix_result: dict[str, Any] | None = None
@@ -856,6 +867,15 @@ def _run_outline_skill(
         parallel_appendix_result: dict[str, Any] | None = None
         appendix_predecided = False
         handoff_kwargs: dict[str, Any] = {}
+        parallel_completed = False
+        finalizing_reported = False
+
+        def emit_finalizing_result() -> None:
+            nonlocal finalizing_reported
+            if progress_callback and not finalizing_reported:
+                progress_callback("finalizing_result", {})
+                finalizing_reported = True
+
         try:
             parallel_result = _run_parallel_outline_chapters(
                 manifest_path,
@@ -875,6 +895,7 @@ def _run_outline_skill(
             else:
                 # 兼容测试和历史调用方的章节会话列表。
                 chapter_session_ids = list(parallel_result or [])
+            parallel_completed = True
         except _ChapterParallelUnsupported:
             previous_decided_count = [-1]
 
@@ -913,6 +934,7 @@ def _run_outline_skill(
                     manifest_path,
                     progress_callback=progress_callback,
                 )
+            emit_finalizing_result()
             generated = {
                 **_close_technical_outline_without_llm(manifest_path),
                 "opencodeOutput": (
@@ -923,20 +945,37 @@ def _run_outline_skill(
                 or {},
             }
         else:
+            if parallel_completed:
+                emit_finalizing_result()
+
+            def session_ready(details: dict[str, Any]) -> None:
+                if not progress_callback:
+                    return
+                callback_details = (
+                    {**details, "suppressStage": True}
+                    if finalizing_reported
+                    else details
+                )
+                progress_callback("outline_session_ready", callback_details)
+                if str(details.get("sessionPhase") or "") == "finalize":
+                    emit_finalizing_result()
+
+            def stream_delta(details: dict[str, Any]) -> None:
+                if not progress_callback:
+                    return
+                callback_details = (
+                    {**details, "suppressStage": True}
+                    if finalizing_reported
+                    else details
+                )
+                progress_callback("outline_delta", callback_details)
+
             generated = OpencodeClient(
                 timeout_ms=int(settings.opencode_timeout_sec * 1000)
             ).generate_outline_with_trace(
                     _build_outline_finalize_prompt(manifest_path),
-                    session_ready_callback=(
-                        (lambda details: progress_callback("outline_session_ready", details))
-                        if progress_callback
-                        else None
-                    ),
-                    stream_callback=(
-                        (lambda details: progress_callback("outline_delta", details))
-                        if progress_callback
-                        else None
-                    ),
+                    session_ready_callback=session_ready if progress_callback else None,
+                    stream_callback=stream_delta if progress_callback else None,
                     early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
                     terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
                     **handoff_kwargs,

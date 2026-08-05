@@ -79,10 +79,21 @@ export const normalizeDecisionProgress = (progress = {}) => {
   if (!raw || typeof raw !== 'object') return null
   const total = Math.max(0, Math.floor(finiteNumber(raw.total)))
   if (total <= 0) return null
-  return {
+  const normalized = {
     phase: String(raw.phase || 'chapters'),
     decided: Math.max(0, Math.min(total, Math.floor(finiteNumber(raw.decided)))),
     total,
+  }
+  if (normalized.phase !== 'parallel') return normalized
+
+  const chapterTotal = Math.max(0, Math.floor(finiteNumber(raw.chapterTotal)))
+  const appendixTotal = Math.max(0, Math.floor(finiteNumber(raw.appendixTotal)))
+  return {
+    ...normalized,
+    chapterDecided: Math.max(0, Math.min(chapterTotal, Math.floor(finiteNumber(raw.chapterDecided)))),
+    chapterTotal,
+    appendixDecided: Math.max(0, Math.min(appendixTotal, Math.floor(finiteNumber(raw.appendixDecided)))),
+    appendixTotal,
   }
 }
 
@@ -179,6 +190,9 @@ const visibleCompletedSummary = (summary) => {
 
 const decisionDetailText = (decisionProgress) => {
   if (!decisionProgress) return ''
+  if (decisionProgress.phase === 'parallel') {
+    return `已判定目录条款 ${decisionProgress.chapterDecided}/${decisionProgress.chapterTotal} 项 · 技术附表 ${decisionProgress.appendixDecided}/${decisionProgress.appendixTotal} 项`
+  }
   const label = decisionProgress.phase === 'appendix' ? '技术附表' : '目录条款'
   return `已判定${label} ${decisionProgress.decided}/${decisionProgress.total} 项`
 }
@@ -202,12 +216,14 @@ export const mergeMonotonicDirectoryProgress = (previous = null, incoming = null
     ? finiteNumber(nowMs)
     : finiteNumber(previous?.percentageUpdatedAt) || finiteNumber(nowMs)
 
-  const phaseRegressed = directoryStepRank(incoming) < directoryStepRank(previous)
+  const previousStepRank = directoryStepRank(previous)
+  const incomingStepRank = directoryStepRank(incoming)
+  const phaseRegressed = incomingStepRank < previousStepRank
   if (phaseRegressed) merged.tasks = previous?.tasks
 
   const previousDecision = normalizeDecisionProgress(previous)
   const incomingDecision = normalizeDecisionProgress(incoming)
-  if (previousDecision && (!incomingDecision || (
+  if (previousDecision && ((!incomingDecision && incomingStepRank <= previousStepRank) || (incomingDecision &&
     incomingDecision.phase === previousDecision.phase && incomingDecision.decided < previousDecision.decided
   ))) {
     merged.decisionProgress = previous.decisionProgress
@@ -250,6 +266,7 @@ export const summarizeDirectoryProgress = (progress = {}) => {
 
   if (runningStatuses.has(status)) {
     const decisionProgress = normalizeDecisionProgress(progress)
+    const incomingSummary = String(progress?.summary || '').trim()
     const fallbackDetail = stepIndex === 0
       ? '正在整理招标文件与投标模板，为目录生成做准备。'
       : stepIndex === 2
@@ -258,7 +275,8 @@ export const summarizeDirectoryProgress = (progress = {}) => {
     return {
       status,
       statusText: status === 'queued' ? '等待生成' : '生成中',
-      summary: decisionDetailText(decisionProgress) || fallbackDetail,
+      summary: decisionDetailText(decisionProgress)
+        || (incomingSummary && !internalDirectoryTextPattern.test(incomingSummary) ? incomingSummary : fallbackDetail),
       percentage,
       tone: 'running',
       steps,

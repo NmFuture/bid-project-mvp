@@ -45,6 +45,7 @@ _DIRECTORY_STAGE_LABELS = {
     "inputs_ready": "准备目录输入",
     "outline_session_ready": "建立生成会话",
     "outline_delta": "LLM 生成目录",
+    "finalizing_result": "合并校验目录结果",
     "normalizing_result": "整理保存结果",
     "outline_failed": "生成失败",
     "outline_fallback": "回退本地生成",
@@ -58,7 +59,28 @@ _DECISION_PHASE_PERCENT_RANGES = {
 }
 
 
-def _decision_progress_percentage(phase: str, decided: int, total: int) -> int | None:
+def _decision_progress_percentage(
+    phase: str,
+    decided: int,
+    total: int,
+    *,
+    chapter_decided: int = 0,
+    chapter_total: int = 0,
+    appendix_decided: int = 0,
+    appendix_total: int = 0,
+) -> int | None:
+    if phase == "parallel":
+        chapter_ratio = (
+            max(0.0, min(1.0, chapter_decided / chapter_total))
+            if chapter_total > 0
+            else 0.0
+        )
+        appendix_ratio = (
+            max(0.0, min(1.0, appendix_decided / appendix_total))
+            if appendix_total > 0
+            else 0.0
+        )
+        return int(round(5 + 73 * chapter_ratio + 10 * appendix_ratio))
     if total <= 0:
         return None
     low, high = _DECISION_PHASE_PERCENT_RANGES.get(phase, (5, 78))
@@ -127,18 +149,45 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         decided = max(0, int(meta.get("decided") or 0))
         total = max(0, int(meta.get("total") or 0))
         decision_progress: dict[str, Any] = {"phase": phase, "decided": decided, "total": total}
+        chapter_decided = max(0, int(meta.get("chapterDecided") or 0))
+        chapter_total = max(0, int(meta.get("chapterTotal") or 0))
+        appendix_decided = max(0, int(meta.get("appendixDecided") or 0))
+        appendix_total = max(0, int(meta.get("appendixTotal") or 0))
+        if phase == "parallel":
+            decision_progress.update(
+                {
+                    "chapterDecided": chapter_decided,
+                    "chapterTotal": chapter_total,
+                    "appendixDecided": appendix_decided,
+                    "appendixTotal": appendix_total,
+                }
+            )
         if meta.get("chaptersTotal") is not None:
             decision_progress["chaptersDone"] = max(0, int(meta.get("chaptersDone") or 0))
             decision_progress["chaptersTotal"] = max(0, int(meta.get("chaptersTotal") or 0))
-        label = "技术附表" if phase == "appendix" else "目录条款"
-        summary = (
-            f"正在逐项判定{label}，已完成 {decided}/{total} 项。"
-            if total > 0
-            else f"正在逐项判定{label}。"
-        )
+        if phase == "parallel":
+            summary = (
+                f"正在并行判定目录条款与技术附表：目录条款 {chapter_decided}/{chapter_total}，"
+                f"技术附表 {appendix_decided}/{appendix_total}。"
+            )
+        else:
+            label = "技术附表" if phase == "appendix" else "目录条款"
+            summary = (
+                f"正在逐项判定{label}，已完成 {decided}/{total} 项。"
+                if total > 0
+                else f"正在逐项判定{label}。"
+            )
         _update_directory_state(
             project_id,
-            percentage=_decision_progress_percentage(phase, decided, total),
+            percentage=_decision_progress_percentage(
+                phase,
+                decided,
+                total,
+                chapter_decided=chapter_decided,
+                chapter_total=chapter_total,
+                appendix_decided=appendix_decided,
+                appendix_total=appendix_total,
+            ),
             summary=summary,
             tasks=_directory_tasks("done", "running", "pending"),
             decision_progress=decision_progress,
@@ -151,6 +200,18 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         stage,
         _DIRECTORY_STAGE_LABELS.get(stage, stage),
     )
+    if stage == "finalizing_result":
+        _update_directory_state(
+            project_id,
+            percentage=90,
+            summary="目录条款与技术附表判定已完成，正在合并校验并保存结果。",
+            tasks=_directory_tasks("done", "done", "running"),
+            decision_progress={},
+            event_message="目录判定已完成，正在合并校验并保存结果。",
+            event_step="finalizing",
+        )
+        return
+
     if stage == "inputs_ready":
         tender_file_count = int(meta.get("tenderFileCount") or 0)
         template_file_count = int(meta.get("templateFileCount") or 0)
@@ -165,12 +226,13 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         return
 
     if stage == "outline_session_ready":
+        suppress_stage = bool(meta.get("suppressStage"))
         _update_directory_state(
             project_id,
-            percentage=8,
-            summary="futurecode session 已建立，正在运行 S2 目录生成 Skill。",
-            tasks=_directory_tasks("done", "running", "pending"),
-            event_message="futurecode session 已建立，正在等待目录语义审核结果。",
+            percentage=None if suppress_stage else 8,
+            summary=None if suppress_stage else "futurecode session 已建立，正在运行 S2 目录生成 Skill。",
+            tasks=None if suppress_stage else _directory_tasks("done", "running", "pending"),
+            event_message=None if suppress_stage else "futurecode session 已建立，正在等待目录语义审核结果。",
             event_step="futurecode_session",
             opencode_output={
                 "status": "waiting",
@@ -186,17 +248,28 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         # 否则并行章节会各自读到空 parts，重复写入首片段事件。
         with _directory_state_write_lock:
             previous_parts = list((_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
-            meta = {key: value for key, value in meta.items() if key != "suppressPercentage"}
+            suppress_stage = bool(meta.get("suppressStage"))
+            meta = {
+                key: value
+                for key, value in meta.items()
+                if key not in {"suppressPercentage", "suppressStage"}
+            }
             parts = list(meta.get("parts") or [])
             first_delta = bool(parts) and not previous_parts
             # 技术标并行章节路径由 decision_progress 驱动百分比；未标记的路径（商务标/串行）沿用流式锚点
-            suppress_percentage = bool((details or {}).get("suppressPercentage"))
+            suppress_percentage = suppress_stage or bool(
+                (details or {}).get("suppressPercentage")
+            )
             _update_directory_state(
                 project_id,
                 percentage=None if suppress_percentage else (65 if first_delta else 70),
                 summary=None if suppress_percentage else "futurecode 正在执行目录生成和语义审核，请稍候。",
-                tasks=_directory_tasks("done", "running", "pending"),
-                event_message="futurecode 已返回 S2 流式片段。" if first_delta else None,
+                tasks=None if suppress_stage else _directory_tasks("done", "running", "pending"),
+                event_message=(
+                    "futurecode 已返回 S2 流式片段。"
+                    if first_delta and not suppress_stage
+                    else None
+                ),
                 event_step="futurecode_delta",
                 opencode_output=meta,
             )

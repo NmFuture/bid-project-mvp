@@ -1307,6 +1307,89 @@ class DirectoryGenerationTests(unittest.TestCase):
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
         runner.decision_workflow.materialize_appendix_predecisions.assert_called_once()
 
+    def test_parallel_decision_aggregator_keeps_chapter_and_appendix_counts_together(self) -> None:
+        from app.services.outline_generation import _ChapterDecisionAggregator
+
+        events: list[dict] = []
+        aggregator = _ChapterDecisionAggregator(
+            [
+                {"chapter_id": "TPL-0001", "item_count": 120},
+                {"chapter_id": "TPL-0002", "item_count": 120},
+            ],
+            lambda stage, details=None: events.append({"stage": stage, **(details or {})}),
+            appendix_total=83,
+        )
+
+        aggregator.emit_initial()
+        aggregator.update_appendix(83)
+        aggregator.update("TPL-0001", 60)
+
+        self.assertEqual(events[-2]["phase"], "parallel")
+        self.assertEqual(events[-2]["chapterDecided"], 0)
+        self.assertEqual(events[-2]["appendixDecided"], 83)
+        self.assertEqual(events[-1]["chapterDecided"], 60)
+        self.assertEqual(events[-1]["appendixDecided"], 83)
+
+    def test_parallel_decision_aggregator_keeps_chapter_phase_without_appendix(self) -> None:
+        from app.services.outline_generation import _ChapterDecisionAggregator
+
+        events: list[dict] = []
+        aggregator = _ChapterDecisionAggregator(
+            [{"chapter_id": "TPL-0001", "item_count": 120}],
+            lambda stage, details=None: events.append({"stage": stage, **(details or {})}),
+        )
+
+        aggregator.emit_initial()
+        aggregator.update("TPL-0001", 60)
+
+        self.assertEqual(events[-1]["phase"], "chapters")
+        self.assertEqual(events[-1]["decided"], 60)
+        self.assertEqual(events[-1]["total"], 120)
+        self.assertNotIn("appendixTotal", events[-1])
+
+    def test_parallel_decision_aggregator_emits_snapshots_in_generation_order(self) -> None:
+        import threading
+
+        from app.services.outline_generation import _ChapterDecisionAggregator
+
+        events: list[int] = []
+        first_callback_started = threading.Event()
+        release_first_callback = threading.Event()
+        second_update_finished = threading.Event()
+
+        def callback(stage: str, details: dict | None = None) -> None:
+            del stage
+            decided = int((details or {}).get("decided") or 0)
+            if decided == 60:
+                first_callback_started.set()
+                release_first_callback.wait(timeout=2)
+            events.append(decided)
+
+        aggregator = _ChapterDecisionAggregator(
+            [{"chapter_id": "TPL-0001", "item_count": 120}],
+            callback,
+        )
+        aggregator.emit_initial()
+
+        first_thread = threading.Thread(target=aggregator.update, args=("TPL-0001", 60))
+        second_thread = threading.Thread(
+            target=lambda: (
+                aggregator.update("TPL-0001", 120),
+                second_update_finished.set(),
+            )
+        )
+        first_thread.start()
+        self.assertTrue(first_callback_started.wait(timeout=1))
+        second_thread.start()
+        second_update_finished.wait(timeout=0.2)
+        release_first_callback.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertEqual(events, [0, 60, 120])
+
     def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
         from app.services.outline_generation import (
             _build_outline_handoff_prompt,
@@ -1347,6 +1430,110 @@ class DirectoryGenerationTests(unittest.TestCase):
                     manifest_path,
                     previous_decided_count=12,
                 )
+
+    def test_technical_outline_serial_fallback_emits_finalizing_result(self) -> None:
+        from app.services.outline_generation import (
+            _ChapterParallelUnsupported,
+            _run_outline_skill,
+        )
+
+        events: list[tuple[str, dict]] = []
+
+        def fake_generate(*args, **kwargs) -> dict:
+            del args
+            session_ready = kwargs["session_ready_callback"]
+            session_ready({"sessionPhase": "decision_handoff"})
+            session_ready({"sessionPhase": "finalize"})
+            kwargs["stream_callback"](
+                {"status": "received", "parts": [{"type": "text", "text": "finalizing"}]}
+            )
+            return {}
+
+        with (
+            patch(
+                "app.services.outline_generation._capture_trusted_technical_outline_input",
+                return_value={"templateStructure": {}},
+            ),
+            patch(
+                "app.services.outline_generation._run_parallel_outline_chapters",
+                side_effect=_ChapterParallelUnsupported,
+            ),
+            patch(
+                "app.services.outline_generation._load_outline_result",
+                return_value={"nodes": []},
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
+            _run_outline_skill(
+                Path("C:/workspace/s2_input.json"),
+                bid_type="技术标",
+                progress_callback=lambda stage, details=None: events.append(
+                    (stage, details or {})
+                ),
+            )
+
+        self.assertEqual(
+            [stage for stage, _ in events],
+            [
+                "outline_session_ready",
+                "outline_session_ready",
+                "finalizing_result",
+                "outline_delta",
+            ],
+        )
+        self.assertTrue(events[-1][1]["suppressStage"])
+
+    def test_parallel_llm_finalize_suppresses_late_stage_callbacks(self) -> None:
+        from app.services.outline_generation import _run_outline_skill
+
+        events: list[tuple[str, dict]] = []
+
+        def fake_generate(*args, **kwargs) -> dict:
+            del args
+            kwargs["session_ready_callback"]({"sessionPhase": "full"})
+            kwargs["stream_callback"](
+                {"status": "received", "parts": [{"type": "text", "text": "finalizing"}]}
+            )
+            return {}
+
+        with (
+            patch(
+                "app.services.outline_generation._capture_trusted_technical_outline_input",
+                return_value={"templateStructure": {}},
+            ),
+            patch(
+                "app.services.outline_generation._run_parallel_outline_chapters",
+                return_value={
+                    "chapterSessionIds": ["ses-chapter"],
+                    "appendixPredecided": True,
+                },
+            ),
+            patch(
+                "app.services.outline_generation._load_outline_result",
+                return_value={"nodes": []},
+            ),
+            patch(
+                "app.services.outline_generation.settings.tech_outline_llm_finalize",
+                True,
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
+            _run_outline_skill(
+                Path("C:/workspace/s2_input.json"),
+                bid_type="技术标",
+                progress_callback=lambda stage, details=None: events.append(
+                    (stage, details or {})
+                ),
+            )
+
+        self.assertEqual(
+            [stage for stage, _ in events],
+            ["finalizing_result", "outline_session_ready", "outline_delta"],
+        )
+        self.assertTrue(events[1][1]["suppressStage"])
+        self.assertTrue(events[2][1]["suppressStage"])
 
     def test_technical_outline_loader_does_not_trust_agent_modified_manifest_gate(self) -> None:
         from app.services.outline_generation import _load_outline_result
@@ -2470,6 +2657,93 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(state["percentage"], 83)
         self.assertEqual(state["decisionProgress"]["phase"], "appendix")
         self.assertIn("附表", state["summary"])
+
+    def test_parallel_decision_progress_does_not_jump_when_appendix_finishes_first(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {
+                "phase": "parallel",
+                "decided": 83,
+                "total": 323,
+                "chapterDecided": 0,
+                "chapterTotal": 240,
+                "appendixDecided": 83,
+                "appendixTotal": 83,
+            },
+        )
+        appendix_first = self._directory_state_for_tests(project_id)
+        self.assertEqual(appendix_first["percentage"], 15)
+        self.assertIn("目录条款 0/240", appendix_first["summary"])
+        self.assertIn("技术附表 83/83", appendix_first["summary"])
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {
+                "phase": "parallel",
+                "decided": 203,
+                "total": 323,
+                "chapterDecided": 120,
+                "chapterTotal": 240,
+                "appendixDecided": 83,
+                "appendixTotal": 83,
+            },
+        )
+        halfway = self._directory_state_for_tests(project_id)
+        self.assertEqual(halfway["percentage"], 52)
+
+        _handle_directory_progress(project_id, "finalizing_result", {})
+        finalizing = self._directory_state_for_tests(project_id)
+        self.assertEqual(finalizing["percentage"], 90)
+        self.assertEqual(finalizing["decisionProgress"], {})
+        self.assertEqual(finalizing["tasks"][2]["status"], "running")
+        self.assertIn("合并校验", finalizing["summary"])
+
+    def test_suppressed_finalize_callbacks_keep_finalizing_stage(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+        _handle_directory_progress(project_id, "finalizing_result", {})
+        finalizing = self._directory_state_for_tests(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "outline_session_ready",
+            {
+                "sessionId": "ses-finalize",
+                "providerId": "provider-finalize",
+                "modelId": "model-finalize",
+                "suppressStage": True,
+            },
+        )
+        session_ready = self._directory_state_for_tests(project_id)
+        self.assertEqual(session_ready["percentage"], 90)
+        self.assertEqual(session_ready["summary"], finalizing["summary"])
+        self.assertEqual(session_ready["tasks"], finalizing["tasks"])
+        self.assertEqual(session_ready["opencodeOutput"]["sessionId"], "ses-finalize")
+
+        _handle_directory_progress(
+            project_id,
+            "outline_delta",
+            {
+                "status": "received",
+                "parts": [{"type": "text", "text": "finalizing"}],
+                "suppressStage": True,
+            },
+        )
+        delta = self._directory_state_for_tests(project_id)
+        self.assertEqual(delta["percentage"], 90)
+        self.assertEqual(delta["summary"], finalizing["summary"])
+        self.assertEqual(delta["tasks"], finalizing["tasks"])
+        self.assertEqual(delta["opencodeOutput"]["parts"][-1]["text"], "finalizing")
+        self.assertNotIn("suppressStage", delta["opencodeOutput"])
 
     def test_concurrent_progress_updates_do_not_lose_events(self) -> None:
         """并行章节会话同时上报时，目录 state 的读改写不能互相覆盖。
