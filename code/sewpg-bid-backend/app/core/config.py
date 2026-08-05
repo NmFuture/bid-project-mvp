@@ -142,6 +142,7 @@ class Settings:
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
     business_pdf_ocr_fallback_enabled: bool
+    material_wiki_auto_refresh: bool
     docling_artifacts_path: Path
     docling_device: str
     bid_internal_api_base_url: str
@@ -235,6 +236,7 @@ settings = Settings(
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",
     business_pdf_ocr_fallback_enabled=_bool_env("BUSINESS_PDF_OCR_FALLBACK_ENABLED", True),
+    material_wiki_auto_refresh=_bool_env("MATERIAL_WIKI_AUTO_REFRESH", True),
     docling_artifacts_path=Path(
         _first_env("BID_DOCLING_ARTIFACTS_PATH", "DOCLING_ARTIFACTS_PATH", default="/opt/docling-models")
     ),

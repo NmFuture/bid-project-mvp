@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
@@ -500,6 +501,26 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
     return plans, stats
 
 
+async def count_retryable_previews() -> int:
+    """统计预览停在 retryable 兜底、等下一轮刷新升级的素材条数。
+
+    典型来源是超大 docx / PDF / XLSX：预览阶段先落本地 TLDR，后台深度解析完成后
+    才能升级为正式预览。进度条据此如实收尾，不把「还差几个」演成全部完成。
+    """
+    from sqlalchemy import func, select
+
+    from app.models import async_session
+    from app.models.materials import RawFile
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(RawFile)
+            .where(RawFile.ext_fields[PREVIEW_EXT_FIELD]["retryable"].as_boolean().is_(True))
+        )
+        return int(result.scalar() or 0)
+
+
 async def _persist_preview_payloads(payload_by_id: dict[str, dict[str, Any]]) -> None:
     from sqlalchemy import select
 
@@ -656,8 +677,16 @@ def _apply_preview_payloads(index_payload: dict[str, Any], payload_by_id: dict[s
                     file_item.pop("pdfFulltext", None)
 
 
-async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[str, Any]:
-    """增量生成/复用文件内容预览，并把成功预览写回传入 index payload。"""
+async def enrich_technical_wiki_previews(
+    index_payload: dict[str, Any],
+    *,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """增量生成/复用文件内容预览，并把成功预览写回传入 index payload。
+
+    `on_progress` 每完成一个批次回报 {"done": x, "total": y}（按待生成文件数计），
+    供素材流水线进度条展示 AI 预览进度。
+    """
     index_files = _iter_index_files(index_payload)
     plans, stats = await _build_preview_plans(index_files)
     stats.setdefault("fallback", 0)
@@ -680,13 +709,20 @@ async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[
     sem = asyncio.Semaphore(PREVIEW_CONCURRENCY)
     batches = [pending[i : i + PREVIEW_BATCH_SIZE] for i in range(0, len(pending), PREVIEW_BATCH_SIZE)]
 
-    async def run_batch(batch: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    async def run_batch(batch: list[dict[str, Any]]) -> tuple[int, dict[str, dict[str, Any]]]:
         async with sem:
-            return await asyncio.to_thread(_compute_batch_preview_payloads, batch)
+            return len(batch), await asyncio.to_thread(_compute_batch_preview_payloads, batch)
 
+    if on_progress is not None:
+        on_progress({"done": 0, "total": len(pending)})
     if batches:
-        for result_map in await asyncio.gather(*[run_batch(batch) for batch in batches]):
+        done = 0
+        for task in asyncio.as_completed([run_batch(batch) for batch in batches]):
+            batch_size, result_map = await task
             payload_by_id.update(result_map)
+            done += batch_size
+            if on_progress is not None:
+                on_progress({"done": done, "total": len(pending)})
 
     for file_id, payload in payload_by_id.items():
         status = payload.get("status") if isinstance(payload, dict) else ""

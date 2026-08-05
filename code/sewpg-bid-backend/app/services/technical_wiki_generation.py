@@ -61,6 +61,7 @@ async def mirror_technical_index_to_wiki(
     *,
     mode: str,
     preview_stats: dict[str, Any] | None = None,
+    on_import_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """把技术标三级目录索引 payload 确定性镜像成 Wiki blueprint 并导入（不走 LLM）。
 
@@ -86,6 +87,7 @@ async def mirror_technical_index_to_wiki(
         root_markdown_content=blueprint.get("rootMarkdownContent") or "",
         nodes=blueprint["nodes"],
         mode=mode,
+        on_progress=on_import_progress,
     )
     stats = index_payload.get("stats") if isinstance(index_payload.get("stats"), dict) else {}
     imported["generation"] = {
@@ -141,11 +143,27 @@ async def generate_technical_wiki(
         raise RuntimeError("技术标 Wiki 缺少有效 technical_material_index.json，请先刷新原始素材 JSON 索引。")
     if on_progress is not None:
         on_progress({"phase": "preview"})
-    preview_stats = await enrich_technical_wiki_previews(index_payload)
+    preview_progress: Callable[[dict[str, Any]], None] | None = None
+    if on_progress is not None:
+        def preview_progress(counts: dict[str, Any]) -> None:
+            on_progress({"phase": "preview", **counts})
+    preview_stats = await enrich_technical_wiki_previews(index_payload, on_progress=preview_progress)
     write_json_file_atomic(TECHNICAL_MATERIAL_INDEX_PATH, index_payload)
     if on_progress is not None:
         on_progress({"phase": "build"})
-    result = await mirror_technical_index_to_wiki(index_payload, mode=mode, preview_stats=preview_stats)
+    import_progress: Callable[[dict[str, Any]], None] | None = None
+    # 收尾时带上最后一次计数，避免把 m/n 覆盖成空、让进度条最后一格丢掉数字。
+    import_counts: dict[str, Any] = {}
     if on_progress is not None:
-        on_progress({"phase": "import"})
+        def import_progress(counts: dict[str, Any]) -> None:
+            import_counts.update(counts)
+            on_progress({"phase": "import", **counts})
+    result = await mirror_technical_index_to_wiki(
+        index_payload,
+        mode=mode,
+        preview_stats=preview_stats,
+        on_import_progress=import_progress,
+    )
+    if on_progress is not None:
+        on_progress({"phase": "import", **import_counts})
     return result
