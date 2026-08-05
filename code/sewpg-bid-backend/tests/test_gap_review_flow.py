@@ -123,14 +123,10 @@ class GapReviewFlowTests(unittest.TestCase):
 
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
-        self.gap_planner_patcher = patch(
-            "app.services.technical_gap_planner.OpencodeClient.run_bid_tech_gap_planner_with_trace",
-            side_effect=RuntimeError("offline test fallback"),
-        )
-        self.gap_planner_mock = self.gap_planner_patcher.start()
+        # 缺口识别已改为直跑本地脚本（不再经 OpenCode），原先「打桩逼出本地 fallback」
+        # 的 OpencodeClient 打桩随之失效且不再需要。
 
     def tearDown(self) -> None:
-        self.gap_planner_patcher.stop()
         self.client.close()
         self.temp_dir.cleanup()
 
@@ -397,11 +393,6 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(missing["number"], "2.1")
         self.assertEqual(missing["fillTasks"][0]["skill"], "bid-tech-table-filler")
         self.assertTrue(payload["gapPlan"]["planFile"].endswith("gap_plan.json"))
-        self.gap_planner_mock.assert_called_once()
-        planner_prompt = self.gap_planner_mock.call_args.args[0]
-        self.assertIn("Use the bid-tech-gap-planner skill", planner_prompt)
-        self.assertIn("s4gap", planner_prompt)
-        self.assertNotIn("历史补料记录", planner_prompt)
 
     def test_gap_detection_rejects_shrunken_skill_output(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
@@ -472,7 +463,6 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         project["gap_state"]["submissions"] = [{"id": "SUB-OLD"}]
         store._persist_project(project)
-        self.gap_planner_mock.reset_mock()
 
         response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
 
