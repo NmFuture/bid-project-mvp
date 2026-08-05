@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -140,6 +141,7 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
             doc = Document()
             doc.add_paragraph("技术方案", style="Heading 1")
             doc.add_paragraph("脱敏正文。")
+            doc.add_table(rows=1, cols=1).cell(0, 0).text = "参数值"
             doc.save(input_file)
             outline_file.write_text(
                 json.dumps(
@@ -171,8 +173,18 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
             self.assertIsInstance(result["summary"], dict)
             self.assertEqual(
                 result["summary"]["fontFamilies"],
-                ["Noto Sans CJK SC", "Liberation Serif", "Noto Serif CJK SC"],
+                ["等线 Light", "Times New Roman", "等线", "宋体"],
             )
+            with ZipFile(output_file) as archive:
+                document_xml = "\n".join(
+                    archive.read(name).decode("utf-8", errors="ignore")
+                    for name in archive.namelist()
+                    if name.startswith("word/") and name.endswith(".xml")
+                )
+            for family in ("等线", "等线 Light", "宋体", "Times New Roman"):
+                self.assertIn(family, document_xml)
+            for family in ("Noto Sans CJK SC", "Noto Serif CJK SC", "Liberation Serif"):
+                self.assertNotIn(family, document_xml)
             self.assertIsInstance(result["warnings"], list)
             self.assertEqual(result["warnings"], result["summary"]["warnings"])
             self.assertTrue(all(set(item) == {"code", "message", "count"} for item in result["warnings"]))
@@ -214,6 +226,10 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
             body = paragraphs["普通正文"]
             self.assertEqual(body.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
             self.assertAlmostEqual(body.runs[0].font.size.pt, 16)
+            with ZipFile(output_file) as archive:
+                document_xml = archive.read("word/document.xml").decode("utf-8")
+            self.assertIn('w:ascii="Arial"', document_xml)
+            self.assertIn('w:eastAsia="宋体"', document_xml)
 
     def test_force_canonical_toc_removes_english_and_chinese_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

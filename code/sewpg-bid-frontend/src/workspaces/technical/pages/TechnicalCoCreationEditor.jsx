@@ -7,7 +7,7 @@ import TechnicalProjectStageProgress from '../components/TechnicalProjectStagePr
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
-import { normalizeFontStyleOverrides, OPEN_SOURCE_FONT_OPTIONS } from '../../shared/fontOptions'
+import { DOCUMENT_FONT_OPTIONS } from '../../shared/fontOptions'
 import {
   technicalFormatDocumentAfterApply,
   technicalFormatRequest,
@@ -31,8 +31,8 @@ const TECHNICAL_BID_LABEL = '技术标'
 const TECHNICAL_DOCUMENT_PART_LABEL = '技术部分'
 
 const DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES = {
-  bodyZhFont: 'Noto Sans CJK SC',
-  bodyEnFont: 'Liberation Serif',
+  bodyZhFont: '等线',
+  bodyEnFont: 'Times New Roman',
   bodySizePt: 12,
   bodyLineSpacing: 1.5,
   bodyFirstLineIndentChars: 2,
@@ -43,7 +43,7 @@ const DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES = {
   pageBottomCm: 2.54,
   pageLeftCm: 3.18,
   pageRightCm: 3.18,
-  tableZhFont: 'Noto Serif CJK SC',
+  tableZhFont: '宋体',
   tableSizePt: 10.5,
   tableLineSpacing: 1,
   insertToc: true,
@@ -93,7 +93,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       setFallbackContent(payload?.fallback?.content || '')
       const restoredFormat = technicalFormatStateFromDocument(payload, DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES)
       setFormatPreset(restoredFormat.preset)
-      setCustomFormat(normalizeFontStyleOverrides(restoredFormat.styleOverrides))
+      setCustomFormat(restoredFormat.styleOverrides)
       setOnlyofficeError('')
     } catch (e) {
       setError(e?.message || '技术标共创文档加载失败')
@@ -180,7 +180,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       setData(nextDocument)
       const restoredFormat = technicalFormatStateFromDocument(nextDocument, customFormat)
       setFormatPreset(restoredFormat.preset)
-      setCustomFormat(normalizeFontStyleOverrides(restoredFormat.styleOverrides))
+      setCustomFormat(restoredFormat.styleOverrides)
       setFinalData(await technicalDocumentAPI.final(id).catch(() => finalData))
       setOnlyofficeError('')
       showToast?.(response?.message || '技术标格式已切换')
@@ -329,8 +329,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
             <div>
               <div className="text-sm font-semibold text-on-surface">正文格式</div>
               <div className="mt-2 grid grid-cols-2 gap-2">
-                {renderFormatFontSelect('bodyZhFont', '中文字体', OPEN_SOURCE_FONT_OPTIONS.zh)}
-                {renderFormatFontSelect('bodyEnFont', '英文字体', OPEN_SOURCE_FONT_OPTIONS.en)}
+                {renderFormatFontSelect('bodyZhFont', '中文字体', DOCUMENT_FONT_OPTIONS.zh)}
+                {renderFormatFontSelect('bodyEnFont', '英文字体', DOCUMENT_FONT_OPTIONS.en)}
                 {renderFormatNumberInput('bodySizePt', '正文字号 pt', { min: 8, max: 22, step: 0.5 })}
                 {renderFormatNumberInput('bodyLineSpacing', '正文行距', { min: 1, max: 3, step: 0.05 })}
                 {renderFormatNumberInput('bodyFirstLineIndentChars', '首行缩进字符', { min: 0, max: 4, step: 0.5 })}
@@ -353,7 +353,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 {renderFormatNumberInput('pageBottomCm', '下边距 cm', { min: 0.5, max: 6, step: 0.1 })}
                 {renderFormatNumberInput('pageLeftCm', '左边距 cm', { min: 0.5, max: 6, step: 0.1 })}
                 {renderFormatNumberInput('pageRightCm', '右边距 cm', { min: 0.5, max: 6, step: 0.1 })}
-                {renderFormatFontSelect('tableZhFont', '表格字体', OPEN_SOURCE_FONT_OPTIONS.zh)}
+                {renderFormatFontSelect('tableZhFont', '表格字体', DOCUMENT_FONT_OPTIONS.zh)}
                 {renderFormatNumberInput('tableSizePt', '表格字号 pt', { min: 8, max: 16, step: 0.5 })}
               </div>
             </div>

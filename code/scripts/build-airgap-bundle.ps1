@@ -55,6 +55,17 @@ function Assert-DigestReference {
     }
 }
 
+function Get-ComposeBuildCompatibilityArgs {
+    $helpOutput = (& docker compose build --help 2>&1) -join "`n"
+    if ($LASTEXITCODE -eq 0 -and $helpOutput -match "--provenance(?:\s|$)") {
+        return @("--provenance=false")
+    }
+
+    Write-Warning "docker compose build does not support --provenance; continuing without disabling provenance."
+    Write-Warning "Image IDs may vary across builds. Upgrade Docker Compose to 2.39 or newer to disable provenance."
+    return @()
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 if (-not $BundleDir) {
@@ -109,7 +120,11 @@ $env:REDIS_IMAGE = $redisImage
 $env:OCR_IMAGE = $ocrImage
 
 Write-Host "==> Building application and OnlyOffice font images..."
-Invoke-Checked -Command @("docker", "compose", "-f", $composeFile, "build", "--provenance=false", "web", "fastapi", "docling-worker", "opencode", "onlyoffice")
+$composeBuildCommand = @("docker", "compose", "-f", $composeFile, "build")
+$composeBuildCompatibilityArgs = @(Get-ComposeBuildCompatibilityArgs)
+$composeBuildCommand += $composeBuildCompatibilityArgs
+$composeBuildCommand += @("web", "fastapi", "docling-worker", "opencode", "onlyoffice")
+Invoke-Checked -Command $composeBuildCommand
 $onlyofficeImageId = (& docker image inspect --format "{{.Id}}" $onlyofficeImage).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $onlyofficeImageId) {
     throw "Cannot resolve the built OnlyOffice image ID."

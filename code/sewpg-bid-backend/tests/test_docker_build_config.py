@@ -59,6 +59,38 @@ require_expected_onlyoffice_image \
     )
 
 
+def _run_compose_build_compat_args(help_text: str) -> subprocess.CompletedProcess[str]:
+    policy_path = BACKEND_ROOT / "onlyoffice" / "image-policy.sh"
+    environment = {
+        **os.environ,
+        "TEST_COMPOSE_BUILD_HELP": help_text,
+        "TEST_ONLYOFFICE_POLICY": str(policy_path),
+    }
+    script = r'''
+set -euo pipefail
+docker() {
+  if [[ "$*" == "compose build --help" ]]; then
+    printf '%s\n' "${TEST_COMPOSE_BUILD_HELP}"
+    return 0
+  fi
+  return 2
+}
+source "${TEST_ONLYOFFICE_POLICY}"
+configure_compose_build_compat_args
+if [[ -n "${COMPOSE_BUILD_PROVENANCE_ARG}" ]]; then
+  printf '%s\n' "${COMPOSE_BUILD_PROVENANCE_ARG}"
+fi
+'''
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=CODE_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def test_fastapi_requirements_do_not_include_docling_runtime() -> None:
     requirements = _requirement_lines(BACKEND_ROOT / "requirements.txt")
 
@@ -221,6 +253,10 @@ def test_onlyoffice_image_contains_and_verifies_the_open_source_font_contract() 
     }
     assert all("/usr/share/fonts" not in volume for volume in onlyoffice["volumes"])
     assert "sewpg-verify-fonts" in " ".join(onlyoffice["healthcheck"]["test"])
+    for service_name in ("web", "fastapi"):
+        assert compose["services"][service_name]["depends_on"]["onlyoffice"]["condition"] == (
+            "service_started"
+        )
     assert "ARG FONTTOOLS_PACKAGE_VERSION=4.38.0-1+deb12u1" in dockerfile
     assert 'python3-fonttools="${FONTTOOLS_PACKAGE_VERSION}"' in dockerfile
     assert 'org.opencontainers.image.revision="${SEWPG_BUILD_REVISION}"' in dockerfile
@@ -298,6 +334,23 @@ def test_onlyoffice_airgap_template_parser_accepts_windows_crlf() -> None:
     assert completed.stdout == expected
 
 
+def test_compose_build_compat_args_only_disable_supported_provenance() -> None:
+    supported = _run_compose_build_compat_args(
+        "Usage: docker compose build [OPTIONS]\n  --provenance string  Add provenance"
+    )
+    assert supported.returncode == 0, supported.stderr
+    assert supported.stdout.strip() == "--provenance=false"
+    assert supported.stderr == ""
+
+    unsupported = _run_compose_build_compat_args(
+        "Usage: docker compose build [OPTIONS]\n  --pull  Always attempt to pull"
+    )
+    assert unsupported.returncode == 0, unsupported.stderr
+    assert unsupported.stdout == ""
+    assert "continuing without disabling provenance" in unsupported.stderr
+    assert "Upgrade Docker Compose to 2.39 or newer" in unsupported.stderr
+
+
 def test_onlyoffice_start_scripts_validate_images_and_build_on_online_paths() -> None:
     start_local = (CODE_ROOT / "start-local.sh").read_text(encoding="utf-8")
     up_ocr = (CODE_ROOT / "scripts" / "up-ocr.sh").read_text(encoding="utf-8")
@@ -308,14 +361,23 @@ def test_onlyoffice_start_scripts_validate_images_and_build_on_online_paths() ->
         assert "onlyoffice/image-policy.sh" in script
         assert "require_expected_onlyoffice_image" in script
 
-    local_build = 'docker compose "${COMPOSE_ARGS[@]}" build --provenance=false onlyoffice'
+    local_build = (
+        'docker compose "${COMPOSE_ARGS[@]}" build \\\n'
+        '  ${COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"} onlyoffice'
+    )
     local_up = 'docker compose "${COMPOSE_ARGS[@]}" up -d --no-build'
-    assert start_local.index("require_expected_onlyoffice_image") < start_local.index(local_build)
+    assert start_local.index("require_expected_onlyoffice_image") < start_local.index(
+        "configure_compose_build_compat_args"
+    )
+    assert start_local.index("configure_compose_build_compat_args") < start_local.index(local_build)
     assert start_local.index(local_build) < start_local.index(local_up)
 
-    ocr_build = 'docker compose "${COMPOSE_ARGS[@]}" build --provenance=false'
+    ocr_build = 'docker compose "${COMPOSE_ARGS[@]}" build'
     ocr_up = 'docker compose "${COMPOSE_ARGS[@]}" up -d --no-build'
-    assert up_ocr.index("require_expected_onlyoffice_image") < up_ocr.index(ocr_build)
+    assert up_ocr.index("require_expected_onlyoffice_image") < up_ocr.index(
+        "configure_compose_build_compat_args"
+    )
+    assert up_ocr.index("configure_compose_build_compat_args") < up_ocr.index(ocr_build)
     assert up_ocr.index(ocr_build) < up_ocr.index(ocr_up)
     assert "fastapi docling-worker opencode web onlyoffice" in up_ocr
 
@@ -326,6 +388,7 @@ def test_onlyoffice_start_scripts_validate_images_and_build_on_online_paths() ->
 
     assert 'ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:${RELEASE_TAG}-fontpack-v1"' in up_5090
     assert up_5090.index("require_expected_onlyoffice_image") < up_5090.index("config --quiet")
+    assert 'COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"' in up_5090
     assert "web fastapi docling-worker opencode onlyoffice" in up_5090
     assert "copy ONLYOFFICE_IMAGE from ${ROOT_DIR}/.env.airgap.example" in up_5090
 
@@ -413,7 +476,16 @@ def test_airgap_build_scripts_export_docling_image() -> None:
         assert "onlyofficeImageId" in script
         assert "ONLYOFFICE_BUILD_REVISION" in script
         assert "ONLYOFFICE_FONT_BUILDER_IMAGE" in script
-        assert "--provenance=false" in script
+
+    assert "configure_compose_build_compat_args" in shell_script
+    assert 'COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"' in shell_script
+    assert "Get-ComposeBuildCompatibilityArgs" in powershell_script
+    assert (
+        "$composeBuildCompatibilityArgs = @(Get-ComposeBuildCompatibilityArgs)"
+        in powershell_script
+    )
+    assert 'return @("--provenance=false")' in powershell_script
+    assert "continuing without disabling provenance" in powershell_script
 
     assert 'ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:${TAG}-fontpack-v1"' in shell_script
     assert "CHECKSUM_COMMAND=(sha256sum -c)" in loader_script
@@ -444,6 +516,11 @@ def test_airgap_onlyoffice_release_metadata_and_loader_verification() -> None:
     assert '$onlyofficeImageId = (& docker image inspect --format "{{.Id}}"' in powershell_script
     assert "onlyofficeImageId = $onlyofficeImageId" in powershell_script
     assert 'ONLYOFFICE_IMAGE=sewpg-bid/onlyoffice:$Tag-fontpack-v1' in powershell_script
+    assert "Get-ComposeBuildCompatibilityArgs" in powershell_script
+    assert (
+        "$composeBuildCompatibilityArgs = @(Get-ComposeBuildCompatibilityArgs)"
+        in powershell_script
+    )
 
     checksum_verify = '"${CHECKSUM_COMMAND[@]}" "${CHECKSUM_INPUT_PATH}"'
     docker_load = 'docker load -i "${IMAGE_TAR}"'
@@ -472,9 +549,10 @@ def test_5090_release_scripts_guard_online_builds_and_support_offline_bundle() -
     assert 'MINIO_SOURCE_IMAGE="${MINIO_SOURCE_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"' in generic_bundle_script
 
     online_guard = 'if [[ "${DEPLOY_MODE}" == "online" ]]; then'
-    online_build = 'docker compose "${compose_args[@]}" build --provenance=false'
+    online_build = 'docker compose "${compose_args[@]}" build'
     assert target_script.rindex(online_guard) < target_script.index(online_build)
-    assert '"${build_args[@]}" web fastapi docling-worker opencode onlyoffice' in target_script
+    assert 'COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"' in target_script
+    assert "web fastapi docling-worker opencode onlyoffice" in target_script
     assert 'git -C "${ROOT_DIR}" status --porcelain' in target_script
     assert "--untracked-files=no" not in target_script
     assert 'CURRENT_SHA="$(git -C "${ROOT_DIR}" rev-parse HEAD)"' in target_script
@@ -491,6 +569,7 @@ def test_5090_release_scripts_guard_online_builds_and_support_offline_bundle() -
 
 def test_airgap_env_template_contains_required_5090_settings() -> None:
     env_template = (CODE_ROOT / ".env.airgap.example").read_text(encoding="utf-8")
+    dev_env_template = (CODE_ROOT / ".env.example").read_text(encoding="utf-8")
 
     for setting in (
         "AUTH_ADMIN_EMAIL=admin@sewpg.com",
@@ -500,6 +579,8 @@ def test_airgap_env_template_contains_required_5090_settings() -> None:
         "DEFAULT_LLM_MODEL=replace-with-your-internal-model",
     ):
         assert setting in env_template
+    assert "ONLYOFFICE_IMAGE=sewpg-bid/onlyoffice:offline-latest-fontpack-v1" in env_template
+    assert "ONLYOFFICE_IMAGE=sewpg-bid/onlyoffice:dev-fontpack-v1" in dev_env_template
 
 
 def test_compose_injects_tech_wiki_pdf_extract_env_into_fastapi_and_workers() -> None:

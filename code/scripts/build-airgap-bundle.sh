@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${REPO_ROOT}/sewpg-bid-backend/onlyoffice/image-policy.sh"
 BUNDLE_DIR="${1:-${REPO_ROOT}/offline-dist}"
 TAG="${2:-offline-$(date +%Y%m%d%H%M)}"
 ONLYOFFICE_SOURCE_IMAGE="${ONLYOFFICE_SOURCE_IMAGE:-onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31}"
@@ -73,7 +74,9 @@ require_digest_reference "${ONLYOFFICE_SOURCE_IMAGE}" "OnlyOffice base image"
 require_digest_reference "${ONLYOFFICE_FONT_BUILDER_SOURCE_IMAGE}" "OnlyOffice font builder image"
 
 echo "==> Building application and OnlyOffice font images..."
-docker compose "${compose_build_args[@]}" build --provenance=false \
+configure_compose_build_compat_args
+docker compose "${compose_build_args[@]}" build \
+  ${COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"} \
   web fastapi docling-worker opencode onlyoffice
 ensure_image "${REDIS_SOURCE_IMAGE}" "Redis"
 ensure_image "${POSTGRES_SOURCE_IMAGE}" "PostgreSQL"

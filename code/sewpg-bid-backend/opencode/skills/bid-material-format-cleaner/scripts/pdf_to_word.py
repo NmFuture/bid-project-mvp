@@ -13,7 +13,7 @@ pdf_to_word.py — 将 PDF 按页拆分成图片并合并成 Word 文档。
 Word 文档格式严格按投标技术标模板:
   - A4 竖排, 页边距 上下1.5cm / 左右2cm
   - 行距 1.15
-  - P0: 标题(默认 Heading 1, 加粗, Noto Serif CJK SC, 首行缩进482 twips, 左对齐)
+  - P0: 标题(默认 Heading 1, 加粗, 宋体, 首行缩进482 twips, 左对齐)
   - P1: 所有图片(首行缩进0, 图片尺寸 414.85pt x 586.75pt)
 """
 
@@ -90,7 +90,7 @@ def build_docx(title: str, image_paths: List[Path], out_path: Path) -> None:
 
     模板关键点:
       - 页面 EMU 值与参考模板精确匹配
-      - P0 标题: 加粗, 首行缩进 482 twips, Noto Serif CJK SC, 左对齐
+      - P0 标题: 加粗, 首行缩进 482 twips, 宋体, 左对齐
       - P1 图片: 首行缩进 0, 所有图片放同一段落, 每张 414.85pt x 586.75pt
     """
     from docx import Document
@@ -125,14 +125,14 @@ def build_docx(title: str, image_paths: List[Path], out_path: Path) -> None:
     for p in body.findall(qn("w:p")):
         body.remove(p)
 
-    def _set_serif_font(run) -> None:
-        """给 run 设置开源中文衬线字体。"""
+    def _set_song_ti(run) -> None:
+        """给 run 设置中文字体为宋体 (w:rFonts w:eastAsia)。"""
         rPr = run._element.get_or_add_rPr()
         rFonts = rPr.find(qn("w:rFonts"))
         if rFonts is None:
             rFonts = OxmlElement("w:rFonts")
             rPr.insert(0, rFonts)
-        rFonts.set(qn("w:eastAsia"), "Noto Serif CJK SC")
+        rFonts.set(qn("w:eastAsia"), "宋体")
 
     def _set_first_line_indent(paragraph, twips: int) -> None:
         pPr = paragraph._element.get_or_add_pPr()
@@ -156,7 +156,7 @@ def build_docx(title: str, image_paths: List[Path], out_path: Path) -> None:
     _set_first_line_indent(p0, 482)
     title_run = p0.add_run(title)
     title_run.bold = True
-    _set_serif_font(title_run)
+    _set_song_ti(title_run)
 
     # 图片紧接着放在同一段落
     for img in image_paths:

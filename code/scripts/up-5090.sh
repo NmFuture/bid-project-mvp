@@ -191,8 +191,11 @@ if [[ "${DEPLOY_MODE}" == "online" ]]; then
     echo "REFRESH_BASE_IMAGES=1: pulling base images, expect a full rebuild."
     build_args+=(--pull)
   fi
-  docker compose "${compose_args[@]}" build --provenance=false \
-    "${build_args[@]}" web fastapi docling-worker opencode onlyoffice
+  configure_compose_build_compat_args
+  docker compose "${compose_args[@]}" build \
+    ${COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"} \
+    "${build_args[@]}" \
+    web fastapi docling-worker opencode onlyoffice
   ONLYOFFICE_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${ONLYOFFICE_IMAGE}")"
   echo "OnlyOffice image ID: ${ONLYOFFICE_IMAGE_ID}"
 fi

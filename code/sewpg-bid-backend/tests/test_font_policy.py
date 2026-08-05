@@ -4,11 +4,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.services.font_policy import normalize_font_style_overrides
-
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-OPEN_SOURCE_FAMILIES = {
+OFFICIAL_DOCUMENT_FAMILIES = {
+    "等线",
+    "等线 Light",
+    "宋体",
+    "Times New Roman",
+    "Arial",
+}
+RUNTIME_FONT_FAMILIES = {
     "Noto Sans CJK SC",
     "Noto Serif CJK SC",
     "Liberation Serif",
@@ -30,27 +34,7 @@ def _declared_families(value: Any) -> set[str]:
     return families
 
 
-def test_legacy_font_names_are_normalized_before_custom_formatting() -> None:
-    normalized = normalize_font_style_overrides(
-        {
-            "bodyZhFont": "等线 Light",
-            "tableZhFont": "宋体",
-            "bodyEnFont": "Times New Roman",
-            "heading1EnFont": "Arial",
-            "bodySizePt": 12,
-        }
-    )
-
-    assert normalized == {
-        "bodyZhFont": "Noto Sans CJK SC",
-        "tableZhFont": "Noto Serif CJK SC",
-        "bodyEnFont": "Liberation Serif",
-        "heading1EnFont": "Liberation Sans",
-        "bodySizePt": 12,
-    }
-
-
-def test_production_style_specs_only_write_font_pack_families() -> None:
+def test_production_style_specs_only_write_official_document_families() -> None:
     style_paths = (
         BACKEND_ROOT / "app/document_processing/technical_document/resources/heading_style.json",
         BACKEND_ROOT / "opencode/skills/bid-tech-assembler/references/heading_style.json",
@@ -60,5 +44,7 @@ def test_production_style_specs_only_write_font_pack_families() -> None:
 
     for style_path in style_paths:
         style = json.loads(style_path.read_text(encoding="utf-8"))
-        assert _declared_families(style)
-        assert _declared_families(style) <= OPEN_SOURCE_FAMILIES
+        families = _declared_families(style)
+        assert families
+        assert families <= OFFICIAL_DOCUMENT_FAMILIES
+        assert families.isdisjoint(RUNTIME_FONT_FAMILIES)

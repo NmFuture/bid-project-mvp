@@ -14,7 +14,7 @@ services:
       fastapi:
         condition: service_healthy
       onlyoffice:
-        condition: service_healthy
+        condition: service_started
     ports:
       - "${WEB_PORT:-80}:80"
     restart: unless-stopped
@@ -96,7 +96,7 @@ services:
       opencode:
         condition: service_healthy
       onlyoffice:
-        condition: service_healthy
+        condition: service_started
       postgres:
         condition: service_healthy
       minio:

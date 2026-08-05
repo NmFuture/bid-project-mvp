@@ -2,6 +2,20 @@
 
 readonly ONLYOFFICE_DEV_IMAGE_DEFAULT="sewpg-bid/onlyoffice:dev-fontpack-v1"
 
+configure_compose_build_compat_args() {
+  COMPOSE_BUILD_PROVENANCE_ARG=""
+
+  local compose_build_help
+  if compose_build_help="$(docker compose build --help 2>&1)" && \
+    grep -q -- '--provenance' <<< "${compose_build_help}"; then
+    COMPOSE_BUILD_PROVENANCE_ARG="--provenance=false"
+    return 0
+  fi
+
+  echo "Warning: docker compose build does not support --provenance; continuing without disabling provenance." >&2
+  echo "Image IDs may vary across builds. Upgrade Docker Compose to 2.39 or newer to disable provenance." >&2
+}
+
 onlyoffice_image_from_env_template() {
   local env_file="$1"
 

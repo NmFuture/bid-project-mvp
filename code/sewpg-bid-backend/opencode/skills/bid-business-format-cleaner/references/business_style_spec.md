@@ -2,7 +2,7 @@
 
 本规范用于 `bid-business-format-cleaner`。清洗对象是一份已经成稿的商务标 `.docx`，目录定位来自 S2 审核后的 `outline.json`。本 skill 不接入 bid-project-mvp 后端，不修改技术标流程或代码。
 
-字体执行开源映射：等线/等线 Light 使用 `Noto Sans CJK SC`，宋体使用 `Noto Serif CJK SC`，Times New Roman 使用 `Liberation Serif`。下文保留传统名称用于对应原始格式要求，实际写入值以 JSON 样式配置为准。
+DOCX XML 保留等线、等线 Light、宋体和 Times New Roman 等正式字体名；OnlyOffice 运行时通过 fontconfig 映射到开源字体，不改写交付文件的字体语义。
 
 ## 输入与输出
 

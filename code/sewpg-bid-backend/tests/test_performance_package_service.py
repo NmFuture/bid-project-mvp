@@ -405,10 +405,12 @@ def test_render_contract_item_docx_sanitizes_fonts_for_text_documents() -> None:
     content = render_contract_item_docx(chunks[0], output_title="山东华电枣庄山亭19万千瓦风电项目")
 
     fonts = _docx_declared_fonts(content)
-    assert "Noto Serif CJK SC" in fonts
-    assert "Liberation Serif" in fonts
+    assert "宋体" in fonts
+    assert "Times New Roman" in fonts
     assert "方正兰亭超细黑简体" not in fonts
-    assert "宋体" not in fonts
+    assert "Songti SC" not in fonts
+    assert "Noto Serif CJK SC" not in fonts
+    assert "Liberation Serif" not in fonts
     assert "Angsana New" not in fonts
     assert "Mangal" not in fonts
     assert not any("Theme" in font or font.startswith("major") or font.startswith("minor") for font in fonts)

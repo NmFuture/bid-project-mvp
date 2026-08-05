@@ -40,6 +40,8 @@ COMPOSE_ARGS=(
 require_expected_onlyoffice_image \
   "${ENV_FILE}" "${ONLYOFFICE_DEV_IMAGE_DEFAULT}" \
   "ONLYOFFICE_IMAGE=${ONLYOFFICE_DEV_IMAGE_DEFAULT}" "${COMPOSE_ARGS[@]}"
-docker compose "${COMPOSE_ARGS[@]}" build --provenance=false \
+configure_compose_build_compat_args
+docker compose "${COMPOSE_ARGS[@]}" build \
+  ${COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"} \
   fastapi docling-worker opencode web onlyoffice
 docker compose "${COMPOSE_ARGS[@]}" up -d --no-build

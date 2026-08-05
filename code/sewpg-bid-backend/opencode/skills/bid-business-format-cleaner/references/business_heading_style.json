@@ -12,8 +12,8 @@
   },
   "heading": {
     "1": {
-      "zh_font": "Noto Sans CJK SC",
-      "en_font": "Liberation Serif",
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
       "size_pt": 15,
       "size_name": "小三",
       "bold": true,
@@ -26,8 +26,8 @@
       "font_color": "000000"
     },
     "2": {
-      "zh_font": "Noto Sans CJK SC",
-      "en_font": "Liberation Serif",
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
       "size_pt": 14,
       "size_name": "四号",
       "bold": true,
@@ -40,8 +40,8 @@
       "font_color": "000000"
     },
     "3": {
-      "zh_font": "Noto Sans CJK SC",
-      "en_font": "Liberation Serif",
+      "zh_font": "等线",
+      "en_font": "Times New Roman",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -54,8 +54,8 @@
       "font_color": "000000"
     },
     "4": {
-      "zh_font": "Noto Sans CJK SC",
-      "en_font": "Liberation Serif",
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -68,8 +68,8 @@
       "font_color": "000000"
     },
     "5": {
-      "zh_font": "Noto Sans CJK SC",
-      "en_font": "Liberation Serif",
+      "zh_font": "等线",
+      "en_font": "Times New Roman",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -82,8 +82,8 @@
       "font_color": "000000"
     },
     "6": {
-      "zh_font": "Noto Sans CJK SC",
-      "en_font": "Liberation Serif",
+      "zh_font": "等线 Light",
+      "en_font": "Times New Roman",
       "size_pt": 12,
       "size_name": "小四",
       "bold": true,
@@ -97,8 +97,8 @@
     }
   },
   "body": {
-    "zh_font": "Noto Sans CJK SC",
-    "en_font": "Liberation Serif",
+    "zh_font": "等线",
+    "en_font": "Times New Roman",
     "size_pt": 12,
     "size_name": "小四",
     "bold": false,
@@ -110,8 +110,8 @@
     "font_color": "000000"
   },
   "table_cell": {
-    "zh_font": "Noto Serif CJK SC",
-    "en_font": "Noto Serif CJK SC",
+    "zh_font": "宋体",
+    "en_font": "宋体",
     "size_pt": 10.5,
     "size_name": "五号",
     "bold": false,
@@ -124,8 +124,8 @@
     "font_color": "000000"
   },
   "caption": {
-    "zh_font": "Noto Sans CJK SC",
-    "en_font": "Noto Sans CJK SC",
+    "zh_font": "等线",
+    "en_font": "等线",
     "size_pt": 12,
     "size_name": "小四",
     "bold": false,
@@ -143,8 +143,8 @@
     "style_spec_path": "business_toc_style.json"
   },
   "header": {
-    "zh_font": "Noto Serif CJK SC",
-    "en_font": "Noto Serif CJK SC",
+    "zh_font": "宋体",
+    "en_font": "宋体",
     "size_pt": 7.5,
     "size_name": "六号",
     "bold": false,
@@ -164,8 +164,8 @@
     "font_color": "000000"
   },
   "page_number": {
-    "zh_font": "Liberation Serif",
-    "en_font": "Liberation Serif",
+    "zh_font": "Times New Roman",
+    "en_font": "Times New Roman",
     "size_pt": 12,
     "size_name": "小四",
     "bold": false,
