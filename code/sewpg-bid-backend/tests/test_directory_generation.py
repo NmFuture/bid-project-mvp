@@ -2380,11 +2380,83 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         state = self._directory_state_for_tests(project_id)
         self.assertEqual(state["status"], "running")
-        self.assertEqual(state["percentage"], 45)
+        self.assertEqual(state["percentage"], 8)
         self.assertEqual(state["opencodeOutput"]["status"], "waiting")
         self.assertEqual(state["opencodeOutput"]["sessionId"], "SESSION-1")
         self.assertEqual(state["events"][-1]["step"], "futurecode_session")
         self.assertIn("futurecode", state["events"][-1]["message"])
+
+    def test_decision_progress_drives_percentage_counts_and_monotonicity(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        started_state = self._directory_state_for_tests(project_id)
+        self.assertTrue(started_state["startedAt"])
+        self.assertEqual(started_state["percentage"], 2)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 0, "total": 240, "chaptersDone": 0, "chaptersTotal": 12},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 5)
+        self.assertEqual(state["decisionProgress"]["decided"], 0)
+        self.assertEqual(state["decisionProgress"]["total"], 240)
+        self.assertEqual(state["decisionProgress"]["chaptersTotal"], 12)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 120, "total": 240, "chaptersDone": 5, "chaptersTotal": 12},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 42)
+        self.assertEqual(state["decisionProgress"]["decided"], 120)
+        self.assertIn("120/240", state["summary"])
+
+        # 乱序到达的旧计数不能让百分比回退
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 60, "total": 240},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 42)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "appendix", "decided": 6, "total": 12},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 83)
+        self.assertEqual(state["decisionProgress"]["phase"], "appendix")
+        self.assertIn("附表", state["summary"])
+
+    def test_chapter_stream_delta_suppresses_percentage_anchor(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 30, "total": 240},
+        )
+        _handle_directory_progress(
+            project_id,
+            "outline_delta",
+            {"status": "streaming", "parts": [{"type": "text", "text": "delta"}], "suppressPercentage": True},
+        )
+
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 14)
+        self.assertNotIn("suppressPercentage", state["opencodeOutput"])
+        self.assertIn("30/240", state["summary"])
 
     def test_background_job_updates_running_state_then_completes(self) -> None:
         from app.services.bid_directory_flow import _handle_directory_progress, _run_directory_generation_job
@@ -2399,7 +2471,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
         running_state = self._directory_state_for_tests(project_id)
         self.assertEqual(running_state["status"], "running")
-        self.assertEqual(running_state["percentage"], 30)
+        self.assertEqual(running_state["percentage"], 5)
         self.assertEqual(running_state["tasks"][1]["status"], "running")
         self.assertEqual(running_state["events"][-1]["step"], "hint_ready")
         self.assertEqual(running_state["opencodeOutput"]["status"], "idle")

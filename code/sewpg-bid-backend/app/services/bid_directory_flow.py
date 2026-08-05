@@ -49,6 +49,21 @@ _DIRECTORY_STAGE_LABELS = {
     "outline_fallback": "回退本地生成",
 }
 
+# 进度锚点按真实耗时占比分配：准备 0-5，判定 5-88（章节 5-78、附表 78-88），保存 88-100。
+_DECISION_PHASE_PERCENT_RANGES = {
+    "chapters": (5, 78),
+    "serial": (5, 78),
+    "appendix": (78, 88),
+}
+
+
+def _decision_progress_percentage(phase: str, decided: int, total: int) -> int | None:
+    if total <= 0:
+        return None
+    low, high = _DECISION_PHASE_PERCENT_RANGES.get(phase, (5, 78))
+    ratio = max(0.0, min(1.0, decided / total))
+    return int(round(low + (high - low) * ratio))
+
 
 def _directory_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
     return [
@@ -95,19 +110,43 @@ def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[s
 
 
 def _handle_directory_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
+    meta = details or {}
+    if stage == "decision_progress":
+        # 高频计数上报：不写事件、不进耗时埋点，只更新计数与百分比
+        phase = str(meta.get("phase") or "chapters")
+        decided = max(0, int(meta.get("decided") or 0))
+        total = max(0, int(meta.get("total") or 0))
+        decision_progress: dict[str, Any] = {"phase": phase, "decided": decided, "total": total}
+        if meta.get("chaptersTotal") is not None:
+            decision_progress["chaptersDone"] = max(0, int(meta.get("chaptersDone") or 0))
+            decision_progress["chaptersTotal"] = max(0, int(meta.get("chaptersTotal") or 0))
+        label = "技术附表" if phase == "appendix" else "目录条款"
+        summary = (
+            f"正在逐项判定{label}，已完成 {decided}/{total} 项。"
+            if total > 0
+            else f"正在逐项判定{label}。"
+        )
+        _update_directory_state(
+            project_id,
+            percentage=_decision_progress_percentage(phase, decided, total),
+            summary=summary,
+            tasks=_directory_tasks("done", "running", "pending"),
+            decision_progress=decision_progress,
+        )
+        return
+
     # 耗时埋点：目录 state 无 runId，用项目级任务锁反查当前 directory_generation job_id。
     record_phase(
         current_locked_job_id("directory_generation", project_id),
         stage,
         _DIRECTORY_STAGE_LABELS.get(stage, stage),
     )
-    meta = details or {}
     if stage == "inputs_ready":
         tender_file_count = int(meta.get("tenderFileCount") or 0)
         template_file_count = int(meta.get("templateFileCount") or 0)
         _update_directory_state(
             project_id,
-            percentage=30,
+            percentage=5,
             summary=f"已准备目录生成输入（招标文件 {tender_file_count} 个，投标模板 {template_file_count} 个），准备调用 futurecode。",
             tasks=_directory_tasks("done", "running", "pending"),
             event_message=f"已完成目录输入准备：招标文件 {tender_file_count} 个，投标模板 {template_file_count} 个。",
@@ -118,7 +157,7 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
     if stage == "outline_session_ready":
         _update_directory_state(
             project_id,
-            percentage=45,
+            percentage=8,
             summary="futurecode session 已建立，正在运行 S2 目录生成 Skill。",
             tasks=_directory_tasks("done", "running", "pending"),
             event_message="futurecode session 已建立，正在等待目录语义审核结果。",
@@ -134,12 +173,15 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
 
     if stage == "outline_delta":
         previous_parts = list((_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
+        meta = {key: value for key, value in meta.items() if key != "suppressPercentage"}
         parts = list(meta.get("parts") or [])
         first_delta = bool(parts) and not previous_parts
+        # 技术标并行章节路径由 decision_progress 驱动百分比；未标记的路径（商务标/串行）沿用流式锚点
+        suppress_percentage = bool((details or {}).get("suppressPercentage"))
         _update_directory_state(
             project_id,
-            percentage=65 if first_delta else 70,
-            summary="futurecode 正在执行目录生成和语义审核，请稍候。",
+            percentage=None if suppress_percentage else (65 if first_delta else 70),
+            summary=None if suppress_percentage else "futurecode 正在执行目录生成和语义审核，请稍候。",
             tasks=_directory_tasks("done", "running", "pending"),
             event_message="futurecode 已返回 S2 流式片段。" if first_delta else None,
             event_step="futurecode_delta",
@@ -175,7 +217,7 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         chapter_count = int(meta.get("chapterCount") or 0)
         _update_directory_state(
             project_id,
-            percentage=85,
+            percentage=90,
             summary=f"futurecode 已生成目录结果，正在整理 {chapter_count} 个一级章节。",
             tasks=_directory_tasks("done", "done", "running"),
             event_message=f"futurecode 已返回目录结果，正在整理 {chapter_count} 个一级章节。",

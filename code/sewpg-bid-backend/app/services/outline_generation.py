@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -47,6 +48,86 @@ PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 
 class _ChapterParallelUnsupported(RuntimeError):
     pass
+
+
+_DECISION_PROGRESS_READ_INTERVAL_SECONDS = 3.0
+
+
+class _ChapterDecisionAggregator:
+    """汇总并行章节会话的判定计数，节流上报 decision_progress。
+
+    计数读取挂在各章节的流式回调上（消息更新即触发），读的是各章节工作区
+    决策状态的只读快照；读失败只跳过本次，不影响生成主流程。
+    """
+
+    def __init__(
+        self,
+        chapters: list[dict[str, Any]],
+        progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
+    ) -> None:
+        self._totals = {
+            str(chapter["chapter_id"]): int(chapter.get("item_count") or 0)
+            for chapter in chapters
+        }
+        self._decided = {chapter_id: 0 for chapter_id in self._totals}
+        self._done: set[str] = set()
+        self._last_read = {chapter_id: 0.0 for chapter_id in self._totals}
+        self._last_reported: tuple[int, int] | None = None
+        self._lock = threading.Lock()
+        self._callback = progress_callback
+
+    def should_read(self, chapter_id: str) -> bool:
+        if self._callback is None:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_read.get(chapter_id, 0.0) < _DECISION_PROGRESS_READ_INTERVAL_SECONDS:
+                return False
+            self._last_read[chapter_id] = now
+            return True
+
+    def update(self, chapter_id: str, decided_count: int) -> None:
+        with self._lock:
+            total = self._totals.get(chapter_id, 0)
+            current = self._decided.get(chapter_id, 0)
+            self._decided[chapter_id] = max(current, min(decided_count, total))
+            payload = self._changed_payload_locked()
+        self._emit(payload)
+
+    def mark_done(self, chapter_id: str) -> None:
+        with self._lock:
+            self._done.add(chapter_id)
+            self._decided[chapter_id] = self._totals.get(chapter_id, 0)
+            payload = self._changed_payload_locked()
+        self._emit(payload)
+
+    def emit_initial(self) -> None:
+        with self._lock:
+            payload = self._changed_payload_locked(force=True)
+        self._emit(payload)
+
+    def _changed_payload_locked(self, force: bool = False) -> dict[str, Any] | None:
+        decided = sum(self._decided.values())
+        chapters_done = len(self._done)
+        if not force and self._last_reported == (decided, chapters_done):
+            return None
+        self._last_reported = (decided, chapters_done)
+        return {
+            "phase": "chapters",
+            "decided": decided,
+            "total": sum(self._totals.values()),
+            "chaptersDone": chapters_done,
+            "chaptersTotal": len(self._totals),
+        }
+
+    def _emit(self, payload: dict[str, Any] | None) -> None:
+        if payload is None or self._callback is None:
+            return
+        try:
+            self._callback("decision_progress", payload)
+        except Exception:
+            # 进度上报绝不打断生成主流程
+            pass
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
 # 注入 S2 manifest 的事实表状态：已确认/已抽取/待人工确认的值可信可用；
@@ -232,7 +313,30 @@ def _run_outline_appendix_session(
             workflow_binding=binding,
         )
 
-    return OpencodeClient(
+    appendix_total = len(appendix_items)
+    last_progress_read = [0.0]
+
+    def emit_appendix_progress(decided: int) -> None:
+        if progress_callback:
+            progress_callback(
+                "decision_progress",
+                {"phase": "appendix", "decided": decided, "total": appendix_total},
+            )
+
+    def stream_delta(details: dict[str, Any]) -> None:
+        progress_callback("outline_delta", {**details, "suppressPercentage": True})
+        now = time.monotonic()
+        if now - last_progress_read[0] < _DECISION_PROGRESS_READ_INTERVAL_SECONDS:
+            return
+        last_progress_read[0] = now
+        try:
+            snapshot = validate_complete()
+        except (Exception, SystemExit):
+            return
+        emit_appendix_progress(int(snapshot.get("decidedCount") or 0))
+
+    emit_appendix_progress(0)
+    result = OpencodeClient(
         timeout_ms=int(settings.opencode_timeout_sec * 1000),
     ).run_outline_decision_session(
         _build_outline_appendix_prompt(manifest_path),
@@ -243,13 +347,11 @@ def _run_outline_appendix_session(
             if progress_callback
             else None
         ),
-        stream_callback=(
-            (lambda details: progress_callback("outline_delta", details))
-            if progress_callback
-            else None
-        ),
+        stream_callback=stream_delta if progress_callback else None,
         session_phase="appendix_decision",
     )
+    emit_appendix_progress(appendix_total)
+    return result
 
 
 def _close_technical_outline_without_llm(manifest_path: Path) -> dict[str, Any]:
@@ -356,6 +458,7 @@ def _run_parallel_outline_chapters(
     chapter_indexes = {
         str(chapter["chapter_id"]): index for index, chapter in enumerate(chapters)
     }
+    aggregator = _ChapterDecisionAggregator(chapters, progress_callback)
 
     def run_chapter(chapter: dict[str, Any]) -> tuple[str, str]:
         chapter_id = str(chapter["chapter_id"])
@@ -379,6 +482,16 @@ def _run_parallel_outline_chapters(
                     {**details, "chapterId": chapter_id, "chapterTitle": chapter.get("title")},
                 )
 
+        def stream_delta(details: dict[str, Any]) -> None:
+            if progress_callback:
+                progress_callback("outline_delta", {**details, "suppressPercentage": True})
+            if aggregator.should_read(chapter_id):
+                try:
+                    snapshot = validate_complete()
+                except (Exception, SystemExit):
+                    return
+                aggregator.update(chapter_id, int(snapshot.get("decidedCount") or 0))
+
         result = OpencodeClient(
             base_url=chapter_base_urls[chapter_indexes[chapter_id] % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
@@ -389,15 +502,12 @@ def _run_parallel_outline_chapters(
             session_title=f"S2 目录决策·{chapter.get('number') or chapter_id}",
             completion_validator=validate_complete,
             session_ready_callback=session_ready,
-            stream_callback=(
-                (lambda details: progress_callback("outline_delta", details))
-                if progress_callback
-                else None
-            ),
+            stream_callback=stream_delta if progress_callback else None,
         )
         return chapter_id, str(result["sessionId"])
 
     try:
+        aggregator.emit_initial()
         with ThreadPoolExecutor(
             max_workers=min(
                 TECH_OUTLINE_CHAPTER_WORKERS,
@@ -408,6 +518,7 @@ def _run_parallel_outline_chapters(
             for future in as_completed(futures):
                 chapter_id, session_id = future.result()
                 session_ids[chapter_id] = session_id
+                aggregator.mark_done(chapter_id)
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
@@ -600,6 +711,16 @@ def _run_outline_skill(
                     previous_decided_count=previous_decided_count[0],
                 )
                 previous_decided_count[0] = int(state["decidedCount"])
+                if progress_callback:
+                    decided = int(state["decidedCount"])
+                    progress_callback(
+                        "decision_progress",
+                        {
+                            "phase": "serial",
+                            "decided": decided,
+                            "total": decided + int(state.get("remainingCount") or 0),
+                        },
+                    )
                 return state
 
             handoff_kwargs = {
