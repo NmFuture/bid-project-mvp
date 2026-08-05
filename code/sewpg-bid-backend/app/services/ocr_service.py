@@ -573,18 +573,20 @@ class OcrService:
             await ensure_material_runtime_tables(session)
             await session.commit()
 
-    async def recognize_text_for_parse(
-        self,
-        *,
-        file_name: str,
-        content: bytes,
-        mime_type: str = "",
-    ) -> tuple[str, dict[str, Any]]:
+    async def _require_parse_ocr_config(self) -> None:
         await self._ensure_tables()
         config = await system_settings_service.get_model_secret_config("ocr")
         if not bool(config.get("enabled")) or not str(config.get("baseUrl") or "").strip():
             raise PeripheralError(400, "请先在系统设置中启用并配置 OCR 模型。", "OCR_CONFIG_REQUIRED")
 
+    async def _submit_parse_task(
+        self,
+        *,
+        file_name: str,
+        content: bytes,
+        mime_type: str = "",
+    ) -> str:
+        """落盘输入并登记一条 pending OcrTask，返回 task_id（不等待结果）。"""
         suffix = Path(file_name).suffix.lower()
         if suffix not in ({".pdf"} | IMAGE_SUFFIXES):
             raise PeripheralError(400, "OCR 仅支持图片或图片型 PDF。", "OCR_FILE_TYPE_INVALID")
@@ -608,14 +610,57 @@ class OcrService:
             )
             session.add(task)
             await session.commit()
+        return task_id
 
-        await self.start_worker()
+    async def _await_parse_task_result(self, task_id: str) -> tuple[str, dict[str, Any]]:
         completed_task, _candidates = await self._wait_for_task(task_id)
         return completed_task.raw_response.get("extractedText") or "", {
             "status": completed_task.status,
             "pageCount": completed_task.page_count,
             "rawResponse": completed_task.raw_response,
         }
+
+    async def recognize_text_for_parse(
+        self,
+        *,
+        file_name: str,
+        content: bytes,
+        mime_type: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        await self._require_parse_ocr_config()
+        task_id = await self._submit_parse_task(file_name=file_name, content=content, mime_type=mime_type)
+        await self.start_worker()
+        return await self._await_parse_task_result(task_id)
+
+    async def recognize_texts_for_parse_batch(
+        self,
+        *,
+        files: list[tuple[str, bytes, str]],
+    ) -> list[tuple[str, dict[str, Any]] | BaseException]:
+        """批量提交 parse 用途 OCR 任务并统一并发等待，供 AI 填写等批量链路使用。
+
+        files 每项为 (file_name, content, mime_type)。先一次性登记全部 pending
+        OcrTask，再用 asyncio.gather 并发等待，实际识别并发度由 OCR worker 池
+        （_OCR_MAX_CONCURRENT）控制。返回与 files 等长且按序对应的结果列表，
+        每项为 (text, meta) 或该项的异常实例（单份失败不影响其他份）。
+        OCR 未配置时整体抛出 OCR_CONFIG_REQUIRED，由调用方按"跳过"处理。
+        """
+        await self._require_parse_ocr_config()
+        submitted: list[str | BaseException] = []
+        for file_name, content, mime_type in files:
+            try:
+                submitted.append(await self._submit_parse_task(file_name=file_name, content=content, mime_type=mime_type))
+            except Exception as exc:
+                submitted.append(exc)
+        await self.start_worker()
+
+        async def _wait_one(task_id: str | BaseException) -> tuple[str, dict[str, Any]]:
+            if isinstance(task_id, BaseException):
+                raise task_id
+            return await self._await_parse_task_result(task_id)
+
+        results = await asyncio.gather(*(_wait_one(item) for item in submitted), return_exceptions=True)
+        return list(results)
 
     async def list_tasks(self, project_id: str) -> dict[str, Any]:
         await self._ensure_tables()

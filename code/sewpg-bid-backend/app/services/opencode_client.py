@@ -179,8 +179,9 @@ class OpencodeClient:
         completion_validator: Callable[[], dict[str, Any]],
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        session_phase: str = "chapter_decision",
     ) -> dict[str, Any]:
-        """运行一个独立章节决策会话，最终结果以持久化状态为准。"""
+        """运行一个独立决策会话（章节或附表），最终结果以持久化状态为准。"""
         session = self.create_session(session_title)
         session_id = str(session.get("id") or "")
         if session_ready_callback:
@@ -189,7 +190,7 @@ class OpencodeClient:
                     "sessionId": session_id,
                     "providerId": self.provider_id,
                     "modelId": self.model_id,
-                    "sessionPhase": "chapter_decision",
+                    "sessionPhase": session_phase,
                 }
             )
         response = self._send_prompt_with_session_polling(
@@ -206,7 +207,7 @@ class OpencodeClient:
         if not isinstance(state, dict):
             state = completion_validator()
         if not bool(state.get("complete")):
-            raise RuntimeError(f"S2 章节决策会话未完成：{session_title}")
+            raise RuntimeError(f"S2 决策会话未完成：{session_title}")
         return {
             "sessionId": session_id,
             "state": state,

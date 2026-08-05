@@ -13,6 +13,9 @@ REPORT_SCHEMA = "technical-outline-compose-report.v1"
 DECISIONS_FILE_NAME = "outline_authoring_decisions.json"
 REPORT_FILE_NAME = "outline_compose_report.json"
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
+# 决策粒度只到二级；三级节点跟随最近的已决策祖先，最终目录仍是三级。
+DECISION_MAX_LEVEL = 2
+APPENDIX_ROOT_TITLE = "技术附表"
 OUTPUT_NODE_FIELDS = {
     "number",
     "title",
@@ -121,6 +124,7 @@ def build_composition(
     _validate_decisions_header(annotated, decisions)
     roots, records = _build_template_records(annotated)
     _apply_template_decisions(records, decisions.get("template_decisions") or [])
+    _inherit_decisions(roots)
     _apply_changes(roots, records, decisions.get("changes") or [])
     outline = {
         "schema_version": "technical-outline.v1",
@@ -151,7 +155,7 @@ def build_level_three_report(
                     "decision": "retain",
                 }
                 for item in annotated["items"]
-                if int(item.get("level") or 1) <= 3
+                if int(item.get("level") or 1) <= DECISION_MAX_LEVEL
             ],
             "changes": [],
         }
@@ -406,7 +410,7 @@ def _validate_template_decisions(structure: dict[str, Any], raw_decisions: Any) 
     expected_ids = {
         str(item.get("template_id") or "")
         for item in structure.get("items") or []
-        if isinstance(item, dict) and int(item.get("level") or 1) <= 3
+        if isinstance(item, dict) and int(item.get("level") or 1) <= DECISION_MAX_LEVEL
     }
     seen: set[str] = set()
     for index, item in enumerate(raw_decisions):
@@ -428,12 +432,6 @@ def _validate_template_decisions(structure: dict[str, Any], raw_decisions: Any) 
                 {"target_id", "decision", "reason", "tender_basis"},
                 index,
             )
-            has_reason = bool(str(item.get("reason") or "").strip())
-            has_basis = isinstance(item.get("tender_basis"), dict)
-            if has_reason and has_basis:
-                raise ValueError(
-                    f"template_decisions[{index}] retain cannot contain both reason and tender_basis"
-                )
         elif decision == "suggest_delete":
             _assert_template_decision_keys(
                 item,
@@ -527,6 +525,25 @@ def _apply_template_decisions(
         target["node"]["suggestion_reason"] = str(item["reason"])
         if "tender_basis" in item:
             target["node"]["tender_basis"] = deepcopy(item["tender_basis"])
+
+
+def _inherit_decisions(
+    records: list[dict[str, Any]],
+    inherited: dict[str, Any] | None = None,
+) -> None:
+    """二级决策下沉：没有独立决策的三级节点跟随最近的已决策祖先。"""
+    for record in records:
+        node = record["node"]
+        if node.get("suggestion_action"):
+            source = node
+        else:
+            source = inherited
+            if source is not None:
+                node["suggestion_action"] = str(source.get("suggestion_action") or "")
+                node["suggestion_reason"] = str(source.get("suggestion_reason") or "")
+                if "tender_basis" in source:
+                    node["tender_basis"] = deepcopy(source["tender_basis"])
+        _inherit_decisions(record["children"], source)
 
 
 def _apply_changes(
@@ -663,7 +680,21 @@ def _apply_add(
         "collapse_reason": "",
     }
     records[node_id] = record
-    _insert_record(roots, record, parent, change.get("after_id"), index)
+    after_id = change.get("after_id")
+    if parent is None and after_id is None and title != APPENDIX_ROOT_TITLE:
+        # 技术附表必须留在最后一个根节点，新增一级章插到它前面。
+        appendix_index = next(
+            (
+                position
+                for position, root in enumerate(roots)
+                if str(root["node"].get("title") or "") == APPENDIX_ROOT_TITLE
+            ),
+            None,
+        )
+        if appendix_index is not None:
+            roots.insert(appendix_index, record)
+            return
+    _insert_record(roots, record, parent, after_id, index)
 
 
 def _move_record(
