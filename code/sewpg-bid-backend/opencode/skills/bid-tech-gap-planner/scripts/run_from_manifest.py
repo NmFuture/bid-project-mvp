@@ -562,6 +562,9 @@ def material_requires_fill(material: dict[str, Any] | None) -> bool:
 # 判据 title_matches_file_name），一切启发式分（文件级/片段/主题/近名）封顶 0.98。
 HEURISTIC_SCORE_CAP = 0.98
 EXACT_MATCH_SCORE = 0.99
+# 展示分诚实化（产品裁决 2026-08-04）：字面证据不足、仅靠弱召回/片段加成撑起的
+# 展示分封顶到低置信档——弱召回的多路求和是排序分，不能冒充置信度。
+WEAK_RECALL_DISPLAY_CAP = 0.49
 
 
 def material_score(material: dict[str, Any], title: str) -> float:
@@ -784,9 +787,14 @@ def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, lim
             item["matchScore"] = EXACT_MATCH_SCORE
             item["matchReason"] = item.get("matchReason") or "文件名精确命中章节标题"
         else:
-            base = max(material_score(material, title), _weak_recall_rank(material))
+            literal = material_score(material, title)
+            base = max(literal, _weak_recall_rank(material))
             segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
-            item["matchScore"] = round(min(base + segment_bonus, HEURISTIC_SCORE_CAP), 2)
+            score = round(min(base + segment_bonus, HEURISTIC_SCORE_CAP), 2)
+            # 字面分不足半档时，弱召回/片段加成只能把展示分抬到低置信档上限。
+            if literal < WEAK_RECALL_DISPLAY_CAP:
+                score = min(score, WEAK_RECALL_DISPLAY_CAP)
+            item["matchScore"] = score
         if recalled:
             item["recalledSegments"] = recalled
             item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）" if item["matchScore"] < EXACT_MATCH_SCORE else item["matchReason"]
@@ -2423,6 +2431,15 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
             # 覆盖锚点：本子节在整章素材内部对应的标题/片段，供 UI 预览与 S4 按节切分。
             source_anchor = outline_anchor_for_title(parent_coverage.get("material"), title)
+            # 释放预备（S3 树状改造）：被覆盖子级同样保留自身候选，父章被「忽略」后
+            # 前端直接按候选派生标签，无需重跑缺口识别；覆盖期间 matchedMaterials 仍为空。
+            own_pick, own_alternatives = pick_material(candidate_materials, title)
+            alternative_materials = dedupe_materials(
+                ([own_pick] if own_pick else []) + own_alternatives
+            )
+            alternative_materials = attach_recalled_segments(alternative_materials, title)
+            alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+            alternative_materials = alternative_materials[:4]
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             appendix_tasks = []
@@ -2567,6 +2584,23 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     matched_material["matchReason"] = f"整章素材覆盖“{title}”及其子节。"
             if matched_material:
                 coverage_role = "chapter_master"
+                # 展示分诚实化（产品裁决 2026-08-04）：整章定案的依据是标题树覆盖或
+                # 剥修饰同名，不是字面包含；展示分按证据强度给（覆盖 50%→0.74、全覆盖
+                # →0.98），不再把强证据素材显示成字面低分。后端补盖只补空缺，不会改写。
+                if title_matches_file_name(matched_material, title):
+                    matched_material["matchScore"] = EXACT_MATCH_SCORE
+                else:
+                    master_coverage = outline_child_coverage(matched_material, child_titles)
+                    if master_coverage > 0:
+                        matched_material["matchScore"] = round(
+                            min(0.5 + 0.48 * master_coverage, HEURISTIC_SCORE_CAP), 2
+                        )
+                        matched_material["matchReason"] = f"整章素材·标题树覆盖{round(master_coverage * 100)}%子节"
+                    elif strong_title_material_match(matched_material, title) == "name":
+                        matched_material["matchScore"] = 0.95
+                        matched_material["matchReason"] = "整章素材·剥修饰同名"
+                    else:
+                        matched_material["matchScore"] = display_match_score(matched_material, title)
                 matched_materials = [matched_material]
                 parent_fill_required = material_requires_fill(matched_material)
                 if parent_fill_required:

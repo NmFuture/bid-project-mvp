@@ -553,6 +553,8 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
   setParentCoverage: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/parent-coverage`, { method: 'POST', body: data }),
+  setTitleOnly: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/title-only`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
@@ -627,6 +629,7 @@ export const technicalDocumentAPI = {
 
 export const technicalMaterialsAPI = {
   identityOptions: () => request('/technical/materials/identity-options'),
+  pipelineProgress: () => request('/technical/materials/pipeline-progress'),
   turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
   index: () => request('/technical/materials/index'),
   setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),

@@ -117,14 +117,9 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
         app.dependency_overrides[current_user] = lambda: self.current_user
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
-        self.gap_planner_patcher = patch(
-            "app.services.technical_gap_planner.OpencodeClient.run_bid_tech_gap_planner_with_trace",
-            side_effect=RuntimeError("offline test fallback"),
-        )
-        self.gap_planner_patcher.start()
+        # 缺口识别已改为后端直跑纯脚本（2026-08-04），不再经 OpenCode，无需离线打桩。
 
     def tearDown(self) -> None:
-        self.gap_planner_patcher.stop()
         app.dependency_overrides.pop(current_user, None)
         self.client.close()
         settings.onlyoffice_backend_base_url = self.original_onlyoffice_backend_base_url

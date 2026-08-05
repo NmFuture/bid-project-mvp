@@ -718,6 +718,41 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertEqual([item["number"] for item in items], ["一、", "1.1", "1.2"])
         self.assertEqual([item["level"] for item in items], [1, 2, 2])
 
+    def test_builtin_style_writes_official_font_names_to_docx_xml(self):
+        input_docx = self.tmp_path / "input_builtin_fonts.docx"
+        outline_path = self.tmp_path / "outline_builtin_fonts.json"
+        output_docx = self.tmp_path / "output_builtin_fonts.docx"
+        manifest_path = self.tmp_path / "manifest_builtin_fonts.json"
+
+        _write_docx(input_docx)
+        _write_outline(outline_path)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "inputFile": str(input_docx),
+                    "outlineFile": str(outline_path),
+                    "outputFile": str(output_docx),
+                    "projectName": "测试项目",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        _run_manifest(manifest_path, response="summary")
+
+        with zipfile.ZipFile(output_docx) as archive:
+            document_xml = "\n".join(
+                archive.read(name).decode("utf-8", errors="ignore")
+                for name in archive.namelist()
+                if name.startswith("word/") and name.endswith(".xml")
+            )
+        for family in ("等线", "等线 Light", "宋体", "Times New Roman"):
+            self.assertIn(family, document_xml)
+        for family in ("Noto Sans CJK SC", "Noto Serif CJK SC", "Liberation Serif"):
+            self.assertNotIn(family, document_xml)
+
     def test_run_manifest_promotes_plain_body_headings_and_preserves_input(self):
 
         input_docx = self.tmp_path / "input.docx"
@@ -896,6 +931,7 @@ class BusinessFormatCleanerTest(unittest.TestCase):
 
         self.assertEqual(style["title"]["text"], "目 录")
         self.assertEqual(style["title"]["zh_font"], "宋体")
+        self.assertEqual(style["title"]["en_font"], "Times New Roman")
         self.assertEqual(style["title"]["size_pt"], 16)
         self.assertEqual(style["field"]["instruction"], " TOC \\o \"1-4\" \\h \\z \\u ")
         self.assertEqual(set(style["entry_styles"].keys()), {"1", "2", "3", "4"})
@@ -905,6 +941,7 @@ class BusinessFormatCleanerTest(unittest.TestCase):
         self.assertEqual(style["entry_styles"]["4"]["left_indent_twips"], 1260)
         for entry in style["entry_styles"].values():
             self.assertEqual(entry["zh_font"], "宋体")
+            self.assertEqual(entry["en_font"], "Times New Roman")
             self.assertEqual(entry["size_pt"], 12)
             self.assertEqual(entry["line_spacing"], 1.5)
             self.assertEqual(entry["line_spacing_rule"], "auto")

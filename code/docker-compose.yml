@@ -335,7 +335,13 @@ services:
     restart: unless-stopped
 
   onlyoffice:
-    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.3.1.2}
+    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:dev-fontpack-v1}
+    build:
+      context: ./sewpg-bid-backend/onlyoffice
+      args:
+        ONLYOFFICE_BASE_IMAGE: ${ONLYOFFICE_BASE_IMAGE:-onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31}
+        ONLYOFFICE_FONT_BUILDER_IMAGE: ${ONLYOFFICE_FONT_BUILDER_IMAGE:-debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e}
+        SEWPG_BUILD_REVISION: ${ONLYOFFICE_BUILD_REVISION:-dev}
     platform: ${ONLYOFFICE_PLATFORM:-linux/amd64}
     container_name: sewpg_bid_onlyoffice
     environment:
@@ -354,13 +360,16 @@ services:
     expose:
       - "80"
     volumes:
-      - ./sewpg-bid-backend/onlyoffice/docker-entrypoint.sh:/usr/local/bin/sewpg-onlyoffice-entrypoint:ro
-      - ./sewpg-bid-backend/onlyoffice/fontconfig/99-sewpg-cjk-font-aliases.conf:/etc/fonts/conf.d/99-sewpg-cjk-font-aliases.conf:ro
-      - ${ONLYOFFICE_CUSTOM_FONTS_HOST_DIR:-./sewpg-bid-backend/onlyoffice/fonts}:/usr/share/fonts/truetype/custom:ro
       - onlyoffice_logs:/var/log/onlyoffice
       - onlyoffice_data:/var/www/onlyoffice/Data
       - onlyoffice_lib:/var/lib/onlyoffice
       - onlyoffice_db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/sewpg-verify-fonts >/dev/null && curl --fail --silent http://127.0.0.1/healthcheck >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
   postgres:

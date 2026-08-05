@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFile, File
@@ -19,6 +20,11 @@ from app.services.technical_generation_service import technical_generation_servi
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_audit_service import technical_audit_service
 from app.services.technical_event_service import technical_event_service
+from app.services.material_wiki_auto import (
+    on_material_tree_changed,
+    on_material_upload_completed,
+    technical_pipeline_progress,
+)
 from app.services.peripheral import PeripheralError
 from app.services.background_job_registry import get_job_status, start_job, update_job_progress
 from app.services.technical_material_store import technical_material_store
@@ -377,6 +383,15 @@ def set_technical_gap_parent_coverage(
     return technical_gap_service.set_parent_coverage(project_id, gap_id, data)
 
 
+@router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/title-only")
+def set_technical_gap_title_only(
+    project_id: str,
+    gap_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return technical_gap_service.set_title_only(project_id, gap_id, data)
+
+
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/select-material")
 async def select_technical_gap_material(
     project_id: str,
@@ -714,17 +729,34 @@ async def technical_raw_create_folder(data: dict[str, Any] = Body(default_factor
     )
 
 
+def _auto_refresh_after_tree_change(reason: str) -> None:
+    # 素材流水线自动衔接：素材树结构变更（删除/移动/改名）后补一轮 Wiki。
+    try:
+        on_material_tree_changed(reason)
+    except Exception as auto_exc:
+        logging.getLogger(__name__).warning("素材流水线自动衔接失败（%s）：%s", reason, auto_exc)
+
+
 @router.delete("/api/technical/materials/raw/folders")
 async def technical_raw_delete_folder(path: str = Query(default="")) -> dict[str, Any]:
-    return await technical_material_store.raw_delete_folder(path)
+    result = await technical_material_store.raw_delete_folder(path)
+    _auto_refresh_after_tree_change("删除素材目录")
+    return result
 
 
 @router.patch("/api/technical/materials/raw/folders")
 async def technical_raw_rename_folder(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.raw_rename_folder(
+    result = await technical_material_store.raw_rename_folder(
         path=str(data.get("path") or data.get("folderPath") or ""),
         new_name=str(data.get("newName") or data.get("folderName") or data.get("name") or ""),
     )
+    _auto_refresh_after_tree_change("重命名素材目录")
+    return result
+
+
+@router.get("/api/technical/materials/pipeline-progress")
+async def technical_material_pipeline_progress() -> dict[str, Any]:
+    return await technical_pipeline_progress()
 
 
 @router.post("/api/technical/materials/raw/upload")
@@ -765,7 +797,7 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
         target_path = str(data.get("targetPath") or "")
         data["targetPath"] = technical_material_store.ensure_path(target_path, "目标目录") if target_path else ""
 
-    return await technical_material_store.raw_upload(
+    result = await technical_material_store.raw_upload(
         target_path=str(data.get("targetPath") or ""),
         project_id=str(data.get("projectId") or ""),
         project_code=str(data.get("projectCode") or ""),
@@ -777,6 +809,13 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
         on_conflict=str(data.get("onConflict") or ""),
         files=list(data.get("files") or []),
     )
+    # 素材流水线自动衔接：纯非清洗批次（PDF/Excel）没有清洗收尾时机，上传后直接触发
+    # Wiki 增量；产生了清洗任务的批次由清洗收尾钩子触发（material_wiki_auto）。
+    try:
+        on_material_upload_completed(int((result.get("cleaning") or {}).get("queued") or 0))
+    except Exception as auto_exc:
+        logging.getLogger(__name__).warning("素材流水线自动衔接失败（上传钩子）：%s", auto_exc)
+    return result
 
 
 @router.post("/api/technical/materials/raw/tag-import/preview")
@@ -835,7 +874,9 @@ async def technical_raw_batch_delete(data: dict[str, Any] = Body(default_factory
     file_ids: list[str] = [str(fid) for fid in (data.get("fileIds") or []) if fid]
     if not file_ids:
         return {"succeeded": [], "failed": [], "message": "未提供文件 ID"}
-    return await technical_material_store.raw_batch_delete_files(file_ids)
+    result = await technical_material_store.raw_batch_delete_files(file_ids)
+    _auto_refresh_after_tree_change("批量删除素材")
+    return result
 
 
 @router.post("/api/technical/materials/raw/batch-tags")
@@ -891,24 +932,30 @@ async def technical_raw_confirm_legacy_split(file_id: str, data: dict[str, Any] 
 @router.post("/api/technical/materials/raw/move")
 async def technical_raw_move_file(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     file_id = str(data.get("fileId") or data.get("id") or "")
-    return await technical_material_store.raw_move_file(
+    result = await technical_material_store.raw_move_file(
         file_id=file_id,
         target_path=str(data.get("targetPath") or ""),
         on_conflict=str(data.get("onConflict") or ""),
     )
+    _auto_refresh_after_tree_change("移动素材文件")
+    return result
 
 
 @router.post("/api/technical/materials/raw/folders/move")
 async def technical_raw_move_folder(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.raw_move_folder(
+    result = await technical_material_store.raw_move_folder(
         source_path=str(data.get("sourcePath") or ""),
         target_parent_path=str(data.get("targetParentPath") or data.get("targetPath") or ""),
     )
+    _auto_refresh_after_tree_change("移动素材目录")
+    return result
 
 
 @router.delete("/api/technical/materials/raw/{file_id}")
 async def technical_raw_delete_file(file_id: str) -> dict[str, Any]:
-    return await technical_material_store.raw_delete_file(file_id)
+    result = await technical_material_store.raw_delete_file(file_id)
+    _auto_refresh_after_tree_change("删除素材文件")
+    return result
 
 
 @router.get("/api/technical/materials/raw/{file_id}/download")

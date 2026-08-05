@@ -14,20 +14,22 @@ from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.event_service import EventService, MAX_META_BYTES
 
 
+# SQLite 不强制 VARCHAR 长度，用 CHECK 复现 Postgres 的
+# StringDataRightTruncationError，否则截断回归测不出来。
 CREATE_TABLE_SQL = """
 CREATE TABLE user_event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id VARCHAR(100) NOT NULL,
-    user_name VARCHAR(100),
-    session_id VARCHAR(100) NOT NULL,
-    bid_type VARCHAR(20) NOT NULL,
-    event_type VARCHAR(20) NOT NULL,
-    route VARCHAR(500),
-    element VARCHAR(200),
-    target VARCHAR(500),
-    status VARCHAR(20),
+    user_id VARCHAR(100) NOT NULL CHECK (length(user_id) <= 100),
+    user_name VARCHAR(100) CHECK (length(user_name) <= 100),
+    session_id VARCHAR(100) NOT NULL CHECK (length(session_id) <= 100),
+    bid_type VARCHAR(20) NOT NULL CHECK (length(bid_type) <= 20),
+    event_type VARCHAR(20) NOT NULL CHECK (length(event_type) <= 20),
+    route VARCHAR(500) CHECK (length(route) <= 500),
+    element VARCHAR(200) CHECK (length(element) <= 200),
+    target VARCHAR(500) CHECK (length(target) <= 500),
+    status VARCHAR(20) CHECK (length(status) <= 20),
     duration_ms INT,
-    trace_id VARCHAR(100),
+    trace_id VARCHAR(100) CHECK (length(trace_id) <= 100),
     meta JSONB,
     client_ts TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -129,6 +131,106 @@ class IngestTests(EventServiceTestCase):
         self.assertEqual(accepted, 0)
         data = await self.service.list({"bidType": TECHNICAL_BID_TYPE})
         self.assertEqual(data["total"], 0)
+
+
+class IngestColumnLimitTests(EventServiceTestCase):
+    # 项目定制素材目录是两层长中文项目名嵌套，minio key 300+ 字符，
+    # 埋点 target 带完整路径会超 VARCHAR(500)。
+    PROJECT_DIR = "某某海上风电场二期工程总承包项目" * 20
+
+    def _long_target(self) -> str:
+        return f"/materials/technical/{self.PROJECT_DIR}/{self.PROJECT_DIR}/风机塔筒技术规格书.docx"
+
+    def _long_route(self) -> str:
+        return f"/api/technical/materials/{self.PROJECT_DIR}/{self.PROJECT_DIR}"
+
+    async def test_one_oversized_event_does_not_drop_the_whole_batch(self) -> None:
+        long_target = self._long_target()
+        events = [
+            {"sessionId": "sess-1", "eventType": "click", "route": "/workspace/tech/home", "target": "before"},
+            {
+                "sessionId": "sess-1",
+                "eventType": "api",
+                "route": self._long_route(),
+                "element": "素材卡片" * 80,
+                "target": long_target,
+                "status": "error" * 10,
+                "traceId": "trace-" * 40,
+            },
+            {"sessionId": "sess-1", "eventType": "route", "route": "/workspace/tech/gap", "target": "after"},
+        ]
+        accepted = await self.service.ingest({"id": "u-1", "name": "张三"}, events, TECHNICAL_BID_TYPE)
+        self.assertEqual(accepted, 3)
+
+        data = await self.service.list({"bidType": TECHNICAL_BID_TYPE, "pageSize": 10})
+        self.assertEqual(data["total"], 3)
+        items = {item["eventType"]: item for item in data["items"]}
+        # 同批次的正常事件不能被脏数据带走
+        self.assertEqual(items["click"]["target"], "before")
+        self.assertEqual(items["route"]["target"], "after")
+
+        oversized = items["api"]
+        self.assertEqual(len(oversized["target"]), 500)
+        self.assertTrue(oversized["target"].startswith("/materials/technical/某某海上风电场"))
+        self.assertTrue(oversized["target"].endswith("风机塔筒技术规格书.docx"))
+        self.assertIn("…", oversized["target"])
+        self.assertEqual(len(oversized["route"]), 500)
+        self.assertEqual(len(oversized["element"]), 200)
+        self.assertEqual(len(oversized["status"]), 20)
+        self.assertEqual(len(oversized["traceId"]), 100)
+
+    async def test_truncated_route_still_matches_prefix_filter(self) -> None:
+        await self.service.ingest(
+            {"id": "u-1"},
+            [{"sessionId": "sess-1", "eventType": "api", "route": self._long_route()}],
+            TECHNICAL_BID_TYPE,
+        )
+        self.assertEqual((await self.service.list({"route": "/api/technical"}))["total"], 1)
+
+    async def test_ingest_truncates_overlong_identity_fields(self) -> None:
+        accepted = await self.service.ingest(
+            {"id": "u-" + "1" * 200, "name": "名" * 300},
+            [{"sessionId": "sess-" + "9" * 300, "eventType": "click", "target": "x"}],
+            TECHNICAL_BID_TYPE,
+        )
+        self.assertEqual(accepted, 1)
+        item = (await self.service.list({"bidType": TECHNICAL_BID_TYPE}))["items"][0]
+        self.assertEqual(len(item["sessionId"]), 100)
+        self.assertEqual(len(item["userId"]), 100)
+        self.assertEqual(len(item["userName"]), 100)
+
+    async def test_business_line_gets_the_same_truncation(self) -> None:
+        accepted = await self.service.ingest(
+            {"id": "u-b"},
+            [{"sessionId": "sess-b", "eventType": "click", "target": self._long_target()}],
+            BUSINESS_BID_TYPE,
+        )
+        self.assertEqual(accepted, 1)
+        data = await self.service.list({"bidType": BUSINESS_BID_TYPE})
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["items"][0]["bidType"], BUSINESS_BID_TYPE)
+        self.assertEqual(len(data["items"][0]["target"]), 500)
+
+    async def test_events_within_limits_are_stored_verbatim(self) -> None:
+        await self.service.ingest(
+            {"id": "u-1", "name": "张三"},
+            [{
+                "sessionId": "sess-1",
+                "eventType": "click",
+                "route": "/workspace/tech/materials",
+                "element": "上传按钮",
+                "target": "material-upload",
+                "status": "success",
+                "traceId": "trace-abc",
+            }],
+            TECHNICAL_BID_TYPE,
+        )
+        item = (await self.service.list({"bidType": TECHNICAL_BID_TYPE}))["items"][0]
+        self.assertEqual(item["route"], "/workspace/tech/materials")
+        self.assertEqual(item["element"], "上传按钮")
+        self.assertEqual(item["target"], "material-upload")
+        self.assertEqual(item["status"], "success")
+        self.assertEqual(item["traceId"], "trace-abc")
 
 
 class ListTests(EventServiceTestCase):

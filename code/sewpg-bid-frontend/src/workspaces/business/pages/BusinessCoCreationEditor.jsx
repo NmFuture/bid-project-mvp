@@ -7,11 +7,7 @@ import BusinessProjectStageProgress from '../components/BusinessProjectStageProg
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
-
-const FONT_OPTIONS = {
-  zh: ['等线', '宋体', '仿宋', '黑体', '楷体', '微软雅黑', '方正仿宋_GBK', '方正小标宋_GBK'],
-  en: ['Times New Roman', 'Arial', 'Calibri', 'Cambria', 'Georgia'],
-}
+import { DOCUMENT_FONT_OPTIONS } from '../../shared/fontOptions'
 
 const triggerDownload = (url, fileName) => {
   if (!url) return false
@@ -333,16 +329,16 @@ export default function BusinessCoCreationEditor({ showToast }) {
     </label>
   )
 
-  const renderFormatFontSelect = (field, label, options = FONT_OPTIONS.zh) => (
+  const renderFormatFontSelect = (field, label, options = DOCUMENT_FONT_OPTIONS.zh) => (
     <label className="block">
       <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
       <select
-        value={customFormat[field] || options[0] || ''}
+        value={customFormat[field] || options[0]?.value || ''}
         onChange={(event) => updateCustomFormat(field, event.target.value)}
         className="h-9 w-full rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
       >
         {options.map((font) => (
-          <option key={font} value={font}>{font}</option>
+          <option key={font.value} value={font.value}>{font.label}</option>
         ))}
       </select>
     </label>
@@ -545,8 +541,8 @@ export default function BusinessCoCreationEditor({ showToast }) {
             <div>
               <div className="text-sm font-semibold text-on-surface">正文格式</div>
               <div className="mt-2 grid grid-cols-2 gap-2">
-                {renderFormatFontSelect('bodyZhFont', '中文字体', FONT_OPTIONS.zh)}
-                {renderFormatFontSelect('bodyEnFont', '英文字体', FONT_OPTIONS.en)}
+                {renderFormatFontSelect('bodyZhFont', '中文字体', DOCUMENT_FONT_OPTIONS.zh)}
+                {renderFormatFontSelect('bodyEnFont', '英文字体', DOCUMENT_FONT_OPTIONS.en)}
                 {renderFormatNumberInput('bodySizePt', '正文字号 pt', { min: 8, max: 22, step: 0.5 })}
                 {renderFormatNumberInput('bodyLineSpacing', '正文行距', { min: 1, max: 3, step: 0.05 })}
                 {renderFormatNumberInput('bodyFirstLineIndentChars', '首行缩进字符', { min: 0, max: 4, step: 0.5 })}
@@ -570,7 +566,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
                 {renderFormatNumberInput('pageBottomCm', '下边距 cm', { min: 0.5, max: 6, step: 0.1 })}
                 {renderFormatNumberInput('pageLeftCm', '左边距 cm', { min: 0.5, max: 6, step: 0.1 })}
                 {renderFormatNumberInput('pageRightCm', '右边距 cm', { min: 0.5, max: 6, step: 0.1 })}
-                {renderFormatFontSelect('tableZhFont', '表格字体', FONT_OPTIONS.zh)}
+                {renderFormatFontSelect('tableZhFont', '表格字体', DOCUMENT_FONT_OPTIONS.zh)}
                 {renderFormatNumberInput('tableSizePt', '表格字号 pt', { min: 8, max: 16, step: 0.5 })}
               </div>
             </div>
