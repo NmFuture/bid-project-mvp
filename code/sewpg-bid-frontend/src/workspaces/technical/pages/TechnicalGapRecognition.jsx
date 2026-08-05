@@ -1470,7 +1470,14 @@ export default function TechnicalGapRecognition({ showToast }) {
   // - 仅文件名精确命中（0.99 后端定案）或父级覆盖的素材仍默认展示为已选中。
   // 解析空副表天然常驻已选区；素材类模板空白在「定案后」（待填写/待审核）也提升到已选区
   // ——否则定案项的备选池收起后，用户看不到定的是哪份模板（产品反馈 2026-08-04）。
-  const topBlankEntries = fillBlankEntries.filter((entry) => !entry.isMaterialBlank || settledSelected)
+  // 整章模板（chapter_fill）同一份素材会同时出现在 matchedMaterials 与 fillTask.blankSource：
+  // matchedMaterials 卡（带分数/层级）已在已选区时，模板空白不再重复渲染（产品反馈 2026-08-04）。
+  const matchedTopMaterialId = String(asObjectArray(selected?.matchedMaterials)[0]?.id || '').trim()
+  const topBlankEntries = fillBlankEntries.filter((entry) => {
+    if (!entry.isMaterialBlank) return true
+    if (!settledSelected) return false
+    return !matchedTopMaterialId || entry.key !== matchedTopMaterialId
+  })
   const poolBlankEntries = fillBlankEntries.filter((entry) => entry.isMaterialBlank && !settledSelected)
   const defaultSelection = (() => {
     if (!selectedMaterialMatch?.material) return null
