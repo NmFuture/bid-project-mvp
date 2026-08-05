@@ -121,7 +121,7 @@ function TechnicalTocActionBadge({ item, items }) {
   let tip = config?.tip
   if (!config && isStructuralItem(item) && technicalGapDescendants(item, items).length) {
     config = TECHNICAL_GAP_TAG_CONFIG.title_only
-    tip = '结构章：本级只是标题骨架，内容由下级承接（系统判定，无需忽略）'
+    tip = '未找到整章素材，内容由下级承接'
   }
   // 其余无标签项（空骨架叶子）保持无提示（产品意见 2026-07-17：删除「空章节」等冗余提示）。
   if (!config) return null
@@ -1505,11 +1505,18 @@ export default function TechnicalGapRecognition({ showToast }) {
         key: String(material?.id || material?.materialId || '').trim(),
       })),
     ]
-    return wrappers.filter((wrapper) => {
+    const deduped = wrappers.filter((wrapper) => {
       if (!wrapper.key || seen.has(wrapper.key)) return false
       seen.add(wrapper.key)
       return true
     })
+    // 系统预选置顶（产品裁决 2026-08-04）：无论展示分高低，第一张卡永远是系统预选的那份。
+    const preselectedId = String(asObjectArray(selected?.matchedMaterials)[0]?.id || '').trim()
+    if (!preselectedId) return deduped
+    const pinned = deduped.filter((wrapper) => wrapper.key === preselectedId)
+    return pinned.length
+      ? [...pinned, ...deduped.filter((wrapper) => wrapper.key !== preselectedId)]
+      : deduped
   })()
   const selectedPlaceholderLabels = compactList([
     ...asArray(selectedBlankSource?.placeholderLabels),
