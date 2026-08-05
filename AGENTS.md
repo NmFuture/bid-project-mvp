@@ -162,6 +162,9 @@ DATABASE_URL="postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform" \
 ```bash
 cd code && docker compose up -d --wait postgres minio redis opencode
 cd sewpg-bid-backend && BID_RUN_INTEGRATION=1 APP_STORE_BACKEND=postgres \
+  DATABASE_URL="postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform" \
+  MINIO_ENDPOINT="http://localhost:9000" MINIO_ROOT_USER=minioadmin \
+  MINIO_ROOT_PASSWORD=minioadmin REDIS_URL="redis://localhost:6379/0" \
   .venv/bin/python -m pytest -m integration
 ```
 
