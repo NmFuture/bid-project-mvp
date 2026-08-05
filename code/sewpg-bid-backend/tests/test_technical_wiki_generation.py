@@ -90,7 +90,7 @@ class TechnicalWikiGenerationTests(unittest.IsolatedAsyncioTestCase):
             result = await generate_technical_wiki(mode="replace")
 
         load_index.assert_called_once()
-        enrich_previews.assert_awaited_once_with(index_payload)
+        enrich_previews.assert_awaited_once_with(index_payload, on_progress=None)
         write_index.assert_called_once()
         # 走确定性脚本，不调 LLM。
         run_skill.assert_called_once()

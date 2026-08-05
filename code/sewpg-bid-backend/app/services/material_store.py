@@ -400,6 +400,7 @@ class MaterialStore:
         nodes: list[dict[str, Any]],
         mode: str = "create",
         bid_type: str,
+        on_progress: Any = None,
     ) -> dict[str, Any]:
         return await import_generated_wiki_blueprint_operation(
             root_title=root_title,
@@ -409,6 +410,7 @@ class MaterialStore:
             bid_type=bid_type,
             ensure_runtime_tables=ensure_material_runtime_tables,
             wiki_list=self.wiki_list,
+            on_progress=on_progress,
         )
 
     async def raw_move_file(

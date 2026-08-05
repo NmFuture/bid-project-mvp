@@ -627,6 +627,7 @@ export const technicalDocumentAPI = {
 
 export const technicalMaterialsAPI = {
   identityOptions: () => request('/technical/materials/identity-options'),
+  pipelineProgress: () => request('/technical/materials/pipeline-progress'),
   turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
   index: () => request('/technical/materials/index'),
   setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),
