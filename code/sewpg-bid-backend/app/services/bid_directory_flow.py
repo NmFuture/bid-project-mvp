@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -95,18 +96,27 @@ def _directory_state(project_id: str) -> dict[str, Any]:
     return directory_state_with_rule_evidence(_any_project(project_id))
 
 
+# 目录 state 的写入是「加载 → 改 → 回写」，接 postgres 时加载还会走一次库往返。
+# 并行章节会话与计数聚合同时上报时，后写会整份覆盖先写（实测丢过 5 条会话事件），
+# 因此所有写路径必须串行。生成任务已按项目上锁，只会落在单个 worker 进程内，
+# 进程内锁足够；换成多进程并发写同一项目时需要改为分布式锁。
+_directory_state_write_lock = threading.RLock()
+
+
 def _update_directory_state(project_id: str, **kwargs: Any) -> dict[str, Any]:
-    project = _any_project_for_update(project_id)
-    state = update_directory_generation_state(project, **kwargs)
-    persist_workspace_project_state(project)
-    return state
+    with _directory_state_write_lock:
+        project = _any_project_for_update(project_id)
+        state = update_directory_generation_state(project, **kwargs)
+        persist_workspace_project_state(project)
+        return state
 
 
 def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    project = _any_project_for_update(project_id)
-    state = fail_directory_generation_state(project, message=message, tasks=tasks)
-    persist_workspace_project_state(project)
-    return state
+    with _directory_state_write_lock:
+        project = _any_project_for_update(project_id)
+        state = fail_directory_generation_state(project, message=message, tasks=tasks)
+        persist_workspace_project_state(project)
+        return state
 
 
 def _handle_directory_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
@@ -172,21 +182,24 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         return
 
     if stage == "outline_delta":
-        previous_parts = list((_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
-        meta = {key: value for key, value in meta.items() if key != "suppressPercentage"}
-        parts = list(meta.get("parts") or [])
-        first_delta = bool(parts) and not previous_parts
-        # 技术标并行章节路径由 decision_progress 驱动百分比；未标记的路径（商务标/串行）沿用流式锚点
-        suppress_percentage = bool((details or {}).get("suppressPercentage"))
-        _update_directory_state(
-            project_id,
-            percentage=None if suppress_percentage else (65 if first_delta else 70),
-            summary=None if suppress_percentage else "futurecode 正在执行目录生成和语义审核，请稍候。",
-            tasks=_directory_tasks("done", "running", "pending"),
-            event_message="futurecode 已返回 S2 流式片段。" if first_delta else None,
-            event_step="futurecode_delta",
-            opencode_output=meta,
-        )
+        # first_delta 由「读上一份 parts → 写新 parts」推导，读写必须在同一把锁内，
+        # 否则并行章节会各自读到空 parts，重复写入首片段事件。
+        with _directory_state_write_lock:
+            previous_parts = list((_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
+            meta = {key: value for key, value in meta.items() if key != "suppressPercentage"}
+            parts = list(meta.get("parts") or [])
+            first_delta = bool(parts) and not previous_parts
+            # 技术标并行章节路径由 decision_progress 驱动百分比；未标记的路径（商务标/串行）沿用流式锚点
+            suppress_percentage = bool((details or {}).get("suppressPercentage"))
+            _update_directory_state(
+                project_id,
+                percentage=None if suppress_percentage else (65 if first_delta else 70),
+                summary=None if suppress_percentage else "futurecode 正在执行目录生成和语义审核，请稍候。",
+                tasks=_directory_tasks("done", "running", "pending"),
+                event_message="futurecode 已返回 S2 流式片段。" if first_delta else None,
+                event_step="futurecode_delta",
+                opencode_output=meta,
+            )
         return
 
     if stage == "outline_fallback":

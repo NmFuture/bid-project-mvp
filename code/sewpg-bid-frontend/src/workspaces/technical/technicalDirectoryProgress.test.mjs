@@ -28,13 +28,14 @@ test('shows real decision counts as the running detail line', () => {
     tasks: runningTasks,
   })
 
-  assert.equal(summary.title, '智能生成目录')
-  assert.equal(summary.stepText, '第 2/3 步')
   assert.equal(summary.summary, '已判定目录条款 120/240 项')
   assert.equal(summary.statusText, '生成中')
   assert.equal(summary.tone, 'running')
+  // 阶段序号与阶段名不再对外暴露，避免页面重复展示状态
+  assert.equal(summary.title, undefined)
+  assert.equal(summary.stepText, undefined)
   assert.doesNotMatch(
-    `${summary.title}${summary.summary}${summary.steps.map((step) => step.label).join('')}`,
+    `${summary.summary}${summary.steps.map((step) => step.label).join('')}`,
     /futurecode|opencode|S2|Skill|session|provider|model/i,
   )
 })
@@ -75,10 +76,8 @@ test('falls back to phase copy when decision counts are unavailable', () => {
     ],
   })
 
-  assert.equal(preparing.title, '准备生成资料')
   assert.equal(preparing.summary, '正在整理招标文件与投标模板，为目录生成做准备。')
   assert.equal(generating.summary, '正在分析招标要求并组织目录结构，请稍候。')
-  assert.equal(saving.title, '保存目录结果')
   assert.equal(saving.summary, '目录结构已经生成，正在整理并保存结果。')
 })
 
@@ -246,15 +245,13 @@ test('summarizes completed and failed directory generation without internal term
     ],
   })
 
-  assert.equal(completed.title, '目录生成完成')
   assert.equal(completed.summary, '目录生成完成，可进入目录确认。')
   assert.equal(completed.statusText, '已完成')
   assert.equal(completed.tone, 'success')
-  assert.equal(failed.title, '目录生成失败（第 2/3 步：智能生成目录）')
   assert.equal(failed.summary, '目录生成未完成，请稍后重试；如仍失败请联系管理员。')
   assert.equal(failed.statusText, '生成失败')
   assert.equal(failed.tone, 'danger')
-  assert.doesNotMatch(`${failed.title}${failed.summary}`, /futurecode|opencode|S2|Skill/i)
+  assert.doesNotMatch(failed.summary, /futurecode|opencode|S2|Skill/i)
 })
 
 test('maps internal directory failures to actionable user-facing reasons', () => {
@@ -279,14 +276,17 @@ test('maps internal directory failures to actionable user-facing reasons', () =>
   assert.equal(resultFailure.summary, '目录结果处理失败，请重新生成；如仍失败请联系管理员。')
 })
 
-test('technical directory page keeps a single status badge, no step rail, and a total runtime line', () => {
+test('technical directory card renders only the detail line and the runtime line', () => {
   const pageSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
   const visibleStatusBindings = pageSource.match(/directoryProgressSummary\.statusText/g) || []
 
   assert.doesNotMatch(pageSource, /summarizeDirectorySource|directorySourceMeta|directoryStatusLabel/)
   assert.doesNotMatch(pageSource, /directoryProgressSummary\.steps\.map/)
   assert.doesNotMatch(pageSource, /estimateDirectoryDisplayPercentage/)
+  // 阶段序号与阶段标题不再渲染，卡片只剩「明细 + 耗时」两行
+  assert.doesNotMatch(pageSource, /directoryProgressSummary\.(title|stepText)/)
   assert.equal(visibleStatusBindings.length, 1)
+  assert.equal((pageSource.match(/directoryProgressSummary\.summary/g) || []).length, 1)
   assert.match(pageSource, /已运行/)
   assert.match(pageSource, /总耗时/)
 })

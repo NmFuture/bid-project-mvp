@@ -218,23 +218,22 @@ export const mergeMonotonicDirectoryProgress = (previous = null, incoming = null
   return merged
 }
 
+// 卡片只展示两行：summary 是主行（运行中即真实判定计数），耗时由页面拼在次行。
+// 阶段序号与阶段名不再对外展示——状态徽标已给出状态与百分比，重复标题只占位置。
 export const summarizeDirectoryProgress = (progress = {}) => {
   const status = normalizeStatus(progress?.status) || 'idle'
   const percentage = clampPercentage(progress?.percentage)
   const steps = buildSteps(progress, status, percentage)
   const stepIndex = activeStepIndex(steps)
-  const stepText = `第 ${stepIndex + 1}/${steps.length} 步`
 
   if (status === 'completed') {
     return {
       status,
       statusText: '已完成',
-      title: '目录生成完成',
       summary: visibleCompletedSummary(progress?.summary),
       percentage,
       tone: 'success',
       steps,
-      stepText: '',
     }
   }
 
@@ -242,12 +241,10 @@ export const summarizeDirectoryProgress = (progress = {}) => {
     return {
       status,
       statusText: '生成失败',
-      title: `目录生成失败（${stepText}：${steps[stepIndex].label}）`,
       summary: visibleFailureSummary(progress?.summary),
       percentage,
       tone: 'danger',
       steps,
-      stepText,
     }
   }
 
@@ -261,23 +258,19 @@ export const summarizeDirectoryProgress = (progress = {}) => {
     return {
       status,
       statusText: status === 'queued' ? '等待生成' : '生成中',
-      title: steps[stepIndex].label,
       summary: decisionDetailText(decisionProgress) || fallbackDetail,
       percentage,
       tone: 'running',
       steps,
-      stepText,
     }
   }
 
   return {
     status,
     statusText: '待生成',
-    title: '等待生成目录',
     summary: '准备完成后可开始生成目录。',
     percentage,
     tone: 'neutral',
     steps,
-    stepText: '',
   }
 }

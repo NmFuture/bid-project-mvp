@@ -482,14 +482,11 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
                       {isDirectoryFailed ? 'error' : isDirectoryCompleted ? 'check_circle' : 'progress_activity'}
                     </span>
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-on-surface">
-                        {directoryProgressSummary.tone === 'running' && directoryProgressSummary.stepText
-                          ? `${directoryProgressSummary.stepText} · ${directoryProgressSummary.title}`
-                          : directoryProgressSummary.title}
+                      <p className="text-sm font-semibold tabular-nums text-on-surface">
+                        {directoryProgressSummary.summary}
                       </p>
-                      <p className="mt-1 text-xs leading-5 text-outline">{directoryProgressSummary.summary}</p>
                       {elapsedLineText ? (
-                        <p className="mt-0.5 text-xs leading-5 tabular-nums text-on-surface-variant">{elapsedLineText}</p>
+                        <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedLineText}</p>
                       ) : null}
                     </div>
                   </div>

@@ -2436,6 +2436,64 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(state["decisionProgress"]["phase"], "appendix")
         self.assertIn("附表", state["summary"])
 
+    def test_concurrent_progress_updates_do_not_lose_events(self) -> None:
+        """并行章节会话同时上报时，目录 state 的读改写不能互相覆盖。
+
+        实测 PRJ-0002：6 个章节会话在同一秒上报「session 已建立」，events 只落了 1 条。
+        目录 state 的写是「读快照 → 改 → 整份回写」，接 postgres 时读还要走一次库往返；
+        这里在快照与回写之间注入等待，把那段真实窗口放大成确定性交错——去掉写锁本用例必失败。
+        """
+        import threading
+
+        import app.services.bid_outline_state as outline_state
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        session_count = 6
+        original_build_event = outline_state.build_directory_event
+        arrival_lock = threading.Lock()
+        arrived_count = [0]
+        all_arrived = threading.Event()
+
+        def delayed_build_event(*args: object, **kwargs: object) -> dict:
+            # 本调用点位于「已读快照、尚未回写」之间：无锁时 6 个线程会在此集合，
+            # 各自持有同一份旧快照，随后互相覆盖，只剩最后一次写入。
+            # 有锁时写被串行化，凑不齐并发线程，各自等待很短的超时后继续。
+            with arrival_lock:
+                arrived_count[0] += 1
+                if arrived_count[0] >= session_count:
+                    all_arrived.set()
+            all_arrived.wait(timeout=0.3)
+            return original_build_event(*args, **kwargs)
+
+        errors: list[BaseException] = []
+
+        def report_session(index: int) -> None:
+            try:
+                _handle_directory_progress(
+                    project_id,
+                    "outline_session_ready",
+                    {"sessionId": f"SESSION-{index}", "providerId": "opencode", "modelId": "big-pickle"},
+                )
+            except BaseException as exc:  # pragma: no cover - 只在回归时触发
+                errors.append(exc)
+
+        with patch.object(outline_state, "build_directory_event", delayed_build_event):
+            threads = [threading.Thread(target=report_session, args=(index,)) for index in range(session_count)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        state = self._directory_state_for_tests(project_id)
+        session_events = [
+            event for event in state["events"] if event.get("step") == "futurecode_session"
+        ]
+        self.assertEqual(len(session_events), session_count)
+
     def test_chapter_stream_delta_suppresses_percentage_anchor(self) -> None:
         from app.services.bid_directory_flow import _handle_directory_progress
 
