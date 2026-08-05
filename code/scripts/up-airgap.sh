@@ -8,6 +8,7 @@ if [[ -f "${SCRIPT_DIR}/docker-compose.yml" ]]; then
 else
   ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 fi
+source "${ROOT_DIR}/sewpg-bid-backend/onlyoffice/image-policy.sh"
 
 ENV_FILE="${1:-${ROOT_DIR}/.env}"
 ENABLE_OCR="${ENABLE_OCR:-false}"
@@ -32,4 +33,8 @@ if [[ "${ENABLE_OCR}" == "1" || "${ENABLE_OCR}" == "true" || "${ENABLE_OCR}" == 
   )
 fi
 
+EXPECTED_ONLYOFFICE_IMAGE="$(onlyoffice_image_from_env_template "${ROOT_DIR}/.env.airgap.example")"
+require_expected_onlyoffice_image \
+  "${ENV_FILE}" "${EXPECTED_ONLYOFFICE_IMAGE}" \
+  "copy ONLYOFFICE_IMAGE from ${ROOT_DIR}/.env.airgap.example" "${compose_args[@]}"
 docker compose "${compose_args[@]}" up -d --no-build

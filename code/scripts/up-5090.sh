@@ -8,6 +8,7 @@ if [[ -f "${SCRIPT_DIR}/docker-compose.yml" ]]; then
 else
   ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 fi
+source "${ROOT_DIR}/sewpg-bid-backend/onlyoffice/image-policy.sh"
 
 ENV_FILE="${1:-${ROOT_DIR}/.env}"
 ACTION="${2:-up}"
@@ -105,8 +106,8 @@ if [[ "${DEPLOY_MODE}" == "online" ]]; then
     echo "Current commit does not match origin/main; fetch and fast-forward main before deploying." >&2
     exit 1
   fi
-  if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no)" ]]; then
-    echo "Tracked files are modified; restore the approved main SHA before deploying." >&2
+  if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain)" ]]; then
+    echo "The worktree has tracked or untracked changes; restore the approved main SHA before deploying." >&2
     exit 1
   fi
 
@@ -116,7 +117,10 @@ if [[ "${DEPLOY_MODE}" == "online" ]]; then
   export FASTAPI_IMAGE="sewpg-bid/fastapi:${RELEASE_TAG}"
   export DOCLING_IMAGE="sewpg-bid/docling-worker:${RELEASE_TAG}"
   export OPENCODE_IMAGE="sewpg-bid/opencode:${RELEASE_TAG}"
-  export ONLYOFFICE_IMAGE="onlyoffice/documentserver:9.3.1.2"
+  export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:${RELEASE_TAG}-fontpack-v1"
+  export ONLYOFFICE_BASE_IMAGE="onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31"
+  export ONLYOFFICE_FONT_BUILDER_IMAGE="debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e"
+  export ONLYOFFICE_BUILD_REVISION="${CURRENT_SHA}"
 fi
 
 mkdir -p "${ROOT_DIR}/.localdata/ocr/huggingface"
@@ -144,8 +148,16 @@ if [[ "${DEPLOY_MODE}" == "offline" ]]; then
     -f "${ROOT_DIR}/docker-compose.ocr.airgap.yml"
     -f "${ROOT_DIR}/docker-compose.5090.yml"
   )
+  EXPECTED_ONLYOFFICE_IMAGE="$(onlyoffice_image_from_env_template "${ROOT_DIR}/.env.airgap.example")"
+  ONLYOFFICE_MIGRATION_INSTRUCTION="copy ONLYOFFICE_IMAGE from ${ROOT_DIR}/.env.airgap.example"
+else
+  EXPECTED_ONLYOFFICE_IMAGE="${ONLYOFFICE_IMAGE}"
+  ONLYOFFICE_MIGRATION_INSTRUCTION="ONLYOFFICE_IMAGE=${ONLYOFFICE_IMAGE}"
 fi
 
+require_expected_onlyoffice_image \
+  "${ENV_FILE}" "${EXPECTED_ONLYOFFICE_IMAGE}" \
+  "${ONLYOFFICE_MIGRATION_INSTRUCTION}" "${compose_args[@]}"
 docker compose "${compose_args[@]}" config --quiet
 docker compose "${compose_args[@]}" config --format json | python3 -c '
 import json
@@ -169,7 +181,7 @@ fi
 
 if [[ "${DEPLOY_MODE}" == "online" ]]; then
   echo "Deploying Git SHA: ${CURRENT_SHA} (${RELEASE_TAG})"
-  docker compose "${compose_args[@]}" pull onlyoffice postgres redis minio ocr
+  docker compose "${compose_args[@]}" pull postgres redis minio ocr
   build_args=()
   if [[ "${REFRESH_BASE_IMAGES:-0}" == "1" ]]; then
     # --pull 会重新拉取基础镜像；基础镜像一旦更新，其后所有层的缓存链整体作废，
@@ -179,7 +191,13 @@ if [[ "${DEPLOY_MODE}" == "online" ]]; then
     echo "REFRESH_BASE_IMAGES=1: pulling base images, expect a full rebuild."
     build_args+=(--pull)
   fi
-  docker compose "${compose_args[@]}" build "${build_args[@]}" web fastapi docling-worker opencode
+  configure_compose_build_compat_args
+  docker compose "${compose_args[@]}" build \
+    ${COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"} \
+    "${build_args[@]}" \
+    web fastapi docling-worker opencode onlyoffice
+  ONLYOFFICE_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${ONLYOFFICE_IMAGE}")"
+  echo "OnlyOffice image ID: ${ONLYOFFICE_IMAGE_ID}"
 fi
 
 docker compose "${compose_args[@]}" up -d --no-build

@@ -18,6 +18,8 @@ from typing import Any
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.shared import Inches, Pt
@@ -386,6 +388,12 @@ def setup_base_styles(doc: Document) -> None:
         style = doc.styles["Normal"]
         style.font.name = "宋体"
         style.font.size = Pt(10.5)
+        r_pr = style._element.get_or_add_rPr()
+        r_fonts = r_pr.find(qn("w:rFonts"))
+        if r_fonts is None:
+            r_fonts = OxmlElement("w:rFonts")
+            r_pr.insert(0, r_fonts)
+        r_fonts.set(qn("w:eastAsia"), "宋体")
     except Exception:
         pass
 
