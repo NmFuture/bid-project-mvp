@@ -564,6 +564,15 @@ async def force_save_technical_document(project_id: str, request: Request) -> di
     return await technical_document_service.force_save_document(project_id, request)
 
 
+@router.post("/api/technical/projects/{project_id}/document/technical-chat")
+async def technical_document_chat(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    return await technical_document_service.chat(project_id, data, user)
+
+
 @router.post("/api/technical/projects/{project_id}/document/technical-format")
 async def apply_technical_document_format(
     project_id: str,
