@@ -129,11 +129,50 @@ hook 级联动：仓库的 `.git/hooks/post-merge` / `post-checkout` 已接入�
 
 ## 验证建议
 
-- 后端相关改动优先在 `code/sewpg-bid-backend/` 下运行聚焦测试，再按风险扩大：
+### 后端测试跑在与 CI 对齐的环境里
+
+不要用系统 Python 或 conda 全局环境跑后端测试。全局环境的依赖与 `requirements.txt`
+不一致时会产生大量与改动无关的失败（实测缺一个 `aiosqlite` 就导致 10 个用例报
+`ModuleNotFoundError`），这些噪声会淹没真实问题，也会让「与基线对比」得出错误结论。
+
+首次准备与 CI 同版本的环境（Python 3.12，`.venv` 已在 `.gitignore` 中）：
 
 ```bash
-PYTHONPATH=. pytest <相关测试文件>
+cd code/sewpg-bid-backend
+uv venv --python 3.12 .venv
+uv pip install --python .venv -r requirements.txt pytest
 ```
+
+跑测试用与 CI 一致的命令与环境变量，三者缺一不可：
+
+```bash
+cd code/sewpg-bid-backend
+APP_STORE_BACKEND=memory \
+DATABASE_URL="postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform" \
+.venv/bin/python -m pytest -m "not integration" <相关测试文件>
+```
+
+- `-m "not integration"`：不加会连带跑需要 MinIO/Redis 的集成用例（CI 由独立
+  job 覆盖，本地缺服务必失败）。
+- `APP_STORE_BACKEND=memory`：CI 的 backend job 用内存后端。
+- `DATABASE_URL`：指向本地 Compose 已映射的 `localhost:5432`。
+
+集成用例按 CI 的 `backend-integration` job 单独跑，需先起依赖服务：
+
+```bash
+cd code && docker compose up -d --wait postgres minio redis opencode
+cd sewpg-bid-backend && BID_RUN_INTEGRATION=1 APP_STORE_BACKEND=postgres \
+  DATABASE_URL="postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform" \
+  MINIO_ENDPOINT="http://localhost:9000" MINIO_ROOT_USER=minioadmin \
+  MINIO_ROOT_PASSWORD=minioadmin REDIS_URL="redis://localhost:6379/0" \
+  .venv/bin/python -m pytest -m integration
+```
+
+判断改动是否引入新失败时，基线与当前分支必须用**同一个**上述环境跑**同一组**用例，
+比对失败集合而非失败总数；失败原因不同也算不同问题，不能只看用例名是否重合。
+CI 的结论优先于本地：本地红而 CI 绿时先怀疑本地环境，不要据此改代码或改断言。
+
+### 其他
 
 - 前端页面或路由改动至少做构建或页面冒烟。
 - Docker 或部署改动需要在 `code/` 下确认服务可启动，并验证健康检查。
