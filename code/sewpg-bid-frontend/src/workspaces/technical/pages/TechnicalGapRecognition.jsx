@@ -2221,7 +2221,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       return
     }
     if (busyAction) return
-    if (sourceMatrixMeta.imported && !window.confirm('重新上传会覆盖当前附表填写规则，并重新应用到当前附表任务。是否继续？')) {
+    if (sourceMatrixMeta.imported && !window.confirm('重新上传会以新文件完整覆盖当前附表填写规则；新文件未包含的旧规则及其推荐素材会被清除。是否继续？')) {
       return
     }
     setBusyAction('source-matrix-upload')
