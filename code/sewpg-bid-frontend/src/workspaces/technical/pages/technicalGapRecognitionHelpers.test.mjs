@@ -390,10 +390,10 @@ test('目录标签v6：空确认防御——没有素材实体证据时确认不
   )
 })
 
-test('目录标签v4：树状冻结——未忽略的活动祖先冻结整棵子树（由父章覆盖）', () => {
-  const chapter = { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
-  const mid = { id: 'C1', number: '3.1', candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
-  const leaf = { id: 'C2', number: '3.1.1', candidateMaterials: [{ id: 'M3', matchScore: 0.5 }] }
+test('目录标签v6：树状冻结——未忽略的活动祖先冻结整棵子树（父章覆盖）', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  const mid = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
+  const leaf = { id: 'C2', number: '3.1.1', level: 3, candidateMaterials: [{ id: 'M3', matchScore: 0.5 }] }
   const items = [chapter, mid, leaf]
 
   // 结构项与空骨架无标签。
@@ -404,18 +404,18 @@ test('目录标签v4：树状冻结——未忽略的活动祖先冻结整棵子
   assert.equal(technicalGapTagOf(mid, items), 'parent_covered')
   assert.equal(technicalGapTagOf(leaf, items), 'parent_covered')
   // 缺素材的父章同样冻结子级（决策①：红色也冻结，先补或忽略）。
-  const emptyChapter = { id: 'P2', number: '第4章', decision: 'material_required' }
-  const emptyChild = { id: 'C3', number: '4.1', candidateMaterials: [{ id: 'M4', matchScore: 0.7 }] }
+  const emptyChapter = { id: 'P2', number: '第4章', level: 1, decision: 'material_required' }
+  const emptyChild = { id: 'C3', number: '4.1', level: 2, candidateMaterials: [{ id: 'M4', matchScore: 0.7 }] }
   assert.equal(technicalGapTagOf(emptyChild, [emptyChapter, emptyChild]), 'parent_covered')
 })
 
-test('目录标签v4：忽略（仅保留标题）释放子级，逐级递归', () => {
-  const chapter = { id: 'P1', number: '第3章', titleOnly: true, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
-  const mid = { id: 'C1', number: '3.1', candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
-  const leaf = { id: 'C2', number: '3.1.1', candidateMaterials: [{ id: 'M3', matchScore: 0.99 }] }
+test('目录标签v6：忽略（仅留标题）释放子级，逐级递归', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, titleOnly: true, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  const mid = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
+  const leaf = { id: 'C2', number: '3.1.1', level: 3, candidateMaterials: [{ id: 'M3', matchScore: 0.99 }] }
   const items = [chapter, mid, leaf]
 
-  // 忽略的父章自己显示仅保留标题。
+  // 忽略的父章自己显示仅留标题。
   assert.equal(technicalGapTagOf(chapter, items), 'title_only')
   // 一级忽略后二级释放、按自身候选派生；二级活动继续冻结三级。
   assert.equal(technicalGapTagOf(mid, items), 'needs_choice')
@@ -426,33 +426,55 @@ test('目录标签v4：忽略（仅保留标题）释放子级，逐级递归', 
   assert.equal(technicalGapTagOf(midIgnored, itemsBothIgnored), 'title_only')
   assert.equal(technicalGapTagOf(leaf, itemsBothIgnored), 'material_ready')
   // 结构性祖先不冻结子级。
-  const structuralRoot = { id: 'P9', number: '第9章', usage: 'structural', decision: 'ready' }
-  const structuralChild = { id: 'C9', number: '9.1', candidateMaterials: [{ id: 'M9', matchScore: 0.6 }] }
+  const structuralRoot = { id: 'P9', number: '第9章', level: 1, usage: 'structural', decision: 'ready' }
+  const structuralChild = { id: 'C9', number: '9.1', level: 2, candidateMaterials: [{ id: 'M9', matchScore: 0.6 }] }
   assert.equal(technicalGapTagOf(structuralChild, [structuralRoot, structuralChild]), 'needs_choice')
 })
 
-test('目录标签v4：冻结子级继承冻结源素材（树派生优先于 coveredByParent 提示）', () => {
-  const chapter = { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1', name: '整章素材.docx', matchScore: 0.99 }] }
-  const leaf = { id: 'C1', number: '3.2', candidateMaterials: [] }
+test('目录标签v6：附表按 level 归入技术附表根，冻结/忽略同样适用（产品反馈 2026-08-04）', () => {
+  // 附表编号不成目录号链（附表A.1 的“父号”附表A 不存在），层级由顺序 + level 决定。
+  const appendixRoot = { id: 'R1', number: '附录', title: '技术附表', level: 1, appendixTasks: [{ id: 'APPX-0' }] }
+  const tableA = { id: 'A1', number: '附表A.1', level: 2, appendixTasks: [{ id: 'APPX-1' }] }
+  const tableB = { id: 'B1', number: '附表B.1.1', level: 2, appendixTasks: [{ id: 'APPX-2' }] }
+  const items = [appendixRoot, tableA, tableB]
+
+  assert.deepEqual(
+    technicalHelpers.technicalGapDescendants(appendixRoot, items).map((item) => item.id),
+    ['A1', 'B1'],
+  )
+  // 附录根活动（待填写）：附表子级冻结。
+  assert.equal(technicalGapTagOf(appendixRoot, items), 'template_ready')
+  assert.equal(technicalGapTagOf(tableA, items), 'parent_covered')
+  // 附录根被忽略：附表各自按空表任务派生（待填写）。
+  const rootIgnored = { ...appendixRoot, titleOnly: true }
+  const itemsIgnored = [rootIgnored, tableA, tableB]
+  assert.equal(technicalGapTagOf(rootIgnored, itemsIgnored), 'title_only')
+  assert.equal(technicalGapTagOf(tableA, itemsIgnored), 'template_ready')
+  assert.equal(technicalGapTagOf(tableB, itemsIgnored), 'template_ready')
+})
+
+test('目录标签v6：冻结子级继承冻结源素材（树派生优先于 coveredByParent 提示）', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1', name: '整章素材.docx', matchScore: 0.99 }] }
+  const leaf = { id: 'C1', number: '3.2', level: 2, candidateMaterials: [] }
   const match = technicalHelpers.matchedMaterialForItem(leaf, [chapter, leaf])
   assert.equal(match.inherited, true)
   assert.equal(match.material.id, 'M1')
   assert.equal(match.sourceItem.id, 'P1')
 })
 
-test('父章节覆盖：目录号归一化与后代识别', () => {
+test('父章节覆盖：目录号归一化与 level 后代识别', () => {
   assert.equal(technicalHelpers.technicalGapNumberKey('第3章'), '3')
   assert.equal(technicalHelpers.technicalGapNumberKey('第十二章'), '12')
   assert.equal(technicalHelpers.technicalGapNumberKey('5.8.2'), '5.8.2')
 
-  const chapter = { id: 'P1', number: '第3章' }
+  const chapter = { id: 'P1', number: '第3章', level: 1 }
   const items = [
     chapter,
-    { id: 'C1', number: '3.1' },
-    { id: 'C2', number: '3.1.1' },
-    { id: 'X1', number: '4.1' },
-    // 前缀相同但不是下级：30.1 不能被「3.」误吞。
-    { id: 'X2', number: '30.1' },
+    { id: 'C1', number: '3.1', level: 2 },
+    { id: 'C2', number: '3.1.1', level: 3 },
+    // 后代识别按顺序 + level：遇到同级或更高级即截断，第4章不被误吞。
+    { id: 'X1', number: '第4章', level: 1 },
+    { id: 'X2', number: '4.1', level: 2 },
   ]
   const descendants = technicalHelpers.technicalGapDescendants(chapter, items)
   assert.deepEqual(descendants.map((item) => item.id), ['C1', 'C2'])
@@ -460,8 +482,8 @@ test('父章节覆盖：目录号归一化与后代识别', () => {
 
 test('父章节覆盖：本节点没素材时不可设置，设置后可撤销', () => {
   const items = [
-    { id: 'P1', number: '第3章' },
-    { id: 'C1', number: '3.1' },
+    { id: 'P1', number: '第3章', level: 1 },
+    { id: 'C1', number: '3.1', level: 2 },
   ]
   const empty = technicalHelpers.technicalGapParentCoverageState(items[0], items)
   assert.equal(empty.descendantCount, 1)
@@ -469,18 +491,18 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
   assert.equal(empty.canApply, false)
 
   const withMaterial = [
-    { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1' }] },
-    { id: 'C1', number: '3.1' },
+    { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1' }] },
+    { id: 'C1', number: '3.1', level: 2 },
   ]
   const ready = technicalHelpers.technicalGapParentCoverageState(withMaterial[0], withMaterial)
   assert.equal(ready.canApply, true)
   assert.equal(ready.applied, false)
 
   const applied = [
-    { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1' }] },
-    { id: 'C1', number: '3.1', coveredByParent: 'P1', parentCoverageSource: 'manual' },
+    { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1' }] },
+    { id: 'C1', number: '3.1', level: 2, coveredByParent: 'P1', parentCoverageSource: 'manual' },
     // planner 自动判定的覆盖不计入人工态，不由这个按钮撤销。
-    { id: 'C2', number: '3.2', coveredByParent: 'P1' },
+    { id: 'C2', number: '3.2', level: 2, coveredByParent: 'P1' },
   ]
   const state = technicalHelpers.technicalGapParentCoverageState(applied[0], applied)
   assert.equal(state.applied, true)

@@ -229,20 +229,19 @@ export const technicalGapOwnTag = (item) => {
   return 'manual_supplement'
 }
 
-// 目录号祖先链：3.2.1 → [3.2 的条目, 第3章 的条目]，最近的祖先在前。
+// 祖先链：3.2.1 → [3.2, 第3章]、附表A.1 → [技术附表根]，最近的祖先在前（level 栈回溯）。
 export const technicalGapAncestorItems = (item, allItems = []) => {
-  const key = technicalGapNumberKey(item?.number)
-  if (!key || !key.includes('.')) return []
-  const byKey = new Map()
-  asObjectArray(allItems).forEach((entry) => {
-    const entryKey = technicalGapNumberKey(entry?.number)
-    if (entryKey && !byKey.has(entryKey)) byKey.set(entryKey, entry)
-  })
-  const segments = key.split('.')
+  const list = asObjectArray(allItems)
+  const index = technicalGapItemIndex(item, list)
+  if (index < 0) return []
   const ancestors = []
-  for (let cut = segments.length - 1; cut >= 1; cut -= 1) {
-    const ancestor = byKey.get(segments.slice(0, cut).join('.'))
-    if (ancestor && ancestor !== item) ancestors.push(ancestor)
+  let level = technicalGapItemLevel(list[index])
+  for (let cursor = index - 1; cursor >= 0 && level > 1; cursor -= 1) {
+    const entryLevel = technicalGapItemLevel(list[cursor])
+    if (entryLevel < level) {
+      ancestors.push(list[cursor])
+      level = entryLevel
+    }
   }
   return ancestors
 }
@@ -288,13 +287,31 @@ export const technicalGapNumberKey = (number) => {
   return text
 }
 
+// —— 目录树父子关系（2026-08-04 v6.1）：按计划顺序 + level 栈推导 ——
+// TOC 的顺序与层级本来就定义了树；目录号前缀链（3.1→第3章）只是它的特例。
+// 附表（附表A.1 等编号不成链）同样归入最近的上级（附录/技术附表根）。
+const technicalGapItemIndex = (item, allItems) => {
+  const list = asObjectArray(allItems)
+  const id = String(item?.id || '')
+  return list.findIndex((entry) => entry === item || (id && String(entry?.id || '') === id))
+}
+
+const technicalGapItemLevel = (item) => {
+  const level = Number(item?.level)
+  return Number.isFinite(level) && level > 0 ? level : 1
+}
+
 export const technicalGapDescendants = (item, allItems = []) => {
-  const parentKey = technicalGapNumberKey(item?.number)
-  if (!parentKey) return []
-  const prefix = `${parentKey}.`
-  return asObjectArray(allItems).filter(
-    (entry) => entry !== item && technicalGapNumberKey(entry?.number).startsWith(prefix),
-  )
+  const list = asObjectArray(allItems)
+  const index = technicalGapItemIndex(item, list)
+  if (index < 0) return []
+  const level = technicalGapItemLevel(list[index])
+  const descendants = []
+  for (let cursor = index + 1; cursor < list.length; cursor += 1) {
+    if (technicalGapItemLevel(list[cursor]) <= level) break
+    descendants.push(list[cursor])
+  }
+  return descendants
 }
 
 export const technicalGapParentCoverageState = (item, allItems = []) => {

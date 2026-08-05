@@ -18,6 +18,7 @@ import {
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
+  isStructuralItem,
   latestResolvedArtifact,
   matchedMaterialForItem,
   previewChoicesForItem,
@@ -26,7 +27,6 @@ import {
   TECHNICAL_GAP_TAG_CONFIG,
   technicalGenerationPresentation,
   technicalGapDescendants,
-  technicalGapNumberKey,
   technicalGapTagOf,
   technicalMatchScore,
   uniqueStrings,
@@ -113,13 +113,20 @@ const artifactSourceLabels = {
 }
 
 // 目录列表里的标签：三字工作态 / 四字旁路态（命名 v6，产品裁决 2026-08-04），hover 出提示。
+// 结构章（planner 判定的纯骨架章，如「标前概述」）天生等同忽略：显示同款「仅留标题」，
+// tip 注明来源，消除"第1章为什么没标签还放开了子级"的困惑（产品反馈 2026-08-04）。
 function TechnicalTocActionBadge({ item, items }) {
   const tag = technicalGapTagOf(item, items)
-  const config = TECHNICAL_GAP_TAG_CONFIG[tag]
-  // 结构项/空章节无标签（产品意见 2026-07-17：删除「空章节」等冗余提示）。
+  let config = TECHNICAL_GAP_TAG_CONFIG[tag]
+  let tip = config?.tip
+  if (!config && isStructuralItem(item) && technicalGapDescendants(item, items).length) {
+    config = TECHNICAL_GAP_TAG_CONFIG.title_only
+    tip = '结构章：本级只是标题骨架，内容由下级承接（系统判定，无需忽略）'
+  }
+  // 其余无标签项（空骨架叶子）保持无提示（产品意见 2026-07-17：删除「空章节」等冗余提示）。
   if (!config) return null
   return (
-    <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant} title={config.tip}>
+    <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant} title={tip}>
       {config.label}
     </Badge>
   )
@@ -136,7 +143,8 @@ function TechnicalGapActionControls({ item, items, busy, onConfirmReady, onRevie
   const tag = technicalGapTagOf(item, items)
   if (tag === 'parent_covered') return null
   const ignored = tag === 'title_only'
-  const hasChildren = technicalGapDescendants(item, items).length > 0
+  // 结构章天生骨架，无自身匹配可忽略；忽略按钮只给「有自身匹配的带下级节点」。
+  const hasChildren = !isStructuralItem(item) && technicalGapDescendants(item, items).length > 0
   const ignoreButton = hasChildren ? (
     <Button
       type="button"
@@ -1262,34 +1270,38 @@ export default function TechnicalGapRecognition({ showToast }) {
   const filteredItems = useMemo(() => (
     tagFilter ? items.filter((item) => technicalGapTagOf(item, items) === tagFilter) : items
   ), [items, tagFilter])
-  // 目录树（产品裁决 2026-08-04）：按目录号构建可折叠树，默认只展开一级章；
+  // 目录树（产品裁决 2026-08-04，v6.1 改 level 栈）：按计划顺序 + level 字段构建可折叠树，
+  // 附表（编号不成链）同样归入「技术附表」根；默认只展开一级章；
   // 筛选态退化为平铺命中列表（跨层级命中在树里会被折叠遮住）。
   const treeRows = useMemo(() => {
     if (tagFilter) {
       return filteredItems.map((item) => ({
         item,
-        key: technicalGapNumberKey(item?.number),
+        key: String(item?.id || ''),
         depth: 0,
         hasChildren: false,
         expanded: false,
       }))
     }
-    const keys = new Set(items.map((item) => technicalGapNumberKey(item?.number)).filter(Boolean))
     const childrenMap = new Map()
     const roots = []
+    const stack = []
     items.forEach((item) => {
-      const key = technicalGapNumberKey(item?.number)
-      const parentKey = key && key.includes('.') ? key.slice(0, key.lastIndexOf('.')) : ''
-      if (parentKey && keys.has(parentKey)) {
-        if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, [])
-        childrenMap.get(parentKey).push(item)
+      const level = Number(item?.level) > 0 ? Number(item.level) : 1
+      while (stack.length && stack[stack.length - 1].level >= level) stack.pop()
+      const parent = stack[stack.length - 1]?.item
+      if (parent) {
+        const parentId = String(parent.id || '')
+        if (!childrenMap.has(parentId)) childrenMap.set(parentId, [])
+        childrenMap.get(parentId).push(item)
       } else {
         roots.push(item)
       }
+      stack.push({ item, level })
     })
     const rows = []
     const walk = (item, depth) => {
-      const key = technicalGapNumberKey(item?.number)
+      const key = String(item?.id || '')
       const children = childrenMap.get(key) || []
       const expanded = expandedTocKeys.has(key)
       rows.push({ item, key, depth, hasChildren: children.length > 0, expanded })
@@ -1307,6 +1319,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   )
   const summary = useMemo(() => data?.gapPlan?.summary || data?.summary || {}, [data])
   const isCompleted = data?.status === 'completed'
+  // 当前选中项的派生态：冻结项操作全禁用（只读查看），定案项备选区默认收起。
+  const selectedTag = selected ? technicalGapTagOf(selected, items) : ''
+  const frozenSelected = selectedTag === 'parent_covered' || selectedTag === 'title_only'
+  const settledSelected = ['material_ready', 'template_ready', 'template_review'].includes(selectedTag)
   const readableScopes = useMemo(
     () => (Array.isArray(materialScope?.readableScopes) ? materialScope.readableScopes : []),
     [materialScope],
@@ -1452,8 +1468,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   // - 素材类候选（含「待填写-」模板与启发式匹配）一律先进备选池（预览 + 选择），
   //   点「选择」后进入本章合并清单；
   // - 仅文件名精确命中（0.99 后端定案）或父级覆盖的素材仍默认展示为已选中。
-  const topBlankEntries = fillBlankEntries.filter((entry) => !entry.isMaterialBlank)
-  const poolBlankEntries = fillBlankEntries.filter((entry) => entry.isMaterialBlank)
+  // 解析空副表天然常驻已选区；素材类模板空白在「定案后」（待填写/待审核）也提升到已选区
+  // ——否则定案项的备选池收起后，用户看不到定的是哪份模板（产品反馈 2026-08-04）。
+  const topBlankEntries = fillBlankEntries.filter((entry) => !entry.isMaterialBlank || settledSelected)
+  const poolBlankEntries = fillBlankEntries.filter((entry) => entry.isMaterialBlank && !settledSelected)
   const defaultSelection = (() => {
     if (!selectedMaterialMatch?.material) return null
     if (
@@ -1512,10 +1530,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     })
     return counts
   }, [items])
-  // 当前选中项的派生态：冻结项操作全禁用（只读查看），定案项备选区默认收起。
-  const selectedTag = selected ? technicalGapTagOf(selected, items) : ''
-  const frozenSelected = selectedTag === 'parent_covered' || selectedTag === 'title_only'
-  const settledSelected = ['material_ready', 'template_ready', 'template_review'].includes(selectedTag)
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -1816,9 +1830,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 目录节点「忽略」/取消（产品裁决 2026-08-04）：本级仅保留标题，子级释放各自匹配；
   // 忽略时自动展开子级，让下一层立即可处理。
   const handleSetTitleOnly = (item, enabled) => {
-    if (enabled) {
-      const key = technicalGapNumberKey(item?.number)
-      if (key) setExpandedTocKeys((prev) => new Set(prev).add(key))
+    if (enabled && item?.id) {
+      setExpandedTocKeys((prev) => new Set(prev).add(String(item.id)))
     }
     return runAction(
       `title-only:${item.id}`,
