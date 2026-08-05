@@ -1134,7 +1134,8 @@ class TocSkillScriptTests(unittest.TestCase):
         commands = (
             "prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|"
             "review-batch|decision-next|decision-batch|decision-reopen|review-corrections|"
-            "appendix-next|appendix-decision-batch|review-complete|decisions|compose|"
+            "appendix-next|appendix-decision-batch|appendix-predecision-next|"
+            "appendix-predecision-batch|review-complete|decisions|compose|"
             "validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
@@ -3657,6 +3658,122 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertTrue(done["complete"])
         self.assertEqual(done["decidedCount"], 1)
         self.assertEqual(done["remainingCount"], 0)
+
+    def test_bid_outline_appendix_predecision_materializes_after_template_merge(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix B.1",
+                "title": "Guaranteed data sheet",
+                "raw_text": "Appendix B.1 Guaranteed data sheet",
+                "following_table_count": 1,
+                "source_status": "present",
+            },
+            {
+                "appendix_id": "APP-0002",
+                "file_id": "TEN-1",
+                "number": "Appendix B.2",
+                "title": "Instructions only",
+                "raw_text": "Appendix B.2 Instructions only",
+                "following_table_count": 0,
+                "source_status": "missing",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_dir = root / "main"
+            predecision_dir = root / "appendix"
+            main_dir.mkdir()
+            predecision_dir.mkdir()
+
+            batch = decision_workflow.next_appendix_predecision_batch(
+                predecision_dir,
+                structure,
+                inventory,
+            )
+            self.assertEqual(
+                batch["submission_contract"]["include_fields"],
+                ["appendix_id", "decision", "reason"],
+            )
+            decision_workflow.submit_appendix_predecision_batch(
+                predecision_dir,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "reason": "Tender requires the completed data sheet.",
+                        },
+                        {
+                            "appendix_id": "APP-0002",
+                            "decision": "exclude",
+                            "reason": "No independent table is present.",
+                        },
+                    ],
+                },
+                inventory,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "模板逐项判断"):
+                decision_workflow.materialize_appendix_predecisions(
+                    main_dir,
+                    predecision_dir,
+                    structure,
+                    inventory,
+                )
+
+            template = decision_workflow.next_decision_batch(main_dir, structure)
+            decision_workflow.submit_decision_batch(
+                main_dir,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                            "reason": "Historical structure remains applicable.",
+                        }
+                    ],
+                    "additions": [],
+                },
+            )
+            result = decision_workflow.materialize_appendix_predecisions(
+                main_dir,
+                predecision_dir,
+                structure,
+                inventory,
+            )
+            state = json_load(main_dir / "outline_decision_state.json")
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["included_count"], 1)
+        self.assertEqual(result["excluded_count"], 1)
+        self.assertEqual(
+            state["appendix_decisions"]["APP-0001"]["decision"], "include"
+        )
+        self.assertEqual(
+            state["appendix_decisions"]["APP-0002"]["decision"], "exclude"
+        )
+        appendix_roots = [
+            item
+            for item in state["additions"]
+            if item.get("parent_id") is None and item.get("title") == "技术附表"
+        ]
+        self.assertEqual(len(appendix_roots), 1)
+        self.assertEqual(
+            [item["parent_id"] for item in state["additions"] if item.get("parent_id")],
+            [appendix_roots[0]["node_id"]],
+        )
 
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
         decision_workflow = load_outline_script("run_from_manifest").decision_workflow

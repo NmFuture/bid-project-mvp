@@ -1042,22 +1042,37 @@ class DirectoryGenerationTests(unittest.TestCase):
                         )
                     ],
                 )
-            return ["ses-chapter-1"]
+            return {
+                "chapterSessionIds": ["ses-chapter-1"],
+                "appendixPredecided": True,
+                "appendixResult": {
+                    "sessionId": "ses-appendix-1",
+                    "opencodeOutput": {"sessionId": "ses-appendix-1"},
+                },
+            }
 
         with patch(
             "app.services.outline_generation._run_parallel_outline_chapters",
             side_effect=fake_parallel_chapters,
         ), patch(
+            "app.services.outline_generation._run_outline_appendix_session",
+        ) as mock_appendix, patch(
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
         ) as mock_generate:
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
         # 快路径：不再启动串行 LLM 收口会话（含全局复核），由后端直跑受控收口
         mock_generate.assert_not_called()
+        mock_appendix.assert_not_called()
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["output"]["chapterCount"], 2)
-        self.assertEqual(payload["opencodeOutput"]["sessionIds"], ["ses-chapter-1"])
+        self.assertEqual(
+            payload["opencodeOutput"]["sessionIds"],
+            ["ses-chapter-1", "ses-appendix-1"],
+        )
         self.assertEqual(payload["opencodeOutput"]["chapterSessionCount"], 1)
+        self.assertEqual(payload["opencodeOutput"]["parallelAppendixSessionCount"], 1)
+        self.assertEqual(payload["opencodeOutput"]["parallelDecisionWorkers"], 2)
 
     def test_technical_outline_chapter_prompt_explains_sparse_chapter_mode(self) -> None:
         from app.services.outline_generation import _build_outline_chapter_prompt
@@ -1189,7 +1204,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ],
             )
 
-    def test_parallel_outline_chapters_use_one_model_config_and_six_workers(self) -> None:
+    def test_parallel_outline_chapters_include_appendix_as_seventh_worker(self) -> None:
         self.parallel_outline_patcher.stop()
         from app.services.outline_generation import (
             _TECH_OUTLINE_REQUEST_SLOTS,
@@ -1230,6 +1245,22 @@ class DirectoryGenerationTests(unittest.TestCase):
         runner.decision_workflow.chapter_decision_progress.return_value = {
             "complete": True
         }
+        runner.review_workflow.decision_appendix_items.return_value = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "附表A.1",
+                "title": "技术参数表",
+                "raw_text": "附表A.1 技术参数表",
+                "following_table_count": 1,
+                "source_status": "present",
+            }
+        ]
+        runner.decision_workflow.appendix_decision_progress.return_value = {
+            "complete": True,
+            "decidedCount": 1,
+            "remainingCount": 0,
+        }
         worker_counts: list[int] = []
 
         def recording_executor(*, max_workers: int) -> RealThreadPoolExecutor:
@@ -1260,17 +1291,21 @@ class DirectoryGenerationTests(unittest.TestCase):
             patch("app.services.outline_generation.OpencodeClient") as client_class,
         ):
             client_class.return_value.run_outline_decision_session.side_effect = [
-                {"sessionId": f"ses-{index}"} for index in range(1, 7)
+                {"sessionId": f"ses-{index}", "opencodeOutput": {}}
+                for index in range(1, 8)
             ]
-            session_ids = _run_parallel_outline_chapters(manifest_path, {})
+            result = _run_parallel_outline_chapters(manifest_path, {})
 
         load_config.assert_called_once_with()
-        self.assertEqual(worker_counts, [6])
-        self.assertEqual(len(session_ids), 6)
-        self.assertEqual(client_class.call_count, 6)
+        self.assertEqual(worker_counts, [7])
+        self.assertEqual(len(result["chapterSessionIds"]), 6)
+        self.assertTrue(result["appendixPredecided"])
+        self.assertTrue(result["appendixResult"]["sessionId"])
+        self.assertEqual(client_class.call_count, 7)
         for call in client_class.call_args_list:
             self.assertIs(call.kwargs["model_config"], model_config)
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
+        runner.decision_workflow.materialize_appendix_predecisions.assert_called_once()
 
     def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
         from app.services.outline_generation import (

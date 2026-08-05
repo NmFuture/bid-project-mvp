@@ -939,6 +939,82 @@ def next_appendix_batch(
     }
 
 
+def next_appendix_predecision_batch(
+    work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    max_items: int = 40,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """在独立工作区发放附表语义预判批次，不依赖正文决策。"""
+    if max_items < 1 or max_items > 40:
+        raise SystemExit("appendix-predecision-next max_items must be between 1 and 40")
+    annotated, _ = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    by_id = {str(item["appendix_id"]): item for item in inventory}
+    decisions = state.get("appendix_decisions") or {}
+    unknown_decisions = set(decisions) - set(by_id)
+    if unknown_decisions:
+        raise SystemExit(
+            "appendix predecision state contains unknown appendix_id: "
+            + ", ".join(sorted(unknown_decisions)[:20])
+        )
+    active = state.get("active_appendix_batch") or {}
+    active_ids = list(active.get("appendix_ids") or [])
+    submission_contract = {
+        "items_must_match_batch": True,
+        "items_must_keep_returned_order": True,
+        "include_fields": ["appendix_id", "decision", "reason"],
+        "exclude_fields": ["appendix_id", "decision", "reason"],
+        "reason_required": "include 与 exclude 都必须提交 reason",
+        "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
+    }
+    if active_ids:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "batch_token": str(active.get("token") or ""),
+            "items": _appendix_items_for_response([by_id[item_id] for item_id in active_ids]),
+            "submission_contract": submission_contract,
+            "decided_count": len(decisions),
+            "remaining_count": len(inventory) - len(decisions),
+            "complete": False,
+        }
+    pending = [item for item in inventory if item["appendix_id"] not in decisions]
+    if not pending:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "batch_token": "",
+            "items": [],
+            "decided_count": len(decisions),
+            "remaining_count": 0,
+            "complete": True,
+        }
+    selected = pending[:max_items]
+    appendix_ids = [str(item["appendix_id"]) for item in selected]
+    token = _appendix_batch_token(
+        fingerprint, inventory_digest, appendix_ids, workflow_binding
+    )
+    state["appendix_inventory_digest"] = inventory_digest
+    state["active_appendix_batch"] = {
+        "token": token,
+        "appendix_ids": appendix_ids,
+    }
+    _write_json(_state_path(work_dir), state)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "batch_token": token,
+        "items": _appendix_items_for_response(selected),
+        "submission_contract": submission_contract,
+        "decided_count": len(decisions),
+        "remaining_count": len(inventory) - len(decisions),
+        "complete": False,
+    }
+
+
 def _required_json_string(value: Any, field_path: str) -> str:
     if value is None:
         raise SystemExit(f"{field_path} is required")
@@ -1244,6 +1320,210 @@ def submit_appendix_batch(
         "remaining_count": len(inventory) - len(decisions),
         "addition_count": len(state.get("additions") or []),
         "complete": len(decisions) == len(inventory),
+    }
+
+
+def submit_appendix_predecision_batch(
+    work_dir: Path,
+    structure: dict[str, Any],
+    payload: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """只保存 include/exclude 语义判断，不生成节点或执行 composition。"""
+    annotated, _ = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    active = state.get("active_appendix_batch") or {}
+    expected_ids = list(active.get("appendix_ids") or [])
+    token = str(payload.get("batch_token") or "")
+    if not expected_ids or token != str(active.get("token") or ""):
+        raise SystemExit(
+            "appendix-predecision-batch must use the current appendix-predecision-next batch_token"
+        )
+    if token != _appendix_batch_token(
+        fingerprint, inventory_digest, expected_ids, workflow_binding
+    ):
+        raise SystemExit("appendix-predecision-batch batch_token binding is invalid")
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise SystemExit("appendix-predecision-batch items must be a list")
+    actual_ids = [
+        str(item.get("appendix_id") or "")
+        for item in raw_items
+        if isinstance(item, dict)
+    ]
+    if actual_ids != expected_ids or len(raw_items) != len(expected_ids):
+        raise SystemExit(
+            "appendix-predecision-batch items must exactly match the current batch"
+        )
+    inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
+    normalized: list[dict[str, str]] = []
+    for index, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}] must be an object"
+            )
+        if set(raw_item) != {"appendix_id", "decision", "reason"}:
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}] has unsupported fields"
+            )
+        appendix_id = _required_json_string(
+            raw_item.get("appendix_id"),
+            f"appendix-predecision-batch items[{index}].appendix_id",
+        )
+        decision = _required_json_string(
+            raw_item.get("decision"),
+            f"appendix-predecision-batch items[{index}].decision",
+        )
+        reason = _required_json_string(
+            raw_item.get("reason"),
+            f"appendix-predecision-batch items[{index}].reason",
+        )
+        if decision not in {"include", "exclude"}:
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}].decision must be include or exclude"
+            )
+        if (
+            decision == "include"
+            and str(inventory_by_id[appendix_id].get("source_status") or "")
+            == "missing"
+        ):
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}] source_status=missing must be exclude"
+            )
+        normalized.append(
+            {"appendix_id": appendix_id, "decision": decision, "reason": reason}
+        )
+    decisions = state.setdefault("appendix_decisions", {})
+    for item in normalized:
+        decisions[item["appendix_id"]] = item
+    state["active_appendix_batch"] = _empty_active_appendix_batch()
+    _invalidate_global_review(state)
+    _write_json(_state_path(work_dir), state)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "decided_count": len(decisions),
+        "remaining_count": len(inventory) - len(decisions),
+        "complete": len(decisions) == len(inventory),
+    }
+
+
+def _available_addition_id(base: str, occupied: set[str]) -> str:
+    candidate = base
+    suffix = 2
+    while candidate in occupied:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    occupied.add(candidate)
+    return candidate
+
+
+def materialize_appendix_predecisions(
+    work_dir: Path,
+    predecision_work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """正文合并后，将隔离的附表预判转换为受控目录节点。"""
+    annotated, template_items = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    _require_template_decisions_complete(state, template_items)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    predecision_state = _load_state(
+        predecision_work_dir,
+        fingerprint,
+        workflow_binding,
+    )
+    _reject_changed_appendix_inventory(predecision_state, inventory_digest)
+    expected_ids = [str(item["appendix_id"]) for item in inventory]
+    predecisions = predecision_state.get("appendix_decisions") or {}
+    if set(predecisions) != set(expected_ids):
+        raise SystemExit("appendix predecisions are incomplete")
+    if (predecision_state.get("active_appendix_batch") or {}).get("appendix_ids"):
+        raise SystemExit("appendix predecision batch is still active")
+
+    while True:
+        batch = next_appendix_batch(
+            work_dir,
+            structure,
+            appendix_items,
+            workflow_binding=workflow_binding,
+        )
+        if batch["complete"]:
+            break
+        current_state = _load_state(work_dir, fingerprint, workflow_binding)
+        additions = current_state.get("additions") or []
+        occupied = {
+            str(item.get("template_id") or "")
+            for item in annotated.get("items") or []
+            if isinstance(item, dict)
+        }
+        occupied.update(
+            str(item.get("node_id") or "")
+            for item in additions
+            if isinstance(item, dict)
+        )
+        roots = [
+            item
+            for item in additions
+            if isinstance(item, dict)
+            and str(item.get("operation") or "") == "add"
+            and item.get("parent_id") is None
+            and str(item.get("title") or "") == "技术附表"
+        ]
+        root_id = str(roots[0].get("node_id") or "") if len(roots) == 1 else ""
+        payload_items: list[dict[str, str]] = []
+        has_include = False
+        for appendix in batch["items"]:
+            appendix_id = str(appendix["appendix_id"])
+            semantic = predecisions[appendix_id]
+            item = {
+                "appendix_id": appendix_id,
+                "decision": str(semantic["decision"]),
+                "reason": str(semantic["reason"]),
+            }
+            if item["decision"] == "include":
+                has_include = True
+                if not root_id:
+                    root_id = _available_addition_id("ADD-TECH-APPENDIX", occupied)
+                item["node_id"] = _available_addition_id(
+                    "ADD-" + appendix_id,
+                    occupied,
+                )
+                item["parent_id"] = root_id
+            payload_items.append(item)
+        payload: dict[str, Any] = {
+            "batch_token": batch["batch_token"],
+            "items": payload_items,
+        }
+        if has_include and not roots:
+            payload["root_addition"] = {
+                "node_id": root_id,
+                "reason": "招标文件包含需要独立填写的技术附表。",
+            }
+        submit_appendix_batch(
+            work_dir,
+            structure,
+            payload,
+            appendix_items,
+            workflow_binding=workflow_binding,
+        )
+
+    included_count = sum(
+        1 for item in predecisions.values() if item.get("decision") == "include"
+    )
+    return {
+        "schema_version": STATE_SCHEMA,
+        "included_count": included_count,
+        "excluded_count": len(predecisions) - included_count,
+        "complete": True,
     }
 
 

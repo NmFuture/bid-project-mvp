@@ -108,6 +108,8 @@ s2outline appendix-decision-batch <manifest> '<batch-json>'
 按 `appendix-next.items` 原样逐项决策并严格保持返回顺序，不得重排、遗漏。每个候选只选 `include` 或 `exclude`，且两者都必须提交 `reason`：`source_status=missing` 必须 `exclude`（即 `missing`）；只有 `source_status=present`（即 `present`）才自主判断。附表只覆盖表格填写，不当然覆盖正文方案、说明、报告或承诺。首次 include 且没有唯一"技术附表"根时提交 `root_addition`，只写合同要求的 `node_id` 和 `reason`；根节点格式、表号和标题由程序生成或复制，不要改写。根节点一旦建立，后续批次不得再提交 `root_addition`，include 直接引用已有根的 `node_id` 作为 `parent_id`。
 严格按 `appendix-next.submission_contract` 使用 include、exclude 和 `root_addition` 各自允许的字段，不要根据报错猜 JSON 结构。
 
+当后端明确标记为“附表并行预判会话”时，改用 `appendix-predecision-next` 和 `appendix-predecision-batch`。此模式只提交 `appendix_id + decision + reason`，不提交 `node_id`、`parent_id` 或 `root_addition`；正文合并后由后端生成节点并执行正式 composition 校验。
+
 ## 5. 全局查漏
 
 全部章节和附表完成后，只做一次全局复核。此时使用 `headings --review` 从 cursor 0 开始按 `next_cursor` 重新分页读取完整招标目录；`--review` 只提供复核视图，不重置首次阅读状态：

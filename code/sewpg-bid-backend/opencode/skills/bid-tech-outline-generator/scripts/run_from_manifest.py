@@ -42,6 +42,8 @@ AGENTIC_COMMANDS = {
     "review-corrections",
     "appendix-next",
     "appendix-decision-batch",
+    "appendix-predecision-next",
+    "appendix-predecision-batch",
     "review-complete",
     "decisions",
     "compose",
@@ -50,7 +52,15 @@ AGENTIC_COMMANDS = {
     "finalize",
 }
 NAVIGATION_COMMANDS = frozenset(
-    {"template-headings", "headings", "search", "section", "decision-next", "appendix-next"}
+    {
+        "template-headings",
+        "headings",
+        "search",
+        "section",
+        "decision-next",
+        "appendix-next",
+        "appendix-predecision-next",
+    }
 )
 # opencode 对工具输出按字符截断（上限 51200）；预算必须按字符计量，
 # 字节计量会把中文预算压到约 1/3，长节被切成多页、逐页触发模型深思考。
@@ -62,6 +72,7 @@ NAVIGATION_RETRY_HINTS = {
     "section": "请减小 --max-chars，并使用同一 --cursor 重试",
     "decision-next": "请精简模板章节标题后重试",
     "appendix-next": "请减小 --max-items 后重试",
+    "appendix-predecision-next": "请减小 --max-items 后重试",
 }
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 NODE_KEYS = {
@@ -100,7 +111,7 @@ class NavigationOutputBudgetError(SystemExit):
 def _navigation_state_paths(command: str, work_dir: Path) -> tuple[Path, ...]:
     if command == "headings":
         return (work_dir / "tender_headings_state.json",)
-    if command in {"decision-next", "appendix-next"}:
+    if command in {"decision-next", "appendix-next", "appendix-predecision-next"}:
         return (work_dir / decision_workflow.STATE_FILE_NAME,)
     return ()
 
@@ -176,7 +187,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|review-complete|decisions|compose|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|appendix-predecision-next|appendix-predecision-batch|review-complete|decisions|compose|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -400,6 +411,8 @@ def dispatch_command(
         "review-corrections",
         "appendix-next",
         "appendix-decision-batch",
+        "appendix-predecision-next",
+        "appendix-predecision-batch",
         "review-complete",
         "decisions",
     }:
@@ -415,6 +428,47 @@ def dispatch_command(
             "templateStructureFile",
         )
         appendix_items = review_workflow.decision_appendix_items(work_dir)
+        if command == "appendix-predecision-next":
+            if command_args and (
+                len(command_args) != 2 or command_args[0] != "--max-items"
+            ):
+                raise SystemExit(
+                    "appendix-predecision-next usage: appendix-predecision-next <manifest> [--max-items 40]"
+                )
+            try:
+                max_items = int(_option_value(command_args, "--max-items", "40"))
+            except ValueError as exc:
+                raise SystemExit(
+                    "appendix-predecision-next --max-items must be an integer"
+                ) from exc
+            return decision_workflow.next_appendix_predecision_batch(
+                work_dir,
+                structure,
+                appendix_items,
+                max_items=max_items,
+                workflow_binding=workflow_binding,
+            )
+        if command == "appendix-predecision-batch":
+            if len(command_args) != 1:
+                raise SystemExit(
+                    "appendix-predecision-batch requires exactly one JSON payload"
+                )
+            batch_text = _required_arg(command_args, 0, "appendix predecision batch JSON")
+            try:
+                appendix_batch = json.loads(batch_text)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(
+                    f"appendix predecision batch JSON is invalid: {exc}"
+                ) from exc
+            if not isinstance(appendix_batch, dict):
+                raise SystemExit("appendix predecision batch JSON must be an object")
+            return decision_workflow.submit_appendix_predecision_batch(
+                work_dir,
+                structure,
+                appendix_batch,
+                appendix_items,
+                workflow_binding=workflow_binding,
+            )
         if command == "appendix-next":
             if command_args and (
                 len(command_args) != 2 or command_args[0] != "--max-items"
