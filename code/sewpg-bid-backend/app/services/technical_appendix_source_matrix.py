@@ -393,11 +393,11 @@ def apply_appendix_source_matrix_to_plan(
     customer_name: str,
     materials: list[dict[str, Any]],
 ) -> dict[str, int]:
-    """把来源矩阵回写到已生成的 gap plan：只更新附表任务的 sourceRouting 与推荐素材。
+    """把来源矩阵回写到已生成的 gap plan：新矩阵完整覆盖旧矩阵路由。
 
-    规则未命中的任务保持原样；命中的任务覆盖 sourceRouting/recommendedMaterials，
-    目录项同步 sourceRouting（取首个命中任务）与 sourceRoutedMaterials，与 skill
-    产出结构一致，前端弹窗与 AI 填写 manifest 直接可用。
+    先清除上一版矩阵产生的任务/目录项路由，再应用新规则；非矩阵来源（如甲方
+    已填附表）和非矩阵推荐素材保持不变。目录项同步首个命中任务的路由与素材，
+    与 skill 产出结构一致，前端弹窗与 AI 填写 manifest 直接可用。
     """
     stats = {"routedItems": 0, "matchedTasks": 0, "manualRequired": 0, "tenderFields": 0, "missingSource": 0}
     rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
@@ -407,11 +407,31 @@ def apply_appendix_source_matrix_to_plan(
     for item in items:
         if not isinstance(item, dict):
             continue
+        item_routing = item.get("sourceRouting") if isinstance(item.get("sourceRouting"), dict) else {}
+        if item_routing.get("source") == "appendix_source_matrix":
+            item.pop("sourceRouting", None)
+            item.pop("sourceRoutedMaterials", None)
         appendix_tasks = item.get("appendixTasks") if isinstance(item.get("appendixTasks"), list) else []
         item_payload: dict[str, Any] = {}
         item_materials: list[dict[str, Any]] = []
         for task in appendix_tasks:
             if not isinstance(task, dict):
+                continue
+            task_routing = task.get("sourceRouting") if isinstance(task.get("sourceRouting"), dict) else {}
+            if task_routing.get("source") == "appendix_source_matrix":
+                task.pop("sourceRouting", None)
+                recommended = task.get("recommendedMaterials")
+                if isinstance(recommended, list):
+                    task["recommendedMaterials"] = [
+                        material
+                        for material in recommended
+                        if not (
+                            isinstance(material, dict)
+                            and isinstance(material.get("sourceRouting"), dict)
+                            and material["sourceRouting"].get("source") == "appendix_source_matrix"
+                        )
+                    ]
+            elif task_routing.get("source"):
                 continue
             title = str(task.get("title") or task.get("id") or "")
             rule = find_appendix_source_rule(matrix, customer_name=customer_name, table_title=title)

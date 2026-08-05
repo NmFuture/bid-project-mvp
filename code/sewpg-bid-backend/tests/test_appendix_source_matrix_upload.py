@@ -252,6 +252,53 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
         self.assertNotIn("sourceRouting", untouched_item["appendixTasks"][0])
         self.assertEqual(untouched_item["appendixTasks"][0]["recommendedMaterials"], [{"id": "keep-me"}])
 
+    def test_reupload_replaces_old_matrix_routing_in_existing_plan(self) -> None:
+        project_id = self._create_project()
+        self._seed_completed_plan(project_id)
+        materials = [
+            {
+                "id": "RAW-0001",
+                "name": "W10 机型参数表.xlsx",
+                "folderPath": "技术标/标准文件/机型参数表",
+                "materialTier": "standard",
+            },
+            {
+                "id": "RAW-0002",
+                "name": "规则外附表来源.docx",
+                "folderPath": "技术标/项目定制/华能/规则外附表来源",
+                "materialTier": "project",
+            },
+        ]
+        first = _build_matrix_xlsx(
+            Path(self.temp_dir.name) / "第一版.xlsx",
+            [["华能", "附表C.2 风轮系统技术参数", "", "机型参数表", ""]],
+        )
+        second = _build_matrix_xlsx(
+            Path(self.temp_dir.name) / "第二版.xlsx",
+            [["华能", "附表X.9 规则外附表", "规则外附表来源", "", ""]],
+        )
+
+        with patch(
+            "app.services.technical_gap_planner._allowed_technical_material_index",
+            return_value=materials,
+        ):
+            self._upload_matrix(project_id, first, filename="第一版.xlsx").raise_for_status()
+            response = self._upload_matrix(project_id, second, filename="第二版.xlsx")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        plan = store._require(project_id)["gap_state"]["plan"]
+        removed_item, new_item = plan["items"]
+        removed_task = removed_item["appendixTasks"][0]
+        self.assertNotIn("sourceRouting", removed_task)
+        self.assertEqual(removed_task["recommendedMaterials"], [])
+        self.assertNotIn("sourceRouting", removed_item)
+        self.assertNotIn("sourceRoutedMaterials", removed_item)
+
+        new_task = new_item["appendixTasks"][0]
+        self.assertEqual(new_task["sourceRouting"]["ruleId"], "Sheet!R2")
+        self.assertEqual([item["id"] for item in new_task["recommendedMaterials"]], ["RAW-0002"])
+        self.assertEqual([item["id"] for item in new_item["sourceRoutedMaterials"]], ["RAW-0002"])
+
     def test_upload_without_plan_returns_empty_applied(self) -> None:
         project_id = self._create_project()
         xlsx_path = _build_matrix_xlsx(
@@ -318,6 +365,47 @@ class ApplyMatrixToPlanTests(unittest.TestCase):
             {"routedItems": 0, "matchedTasks": 0, "manualRequired": 0, "tenderFields": 0, "missingSource": 0},
         )
         self.assertNotIn("sourceRouting", plan["items"][0]["appendixTasks"][0])
+
+    def test_non_matrix_routing_is_not_overwritten(self) -> None:
+        plan = {
+            "items": [
+                {
+                    "id": "toc-client",
+                    "appendixTasks": [
+                        {
+                            "id": "A1",
+                            "title": "附表C.2 风轮系统技术参数",
+                            "sourceRouting": {"source": "client_appendix_input", "status": "client_provided"},
+                            "recommendedMaterials": [{"id": "RAW-CLIENT"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        matrix = {
+            "rows": [
+                {
+                    "id": "Sheet1!R2",
+                    "customer": "华能",
+                    "tableTitle": "附表C.2 风轮系统技术参数",
+                    "projectSources": [],
+                    "standardSources": ["机型参数表"],
+                    "otherSources": [],
+                }
+            ]
+        }
+
+        stats = apply_appendix_source_matrix_to_plan(
+            plan,
+            matrix,
+            customer_name="华能",
+            materials=[{"id": "RAW-PARAM", "name": "机型参数表.xlsx", "materialTier": "standard"}],
+        )
+
+        task = plan["items"][0]["appendixTasks"][0]
+        self.assertEqual(stats["routedItems"], 0)
+        self.assertEqual(task["sourceRouting"]["source"], "client_appendix_input")
+        self.assertEqual(task["recommendedMaterials"], [{"id": "RAW-CLIENT"}])
 
 
 if __name__ == "__main__":
