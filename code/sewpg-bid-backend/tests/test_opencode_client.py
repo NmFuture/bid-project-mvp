@@ -194,6 +194,40 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(http_client.post.call_count, 1)
         sleep.assert_not_called()
 
+    def test_send_prompt_includes_explicit_tool_overrides(self) -> None:
+        client = OpencodeClient(
+            base_url="http://opencode:4096",
+            provider_id="provider-test",
+            model_id="model-test",
+        )
+        response = MagicMock()
+        response.text = '{"parts": []}'
+        response.json.return_value = {"parts": []}
+        http_client = self._http_client_with_post_side_effect(response)
+        tool_overrides = {"bash": False, "read": False, "write": False}
+
+        with patch("app.services.opencode_client.httpx.Client", return_value=http_client):
+            client.send_prompt("session-safe", "只返回文字", tools=tool_overrides)
+
+        payload = http_client.post.call_args.kwargs["json"]
+        self.assertEqual(payload["tools"], tool_overrides)
+
+    def test_send_text_prompt_omits_tool_overrides_by_default(self) -> None:
+        client = OpencodeClient()
+
+        with patch.object(
+            client,
+            "create_session",
+            return_value={"id": "session-default-tools"},
+        ), patch.object(
+            client,
+            "send_prompt",
+            return_value={"parts": [{"type": "text", "text": "普通回复"}]},
+        ) as send_prompt:
+            client.send_text_prompt("普通任务", "继续执行")
+
+        send_prompt.assert_called_once_with("session-default-tools", "继续执行")
+
     def test_extract_outline_json_repairs_invalid_json_once(self) -> None:
         client = OpencodeClient()
         response = {

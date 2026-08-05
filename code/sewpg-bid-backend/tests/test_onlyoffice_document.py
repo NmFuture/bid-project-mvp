@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, call, patch
 from urllib.parse import parse_qs, quote, urlparse
 
+import httpx
 from fastapi.testclient import TestClient
 from starlette.datastructures import URL as StarletteURL
 
@@ -25,6 +26,25 @@ from app.services.technical_gap_review import prepare_technical_review_document
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.technical_material_store import technical_material_store
+
+
+EXPECTED_TECHNICAL_CHAT_TOOLS = {
+    "invalid": False,
+    "question": False,
+    "bash": False,
+    "read": False,
+    "glob": False,
+    "grep": False,
+    "edit": False,
+    "write": False,
+    "task": False,
+    "webfetch": False,
+    "todowrite": False,
+    "websearch": False,
+    "codesearch": False,
+    "skill": False,
+    "apply_patch": False,
+}
 
 
 class _DummyRequest:
@@ -287,6 +307,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertIn("不要自动修改 Word", prompt)
         self.assertIn("请给出撰写建议", prompt)
         self.assertNotIn("不应重放", prompt)
+        self.assertEqual(send_text_prompt.call_args.kwargs["tools"], EXPECTED_TECHNICAL_CHAT_TOOLS)
         binding = store.get_project_runtime_state(project_id)["technical_chat_sessions"][self.current_user["id"]]
         self.assertEqual(binding["sessionId"], "session-first")
         self.assertEqual(binding["providerId"], "provider-primary")
@@ -326,7 +347,11 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["reply"], "这是基于原会话的回复。")
         send_text_prompt.assert_not_called()
-        send_prompt.assert_called_once_with("session-owned", "继续说明第二点")
+        send_prompt.assert_called_once_with(
+            "session-owned",
+            "继续说明第二点",
+            tools=EXPECTED_TECHNICAL_CHAT_TOOLS,
+        )
 
     def test_technical_document_chat_rejects_unowned_session(self) -> None:
         project_id = self.create_project()
@@ -396,34 +421,72 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         binding = store.get_project_runtime_state(project_id)["technical_chat_sessions"][self.current_user["id"]]
         self.assertEqual(binding["sessionId"], "session-new")
 
-    def test_technical_document_chat_fallback_updates_new_session_binding(self) -> None:
+    def test_technical_document_chat_cross_base_fallback_binding_is_reused_on_next_message(self) -> None:
         project_id = self.create_project()
-        fallback_result = {
-            "sessionId": "session-fallback",
-            "providerId": "provider-default",
-            "modelId": "model-default",
-            "reply": "默认模型回复。",
-            "opencodeOutput": {"status": "received", "sessionId": "session-fallback"},
+        custom_base_url = "http://custom-opencode:4096"
+        fallback_base_url = settings.opencode_base_url.rstrip("/")
+        custom_config = {
+            "enabled": True,
+            "baseUrl": custom_base_url,
+            "opencodeBaseUrl": custom_base_url,
+            "providerId": "custom-provider",
+            "modelId": "custom-model",
         }
 
+        def send_text_prompt(client, _title: str, _prompt: str, **_kwargs) -> dict:
+            if client.base_url == custom_base_url:
+                raise RuntimeError("ProviderModelNotFound")
+            self.assertEqual(client.base_url, fallback_base_url)
+            return {
+                "sessionId": "session-fallback",
+                "providerId": "provider-default",
+                "modelId": "model-default",
+                "reply": "默认模型回复。",
+                "opencodeOutput": {"status": "received", "sessionId": "session-fallback"},
+            }
+
+        def send_prompt(client, session_id: str, prompt: str, **_kwargs) -> dict:
+            self.assertEqual(client.base_url, fallback_base_url)
+            self.assertEqual(session_id, "session-fallback")
+            self.assertEqual(prompt, "继续说明")
+            return {
+                "info": {"providerID": "provider-default", "modelID": "model-default"},
+                "parts": [{"type": "text", "text": "已在同一备用会话继续。"}],
+            }
+
         with patch(
+            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            return_value=custom_config,
+        ), patch(
             "app.services.opencode_client.OpencodeClient.send_text_prompt",
-            side_effect=[RuntimeError("ProviderModelNotFound"), fallback_result],
-        ) as send_text_prompt:
-            response = self.client.post(
+            autospec=True,
+            side_effect=send_text_prompt,
+        ) as send_text, patch(
+            "app.services.opencode_client.OpencodeClient.send_prompt",
+            autospec=True,
+            side_effect=send_prompt,
+        ) as send_existing:
+            first_response = self.client.post(
                 f"/api/technical/projects/{project_id}/document/technical-chat",
                 json={"message": "请检查技术方案", "sessionId": ""},
             )
+            second_response = self.client.post(
+                f"/api/technical/projects/{project_id}/document/technical-chat",
+                json={"message": "继续说明", "sessionId": "session-fallback"},
+            )
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertTrue(payload["fallbackModelUsed"])
-        self.assertIn("ProviderModelNotFound", payload["primaryModelError"])
-        self.assertEqual(send_text_prompt.call_count, 2)
+        self.assertEqual(first_response.status_code, 200)
+        self.assertTrue(first_response.json()["fallbackModelUsed"])
+        self.assertNotIn("primaryModelError", first_response.json())
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(second_response.json()["reply"], "已在同一备用会话继续。")
+        self.assertEqual(send_text.call_count, 2)
+        send_existing.assert_called_once()
         binding = store.get_project_runtime_state(project_id)["technical_chat_sessions"][self.current_user["id"]]
         self.assertEqual(binding["sessionId"], "session-fallback")
         self.assertEqual(binding["providerId"], "provider-default")
         self.assertEqual(binding["modelId"], "model-default")
+        self.assertEqual(binding["baseUrl"], fallback_base_url)
 
     def test_technical_document_chat_merges_concurrent_user_session_binding(self) -> None:
         project_id = self.create_project()
@@ -435,7 +498,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             "opencodeOutput": {"status": "received", "sessionId": "session-current-user"},
         }
 
-        def send_with_concurrent_update(_title: str, _prompt: str) -> dict:
+        def send_with_concurrent_update(_title: str, _prompt: str, **_kwargs) -> dict:
             latest_project = store.require_project_for_update(project_id)
             latest_project["technical_chat_sessions"] = {
                 "technical-chat-user-2": {
@@ -497,7 +560,12 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 502)
-        send_prompt.assert_called_once_with("session-owned", "继续")
+        self.assertEqual(response.json()["detail"], "技术标 AI 对话服务暂不可用，请稍后重试。")
+        send_prompt.assert_called_once_with(
+            "session-owned",
+            "继续",
+            tools=EXPECTED_TECHNICAL_CHAT_TOOLS,
+        )
         send_text_prompt.assert_not_called()
 
     def test_technical_document_chat_expired_session_requires_new_conversation(self) -> None:
@@ -523,9 +591,13 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("会话已失效", response.json()["detail"])
         self.assertIn("请新建对话", response.json()["detail"])
-        send_prompt.assert_called_once_with("session-expired", "继续")
+        send_prompt.assert_called_once_with(
+            "session-expired",
+            "继续",
+            tools=EXPECTED_TECHNICAL_CHAT_TOOLS,
+        )
 
-    def test_technical_document_chat_plain_404_is_not_classified_as_expired_session(self) -> None:
+    def test_technical_document_chat_wrapped_http_404_requires_new_conversation(self) -> None:
         project_id = self.create_project()
         project = store.require_project_for_update(project_id)
         project["technical_chat_sessions"] = {
@@ -533,23 +605,34 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
         store.persist_project_state(project)
 
+        request = httpx.Request(
+            "POST",
+            "http://opencode/session/session-owned/message",
+        )
+        http_error = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=request,
+            response=httpx.Response(404, request=request),
+        )
+        wrapped_error = RuntimeError("futurecode 生成失败：404 Not Found")
+        wrapped_error.__cause__ = http_error
+
         with patch(
             "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
             return_value={},
         ), patch(
             "app.services.opencode_client.OpencodeClient.send_prompt",
-            side_effect=RuntimeError(
-                "Client error '404 Not Found' for url http://opencode/session/session-owned/message"
-            ),
+            side_effect=wrapped_error,
         ) as send_prompt:
             response = self.client.post(
                 f"/api/technical/projects/{project_id}/document/technical-chat",
                 json={"message": "继续", "sessionId": "session-owned"},
             )
 
-        self.assertEqual(response.status_code, 502)
-        self.assertNotIn("会话已失效", response.json()["detail"])
-        send_prompt.assert_called_once_with("session-owned", "继续")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("会话已失效", response.json()["detail"])
+        self.assertIn("请新建对话", response.json()["detail"])
+        send_prompt.assert_called_once()
 
     def test_technical_document_chat_model_fallback_keeps_existing_session(self) -> None:
         project_id = self.create_project()
@@ -581,12 +664,12 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["sessionId"], "session-owned")
         self.assertTrue(payload["fallbackModelUsed"])
-        self.assertIn("ProviderModelNotFound", payload["primaryModelError"])
+        self.assertNotIn("primaryModelError", payload)
         self.assertEqual(
             send_prompt.call_args_list,
             [
-                call("session-owned", "继续讨论"),
-                call("session-owned", "继续讨论"),
+                call("session-owned", "继续讨论", tools=EXPECTED_TECHNICAL_CHAT_TOOLS),
+                call("session-owned", "继续讨论", tools=EXPECTED_TECHNICAL_CHAT_TOOLS),
             ],
         )
         send_text_prompt.assert_not_called()
@@ -633,7 +716,11 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("无法续接", response.json()["detail"])
         self.assertIn("请新建对话", response.json()["detail"])
-        send_prompt.assert_called_once_with("session-owned", "继续讨论")
+        send_prompt.assert_called_once_with(
+            "session-owned",
+            "继续讨论",
+            tools=EXPECTED_TECHNICAL_CHAT_TOOLS,
+        )
         send_text_prompt.assert_not_called()
         binding = store.get_project_runtime_state(project_id)["technical_chat_sessions"][self.current_user["id"]]
         self.assertEqual(binding["sessionId"], "session-owned")
