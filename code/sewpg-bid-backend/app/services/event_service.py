@@ -9,6 +9,7 @@ from sqlalchemy import case, desc, func, or_, select
 from app.models import async_session
 from app.models.materials import UserEventLog
 from app.services.audit_service import user_id_of, user_name_of
+from app.services.column_text import fit_text, varchar_limits
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 
 
@@ -16,6 +17,7 @@ EVENT_TYPES = {"click", "route", "api", "error"}
 MAX_META_BYTES = 4096
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+COLUMN_LIMITS = varchar_limits(UserEventLog.__table__)
 
 
 def _paging(filters: dict[str, Any]) -> tuple[int, int]:
@@ -51,6 +53,10 @@ def _parse_duration_ms(value: Any) -> int | None:
         return max(0, int(value))
     except (TypeError, ValueError):
         return None
+
+
+def _fit(value: Any, column: str) -> str:
+    return fit_text(value, COLUMN_LIMITS.get(column))
 
 
 def _truncate_meta(value: Any) -> dict[str, Any]:
@@ -97,17 +103,17 @@ class EventService:
                 continue
             rows.append(
                 UserEventLog(
-                    user_id=user_id_of(user),
-                    user_name=user_name_of(user),
-                    session_id=session_id,
+                    user_id=_fit(user_id_of(user), "user_id"),
+                    user_name=_fit(user_name_of(user), "user_name"),
+                    session_id=_fit(session_id, "session_id"),
                     bid_type=bid_type,
                     event_type=event_type,
-                    route=str(event.get("route") or "") or None,
-                    element=str(event.get("element") or "") or None,
-                    target=str(event.get("target") or "") or None,
-                    status=str(event.get("status") or "") or None,
+                    route=_fit(event.get("route"), "route") or None,
+                    element=_fit(event.get("element"), "element") or None,
+                    target=_fit(event.get("target"), "target") or None,
+                    status=_fit(event.get("status"), "status") or None,
                     duration_ms=_parse_duration_ms(event.get("durationMs")),
-                    trace_id=str(event.get("traceId") or "") or None,
+                    trace_id=_fit(event.get("traceId"), "trace_id") or None,
                     meta=_truncate_meta(event.get("meta")),
                     client_ts=_parse_client_ts(event.get("clientTs")),
                 )
