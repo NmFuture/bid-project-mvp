@@ -15,13 +15,22 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from docxcompose.composer import Composer
 
 
 SCHEMA_VERSION = "bid-tech-word-placeholder-fill-v1"
+# 占位符后缀是类型的权威标记：待填写/待补充/待确认要填一个值，待插入要嵌整份素材。
+# 后缀必须捕获（group 3）——只按 group 2 的名字查事实表的话，`[塔架与基础工程量，待插入]`
+# 会被当成字段名去查表，查不到就标黄，整份素材再也进不来。
+EMBED_SUFFIX = "待插入"
+PLACEHOLDER_SUFFIXES = ("待填写", "待补充", "待确认", EMBED_SUFFIX)
 PLACEHOLDER_RE = re.compile(
-    r"([\[【])\s*(?:待填写[:：]\s*)?([^\]】\r\n]{1,80}?)(?:[,，、:：\s]*(?:待填写|待补充|待确认))?\s*([\]】])"
+    r"([\[【])\s*(?:待填写[:：]\s*)?([^\]】\r\n]{1,80}?)"
+    r"(?:[,，、:：\s]*(待填写|待补充|待确认|待插入))?\s*([\]】])"
 )
 MANUAL_FILL = "FFF2CC"
+# 两类待人工：manual 是没定位到字段值，manual_embed 是整份素材没嵌进来，都要标黄计入待人工
+MANUAL_ACTIONS = ("manual", "manual_embed")
 
 
 def now_iso() -> str:
@@ -45,7 +54,7 @@ def norm(value: Any) -> str:
 
 def placeholderish(value: Any) -> bool:
     text = clean(value)
-    return any(marker in text for marker in ("待填写", "待补充", "待确认", "待人工补充", "[", "【"))
+    return any(marker in text for marker in (*PLACEHOLDER_SUFFIXES, "待人工补充", "待人工插入", "[", "【"))
 
 
 def placeholder_key(raw: Any) -> str:
@@ -316,19 +325,44 @@ def collect_facts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 def placeholder_label(raw: str) -> str:
     label = clean(raw)
     label = re.sub(r"^(待填写|缺失)[:：]", "", label).strip()
-    label = re.sub(r"[,，、:：\s]*(待填写|待补充|待确认)$", "", label).strip()
+    label = re.sub(r"[,，、:：\s]*(待填写|待补充|待确认|待插入)$", "", label).strip()
     return label or "待填写内容"
 
 
 def find_placeholders(text: str) -> list[dict[str, Any]]:
+    """定位占位符并按后缀分型：kind=fill 填一个值，kind=embed 嵌一整份素材。
+
+    后缀是可选捕获组，`[待填写：字段名]` 这种前缀写法捕不到后缀，所以仍按整段文字
+    兜底判定是不是占位符；类型只认后缀，捕不到后缀的一律按 fill 处理。
+    """
     result: list[dict[str, Any]] = []
     for match in PLACEHOLDER_RE.finditer(text or ""):
         body = placeholder_label(match.group(2))
         full = match.group(0)
-        if "待填写" not in full and "待补充" not in full and "待确认" not in full:
+        suffix = match.group(3) or ""
+        if not any(marker in full for marker in PLACEHOLDER_SUFFIXES):
             continue
-        result.append({"full": full, "label": body, "start": match.start(), "end": match.end()})
+        result.append(
+            {
+                "full": full,
+                "label": body,
+                "kind": "embed" if suffix == EMBED_SUFFIX else "fill",
+                "start": match.start(),
+                "end": match.end(),
+            }
+        )
     return result
+
+
+def standalone_embed(text: str, placeholders: list[dict[str, Any]]) -> bool:
+    """待插入占位符独占整段才做整份嵌入。
+
+    把一句话中间的几个字替换成一整份文档，版面语义说不清；混排与表格单元格里的
+    待插入一律标黄交人工。真实素材里的待插入占位符都是独占段落的。
+    """
+    if len(placeholders) != 1 or placeholders[0]["kind"] != "embed":
+        return False
+    return clean(text) == clean(placeholders[0]["full"])
 
 
 # ---------- 清单驱动定位：待填写文件 → 占位符 → 候选内上下文消歧 ----------
@@ -637,6 +671,28 @@ def replace_text(
     for placeholder in placeholders:
         parts.append(text[last : placeholder["start"]])
         placeholder["rawText"] = text
+        if placeholder["kind"] == "embed":
+            # 走到这里的待插入都不是独占段落（混排或表格单元格），不做整份嵌入
+            value = f"[待人工插入：{placeholder['label']}]"
+            highlighted = True
+            unfilled.append(placeholder["label"])
+            decisions.append(
+                {
+                    "placeholder": placeholder["full"],
+                    "label": placeholder["label"],
+                    "action": "manual_embed",
+                    "value": value,
+                    "confidence": 0,
+                    "evidence": None,
+                    "alternatives": [],
+                    "specStatus": "embed_not_standalone",
+                    "embedStatus": "not_standalone",
+                    "embedMessage": "待插入占位符未独占整段，无法整份嵌入。",
+                }
+            )
+            parts.append(value)
+            last = placeholder["end"]
+            continue
         selected, alternatives, spec_status = spec_locate(spec_index, placeholder, context)
         if selected:
             value = clean(selected["value"])
@@ -676,18 +732,118 @@ def replace_text(
     return result, decisions, unfilled, highlighted
 
 
+# ---------- 待插入：整份素材嵌入 ----------
+#
+# 与待填写共用同一套精确定位，只是查表对象和执行动作不同：待填写拿占位符文字查事实表
+# 字段取一个值，待插入拿占位符文字查 manifest.embedSources 取一份素材整个嵌进去。
+# 素材检索与下载在后端完成（脚本不联网、不查库），这里只依据 manifest 给的本地路径。
+
+
+def build_embed_index(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for entry in object_items(manifest.get("embedSources")):
+        key = placeholder_key(entry.get("placeholder")) or norm(entry.get("name"))
+        if key:
+            index.setdefault(key, entry)
+    return index
+
+
+def embed_failure_message(entry: dict[str, Any] | None) -> str:
+    if not entry:
+        return "素材库未找到同名素材。"
+    message = clean(entry.get("statusMessage"))
+    if message:
+        return message
+    return f"素材不可嵌入（{clean(entry.get('status')) or '状态未知'}）。"
+
+
+def apply_embeds(
+    doc: Any,
+    targets: list[tuple[str, Any, dict[str, Any]]],
+    embed_index: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """把整份素材插到占位符段落的位置，插完删掉占位符段落。
+
+    `Composer.append()` 只能追加到文档末尾，这里要的是替换中间某一段，所以用
+    `Composer.insert(index, doc)`。索引每次现算：先前的插入会让后面段落整体后移，
+    预先算好一批索引再依次使用会全部错位。
+    插进来的素材自己可能带占位符，明确不回扫——占位符在插入前已经收集完毕。
+    """
+    decisions: list[dict[str, Any]] = []
+    unfilled: list[str] = []
+    composer: Any = None
+    body = doc.element.body
+    for location, paragraph, placeholder in targets:
+        label = placeholder["label"]
+        entry = embed_index.get(placeholder_key(label))
+        source_path = Path(clean(entry.get("docxPath"))) if entry and clean(entry.get("docxPath")) else None
+        ready = bool(entry) and clean(entry.get("status")) == "ready" and source_path is not None and source_path.exists()
+        if ready:
+            if composer is None:
+                composer = Composer(doc)
+            composer.insert(list(body).index(paragraph._p), Document(str(source_path)))
+            paragraph._p.getparent().remove(paragraph._p)
+            decisions.append(
+                {
+                    "location": location,
+                    "placeholder": placeholder["full"],
+                    "label": label,
+                    "action": "embed",
+                    "value": f"[已嵌入整份素材：{clean(entry.get('name')) or source_path.name}]",
+                    "confidence": 0.99,
+                    "evidence": {
+                        "source": clean(entry.get("name")),
+                        "sourcePath": str(source_path),
+                        "materialId": clean(entry.get("materialId")),
+                        "materialTier": clean(entry.get("materialTier")),
+                        "factType": "embedded_document",
+                    },
+                    "alternatives": [],
+                    "specStatus": "embed",
+                    "embedStatus": "embedded",
+                }
+            )
+            continue
+        message = embed_failure_message(entry)
+        set_paragraph_text(paragraph, f"[待人工插入：{label}]", highlight=True)
+        unfilled.append(label)
+        decisions.append(
+            {
+                "location": location,
+                "placeholder": placeholder["full"],
+                "label": label,
+                "action": "manual_embed",
+                "value": f"[待人工插入：{label}]",
+                "confidence": 0,
+                "evidence": None,
+                "alternatives": [],
+                "specStatus": "embed_manual",
+                "embedStatus": clean(entry.get("status")) if entry else "not_found",
+                "embedMessage": message,
+            }
+        )
+    return decisions, unfilled
+
+
 def fill_docx(
     source_path: Path,
     output_file: Path,
     spec_index: SpecIndex,
+    embed_index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     doc = Document(str(source_path))
     decisions: list[dict[str, Any]] = []
     unfilled: list[str] = []
+    embed_targets: list[tuple[str, Any, dict[str, Any]]] = []
 
     for idx, paragraph in enumerate(doc.paragraphs, start=1):
         text = paragraph.text
-        if not find_placeholders(text):
+        placeholders = find_placeholders(text)
+        if not placeholders:
+            continue
+        if standalone_embed(text, placeholders):
+            # 段落对象留到文本填写全部结束后再处理：嵌入会改变 body 结构
+            embed_targets.append((f"P{idx}", paragraph, placeholders[0]))
             continue
         context = clean(text)
         replaced, local_decisions, local_unfilled, highlight = replace_text(text, context, spec_index)
@@ -732,6 +888,10 @@ def fill_docx(
                 decisions.extend(local_decisions)
                 unfilled.extend(local_unfilled)
 
+    embed_decisions, embed_unfilled = apply_embeds(doc, embed_targets, embed_index or {})
+    decisions.extend(embed_decisions)
+    unfilled.extend(embed_unfilled)
+
     output_file.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_file))
     return {
@@ -751,10 +911,28 @@ def write_reports(output_file: Path, result: dict[str, Any]) -> tuple[Path, Path
         f"- 输出文件：`{result['outputFile']}`",
         f"- 占位符：{report['placeholderCount']}",
         f"- 已填写：{report['filledPlaceholderCount']}",
-        f"- 待人工：{report['unfilledPlaceholderCount']}",
+        f"- 已嵌入整份素材：{report.get('embeddedCount', 0)}",
+        f"- 待人工：{report['unfilledPlaceholderCount']}（其中待人工插入 {report.get('manualEmbedCount', 0)}）",
         "",
         "## 参考来源",
     ]
+    embed_details = report.get("embedDetails") or []
+    if embed_details:
+        lines.extend(
+            [
+                "",
+                f"## 整份素材嵌入（{len(embed_details)}）",
+                "",
+                "| 位置 | 占位符 | 结果 | 素材 | 说明 |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for item in embed_details:
+            action = "已嵌入" if item.get("action") == "embed" else "待人工插入"
+            lines.append(
+                f"| {item.get('location') or ''} | {item.get('placeholder') or ''} | {action} "
+                f"| {item.get('source') or ''} | {item.get('message') or ''} |"
+            )
     for source in report.get("referenceSources") or []:
         lines.append(f"- {source['name']}（{source['route']}）")
     if report.get("specDriven"):
@@ -795,8 +973,9 @@ def write_reports(output_file: Path, result: dict[str, Any]) -> tuple[Path, Path
             for row in rows:
                 lines.append("| " + " | ".join(str(row.get(column, "")) for column in columns) + " |")
     lines.extend(["", "## 占位符明细", "", "| 位置 | 占位符 | 动作 | 值 | 置信度 |", "|---|---|---|---|---:|"])
+    action_labels = {"fill": "填写", "embed": "嵌入", "manual_embed": "待人工插入"}
     for item in result.get("filledFieldDetails") or []:
-        action = "填写" if item["action"] == "fill" else "待人工"
+        action = action_labels.get(item["action"], "待人工")
         lines.append(f"| {item['location']} | {item['placeholder']} | {action} | {item['value']} | {item['confidence']} |")
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return json_path, md_path
@@ -894,7 +1073,8 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
         # 事实表没带清单第 2/3 列就没有定位依据。以前这里会退回上下文规则 + 全库模糊
         # 匹配，是错值的主要来源；现在直接失败，由后端守卫给出「重新上传清单」的指引。
         raise RuntimeError("事实表缺少清单的「待填写文件」「原占位符位置」两列，无法定位字段，请重新上传项目事实表清单。")
-    filled = fill_docx(source_path, output_file, spec_index)
+    embed_index = build_embed_index(manifest)
+    filled = fill_docx(source_path, output_file, spec_index, embed_index)
     decisions = filled["decisions"]
     filled_locations = {str(item.get("location")) for item in decisions if item.get("action") == "fill" and item.get("location")}
     semantic_validation = validate_key_data_tables(output_file, facts, filled_locations)
@@ -921,12 +1101,28 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
         "unfilledFields": list(dict.fromkeys(filled["unfilled"])),
         "evidenceRefs": evidence_refs,
         "filledFieldDetails": decisions,
-        "unfilledFieldDetails": [item for item in decisions if item["action"] == "manual"],
+        "unfilledFieldDetails": [item for item in decisions if item["action"] in MANUAL_ACTIONS],
         "fillReport": {
             "title": title,
             "placeholderCount": len(decisions),
             "filledPlaceholderCount": sum(1 for item in decisions if item["action"] == "fill"),
-            "unfilledPlaceholderCount": sum(1 for item in decisions if item["action"] == "manual"),
+            "unfilledPlaceholderCount": sum(1 for item in decisions if item["action"] in MANUAL_ACTIONS),
+            # 整份嵌入单独计数：混进「填了几个值」的话，审核界面看不出哪些是整份文档
+            "embeddedCount": sum(1 for item in decisions if item["action"] == "embed"),
+            "manualEmbedCount": sum(1 for item in decisions if item["action"] == "manual_embed"),
+            "embedDetails": [
+                {
+                    "location": item.get("location"),
+                    "placeholder": item.get("placeholder"),
+                    "label": item.get("label"),
+                    "action": item.get("action"),
+                    "status": item.get("embedStatus"),
+                    "message": item.get("embedMessage"),
+                    "source": (item.get("evidence") or {}).get("source"),
+                }
+                for item in decisions
+                if item["action"] in ("embed", "manual_embed")
+            ],
             # 正文填写只依据事实表清单定位，不再读参考素材；两个键保留是为了下游读报告的
             # 代码（产物卡片、质量验收）不用跟着改 schema。
             "referenceMaterialCount": 0,
@@ -934,6 +1130,7 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             "blankDocxPath": str(source_path),
             "preservedOriginalStructure": True,
             "manualMarker": "[待人工补充：字段名]",
+            "manualEmbedMarker": "[待人工插入：素材名]",
             "manualHighlight": MANUAL_FILL,
             "specDriven": spec_index.enabled,
             **semantic_validation,
