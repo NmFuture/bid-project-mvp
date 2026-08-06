@@ -213,6 +213,31 @@ class SpecLocateTests(unittest.TestCase):
         self.assertEqual(status, "unique")
         self.assertEqual(selected["value"], "5")
 
+    def test_same_placeholder_shared_by_synonym_fields_fills_when_values_agree(self) -> None:
+        # 清单里同一个占位符被多个同义字段共用（年等效满负荷小时数 / 等效上网小时数 …），
+        # 取值一致时没有歧义，照填
+        facts = [
+            _spec_fact("年等效满负荷小时数（保证值，h）", "2836", ["[投标方案，待填写]"], ["待填写-塔筒设计方案.docx"]),
+            _spec_fact("等效上网小时数（保证值，h）", "2836", ["[投标方案，待填写]"], ["待填写-塔筒设计方案.docx"]),
+        ]
+        index = self._index(facts)
+        selected, _alts, status = filler.spec_locate(index, {"label": "年等效满负荷小时数（保证值，h）"}, "上下文")
+        self.assertEqual(status, "field_name")
+        self.assertEqual(selected["value"], "2836")
+
+    def test_same_placeholder_shared_by_conflicting_fields_goes_manual(self) -> None:
+        # 取值不一致时不得静默取第一个：上下文分不开就交人工
+        facts = [
+            _spec_fact("年等效满负荷小时数（保证值，h）", "2836", ["[投标方案，待填写]"], ["待填写-塔筒设计方案.docx"]),
+            _spec_fact("年等效满负荷小时数（考核值，h）", "2650", ["[投标方案，待填写]"], ["待填写-塔筒设计方案.docx"]),
+        ]
+        facts[1]["reviewLabel"] = "年等效满负荷小时数（保证值，h）"  # 别名撞上另一个字段的正式名
+        index = self._index(facts)
+        selected, alternatives, status = filler.spec_locate(index, {"label": "年等效满负荷小时数（保证值，h）"}, "无区分信息")
+        self.assertEqual(status, "ambiguous")
+        self.assertIsNone(selected)
+        self.assertEqual(len(alternatives), 2)
+
     def test_composite_placeholder_is_reported_not_filled(self) -> None:
         # 一格填多个字段（`[投标机型、台数，待填写]`）不自动填：分隔方式是产品决策
         facts = [_spec_fact("投标机型", "EW10.0-220", ["[机型，待填写]"], ["待填写-塔筒设计方案.docx"])]

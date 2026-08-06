@@ -708,20 +708,25 @@ class SpecIndex:
         # 历史 manifest 字段不得进这张表：它们的 label 可能恰好等于泛占位符文字
         #（如「投标方案」），会劫持整份文档里该占位符的所有位置。
         spec_facts = [fact for fact in facts if fact.get("specPlaceholders") or fact.get("specTargets")]
-        # 字段名先占位，复核列别名只填补空位——别名与其他字段的正式名冲突时不得覆盖
-        self.by_label: dict[str, dict[str, Any]] = {}
+        # 一个占位符可能同时是多个字段的名字或别名：清单里「年等效满负荷小时数（保证值，h）」
+        # 被 4 个字段（年等效满发小时数／等效上网小时数／有效小时数…）共用。存成候选列表
+        # 而不是首个命中，值不一致时交给上下文消歧，不能静默取 seq 最小的那个。
+        self.by_label: dict[str, list[dict[str, Any]]] = {}
         for name_key in ("label", "reviewLabel"):
             for fact in spec_facts:
                 key = norm(fact.get(name_key))
-                if key and key not in self.by_label:
-                    self.by_label[key] = fact
+                if not key:
+                    continue
+                bucket = self.by_label.setdefault(key, [])
+                if fact not in bucket:
+                    bucket.append(fact)
         self.enabled = bool(self.known_placeholders or self.by_label)
 
     def knows(self, placeholder_label_text: str) -> bool:
         return norm(placeholder_label_text) in self.known_placeholders
 
-    def by_field_name(self, placeholder_label_text: str) -> dict[str, Any] | None:
-        return self.by_label.get(norm(placeholder_label_text))
+    def by_field_name(self, placeholder_label_text: str) -> list[dict[str, Any]]:
+        return self.by_label.get(norm(placeholder_label_text)) or []
 
     def candidates(self, placeholder_label_text: str) -> tuple[list[dict[str, Any]], bool]:
         entries = self.by_placeholder.get(norm(placeholder_label_text)) or []
@@ -816,10 +821,16 @@ def spec_locate(
         return None, [], "skipped"
     label = placeholder["label"]
     named = spec_index.by_field_name(label)
-    if named is not None:
-        picked = dict(named)
+    if len(named) == 1 or (named and len({norm(fact.get("value")) for fact in named}) == 1):
+        # 多个同义字段指向同一个占位符时，取值一致就没有歧义（同一个数据的不同叫法）
+        picked = dict(named[0])
         picked["score"] = 0.99
         return picked, [], "field_name"
+    if named:
+        picked, alternatives = disambiguate_by_context(named, context)
+        if picked:
+            return picked, alternatives, "disambiguated"
+        return None, alternatives or named[:4], "ambiguous"
     if not spec_index.knows(label):
         return None, [], "not_in_spec"
     candidates, _ = spec_index.candidates(label)
@@ -1386,8 +1397,7 @@ def composite_field_names(spec_index: SpecIndex | None, placeholder_label_text: 
     parts = split_field_enumeration(placeholder_label_text)
     if len(parts) < 2:
         return []
-    hits = [clean(spec_index.by_field_name(part).get("label")) for part in parts if spec_index.by_field_name(part)]
-    return hits
+    return [clean(spec_index.by_field_name(part)[0].get("label")) for part in parts if spec_index.by_field_name(part)]
 
 
 def build_spec_diagnostics(
