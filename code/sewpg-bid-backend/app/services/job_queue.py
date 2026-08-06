@@ -34,6 +34,7 @@ KNOWN_JOB_TYPES = {
     "material_deep_parse",
     "material_wiki_generation",
     "s1_parse",
+    "technical_body_fill",
     *INTERNAL_JOB_TYPES,
 }
 

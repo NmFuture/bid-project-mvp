@@ -279,3 +279,61 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-backend/tests/test_technical_word_fill_discipline.py`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 02:36:29 post-commit 68b6c31
+
+提交摘要：fix(技术标): 同一占位符被多个同义字段共用时不再静默取首个
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_technical_word_fill_discipline.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 03:20:56 post-commit 418deb6
+
+提交摘要：feat(技术标): 正文一键填写改后台任务，砍掉 opencode 与 OCR 两层空转
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/technical.py`
+- `code/sewpg-bid-backend/app/services/job_queue.py`
+- `code/sewpg-bid-backend/app/services/technical_body_fill_job.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_ai_fill.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_service.py`
+- `code/sewpg-bid-backend/app/workers/redis_worker.py`
+- `code/sewpg-bid-backend/tests/test_gap_event_loop_safety.py`
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+- `code/sewpg-bid-backend/tests/test_technical_body_fill_job.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.test.mjs`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 03:37:11 post-commit ae5a50d
+
+提交摘要：fix(技术标): 一键填写提交不再清空页面数据，入口收进「待填写」标签
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 03:46:57 post-commit 3923201
+
+提交摘要：fix(技术标): 历史事实表补清单第 2/3 列，正文填写不再误走旧模糊链路
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/technical_gap_ai_fill.py`
+- `code/sewpg-bid-backend/tests/test_technical_body_fill_job.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
