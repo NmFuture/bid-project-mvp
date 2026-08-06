@@ -149,6 +149,8 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const splitContainerRef = useRef(null)
   const [treeWidth, setTreeWidth] = useState(TREE_WIDTH_DEFAULT)
   const [resizing, setResizing] = useState(false)
+  // 已刷新过的 Wiki 任务 jobId（手动轮询与流水线回调共用），同一任务只重载一次目录树。
+  const handledWikiJobRef = useRef('')
 
   const startTreeResize = useCallback((event) => {
     if (event.button !== 0) return
@@ -255,6 +257,8 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         }
         finish()
         if (state === 'succeeded') {
+          // 标记本任务已刷新，流水线进度条的同一 jobId 成功回调据此跳过，避免重复请求。
+          handledWikiJobRef.current = wikiJobId
           await loadData()
           showToast(status?.message || `${activeBidType} Wiki 已更新`)
         } else if (state === 'failed' || state === 'cancelled') {
@@ -282,6 +286,21 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
+
+  // 流水线进度条回调（R10-B07-04）：页面打开后发现新的 Wiki 成功任务时重新加载目录树。
+  // 按 jobId 去重只刷新一次；本页手动触发的任务由上面的 bootstrapStatus 轮询负责刷新，
+  // 这里跳过避免重复请求。带上当前选中节点刷新：展开位置由 collapsedMap 本地保留，
+  // 选中状态随 nodeId 保留；节点已被任务删掉时后端回退到首个可见节点。
+  const handlePipelineWikiSuccess = useCallback(
+    (jobId) => {
+      const id = String(jobId || '')
+      if (!id || handledWikiJobRef.current === id) return
+      handledWikiJobRef.current = id
+      if (id === wikiJobId) return
+      loadData(selectedNodeId ? { nodeId: selectedNodeId } : {})
+    },
+    [loadData, selectedNodeId, wikiJobId],
+  )
   // 右侧只派生一个用户可读的状态小 tag，后端原始 tags 不再透出到界面。
   const selectedStatus = useMemo(() => previewStatusForTags(selectedNode?.tags), [selectedNode])
   const selectedMaterialId = useMemo(() => materialIdFromNode(selectedNode), [selectedNode])
@@ -517,7 +536,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       />
       {/* 素材流水线统一进度条（2026-08-04）：覆盖清洗 + Wiki（手动/自动触发同一任务类型），
           替代原先只跟手动刷新联动的任务提示块。 */}
-      <MaterialPipelineProgress />
+      <MaterialPipelineProgress onWikiJobSuccess={handlePipelineWikiSuccess} />
       {previewStatusItems.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-outline-variant/45 px-1 py-2 text-xs">
           <span className="font-medium text-on-surface">解析状态</span>
