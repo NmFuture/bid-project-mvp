@@ -96,6 +96,19 @@ test('reloads outline when completed directory status is newer than the first ou
   assert.equal(snapshot.projectPayload.currentStage, 2)
 })
 
+test('loads regenerated outline before publishing terminal directory state', () => {
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+  const pollStart = outlineSource.indexOf('const pollDirectoryStatus = async () => {')
+  const pollEnd = outlineSource.indexOf('timer = window.setTimeout(pollDirectoryStatus, 1000)', pollStart)
+  const pollSource = outlineSource.slice(pollStart, pollEnd)
+
+  assert.ok(pollStart >= 0 && pollEnd > pollStart)
+  assert.ok(
+    pollSource.indexOf("if (payload?.status === 'completed')")
+      < pollSource.indexOf('setDirectoryState((previous)'),
+  )
+})
+
 test('summarizes intelligent directory generation with user-facing elapsed time and steps', () => {
   const summary = summarizeDirectoryProgress({
     status: 'running',

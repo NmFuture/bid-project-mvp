@@ -374,19 +374,20 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       try {
         const payload = await technicalDirectoryAPI.status(id)
         if (cancelled) return
-        setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
         if (payload?.status === 'completed') {
           const [outlinePayload, projectPayload] = await Promise.all([
             technicalOutlineAPI.get(id),
             technicalProjectsAPI.get(id).catch(() => null),
           ])
           if (cancelled) return
+          setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
           applyOutlinePayload(outlinePayload)
           setCurrentStage(Number(projectPayload?.currentStage) || 2)
           setRegenerating(false)
           showToast?.('目录重新生成完成，请重新审核。')
           return
         }
+        setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
         if (isDirectoryProgressFailed(payload)) {
           setRegenerating(false)
           showToast?.('目录重新生成失败，当前目录未被修改。', 'error')
