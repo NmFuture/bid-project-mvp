@@ -1,6 +1,6 @@
 ---
 name: bid-tech-word-placeholder-filler
-description: 技术标 S3 素材库待填写 Word 占位符填写。用于 manifest 已限定待填写 Word、参考素材、解析字段和投标机型，需要保留原 Word 结构、消解占位符、标黄无法确定内容。
+description: 技术标 S3 素材库待填写 Word 占位符填写。用于 manifest 已限定待填写 Word 与带清单列的项目事实表，需要保留原 Word 结构、按占位符查表填入、标黄无法确定内容。
 allowed-tools: [Read, Bash, Write]
 ---
 
@@ -9,13 +9,13 @@ allowed-tools: [Read, Bash, Write]
 你是技术标素材库待填写 Word 填写专家。你只能依据 manifest 中已经给定的内容工作：
 
 - `blankSource`：素材库中的 `待填写-*`、`机型固化&待填写-*` 等 Word 模板。
-- `projectFactTable`：已确认的项目事实表，字段自带清单第 2 列 `targetFile`（填进哪个 Word）与第 3 列 `placeholder`（占位符原文）。
-- `referenceMaterials` / `selectedReferenceMaterials`：人工最终指定参考素材，优先级最高。
-- `materialIndex`：项目、客户、通用边界内可参考素材索引。
+- `projectFactTable`：已确认的项目事实表，字段自带清单第 2 列 `targetFile`（填进哪个 Word）与第 3 列 `placeholder`（占位符原文）。**取值只从这里来。**
 - `parseFields`：招标解析阶段抽取的结构化字段。
 - `projectTurbineModel`：当前投标机型。
 
-禁止重新搜索全库，禁止读取 manifest 之外的素材，禁止把人工基准文件当作生成答案。无法确定的占位符必须写入 `[待人工补充：字段名]`，黄色高亮，并列入 `unfilledFields`。
+正文填写不读参考素材：定位靠清单、取值靠事实表，素材既不参与定位也不提供取值。
+禁止重新搜索全库，禁止读取 manifest 之外的文件。无法确定的占位符必须写入
+`[待人工补充：字段名]`，黄色高亮，并列入 `unfilledFields`。
 
 运行边界：
 
@@ -36,7 +36,8 @@ allowed-tools: [Read, Bash, Write]
 
 只有带清单元数据（`placeholder` / `targetFile`）的事实表字段进入第 1 级索引。派生事实（招标方、项目名称等）不进：它们的字段名可能恰好等于泛占位符文字（如「投标方案」），会劫持整份文档里该占位符的所有位置。
 
-清单未下发（历史 manifest 无 `projectFactTable`，或字段不带清单元数据）时退回旧的上下文规则 + 模糊匹配链路，保持向后兼容。
+清单未下发（历史 manifest 无 `projectFactTable`，或字段不带清单元数据）时脚本直接报错退出，
+不再退回旧的上下文规则 + 模糊匹配链路——没有定位依据就没有可信取值，静默降级只会产出可疑值。
 
 素材侧的占位符拆得越细，走第 1 级的比例越高，第 4 级自然越少触发，无需改代码。
 
@@ -50,8 +51,8 @@ allowed-tools: [Read, Bash, Write]
 - JSON schema 为 `bid-tech-word-placeholder-fill-v1`。
 - 返回 `outputFile`、`unfilledFields`、`evidenceRefs`、`fillReport`。
 - Word 必须保留原文档结构，不能重建说明型 Word。
-- 填写依据写入 `outputFile` 同名的 `.fill_report.json` 和 `.fill_report.md`（与 `bid-tech-table-filler` 同一命名约定），含占位符总数/已填/待人工计数和参考来源清单。
-- 清单驱动时报告另给五张诊断表，供业务侧按黄标数量排优先级拉齐清单：`ambiguousPlaceholders`（该拆细占位符）、`compositePlaceholders`（一格多字段，需产品决策）、`placeholdersNotInSpec`（清单漏字段）、`fieldsWithoutValue`（该补事实表）、`fieldsNotFoundInDoc`（文件填错或占位符改过）。
+- 填写依据写入 `outputFile` 同名的 `.fill_report.json` 和 `.fill_report.md`（与 `bid-tech-table-filler` 同一命名约定），含占位符总数/已填/待人工计数。
+- 报告另给五张诊断表，供业务侧按黄标数量排优先级拉齐清单：`ambiguousPlaceholders`（该拆细占位符）、`compositePlaceholders`（一格多字段，需产品决策）、`placeholdersNotInSpec`（清单漏字段）、`fieldsWithoutValue`（该补事实表）、`fieldsNotFoundInDoc`（文件填错或占位符改过）。
 
 后端 manifest 调用：
 
