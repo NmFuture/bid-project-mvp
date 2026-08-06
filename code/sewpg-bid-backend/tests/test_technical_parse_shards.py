@@ -634,7 +634,9 @@ class ShardedOrchestrationTests(unittest.TestCase):
                 profile=TECHNICAL_PARSE_PROFILE,
             )
 
-        load_model_config.assert_called_once_with()
+        load_model_config.assert_called_once_with(
+            timeout_seconds=parsing.settings.s1_parse_model_config_timeout_sec,
+        )
         self.assertEqual(sorted(seen), sorted(["projectBasics", *shard_keys()]))
         self.assertEqual(len(initialized_configs), 7)
         self.assertTrue(all(config is model_config for config in initialized_configs))

@@ -312,7 +312,7 @@ class SystemSettingsService:
             row = (await session.execute(select(SystemConfig).where(SystemConfig.key == kind))).scalar_one_or_none()
         return self._normalize_model_config(kind, copy.deepcopy(row.value or {}) if row is not None else {})
 
-    def get_opencode_model_config_sync(self) -> dict[str, Any]:
+    def get_opencode_model_config_sync(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         fallback = self._normalize_model_config(
             "llm",
             {
@@ -327,6 +327,15 @@ class SystemSettingsService:
                 "maxTokens": 32768,
             },
         )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if timeout_seconds is None:
+                try:
+                    return asyncio.run(self.get_model_secret_config("llm"))
+                except Exception:
+                    return fallback
+
         result: dict[str, Any] = {}
         error: BaseException | None = None
 
@@ -339,8 +348,25 @@ class SystemSettingsService:
 
         thread = threading.Thread(target=run, daemon=True, name="load-opencode-model-config")
         thread.start()
-        thread.join(timeout=OPENCODE_MODEL_CONFIG_SYNC_TIMEOUT_SECONDS)
-        if thread.is_alive() or error:
+        wait_seconds = (
+            OPENCODE_MODEL_CONFIG_SYNC_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(0.0, float(timeout_seconds))
+        )
+        thread.join(timeout=wait_seconds)
+        if thread.is_alive():
+            if timeout_seconds is not None:
+                logger.warning(
+                    "OpenCode 模型配置读取超时（%.1f 秒），本次使用环境变量默认配置。",
+                    wait_seconds,
+                )
+            return fallback
+        if error:
+            if timeout_seconds is not None:
+                logger.warning(
+                    "OpenCode 模型配置读取失败，本次使用环境变量默认配置：%s",
+                    error,
+                )
             return fallback
         return result or fallback
 

@@ -6614,7 +6614,9 @@ def _run_technical_sharded_parse_skill(
 
     reset_submissions(skill_manifest_path, load_skill_manifest(skill_manifest_path))
     _run_s1parse_cli("prepare", skill_manifest_path)
-    model_config = system_settings_service.get_opencode_model_config_sync()
+    model_config = system_settings_service.get_opencode_model_config_sync(
+        timeout_seconds=settings.s1_parse_model_config_timeout_sec,
+    )
     tasks = _technical_shard_tasks(skill_manifest_path, profile)
     _raise_if_parse_cancelled(cancel_check)
 

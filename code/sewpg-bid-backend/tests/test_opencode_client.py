@@ -121,7 +121,21 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(client.provider_id, settings.opencode_provider_id)
         self.assertEqual(client.model_id, settings.opencode_model_id)
 
-    def test_sync_model_config_load_times_out_and_falls_back(self) -> None:
+    def test_sync_model_config_load_waits_for_database_by_default(self) -> None:
+        async def slow_config_load(_kind: str) -> dict:
+            await asyncio.sleep(0.02)
+            return _db_llm_config(modelId="database-model")
+
+        with patch.object(
+            system_settings_service,
+            "get_model_secret_config",
+            new=slow_config_load,
+        ):
+            config = system_settings_service.get_opencode_model_config_sync()
+
+        self.assertEqual(config["modelId"], "database-model")
+
+    def test_sync_model_config_load_with_explicit_timeout_warns_and_falls_back(self) -> None:
         async def slow_config_load(_kind: str) -> dict:
             await asyncio.sleep(0.1)
             return _db_llm_config(modelId="unexpected-db-model")
@@ -131,15 +145,12 @@ class OpencodeClientTests(unittest.TestCase):
             system_settings_service,
             "get_model_secret_config",
             new=slow_config_load,
-        ), patch(
-            "app.services.system_settings.OPENCODE_MODEL_CONFIG_SYNC_TIMEOUT_SECONDS",
-            0.01,
-            create=True,
-        ):
-            config = system_settings_service.get_opencode_model_config_sync()
+        ), self.assertLogs("app.services.system_settings", level="WARNING") as captured:
+            config = system_settings_service.get_opencode_model_config_sync(timeout_seconds=0.01)
         elapsed = time.monotonic() - started_at
 
         self.assertLess(elapsed, 0.08)
+        self.assertIn("模型配置读取超时", "\n".join(captured.output))
         self.assertEqual(
             config["modelId"],
             settings.default_llm_model or settings.opencode_model_id,
