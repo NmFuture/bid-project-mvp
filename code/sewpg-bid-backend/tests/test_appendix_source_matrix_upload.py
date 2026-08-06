@@ -12,8 +12,10 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
+from app.services import technical_gap_service
 from app.services.store import store
 from app.services.technical_appendix_source_matrix import (
+    appendix_rule_code_score,
     apply_appendix_source_matrix_to_plan,
     load_appendix_source_matrix_for_project,
 )
@@ -286,6 +288,10 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
             response = self._upload_matrix(project_id, second, filename="第二版.xlsx")
 
         self.assertEqual(response.status_code, 200, response.text)
+        applied = response.json()["applied"]
+        self.assertEqual(applied["routedItems"], 1)
+        self.assertEqual(applied["clearedItems"], 1)
+        self.assertEqual(applied["clearedTasks"], 1)
         plan = store._require(project_id)["gap_state"]["plan"]
         removed_item, new_item = plan["items"]
         removed_task = removed_item["appendixTasks"][0]
@@ -298,6 +304,62 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
         self.assertEqual(new_task["sourceRouting"]["ruleId"], "Sheet!R2")
         self.assertEqual([item["id"] for item in new_task["recommendedMaterials"]], ["RAW-0002"])
         self.assertEqual([item["id"] for item in new_item["sourceRoutedMaterials"]], ["RAW-0002"])
+
+    def test_reupload_zero_match_still_persists_cleared_plan(self) -> None:
+        """第二版规则零命中：只清旧路由、不新增（routedItems=0）也必须落库（R10-B09-03）。
+
+        内存后端共享对象引用，读回 plan 无法区分是否持久化，故用 persist 探针：
+        第二次上传应至少落库 2 次（绑定 1 次 + 清除旧路由后的计划 1 次），
+        缺修复时只有绑定那 1 次。
+        """
+        project_id = self._create_project()
+        self._seed_completed_plan(project_id)
+        materials = [
+            {
+                "id": "RAW-0001",
+                "name": "W10 机型参数表.xlsx",
+                "folderPath": "技术标/标准文件/机型参数表",
+                "materialTier": "standard",
+            },
+        ]
+        first = _build_matrix_xlsx(
+            Path(self.temp_dir.name) / "第一版.xlsx",
+            [["华能", "附表C.2 风轮系统技术参数", "", "机型参数表", ""]],
+        )
+        # 第二版规则有效（Z.1 不在计划中），整版零命中当前附表任务
+        second = _build_matrix_xlsx(
+            Path(self.temp_dir.name) / "第二版.xlsx",
+            [["华能", "附表Z.1 计划外附表", "", "机型参数表", ""]],
+        )
+
+        real_persist = technical_gap_service.persist_technical_gap_project
+        with patch(
+            "app.services.technical_gap_planner._allowed_technical_material_index",
+            return_value=materials,
+        ):
+            first_response = self._upload_matrix(project_id, first, filename="第一版.xlsx")
+            first_response.raise_for_status()
+            self.assertEqual(first_response.json()["applied"]["routedItems"], 1)
+            with patch.object(
+                technical_gap_service,
+                "persist_technical_gap_project",
+                wraps=real_persist,
+            ) as persist_spy:
+                response = self._upload_matrix(project_id, second, filename="第二版.xlsx")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        applied = response.json()["applied"]
+        self.assertEqual(applied["routedItems"], 0)
+        self.assertEqual(applied["clearedItems"], 1)
+        self.assertEqual(applied["clearedTasks"], 1)
+        self.assertGreaterEqual(persist_spy.call_count, 2)
+        plan = store._require(project_id)["gap_state"]["plan"]
+        cleared_item = plan["items"][0]
+        cleared_task = cleared_item["appendixTasks"][0]
+        self.assertNotIn("sourceRouting", cleared_task)
+        self.assertEqual(cleared_task["recommendedMaterials"], [])
+        self.assertNotIn("sourceRouting", cleared_item)
+        self.assertNotIn("sourceRoutedMaterials", cleared_item)
 
     def test_upload_without_plan_returns_empty_applied(self) -> None:
         project_id = self._create_project()
@@ -362,7 +424,15 @@ class ApplyMatrixToPlanTests(unittest.TestCase):
         plan = self._plan()
         self.assertEqual(
             apply_appendix_source_matrix_to_plan(plan, {"rows": []}, customer_name="华能", materials=[]),
-            {"routedItems": 0, "matchedTasks": 0, "manualRequired": 0, "tenderFields": 0, "missingSource": 0},
+            {
+                "routedItems": 0,
+                "matchedTasks": 0,
+                "manualRequired": 0,
+                "tenderFields": 0,
+                "missingSource": 0,
+                "clearedItems": 0,
+                "clearedTasks": 0,
+            },
         )
         self.assertNotIn("sourceRouting", plan["items"][0]["appendixTasks"][0])
 
@@ -406,6 +476,70 @@ class ApplyMatrixToPlanTests(unittest.TestCase):
         self.assertEqual(stats["routedItems"], 0)
         self.assertEqual(task["sourceRouting"]["source"], "client_appendix_input")
         self.assertEqual(task["recommendedMaterials"], [{"id": "RAW-CLIENT"}])
+
+
+class AppendixRuleCodeScoreTests(unittest.TestCase):
+    """父级编号规则覆盖子编号附表（F.2 规则命中 F.2.1）。"""
+
+    def test_parent_rule_covers_sub_numbered_table(self) -> None:
+        self.assertEqual(
+            appendix_rule_code_score("附表F.2.1 投标机组设计认证", "附表F.2 投标机型整机认证"),
+            0.93,
+        )
+        self.assertEqual(
+            appendix_rule_code_score("附表G.3.2 塔筒极限强度设计安全余量", "附表G.3 钢塔筒招标项目场址设计安全性"),
+            0.93,
+        )
+
+    def test_exact_and_range_scores_unchanged(self) -> None:
+        self.assertEqual(
+            appendix_rule_code_score("附表C.1 总体技术参数与规格", "附表C.1 总体技术参数与规格"),
+            0.96,
+        )
+        self.assertEqual(appendix_rule_code_score("附表D.3 功率曲线", "附表D.1-D.6"), 0.94)
+
+    def test_sub_code_coverage_boundaries(self) -> None:
+        # 前缀不同不覆盖
+        self.assertEqual(appendix_rule_code_score("附表G.2.1 场址载荷", "附表F.2 整机认证"), 0.0)
+        # 反向（子级规则覆盖父级附表）不成立
+        self.assertEqual(appendix_rule_code_score("附表F.2 整机认证", "附表F.2.1 设计认证"), 0.0)
+        # 兄弟编号不覆盖
+        self.assertEqual(appendix_rule_code_score("附表F.3.1 大部件认证", "附表F.2 整机认证"), 0.0)
+
+    def test_apply_routes_sub_numbered_task_by_parent_rule(self) -> None:
+        plan = {
+            "items": [
+                {
+                    "id": "toc-1",
+                    "appendixTasks": [{"id": "A1", "title": "附表F.2.1 投标机组设计认证"}],
+                }
+            ]
+        }
+        matrix = {
+            "rows": [
+                {
+                    "id": "Sheet1!R33",
+                    "customer": "华能",
+                    "tableTitle": "附表F.2 投标机型整机认证",
+                    "projectSources": [],
+                    "standardSources": ["认证证书"],
+                    "otherSources": [],
+                }
+            ]
+        }
+        materials = [
+            {
+                "id": "RAW-CERT",
+                "name": "EW10.0-220上置型式认证证书.pdf",
+                "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书",
+                "materialTier": "standard",
+            }
+        ]
+        stats = apply_appendix_source_matrix_to_plan(plan, matrix, customer_name="华能", materials=materials)
+        task = plan["items"][0]["appendixTasks"][0]
+        self.assertEqual(task["sourceRouting"]["ruleId"], "Sheet1!R33")
+        self.assertEqual(task["recommendedMaterials"][0]["id"], "RAW-CERT")
+        self.assertEqual(stats["matchedTasks"], 1)
 
 
 if __name__ == "__main__":

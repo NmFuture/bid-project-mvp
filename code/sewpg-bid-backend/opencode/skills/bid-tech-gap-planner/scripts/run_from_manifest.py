@@ -120,6 +120,22 @@ def parse_fields_from_parse(parse_result: dict[str, Any]) -> list[dict[str, Any]
     return fields[:320]
 
 
+def tender_document_summaries(parse_result: dict[str, Any]) -> list[dict[str, str]]:
+    documents = parse_result.get("documents")
+    if not isinstance(documents, list):
+        documents = parse_result.get("sourceFiles")
+    result: list[dict[str, str]] = []
+    for document in documents or []:
+        if not isinstance(document, dict) or document.get("status") == "failed":
+            continue
+        document_id = str(document.get("id") or "").strip()
+        name = str(document.get("name") or document.get("fileName") or "").strip()
+        if not document_id and not name:
+            continue
+        result.append({"id": document_id, "name": name})
+    return result
+
+
 def wiki_cards_by_section(wiki_dir: Path | None) -> dict[str, list[dict[str, Any]]]:
     if not wiki_dir or not (wiki_dir / "卡片").exists():
         return {}
@@ -259,7 +275,19 @@ def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
     start_code = normalize_appendix_code(rule_match.group(1))
     end_code = normalize_appendix_code(rule_match.group(2) or "")
     if not end_code:
-        return 0.96 if table_code == start_code else 0.0
+        if table_code == start_code:
+            return 0.96
+        # 子编号覆盖：规则只写父级编号（如 F.2）时覆盖附表子编号（F.2.1/F.2.2）。
+        # 分值低于精确命中与区间命中，更具体的规则（若有）仍然优先。
+        table_parts = _appendix_code_parts(table_code)
+        start_parts = _appendix_code_parts(start_code)
+        if table_parts and start_parts:
+            table_prefix, table_numbers = table_parts
+            start_prefix, start_numbers = start_parts
+            if not (table_prefix and start_prefix and table_prefix != start_prefix):
+                if len(table_numbers) > len(start_numbers) and table_numbers[: len(start_numbers)] == start_numbers:
+                    return 0.93
+        return 0.0
 
     table_parts = _appendix_code_parts(table_code)
     start_parts = _appendix_code_parts(start_code)
@@ -2452,11 +2480,17 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     recommended_pool,
                     source_rule=source_rule,
                 )
+                routing = source_routing_payload(source_rule, recommended)
+                if routing.get("useTenderParseFields"):
+                    tender_documents = tender_document_summaries(parse_result)
+                    routing["tenderDocuments"] = tender_documents
+                    routing["tenderDocumentCount"] = len(tender_documents)
+                    routing["tenderDocumentStatus"] = "available" if tender_documents else "missing_source"
                 task = build_appendix_task(
                     appendix,
                     recommended,
                     parse_fields,
-                    source_routing=source_routing_payload(source_rule, recommended),
+                    source_routing=routing,
                 )
                 # 查表替换：甲方已填附表（…/技术附表输入文件）按命名严格命中——
                 # 精确编号（附表C.8）或整组字母（技术附H 覆盖 H 组全部），冲突键不定案。

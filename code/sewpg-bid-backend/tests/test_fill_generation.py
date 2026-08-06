@@ -652,6 +652,64 @@ class FillGenerationTests(unittest.TestCase):
         self.assertFalse(staging_dir.exists())
         self.assertFalse((root / "assembly_gap_plan.json").exists())
 
+    def test_stage_selected_materials_releases_title_only_descendants(self) -> None:
+        from app.services import tech_assembly
+
+        root = Path(self.temp_dir.name) / "title-only-staging"
+        source_dir = root / "source"
+        source_dir.mkdir(parents=True)
+        parent_source = source_dir / "old-parent.docx"
+        child_source = source_dir / "new-child.docx"
+        Document().save(parent_source)
+        Document().save(child_source)
+        gap_plan_path = root / "gap_plan.json"
+        gap_plan_path.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "id": "GAP-PARENT",
+                            "number": "1.7",
+                            "titleOnly": True,
+                            "coverageRole": "chapter_master",
+                            "matchedMaterials": [{"path": str(parent_source)}],
+                        },
+                        {
+                            "id": "GAP-CHILD",
+                            "number": "1.7.1",
+                            "coverageRole": "covered_by_parent",
+                            "coveredByParent": "GAP-PARENT",
+                            "resolvedArtifacts": [
+                                {
+                                    "source": "manual_upload",
+                                    "path": str(child_source),
+                                    "s7Ready": True,
+                                }
+                            ],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        staging_dir = root / "selected_materials"
+
+        runtime_plan_path, staged_materials = tech_assembly._stage_selected_gap_plan_materials(
+            gap_plan_path,
+            staging_dir,
+        )
+
+        self.assertEqual(len(staged_materials), 1)
+        self.assertEqual(staged_materials[0]["title"], child_source.name)
+        self.assertEqual(staged_materials[0]["gapId"], "GAP-CHILD")
+        self.assertEqual(staged_materials[0]["originalPath"], str(child_source))
+        runtime_plan = json.loads(runtime_plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(runtime_plan["items"][0]["matchedMaterials"][0]["path"], str(parent_source))
+        child_path = runtime_plan["items"][1]["resolvedArtifacts"][0]["path"]
+        self.assertTrue((staging_dir / child_path).exists())
+        self.assertFalse(any(path.name == parent_source.name for path in staging_dir.rglob("*.docx")))
+
     def test_stage_resolved_artifact_prefers_material_id_for_store_recovery(self) -> None:
         from app.services import tech_assembly
 

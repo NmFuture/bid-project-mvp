@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, Awaitable, Callable
 
@@ -16,6 +17,7 @@ from app.services.material_folder_scope import (
     material_tier_root_path,
 )
 from app.services.material_folder_maintenance import ensure_business_customized_children_for_created_folder
+from app.services.material_fulltext_artifacts import purge_material_fulltext_objects
 from app.services.material_raw_file_filter import raw_file_matches_bid_type, raw_folder_matches_bid_type
 from app.services.material_raw_folder_lock import lock_raw_folder_path
 from app.services.material_taxonomy import is_raw_material_protected_folder_path, normalize_material_tier
@@ -185,6 +187,10 @@ async def delete_raw_folder(
             select(RawFile).where(RawFile.folder_id.in_(folder_ids)).options(selectinload(RawFile.folder))
         )
         files = files_result.scalars().all()
+        fulltext_cleanup_targets = [
+            (int(item.id), int(item.version or 1))
+            for item in files
+        ]
         for item in files:
             await purge_raw_file_objects(session, item)
             await session.delete(item)
@@ -193,6 +199,8 @@ async def delete_raw_folder(
             await session.delete(descendant)
         await mark_default_folder_deleted(session, folder_path)
         await session.commit()
+        for raw_file_id, source_version in fulltext_cleanup_targets:
+            await asyncio.to_thread(purge_material_fulltext_objects, raw_file_id, source_version)
 
         tree = await raw_tree()
         return {
@@ -222,7 +230,9 @@ async def delete_raw_file(
         if not raw_file_matches_bid_type(item, bid_type):
             raise PeripheralError(400, "该文件不属于当前素材库。", "RAW_FILE_SCOPE")
         payload = item.to_dict()
+        fulltext_cleanup_target = (int(item.id), int(item.version or 1))
         await purge_raw_file_objects(session, item)
         await session.delete(item)
         await session.commit()
+        await asyncio.to_thread(purge_material_fulltext_objects, *fulltext_cleanup_target)
         return {"message": "删除成功", "item": payload}

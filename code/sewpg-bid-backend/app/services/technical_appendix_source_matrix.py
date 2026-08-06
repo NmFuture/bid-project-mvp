@@ -63,7 +63,19 @@ def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
     start_code = normalize_appendix_code(rule_match.group(1))
     end_code = normalize_appendix_code(rule_match.group(2) or "")
     if not end_code:
-        return 0.96 if table_code == start_code else 0.0
+        if table_code == start_code:
+            return 0.96
+        # 子编号覆盖：规则只写父级编号（如 F.2）时覆盖附表子编号（F.2.1/F.2.2）。
+        # 分值低于精确命中与区间命中，更具体的规则（若有）仍然优先。
+        table_parts = _appendix_code_parts(table_code)
+        start_parts = _appendix_code_parts(start_code)
+        if table_parts and start_parts:
+            table_prefix, table_numbers = table_parts
+            start_prefix, start_numbers = start_parts
+            if not (table_prefix and start_prefix and table_prefix != start_prefix):
+                if len(table_numbers) > len(start_numbers) and table_numbers[: len(start_numbers)] == start_numbers:
+                    return 0.93
+        return 0.0
 
     table_parts = _appendix_code_parts(table_code)
     start_parts = _appendix_code_parts(start_code)
@@ -398,8 +410,20 @@ def apply_appendix_source_matrix_to_plan(
     先清除上一版矩阵产生的任务/目录项路由，再应用新规则；非矩阵来源（如甲方
     已填附表）和非矩阵推荐素材保持不变。目录项同步首个命中任务的路由与素材，
     与 skill 产出结构一致，前端弹窗与 AI 填写 manifest 直接可用。
+
+    stats 里 clearedItems/clearedTasks 记录本次清除的旧矩阵路由数量：调用方
+    据此判断是否需要持久化——新版规则零命中时 routedItems 为 0，但清除本身
+    也是改动，必须落库，否则旧路由会在重新读取时复活（R10-B09-03）。
     """
-    stats = {"routedItems": 0, "matchedTasks": 0, "manualRequired": 0, "tenderFields": 0, "missingSource": 0}
+    stats = {
+        "routedItems": 0,
+        "matchedTasks": 0,
+        "manualRequired": 0,
+        "tenderFields": 0,
+        "missingSource": 0,
+        "clearedItems": 0,
+        "clearedTasks": 0,
+    }
     rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
     items = plan.get("items") if isinstance(plan.get("items"), list) else []
     if not rows or not items:
@@ -411,6 +435,7 @@ def apply_appendix_source_matrix_to_plan(
         if item_routing.get("source") == "appendix_source_matrix":
             item.pop("sourceRouting", None)
             item.pop("sourceRoutedMaterials", None)
+            stats["clearedItems"] += 1
         appendix_tasks = item.get("appendixTasks") if isinstance(item.get("appendixTasks"), list) else []
         item_payload: dict[str, Any] = {}
         item_materials: list[dict[str, Any]] = []
@@ -420,6 +445,7 @@ def apply_appendix_source_matrix_to_plan(
             task_routing = task.get("sourceRouting") if isinstance(task.get("sourceRouting"), dict) else {}
             if task_routing.get("source") == "appendix_source_matrix":
                 task.pop("sourceRouting", None)
+                stats["clearedTasks"] += 1
                 recommended = task.get("recommendedMaterials")
                 if isinstance(recommended, list):
                     task["recommendedMaterials"] = [

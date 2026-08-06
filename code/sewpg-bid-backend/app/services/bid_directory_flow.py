@@ -16,7 +16,6 @@ from app.services.bid_outline_state import (
     confirm_outline_state,
     directory_state_with_rule_evidence,
     fail_directory_generation_state,
-    regenerate_outline_state,
     save_outline_state,
     start_directory_generation_state,
     update_directory_generation_state,
@@ -393,6 +392,14 @@ class BidDirectoryService:
         persist_workspace_project_state(project)
         return payload
 
+    def ensure_outline_editable(self, project_id: str) -> None:
+        current = self.directory_state(project_id)
+        if str(current.get("status") or "").strip().lower() in {"running", "processing", "queued"} or is_generation_locked(
+            "directory_generation",
+            project_id,
+        ):
+            raise HTTPException(status_code=409, detail="目录生成任务正在执行，请等待完成后再修改或确认目录。")
+
     async def generation_status(self, project_id: str) -> dict[str, Any]:
         return self.directory_state(project_id)
 
@@ -432,6 +439,7 @@ class BidDirectoryService:
         )
 
     async def run_generation(self, project_id: str, data: dict[str, Any] | None = None) -> JSONResponse:
+        generation_data = data or {}
         current = self.directory_state(project_id)
         if current.get("status") == "running" or is_generation_locked("directory_generation", project_id):
             return JSONResponse(
@@ -446,10 +454,11 @@ class BidDirectoryService:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        _schedule_directory_generation_job(project_id, data or {})
+        _schedule_directory_generation_job(project_id, generation_data)
+        message = "已开始重新生成目录，请稍候。" if generation_data.get("regenerateOutline") else "已开始生成目录，请稍候。"
         return JSONResponse(
             status_code=202,
-            content={**payload, "message": "已开始生成目录，请稍候。"},
+            content={**payload, "message": message},
         )
 
     async def outline(self, project_id: str, request: Request, *, file_id: str = "") -> dict[str, Any]:
@@ -465,18 +474,17 @@ class BidDirectoryService:
         return payload
 
     async def save_outline(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.ensure_outline_editable(project_id)
         project = self.require_project_for_update(project_id)
         payload = save_outline_state(project, (data or {}).get("nodes") or [])
         persist_workspace_project_state(project)
         return {**payload, "message": "目录已保存"}
 
-    async def regenerate_outline(self, project_id: str) -> dict[str, Any]:
-        project = self.require_project_for_update(project_id)
-        payload = regenerate_outline_state(project)
-        persist_workspace_project_state(project)
-        return {**payload, "message": "已重生成目录审核稿"}
+    async def regenerate_outline(self, project_id: str) -> JSONResponse:
+        return await self.run_generation(project_id, {"regenerateOutline": True})
 
     async def confirm_outline(self, project_id: str) -> dict[str, Any]:
+        self.ensure_outline_editable(project_id)
         project = self.require_project_for_update(project_id)
         payload = confirm_outline_state(project)
         persist_workspace_project_state(project)

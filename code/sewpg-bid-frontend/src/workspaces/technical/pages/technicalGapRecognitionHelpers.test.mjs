@@ -7,10 +7,32 @@ import {
   appendixTaskForFillTask,
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
+  tenderDocumentStateForAiFill,
   technicalGapTagOf,
 } from './technicalGapRecognitionHelpers.js'
 
 import * as technicalHelpers from './technicalGapRecognitionHelpers.js'
+
+test('附表来源规则上传提示区分新增、清除和延后生效', () => {
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({
+      rowCount: 3,
+      applied: { routedItems: 2, clearedItems: 1, clearedTasks: 1 },
+    }),
+    '已解析 3 条附表来源规则，已应用到 2 个目录项的附表任务，并已清除 1 个目录项、1 个附表任务的旧规则关联',
+  )
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({
+      rowCount: 1,
+      applied: { routedItems: 0, clearedItems: 1, clearedTasks: 2 },
+    }),
+    '已解析 1 条附表来源规则，未新增匹配，已清除 1 个目录项、2 个附表任务的旧规则关联',
+  )
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({ rowCount: 4, applied: {} }),
+    '已解析 4 条附表来源规则，将在下次缺口识别时生效',
+  )
+})
 
 test('生成完成提示展示 warning 数量且格式清洗失败时明确回退', () => {
   const presentation = technicalHelpers.technicalGenerationPresentation({
@@ -218,6 +240,38 @@ test('技术标 AI 填表在仅附表任务有规则时使用对应空表推荐�
   )
 })
 
+test('招标文件来源规则允许零素材并展示项目完整招标文件', () => {
+  const state = tenderDocumentStateForAiFill({
+    sourceRouting: {
+      useTenderParseFields: true,
+      tenderDocumentStatus: 'available',
+      tenderDocumentCount: 2,
+      tenderDocuments: [
+        { id: 'TEN-1', name: '技术规范.pdf' },
+        { id: 'TEN-2', name: '招标附图.docx' },
+      ],
+    },
+  })
+
+  assert.equal(state.required, true)
+  assert.equal(state.missingSource, false)
+  assert.equal(state.documentCount, 2)
+  assert.deepEqual(state.documentNames, ['技术规范.pdf', '招标附图.docx'])
+})
+
+test('招标文件来源规则在项目无源文件时阻止空跑', () => {
+  const state = tenderDocumentStateForAiFill({
+    sourceRouting: {
+      useTenderParseFields: true,
+      tenderDocumentStatus: 'missing_source',
+      tenderDocumentCount: 0,
+    },
+  })
+
+  assert.equal(state.required, true)
+  assert.equal(state.missingSource, true)
+})
+
 test('待填写素材严格按「待填写-」前缀识别', () => {
   assert.equal(isFillTemplateMaterial({ name: '待填写-附表D3桨距角曲线.docx' }), true)
   assert.equal(isFillTemplateMaterial({ cleanedFileName: '待填写-项目技术承诺函.docx' }), true)
@@ -401,6 +455,32 @@ test('目录标签v6：空确认防御——没有素材实体证据时确认不
       humanConfirmed: true,
     }),
     'needs_choice',
+  )
+})
+
+test('目录标签v6：人工选中未填写的「待填写-」模板进待填写，不进已就绪（R10-B07-01）', () => {
+  // 后端 register 对空模板产物落 s7Ready=false：它只是定下要填的模板，不算成稿。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G1',
+      decision: 'fill_required',
+      status: 'needs_input',
+      fillTasks: [{ id: 'FILL-G1-RAW-TPL1', status: 'pending', blankSource: { materialId: 'RAW-TPL1', sourceType: 'material_fill_template' } }],
+      resolvedArtifacts: [{ id: 'ART-1', source: 'material_library', fileName: '01-待填写-投标说明函.docx', s7Ready: false }],
+      humanConfirmed: true,
+    }),
+    'template_ready',
+  )
+  // 对照：s7Ready 的人工选材产物（成稿）仍是已就绪。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G2',
+      decision: 'ready',
+      status: 'resolved',
+      resolvedArtifacts: [{ id: 'ART-2', source: 'material_library', fileName: '01-性能保证.docx', s7Ready: true }],
+      humanConfirmed: true,
+    }),
+    'material_ready',
   )
 })
 
