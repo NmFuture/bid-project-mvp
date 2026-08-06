@@ -718,7 +718,9 @@ class TechnicalGapService:
             or ""
         )
         stats = apply_appendix_source_matrix_to_plan(plan, matrix, customer_name=customer_name, materials=materials)
-        if stats.get("routedItems"):
+        # 新增路由或清除旧路由都算改动：第二版规则零命中时 routedItems 为 0，
+        # 但旧矩阵路由已被清除，不持久化会让旧路由在重新读取时复活（R10-B09-03）。
+        if stats.get("routedItems") or stats.get("clearedItems") or stats.get("clearedTasks"):
             project["updatedAt"] = now_iso()
             persist_technical_gap_project(project)
         return stats
