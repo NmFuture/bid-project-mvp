@@ -325,3 +325,15 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 03:46:57 post-commit 3923201
+
+提交摘要：fix(技术标): 历史事实表补清单第 2/3 列，正文填写不再误走旧模糊链路
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/services/technical_gap_ai_fill.py`
+- `code/sewpg-bid-backend/tests/test_technical_body_fill_job.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

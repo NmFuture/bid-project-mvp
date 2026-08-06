@@ -6,8 +6,6 @@ import unittest
 from unittest import mock
 
 from app.services.technical_body_fill_job import (
-    DEFAULT_BODY_FILL_CONCURRENCY,
-    body_fill_concurrency,
     body_fill_running,
     body_fill_state,
     collect_body_fill_targets,
@@ -78,18 +76,6 @@ class StateTests(unittest.TestCase):
         self.assertEqual(len(gap_state["bodyFillState"]["errors"]), 1)
 
 
-class ConcurrencyTests(unittest.TestCase):
-    def test_default_is_local_safe(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("TECHNICAL_BODY_FILL_CONCURRENCY", None)
-            self.assertEqual(body_fill_concurrency(), DEFAULT_BODY_FILL_CONCURRENCY)
-
-    def test_env_override_is_clamped(self) -> None:
-        for raw, expected in (("8", 8), ("0", 1), ("999", 16), ("不是数字", DEFAULT_BODY_FILL_CONCURRENCY)):
-            with mock.patch.dict(os.environ, {"TECHNICAL_BODY_FILL_CONCURRENCY": raw}):
-                self.assertEqual(body_fill_concurrency(), expected)
-
-
 class SpecDrivenFillTests(unittest.TestCase):
     def test_fact_table_with_spec_columns_drives_placeholders(self) -> None:
         table = {"fields": [{"label": "投标机型", "placeholder": "[投标机型，待填写]"}]}
@@ -146,7 +132,8 @@ class RunBodyFillJobTests(unittest.TestCase):
         calls: list[str] = []
         state = self._run(lambda project, gap_id, data, **kwargs: calls.append(gap_id))
 
-        self.assertEqual(sorted(calls), ["G1", "G2", "G3"])
+        # 严格按清单顺序串行：并发写回会撞上 asyncpg 连接池绑定 event loop 的限制
+        self.assertEqual(calls, ["G1", "G2", "G3"])
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual((state["total"], state["done"], state["succeeded"], state["failed"]), (3, 3, 3, 0))
 
