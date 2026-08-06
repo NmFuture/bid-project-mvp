@@ -395,6 +395,81 @@ async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple
     return payload, "raw"
 
 
+_FILL_ORIGINAL_SUFFIXES = (".xlsx", ".xlsm")
+
+
+async def _original_technical_fill_source_payload(material_id: str) -> dict[str, Any] | None:
+    """取素材 Excel 原件的下载信息。
+
+    清洗稿是 docx 文本化版本，丢掉了 sheet 结构：报价分项转写、功率曲线矩阵、
+    参数表机型列定位都必须读原生 Excel。返回 None 表示该素材没有需要额外落地
+    的 Excel 原件（本身是 Word/PDF，或取不到原件）。PDF 不在此列——其文本已由
+    清洗稿承载，额外落地只会凭空增加 OCR 开销。
+    """
+    try:
+        payload = await technical_material_store.raw_download_content(material_id)
+    except Exception:
+        return None
+    file_name = str(payload.get("fileName") or "").lower()
+    if not file_name.endswith(_FILL_ORIGINAL_SUFFIXES):
+        return None
+    return payload
+
+
+def _material_may_have_excel_original(item: dict[str, Any]) -> bool:
+    """按素材名判断是否值得回源取 Excel 原件，避免逐份多打一次 DB/MinIO。
+
+    素材名是上传时的原始文件名（清洗稿名单独放 cleanedFileName），后缀已足够
+    判定；名称缺失或后缀不认识时返回 True，交给下载分支探测。
+    """
+    for key in ("name", "title"):
+        text = str(item.get(key) or "").strip().lower()
+        if not text:
+            continue
+        if text.endswith(_FILL_ORIGINAL_SUFFIXES):
+            return True
+        if text.endswith((".docx", ".doc", ".pdf", ".txt", ".md")):
+            return False
+    return True
+
+
+def _resolve_original_material_file(
+    material_id: str,
+    item: dict[str, Any],
+    cache_dir: Path,
+) -> Path | None:
+    """把 Excel 原件落地到素材缓存，并在 item 上暴露 originalPath。
+
+    已落地的就是原件（清洗稿缺失走 raw 分支）时直接复用，不重复下载。
+    """
+    current = Path(str(item.get("path") or ""))
+    if current.suffix.lower() in _FILL_ORIGINAL_SUFFIXES and current.exists():
+        item["originalPath"] = str(current)
+        item["originalFileName"] = current.name
+        return current
+    if not _material_may_have_excel_original(item):
+        return None
+    awaitable = _original_technical_fill_source_payload(material_id)
+    try:
+        payload = _run_async(awaitable)
+    except Exception:
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        return None
+    if not payload:
+        return None
+    file_name = _safe_filename(str(payload.get("fileName") or ""), f"{material_id}原件")
+    target_path = cache_dir / f"{material_id}-{file_name}"
+    if not target_path.exists():
+        try:
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        except Exception:
+            return None
+    item["originalPath"] = str(target_path)
+    item["originalFileName"] = target_path.name
+    return target_path
+
+
 async def _downloadable_technical_word_payload(material_id: str) -> tuple[dict[str, Any], str]:
     try:
         payload = await technical_material_store.raw_download_cleaned_content(material_id)
@@ -532,6 +607,9 @@ def _prepare_material_index_files(
                 "fileName": target_path.name,
             }
         )
+        # 清洗稿是 docx 文本化版本；Excel 原件另行落地，供报价转写、曲线矩阵等
+        # 依赖 sheet 结构的填表分支使用（见 _resolve_original_material_file）。
+        _resolve_original_material_file(material_id, item, cache_dir)
         if ocr_pdf and target_path.suffix.lower() == ".pdf":
             has_cache = target_path.with_suffix(".ocr.txt").exists()
             if has_cache:

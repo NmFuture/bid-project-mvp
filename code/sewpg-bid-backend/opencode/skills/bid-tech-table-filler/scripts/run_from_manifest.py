@@ -272,6 +272,9 @@ class Source:
     ocr_text_path: Path | None = None  # PDF 素材的 OCR 文本 sidecar（后端生成）
     text_path: Path | None = None
     document_nav_path: Path | None = None
+    # Excel 原件对应的清洗 docx 文本稿：kind=xlsx 时保留，供按 Word 表格结构
+    # 工作的分支（整表移植、同构表查表）回退使用。
+    cleaned_docx_path: Path | None = None
 
 
 @dataclass
@@ -1183,6 +1186,19 @@ def enrich_material_with_known_path(material: dict[str, Any], manifest: dict[str
     return material
 
 
+def original_material_path(material: dict[str, Any], manifest_dir: Path) -> Path | None:
+    """素材的原生 Excel 路径（后端 originalPath），没有则 None。
+
+    素材缓存里的 path 是清洗后的 docx 文本稿，sheet 结构已丢失；报价分项转写、
+    功率曲线矩阵、参数表机型列定位都要读原生 Excel，由后端额外落地并在
+    originalPath 暴露。
+    """
+    path = first_existing_path((material.get("originalPath"),), manifest_dir)
+    if path is not None and path.suffix.lower() in {".xlsx", ".xlsm"}:
+        return path
+    return None
+
+
 def add_source_from_material(
     sources: list[Source],
     material: dict[str, Any],
@@ -1197,15 +1213,23 @@ def add_source_from_material(
     if path is None or path.suffix.lower() not in {".docx", ".xlsx", ".xlsm", ".pdf", ".txt", ".md"}:
         return
     name = material_label(material) or path.name
-    suffix = path.suffix.lower()
+    original_path = original_material_path(material, manifest_dir)
+    cleaned_docx_path: Path | None = None
     ocr_text_path: Path | None = None
     text_path = first_existing_path((material.get("textPath"),), manifest_dir)
     document_nav_path = first_existing_path((material.get("documentNavPath"),), manifest_dir)
-    if suffix == ".pdf":
+    if path.suffix.lower() == ".pdf":
         for candidate in (Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None, path.with_suffix(".ocr.txt")):
             if candidate is not None and candidate.exists() and candidate.is_file():
                 ocr_text_path = candidate.resolve()
                 break
+    if original_path is not None:
+        # Excel 原件优先：清洗 docx 只保留文本，读不出 sheet；原件在时整条链路按 xlsx 走。
+        # 清洗稿仍留在 cleaned_docx_path，供整表移植等按 Word 表格结构工作的分支使用。
+        if path.suffix.lower() == ".docx":
+            cleaned_docx_path = path
+        path = original_path
+    suffix = path.suffix.lower()
     sources.append(
         Source(
             name=name,
@@ -1227,6 +1251,7 @@ def add_source_from_material(
             ocr_text_path=ocr_text_path,
             text_path=text_path,
             document_nav_path=document_nav_path,
+            cleaned_docx_path=cleaned_docx_path,
         )
     )
 
@@ -3806,6 +3831,19 @@ def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source
     return decisions
 
 
+def source_docx_path(source: Source) -> Path | None:
+    """按 Word 表格结构读取该素材时应打开的文件。
+
+    kind=docx 用素材本身；kind=xlsx（原件优先后）回退到清洗 docx 文本稿，
+    使整表移植、同构表查表这类按 Word 表格工作的分支不因改读原件而失去来源。
+    """
+    if source.kind == "docx":
+        return source.path
+    if source.cleaned_docx_path is not None and source.cleaned_docx_path.is_file():
+        return source.cleaned_docx_path
+    return None
+
+
 def apply_source_table_transplant(output_file: Path, sources: list[Source]) -> list[dict[str, Any]]:
     doc = Document(str(output_file))
     own_limit = own_table_limit(doc)
@@ -3814,10 +3852,11 @@ def apply_source_table_transplant(output_file: Path, sources: list[Source]) -> l
         if not sparse_table_needs_expansion(target_table):
             continue
         for source in sources:
-            if source.kind != "docx":
+            docx_path = source_docx_path(source)
+            if docx_path is None:
                 continue
             try:
-                source_doc = Document(str(source.path))
+                source_doc = Document(str(docx_path))
             except Exception:
                 continue
             for source_idx, source_table in enumerate(source_doc.tables):
@@ -3949,12 +3988,13 @@ def apply_same_shape_source_table_fill(
 
     candidates_by_field: dict[str, list[dict[str, Any]]] = {}
     for source in sources:
-        if source.kind != "docx":
+        docx_path = source_docx_path(source)
+        if docx_path is None:
             continue
         try:
-            if source.path.resolve() == spec.source.resolve():
+            if docx_path.resolve() == spec.source.resolve():
                 continue
-            source_doc = Document(str(source.path))
+            source_doc = Document(str(docx_path))
         except Exception:
             continue
         for source_table_idx, source_table in enumerate(source_doc.tables):
