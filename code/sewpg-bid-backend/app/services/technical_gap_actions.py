@@ -23,6 +23,7 @@ from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
+from app.services.technical_gap_fact_table import FILL_TEMPLATE_NAME_PREFIX
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.workspace_artifacts import technical_workspace_dir
@@ -333,6 +334,52 @@ async def prepare_technical_existing_gap_material_files(
         raise
 
 
+def _selected_material_is_fill_template(prepared: dict[str, Any]) -> bool:
+    """按名称前缀识别「待填写」空模板（业主空白附表命名约定，口径同事实表素材过滤）。"""
+    return str(prepared.get("materialName") or "").strip().startswith(FILL_TEMPLATE_NAME_PREFIX)
+
+
+def _ensure_material_fill_task(
+    item: dict[str, Any],
+    gap_id: str,
+    prepared: dict[str, Any],
+    path: Path,
+) -> None:
+    """为人工选中的「待填写-」模板补挂待执行的 AI 填写任务（结构对齐 planner 的素材填写任务）。
+
+    没有 fillTask 时前端没有 AI 填写入口、决策终审也判不出 fill_required，
+    空模板会一直被当作成稿。
+    """
+    material_id = str(prepared.get("materialId") or "").strip()
+    task_id = f"FILL-{gap_id}-{material_id or path.stem}"
+    fill_tasks = item.setdefault("fillTasks", [])
+    if any(str(task.get("id") or "") == task_id for task in fill_tasks if isinstance(task, dict)):
+        return
+    material_name = str(prepared.get("materialName") or path.stem)
+    fill_tasks.append(
+        {
+            "id": task_id,
+            "skill": TECHNICAL_WORD_FILL_SKILL_NAME,
+            "status": "pending",
+            "title": f"填写{material_name}",
+            "blankSource": {
+                "id": material_id,
+                "title": material_name,
+                "sourceFile": material_name,
+                "materialId": material_id,
+                "folderPath": str(prepared.get("folderPath") or ""),
+                "path": str(path),
+                "cleanedFileName": "",
+                "placeholderCount": 0,
+                "placeholderLabels": [],
+                "placeholderSamples": [],
+                "sourceType": "material_fill_template",
+            },
+            "requiredReferences": ["素材库文件", "招标解析字段", "项目投标机型"],
+        }
+    )
+
+
 def register_technical_existing_gap_material(
     project: dict[str, Any],
     gap_id: str,
@@ -359,6 +406,9 @@ def register_technical_existing_gap_material(
         if not path.exists():
             raise ValueError(f"已选择素材文件不存在：{path}")
         artifact_id = f"ART-{gap_id}-MAT-{existing_count + index}"
+        # 先判「待填写-」空模板再判人工选材成稿（R10-B07-01）：选中待填写模板只是
+        # 定下要填的模板，不是定稿——产物保持 s7Ready=False，不进 S7。
+        is_fill_template = _selected_material_is_fill_template(prepared)
         artifacts.append(
             {
                 "id": artifact_id,
@@ -382,18 +432,25 @@ def register_technical_existing_gap_material(
                     browser_base_url=browser_base_url,
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
-                "s7Ready": True,
+                "s7Ready": not is_fill_template,
                 "active": True,
             }
         )
+        if is_fill_template:
+            _ensure_material_fill_task(item, gap_id, prepared, path)
 
     superseded_count = _supersede_technical_gap_resolved_artifacts(
         item, created_at=created_at, operator=str(data.get("operator") or "当前用户")
     )
-    item["status"] = "resolved"
     item.setdefault("resolvedArtifacts", []).extend(artifacts)
-    item["resolvedAt"] = created_at
-    item["resolvedSource"] = artifacts[0]["fileName"]
+    if all(artifact.get("s7Ready") is False for artifact in artifacts):
+        # 待填写模板：进入「待填写」，AI 填写完成并人工复核通过后才允许就绪进 S7。
+        item["status"] = "needs_input"
+        item["decision"] = "fill_required"
+    else:
+        item["status"] = "resolved"
+        item["resolvedAt"] = created_at
+        item["resolvedSource"] = artifacts[0]["fileName"]
     select_note = f"人工选择已有素材：{len(artifacts)} 份"
     if superseded_count:
         select_note += f"，取代此前 {superseded_count} 份产物"

@@ -13,6 +13,27 @@ export const uniqueStrings = (items) => {
     })
 }
 
+export const technicalAppendixSourceMatrixUploadMessage = (payload) => {
+  const rowCount = Math.max(0, Number(payload?.rowCount) || 0)
+  const applied = payload?.applied && typeof payload.applied === 'object' ? payload.applied : {}
+  const routedItems = Math.max(0, Number(applied.routedItems) || 0)
+  const clearedItems = Math.max(0, Number(applied.clearedItems) || 0)
+  const clearedTasks = Math.max(0, Number(applied.clearedTasks) || 0)
+  const clearedParts = [
+    clearedItems ? `${clearedItems} 个目录项` : '',
+    clearedTasks ? `${clearedTasks} 个附表任务` : '',
+  ].filter(Boolean)
+
+  if (routedItems) {
+    const clearedText = clearedParts.length ? `，并已清除 ${clearedParts.join('、')}的旧规则关联` : ''
+    return `已解析 ${rowCount} 条附表来源规则，已应用到 ${routedItems} 个目录项的附表任务${clearedText}`
+  }
+  if (clearedParts.length) {
+    return `已解析 ${rowCount} 条附表来源规则，未新增匹配，已清除 ${clearedParts.join('、')}的旧规则关联`
+  }
+  return `已解析 ${rowCount} 条附表来源规则，将在下次缺口识别时生效`
+}
+
 export const technicalGenerationPresentation = (status) => {
   const assembly = status?.assembly && typeof status.assembly === 'object' ? status.assembly : {}
   const warnings = asObjectArray(assembly.warnings)
@@ -144,6 +165,16 @@ export const technicalGapHumanConfirmState = (item) => {
 
 export const isTechnicalGapHumanConfirmed = (item) => technicalGapHumanConfirmState(item) === 'confirmed'
 
+export const currentResolvedArtifact = (artifact) => (
+  Boolean(artifact)
+  && artifact?.active !== false
+  && !artifact?.supersededAt
+)
+
+export const currentResolvedArtifacts = (selected) => (
+  asObjectArray(selected?.resolvedArtifacts).filter(currentResolvedArtifact)
+)
+
 const candidatePool = (item) => [
   ...asObjectArray(item?.matchedMaterials),
   ...asObjectArray(item?.candidateMaterials),
@@ -182,10 +213,14 @@ const isTemplateTrackItem = (item) => {
 }
 
 const hasAiFillArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
-  .some((artifact) => String(artifact?.source || '') === 'ai_fill')
+  .some((artifact) => currentResolvedArtifact(artifact) && String(artifact?.source || '') === 'ai_fill')
 
+// 人工产物算「成稿」必须与后端 S7 闸口同口径（s7Ready）：人工选中的「待填写-」空模板
+// s7Ready=false（R10-B07-01），只是定下要填的模板，不算成稿，不进「已就绪」。
 const hasManualArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
-  .some((artifact) => ['manual_upload', 'material_library', 'manual'].includes(String(artifact?.source || '')))
+  .some((artifact) => ['manual_upload', 'material_library', 'manual'].includes(String(artifact?.source || ''))
+    && currentResolvedArtifact(artifact)
+    && artifact?.s7Ready !== false)
 
 export const technicalGapOwnTag = (item) => {
   if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
@@ -223,7 +258,7 @@ export const technicalGapOwnTag = (item) => {
   if (
     String(item?.decision || '') === 'ready'
     && !candidatePool(item).length
-    && !asObjectArray(item?.resolvedArtifacts).length
+    && !currentResolvedArtifacts(item).length
   ) return ''
   if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
   return 'manual_supplement'
@@ -323,7 +358,7 @@ export const technicalGapParentCoverageState = (item, allItems = []) => {
       && String(entry?.parentCoverageSource || '') === 'manual',
   )
   const hasMaterial = asObjectArray(item?.matchedMaterials).length > 0
-    || asObjectArray(item?.resolvedArtifacts).length > 0
+    || currentResolvedArtifacts(item).length > 0
   return {
     descendantCount: descendants.length,
     coveredCount: manualCovered.length,
@@ -341,6 +376,24 @@ export const appendixTaskForFillTask = (selected, task) => {
     return appendixTasks.find((appendixTask) => String(appendixTask?.id || '').trim() === blankId) || null
   }
   return appendixTasks[0] || null
+}
+
+export const tenderDocumentStateForAiFill = (appendixTask) => {
+  const routing = appendixTask?.sourceRouting && typeof appendixTask.sourceRouting === 'object'
+    ? appendixTask.sourceRouting
+    : {}
+  const required = Boolean(routing.useTenderParseFields)
+  const documents = asObjectArray(routing.tenderDocuments)
+  const count = Number(routing.tenderDocumentCount)
+  const documentCount = Number.isFinite(count) && count >= 0 ? count : documents.length
+  const status = String(routing.tenderDocumentStatus || (documentCount > 0 ? 'available' : required ? 'unknown' : 'not_required'))
+  return {
+    required,
+    status,
+    documentCount,
+    documentNames: uniqueStrings(documents.map((document) => document.name)),
+    missingSource: required && status === 'missing_source',
+  }
 }
 
 export const defaultAiFillReferenceMaterialIds = (selected, selectedMaterialIds = [], task = null) => {
@@ -384,7 +437,7 @@ export const defaultAiFillParseFieldIds = (selected, task) => uniqueStrings([
 ])
 
 export const latestResolvedArtifact = (selected) => {
-  const artifacts = asObjectArray(selected?.resolvedArtifacts)
+  const artifacts = currentResolvedArtifacts(selected)
   return artifacts.length ? artifacts[artifacts.length - 1] : null
 }
 
@@ -459,7 +512,7 @@ export const previewChoicesForItem = (selected, allItems = []) => {
   if (!selected) return []
 
   const choices = []
-  const artifacts = asObjectArray(selected?.resolvedArtifacts).slice().reverse()
+  const artifacts = currentResolvedArtifacts(selected).slice().reverse()
   artifacts
     .filter((item) => item?.onlyoffice?.fileUrl || item?.onlyoffice?.documentServerFileUrl)
     .forEach((artifact) => {

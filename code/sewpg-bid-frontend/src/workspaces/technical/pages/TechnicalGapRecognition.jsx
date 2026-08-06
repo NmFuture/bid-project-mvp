@@ -5,6 +5,7 @@ import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
@@ -18,6 +19,8 @@ import {
   appendixTaskForFillTask,
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
+  currentResolvedArtifact,
+  currentResolvedArtifacts,
   isFillTemplateMaterial,
   isStructuralItem,
   latestResolvedArtifact,
@@ -26,10 +29,11 @@ import {
   primaryBlankSource,
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
-  technicalGenerationPresentation,
+  technicalAppendixSourceMatrixUploadMessage,
   technicalGapDescendants,
   technicalGapTagOf,
   technicalMatchScore,
+  tenderDocumentStateForAiFill,
   uniqueStrings,
 } from './technicalGapRecognitionHelpers'
 
@@ -938,6 +942,7 @@ function AiFillReferenceModal({
   open,
   blankTitle,
   sourceRoutingSummary,
+  tenderDocumentState,
   candidates,
   referenceIds,
   busy,
@@ -947,6 +952,9 @@ function AiFillReferenceModal({
   onClose,
 }) {
   if (!open) return null
+  const usesTenderDocument = Boolean(tenderDocumentState?.required)
+  const missingTenderDocument = Boolean(tenderDocumentState?.missingSource)
+  const tenderDocumentNames = asArray(tenderDocumentState?.documentNames)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
       <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
@@ -966,6 +974,18 @@ function AiFillReferenceModal({
           {sourceRoutingSummary ? (
             <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
               {sourceRoutingSummary}
+            </div>
+          ) : null}
+          {usesTenderDocument ? (
+            <div className={`mt-2 rounded-md px-3 py-2 text-[11px] leading-relaxed ${missingTenderDocument ? 'bg-error-container text-on-error-container' : 'bg-primary-container/45 text-on-primary-container'}`}>
+              <div className="font-semibold">使用项目招标文件全文</div>
+              <div className="mt-0.5">
+                {missingTenderDocument
+                  ? '项目当前没有可读取的招标文件，请先在技术标解析中补充或替换招标文件并重新解析。'
+                  : tenderDocumentNames.length
+                    ? `${tenderDocumentNames.join('、')}（共 ${tenderDocumentState.documentCount} 份）`
+                    : '执行时将读取解析阶段上传的完整招标文件及其全文、表格解析结果。'}
+              </div>
             </div>
           ) : null}
           <div className="mt-3 space-y-2">
@@ -1008,19 +1028,28 @@ function AiFillReferenceModal({
               )
             }) : (
               <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
-                暂无推荐素材，可先在目录项底部搜索或上传素材后再发起 AI 填写。
+                {usesTenderDocument && !missingTenderDocument
+                  ? '本次无需额外选择素材，AI 将读取项目招标文件全文进行填写。'
+                  : '暂无推荐素材，可先在目录项底部搜索或上传素材后再发起 AI 填写。'}
               </div>
             )}
           </div>
         </div>
         <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-low px-5 py-4">
-          <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
-            已选 {referenceIds.length} 份参考素材
-          </span>
+          <div className="flex flex-wrap gap-1.5">
+            <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+              已选 {referenceIds.length} 份参考素材
+            </span>
+            {usesTenderDocument && !missingTenderDocument ? (
+              <span className="rounded bg-primary-container px-2 py-0.5 text-[10px] font-semibold text-on-primary-container">
+                招标文件 {tenderDocumentState.documentCount || '全部'} 份
+              </span>
+            ) : null}
+          </div>
           <div className="flex gap-2">
             <Button type="button" onClick={onClose} disabled={busy} variant="quiet">取消</Button>
-            <Button type="button" onClick={onConfirm} disabled={busy} variant="primary">
-              {busy ? '处理中...' : '开始 AI 填写'}
+            <Button type="button" onClick={onConfirm} disabled={busy || missingTenderDocument} variant="primary">
+              {busy ? '处理中...' : missingTenderDocument ? '缺少招标文件' : '开始 AI 填写'}
             </Button>
           </div>
         </div>
@@ -1029,71 +1058,6 @@ function AiFillReferenceModal({
   )
 }
 
-
-function TechnicalGenerationProgressModal({
-  open,
-  status,
-  progress,
-  onClose,
-}) {
-  if (!open) return null
-  const running = status?.status === 'running'
-  const completed = status?.status === 'completed'
-  const failed = status?.status === 'failed'
-  const title = running ? '正在生成技术标正文' : completed ? '技术标正文已生成' : failed ? '技术标正文生成失败' : '技术标正文生成'
-  const summary = status?.summary || (running ? '系统正在根据当前素材匹配结果生成正文。' : completed ? '可继续进入共创导出。' : failed ? '请检查任务状态后重新生成。' : '准备生成技术标正文。')
-  const { warningCount, formatCleanFailed, formatCleanMessage } = technicalGenerationPresentation(status)
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="w-full max-w-xl rounded-lg bg-surface shadow-2xl">
-        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
-          <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">{title}</h3>
-            <p className="mt-1 text-sm text-on-surface-variant">{summary}</p>
-          </div>
-          {!running ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
-        </div>
-        <div className="space-y-4 p-5">
-          <div className="flex items-center gap-3">
-            <div className="h-3 flex-1 overflow-hidden rounded-full bg-surface-container-high">
-              <div
-                className={`h-full transition-all duration-700 ${failed ? 'bg-error' : 'bg-primary'}`}
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <span className="w-12 text-right text-xs font-semibold text-outline">{progress}%</span>
-          </div>
-          {completed ? (
-            <div className="rounded-md border border-secondary/20 bg-secondary-container/40 px-3 py-2 text-sm text-on-secondary-container">
-              技术标正文已生成。可返回本页继续调整素材匹配并重新生成，或进入共创导出。
-            </div>
-          ) : null}
-          {completed && warningCount > 0 ? (
-            <div className="rounded-md border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm text-on-tertiary-fixed-variant">
-              生成结果包含 {warningCount} 项提示，可继续进入共创处理。
-            </div>
-          ) : null}
-          {completed && formatCleanFailed ? (
-            <div className="rounded-md border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm font-semibold text-on-tertiary-fixed-variant">
-              {formatCleanMessage}
-            </div>
-          ) : null}
-          {failed ? (
-            <div className="rounded-md border border-error/25 bg-error/10 px-3 py-2 text-sm text-error">
-              {status?.error || '生成失败，请稍后重试。'}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex justify-end border-t border-surface-container-high bg-surface-container-low px-5 py-4">
-          <Button type="button" onClick={onClose} disabled={running} variant={completed ? 'primary' : 'quiet'}>
-            {running ? '生成中...' : '关闭'}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 function PreviewDocumentPane({
   eyebrow,
@@ -1416,6 +1380,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const activeAppendixTasks = selectedAppendixTask ? [selectedAppendixTask] : selectedAppendixTasks
   const selectedSourceRouting = sourceRoutingForAppendixTasks(activeAppendixTasks, selected)
   const selectedSourceRoutingSummary = sourceRoutingText(selectedSourceRouting)
+  const aiFillTenderDocumentState = tenderDocumentStateForAiFill(
+    appendixTaskForFillTask(selected, aiFillModalTask),
+  )
   const selectedReferenceCandidates = (() => {
     const seen = new Set()
     const routed = sourceRoutedMaterials(activeAppendixTasks, selected)
@@ -1448,10 +1415,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
   // 本章合并清单（产品意见 2026-07-17 方案A）：展示本章全部已选用素材/上传/AI 产物，
   // 替代只显示最新一条产物的旧结果行。2026-08-02：每个目录项只定案一份素材，无合并顺序概念。
-  const mergeArtifacts = asObjectArray(selected?.resolvedArtifacts)
+  const mergeArtifacts = currentResolvedArtifacts(selected)
   // 已选用素材 id 集合：选用产物 source=material_library，对齐商务标已选高亮。
   const selectedMaterialIdSet = new Set(
-    asObjectArray(selected?.resolvedArtifacts)
+    currentResolvedArtifacts(selected)
       .filter((artifact) => String(artifact?.source || '') === 'material_library')
       .map((artifact) => String(artifact?.materialId || '').trim())
       .filter(Boolean),
@@ -1929,7 +1896,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 「复核通过」（产品裁决 2026-08-04 行为①）：确认全部 AI 填写产物，本条收口为已就绪素材。
   const handleReviewPassAiFill = (item) => {
     const artifact = asObjectArray(item?.resolvedArtifacts)
-      .filter((entry) => String(entry?.source || '') === 'ai_fill')
+      .filter((entry) => currentResolvedArtifact(entry) && String(entry?.source || '') === 'ai_fill')
       .pop()
     if (!artifact?.id) return null
     return runAction(
@@ -2230,10 +2197,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       formData.append('file', file)
       const payload = await technicalGapsAPI.uploadAppendixSourceMatrix(id, formData)
       setSourceMatrixMeta({ imported: true, fileName: payload?.fileName || file.name })
-      const applied = payload?.applied || {}
-      showToast?.(applied.routedItems
-        ? `已解析 ${payload?.rowCount ?? 0} 条附表来源规则，已应用到 ${applied.routedItems} 个目录项的附表任务`
-        : `已解析 ${payload?.rowCount ?? 0} 条附表来源规则，将在下次缺口识别时生效`)
+      showToast?.(technicalAppendixSourceMatrixUploadMessage(payload))
       await loadData({ silent: true })
     } catch (e) {
       showToast?.(e?.message || '附表填写规则上传失败', 'error')
@@ -2286,16 +2250,18 @@ export default function TechnicalGapRecognition({ showToast }) {
             >
               {busyAction === 'fact-specs-upload' ? '上传中...' : factConfirmed ? '项目事实表已确认' : '项目事实表'}
             </Button>
-            <Button
-              type="button"
-              onClick={runTechnicalAssembly}
-              disabled={Boolean(busyAction) || !hasTechnicalGapPlan || generationRunning}
-              title={!hasTechnicalGapPlan ? '素材匹配完成后可生成正文' : '允许带未确认项生成正文，生成结果会保留复核提示'}
-              size="stage"
-              variant="primary"
-            >
-              {generationRunning ? '生成中...' : generationCompleted ? '重新生成正文' : '生成技术标正文'}
-            </Button>
+            {!generationCompleted ? (
+              <Button
+                type="button"
+                onClick={runTechnicalAssembly}
+                disabled={Boolean(busyAction) || !hasTechnicalGapPlan || generationRunning}
+                title={!hasTechnicalGapPlan ? '素材匹配完成后可生成正文' : '允许带未确认项生成正文，生成结果会保留复核提示'}
+                size="stage"
+                variant="primary"
+              >
+                {generationRunning ? '生成中...' : '生成技术标正文'}
+              </Button>
+            ) : null}
             <Button
               type="button"
               onClick={advanceToTechnicalEditor}
@@ -2800,6 +2766,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         open={Boolean(aiFillModalTask)}
         blankTitle={aiFillModalTask?.blankSource?.title || aiFillModalTask?.blankSource?.id || ''}
         sourceRoutingSummary={selectedSourceRoutingSummary}
+        tenderDocumentState={aiFillTenderDocumentState}
         candidates={selectedReferenceCandidates}
         referenceIds={aiFillModalTask ? aiFillReferenceIdsFor(aiFillModalTask) : []}
         busy={Boolean(busyAction)}
