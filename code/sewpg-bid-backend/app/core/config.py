@@ -140,7 +140,6 @@ class Settings:
     s1_parse_opencode_enabled: bool
     s1_parse_technical_shard_enabled: bool
     s1_parse_shard_concurrency: int
-    s1_parse_model_config_timeout_sec: float
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
@@ -238,10 +237,6 @@ settings = Settings(
     s1_parse_technical_shard_enabled=_bool_env("S1_PARSE_TECHNICAL_SHARD_ENABLED", True),
     # projectBasics 与 6 个清单分片共 7 个独立会话，默认全部并发执行。
     s1_parse_shard_concurrency=_int_env("S1_PARSE_SHARD_CONCURRENCY", 7),
-    s1_parse_model_config_timeout_sec=max(
-        0.1,
-        float(os.getenv("S1_PARSE_MODEL_CONFIG_TIMEOUT_SEC", "3")),
-    ),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",

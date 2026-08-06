@@ -135,27 +135,6 @@ class OpencodeClientTests(unittest.TestCase):
 
         self.assertEqual(config["modelId"], "database-model")
 
-    def test_sync_model_config_load_with_explicit_timeout_warns_and_falls_back(self) -> None:
-        async def slow_config_load(_kind: str) -> dict:
-            await asyncio.sleep(0.1)
-            return _db_llm_config(modelId="unexpected-db-model")
-
-        started_at = time.monotonic()
-        with patch.object(
-            system_settings_service,
-            "get_model_secret_config",
-            new=slow_config_load,
-        ), self.assertLogs("app.services.system_settings", level="WARNING") as captured:
-            config = system_settings_service.get_opencode_model_config_sync(timeout_seconds=0.01)
-        elapsed = time.monotonic() - started_at
-
-        self.assertLess(elapsed, 0.08)
-        self.assertIn("模型配置读取超时", "\n".join(captured.output))
-        self.assertEqual(
-            config["modelId"],
-            settings.default_llm_model or settings.opencode_model_id,
-        )
-
     def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
         client = OpencodeClient()
         request = httpx.Request("POST", "http://opencode:4096/session")
