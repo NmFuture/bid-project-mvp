@@ -28,7 +28,13 @@ def technical_outline_number_and_title(
     return number, title
 
 
+FILL_QUALITY_ACCEPTED_STATUSES = frozenset({"passed", "no_fill_required"})
+
+
 def technical_gap_artifact_is_s7_ready(artifact: dict[str, Any]) -> bool:
+    # active=False 表示已被撤销/取代的非活动产物（保留审计），一律不进 S7。
+    if artifact.get("active", True) is False:
+        return False
     if artifact.get("s7Ready", True) is False:
         return False
     if str(artifact.get("source") or "") != "ai_fill":
@@ -36,7 +42,9 @@ def technical_gap_artifact_is_s7_ready(artifact: dict[str, Any]) -> bool:
     if str(artifact.get("qualityGate") or "") == "human_confirmed":
         return True
     quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
-    return str(quality_report.get("status") or "") == "passed"
+    # no_fill_required：空白模板本身没有待填单元格（招标原文已写满，或整列留空即
+    # 不限制），填 0 格是正确终态，与 passed 同等放行。
+    return str(quality_report.get("status") or "") in FILL_QUALITY_ACCEPTED_STATUSES
 
 
 def recompute_technical_gap_decisions(plan: dict[str, Any]) -> int:
@@ -314,6 +322,9 @@ def aggregate_technical_gap_fill_quality(
         "evidenceRefCount": evidence,
         "taskCount": len(reports),
         "passedTaskCount": sum(1 for report in reports if report.get("status") == "passed"),
-        "needsReviewTaskCount": sum(1 for report in reports if report.get("status") != "passed"),
+        "noFillRequiredTaskCount": sum(1 for report in reports if report.get("status") == "no_fill_required"),
+        "needsReviewTaskCount": sum(
+            1 for report in reports if report.get("status") not in FILL_QUALITY_ACCEPTED_STATUSES
+        ),
         "thresholds": thresholds,
     }

@@ -4,11 +4,13 @@ import copy
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import shutil
 import sys
 import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -41,12 +43,122 @@ TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
 TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 TECH_OUTLINE_HANDOFF_DECISION_UNITS = 1
 TECH_OUTLINE_CHAPTER_WORKERS = 6
-_TECH_OUTLINE_REQUEST_SLOTS = threading.BoundedSemaphore(TECH_OUTLINE_CHAPTER_WORKERS)
+TECH_OUTLINE_TOTAL_WORKERS = TECH_OUTLINE_CHAPTER_WORKERS + 1
+_TECH_OUTLINE_REQUEST_SLOTS = threading.BoundedSemaphore(TECH_OUTLINE_TOTAL_WORKERS)
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
+
+logger = logging.getLogger(__name__)
 
 
 class _ChapterParallelUnsupported(RuntimeError):
     pass
+
+
+_DECISION_PROGRESS_READ_INTERVAL_SECONDS = 3.0
+
+
+class _ChapterDecisionAggregator:
+    """汇总并行章节会话的判定计数，节流上报 decision_progress。
+
+    计数读取挂在各章节的流式回调上（消息更新即触发），读的是各章节工作区
+    决策状态的只读快照；读失败只跳过本次，不影响生成主流程。
+    """
+
+    def __init__(
+        self,
+        chapters: list[dict[str, Any]],
+        progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
+        *,
+        appendix_total: int = 0,
+    ) -> None:
+        self._totals = {
+            str(chapter["chapter_id"]): int(chapter.get("item_count") or 0)
+            for chapter in chapters
+        }
+        self._decided = {chapter_id: 0 for chapter_id in self._totals}
+        self._appendix_total = max(0, int(appendix_total))
+        self._appendix_decided = 0
+        self._done: set[str] = set()
+        self._last_read = {chapter_id: 0.0 for chapter_id in self._totals}
+        self._last_reported: tuple[int, int, int] | None = None
+        self._lock = threading.Lock()
+        self._callback = progress_callback
+
+    def should_read(self, chapter_id: str) -> bool:
+        if self._callback is None:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_read.get(chapter_id, 0.0) < _DECISION_PROGRESS_READ_INTERVAL_SECONDS:
+                return False
+            self._last_read[chapter_id] = now
+            return True
+
+    def update(self, chapter_id: str, decided_count: int) -> None:
+        with self._lock:
+            total = self._totals.get(chapter_id, 0)
+            current = self._decided.get(chapter_id, 0)
+            self._decided[chapter_id] = max(current, min(decided_count, total))
+            payload = self._changed_payload_locked()
+            self._emit(payload)
+
+    def update_appendix(self, decided_count: int) -> None:
+        with self._lock:
+            self._appendix_decided = max(
+                self._appendix_decided,
+                min(max(0, decided_count), self._appendix_total),
+            )
+            payload = self._changed_payload_locked()
+            self._emit(payload)
+
+    def mark_done(self, chapter_id: str) -> None:
+        with self._lock:
+            self._done.add(chapter_id)
+            self._decided[chapter_id] = self._totals.get(chapter_id, 0)
+            payload = self._changed_payload_locked()
+            self._emit(payload)
+
+    def emit_initial(self) -> None:
+        with self._lock:
+            payload = self._changed_payload_locked(force=True)
+            self._emit(payload)
+
+    def _changed_payload_locked(self, force: bool = False) -> dict[str, Any] | None:
+        chapter_decided = sum(self._decided.values())
+        chapter_total = sum(self._totals.values())
+        chapters_done = len(self._done)
+        signature = (chapter_decided, self._appendix_decided, chapters_done)
+        if not force and self._last_reported == signature:
+            return None
+        self._last_reported = signature
+        if self._appendix_total <= 0:
+            return {
+                "phase": "chapters",
+                "decided": chapter_decided,
+                "total": chapter_total,
+                "chaptersDone": chapters_done,
+                "chaptersTotal": len(self._totals),
+            }
+        return {
+            "phase": "parallel",
+            "decided": chapter_decided + self._appendix_decided,
+            "total": chapter_total + self._appendix_total,
+            "chapterDecided": chapter_decided,
+            "chapterTotal": chapter_total,
+            "appendixDecided": self._appendix_decided,
+            "appendixTotal": self._appendix_total,
+            "chaptersDone": chapters_done,
+            "chaptersTotal": len(self._totals),
+        }
+
+    def _emit(self, payload: dict[str, Any] | None) -> None:
+        if payload is None or self._callback is None:
+            return
+        try:
+            self._callback("decision_progress", payload)
+        except Exception:
+            # 进度上报绝不打断生成主流程
+            pass
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
 # 注入 S2 manifest 的事实表状态：已确认/已抽取/待人工确认的值可信可用；
@@ -168,7 +280,7 @@ manifest：{manifest_path}
 
 {startup}
 {mandatory_start}
-本会话只做模板正文目录的自主判断：循环调用 `decision-next`，每个决策单元都按 Skill 自主使用 `search` 和 `section` 阅读相关招标原文，再提交“保留 / 建议增加 / 建议删除”。最多完成 {TECH_OUTLINE_HANDOFF_DECISION_UNITS} 个成功提交的决策单元；不足时做到 `decision-next complete=true` 为止。
+本会话只做模板正文目录的自主判断：循环调用 `decision-next`，每个决策单元是一个一级章的章根加它下面的全部二级节点（三级节点跟随二级父节点，不单独判断）。按 Skill 自主使用 `search` 和 `section` 阅读相关招标原文，再提交“保留 / 建议增加 / 建议删除”。最多完成 {TECH_OUTLINE_HANDOFF_DECISION_UNITS} 个成功提交的决策单元；不足时做到 `decision-next complete=true` 为止。
 
 本会话不得执行 appendix-next、review-complete、decisions、compose 或 finalize。到达本会话边界后立即停止，不要继续读后续章节；只返回一个简短 JSON：{{"workflowStage":"decision_checkpoint"}}。
 """.strip()
@@ -185,9 +297,133 @@ Use the {OUTLINE_SKILL_NAME} skill.
 manifest：{manifest_path}
 
 准备产物已经由后端生成，不要执行 `s2outline prepare`。先用 `template-headings` 按 `next_cursor` 读完模板目录，再用 `headings` 按 `next_cursor` 读完整本招标目录，以便识别跨章等价项。
-然后循环执行 `decision-next`。每个决策单元都按 Skill 自主使用 `search`、`section`、`read` 阅读相关招标原文，完成“保留 / 建议增加 / 建议删除”三类判断并执行 `decision-batch`。同一章包含多个决策单元时继续处理，直到 `decision-next complete=true`。
+然后循环执行 `decision-next`。决策只到二级：`decision-next` 返回本章章根和它下面的全部二级节点，三级节点跟随二级父节点，不单独判断。按 Skill 自主使用 `search`、`section`、`read` 阅读相关招标原文，完成“保留 / 建议增加 / 建议删除”三类判断并执行 `decision-batch`，直到 `decision-next complete=true`。
+若 `decision-next` 返回 `authoring_mode=sparse_chapter`（本章模板二级节点稀疏），按其 `decision_steps` 执行：自主圈定本章对应的少数上级章节后，用 `section --max-chars 30000` 连续通读，不做搜索式发散（search 全会话最多 2 次），从已读原文提炼响应单元并一次提交全部新增。
 不要执行 `appendix-next`、`review-complete`、`decisions`、`compose` 或 `finalize`，也不要处理其他一级章。完成后只返回简短 JSON：{{"workflowStage":"chapter_complete"}}。
 """.strip()
+
+
+def _build_outline_appendix_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+这是 S2 技术标目录的附表决策会话。模板正文各章的三类判断已由并行章节会话全部完成并合并，本会话只做技术附表判断。
+manifest：{manifest_path}
+
+不要执行 `s2outline prepare`、`template-headings`、`headings`、`decision-next`、`decision-batch`、`review-corrections`、`review-complete`、`decisions`、`compose` 或 `finalize`，也不要改判正文章节。
+
+从 `s2outline appendix-next {manifest_path} --max-items 40` 开始，按 Skill 第 4 步循环判断并用 `appendix-decision-batch` 提交，直到 `appendix-next` 返回 `complete=true`。需要证据时用 `search`、`section` 阅读招标原文。完成后只返回简短 JSON：{{"workflowStage":"appendix_complete"}}。
+""".strip()
+
+
+def _build_outline_appendix_predecision_prompt(manifest_path: Path) -> str:
+    return f"""
+Use the {OUTLINE_SKILL_NAME} skill.
+
+这是 S2 技术标目录的附表并行预判会话。正文章节会话正在同时运行；本会话只判断每个附表 include 或 exclude，不生成节点、不挂载目录、不写正文决策。
+manifest：{manifest_path}
+
+不要执行 `s2outline prepare`、`template-headings`、`headings`、`decision-next`、`decision-batch`、`appendix-next`、`appendix-decision-batch`、`review-corrections`、`review-complete`、`decisions`、`compose` 或 `finalize`。
+
+从 `s2outline appendix-predecision-next {manifest_path} --max-items 40` 开始，按 Skill 的附表判断规则逐项判断，并用 `appendix-predecision-batch` 提交。提交项只能包含 `appendix_id`、`decision`、`reason`。需要证据时用 `search`、`section` 阅读招标原文，直到 next 返回 `complete=true`。完成后只返回简短 JSON：{{"workflowStage":"appendix_predecision_complete"}}。
+""".strip()
+
+
+def _run_outline_appendix_session(
+    manifest_path: Path,
+    *,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    runner = _load_technical_outline_runner()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    structure = json.loads(
+        (work_dir / "template_structure.json").read_text(encoding="utf-8")
+    )
+    appendix_items = runner.review_workflow.decision_appendix_items(work_dir)
+    if not appendix_items:
+        return {
+            "sessionId": "",
+            "state": {"complete": True, "decidedCount": 0, "remainingCount": 0},
+            "opencodeOutput": build_directory_opencode_output(status="received"),
+        }
+    binding = runner._strict_workflow_binding(manifest, work_dir)
+
+    def validate_complete() -> dict[str, Any]:
+        return runner.decision_workflow.appendix_decision_progress(
+            work_dir,
+            structure,
+            appendix_items,
+            workflow_binding=binding,
+        )
+
+    appendix_total = len(appendix_items)
+    last_progress_read = [0.0]
+
+    def emit_appendix_progress(decided: int) -> None:
+        if progress_callback:
+            progress_callback(
+                "decision_progress",
+                {"phase": "appendix", "decided": decided, "total": appendix_total},
+            )
+
+    def stream_delta(details: dict[str, Any]) -> None:
+        progress_callback("outline_delta", {**details, "suppressPercentage": True})
+        now = time.monotonic()
+        if now - last_progress_read[0] < _DECISION_PROGRESS_READ_INTERVAL_SECONDS:
+            return
+        last_progress_read[0] = now
+        try:
+            snapshot = validate_complete()
+        except (Exception, SystemExit):
+            return
+        emit_appendix_progress(int(snapshot.get("decidedCount") or 0))
+
+    emit_appendix_progress(0)
+    result = OpencodeClient(
+        timeout_ms=int(settings.opencode_timeout_sec * 1000),
+    ).run_outline_decision_session(
+        _build_outline_appendix_prompt(manifest_path),
+        session_title="S2 附表决策",
+        completion_validator=validate_complete,
+        session_ready_callback=(
+            (lambda details: progress_callback("outline_session_ready", details))
+            if progress_callback
+            else None
+        ),
+        stream_callback=stream_delta if progress_callback else None,
+        session_phase="appendix_decision",
+    )
+    emit_appendix_progress(appendix_total)
+    return result
+
+
+def _close_technical_outline_without_llm(manifest_path: Path) -> dict[str, Any]:
+    """并行章节与附表决策完成后，由后端直跑受控收口命令，替代串行 LLM 收口会话。
+
+    不再执行 LLM 全局复核：5 次实测复核仅 1 次改判且为重复既有章节的负价值
+    产出，历史重大缺陷（空章）也未被其捕获；质量兜底交给下游人工审核与
+    finalize 强校验。review-complete 仅在决策状态上盖全局复核章。
+    """
+    runner = _load_technical_outline_runner()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    review_payload = json.dumps(
+        {
+            "review_summary": (
+                "并行章节决策与附表决策已全部提交并通过受控合并；"
+                "按配置跳过 LLM 全局复核，由后端执行受控收口，质量由人工审核兜底。"
+            ),
+            "issues": [],
+        },
+        ensure_ascii=False,
+    )
+    try:
+        runner.dispatch_command("review-complete", manifest, manifest_path, [review_payload])
+        runner.dispatch_command("decisions", manifest, manifest_path, [])
+        runner.dispatch_command("compose", manifest, manifest_path, [])
+    except SystemExit as exc:
+        raise RuntimeError(f"技术标目录受控收口失败：{exc}") from exc
+    return _finalize_current_technical_outline(manifest_path)
 
 
 def _outline_chapter_base_urls() -> list[str]:
@@ -250,15 +486,49 @@ def _prepare_outline_chapter_workspaces(
     return chapters, chapter_manifests, chapter_root, workflow_binding
 
 
+def _prepare_outline_appendix_workspace(
+    manifest_path: Path,
+    chapter_root: Path,
+) -> Path:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
+    appendix_dir = chapter_root / "appendix"
+    appendix_dir.mkdir()
+    for source in work_dir.iterdir():
+        if source.is_file():
+            shutil.copy2(source, appendix_dir / source.name)
+    (appendix_dir / "outline_decision_state.json").unlink(missing_ok=True)
+    appendix_manifest = copy.deepcopy(manifest)
+    appendix_manifest["workDir"] = str(appendix_dir)
+    appendix_manifest["outputFile"] = str(appendix_dir / "toc.json")
+    appendix_manifest_path = appendix_dir / "s2_input.json"
+    appendix_manifest_path.write_text(
+        json.dumps(appendix_manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return appendix_manifest_path
+
+
 def _run_parallel_outline_chapters(
     manifest_path: Path,
     structure: dict[str, Any],
     *,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
-) -> list[str]:
+) -> dict[str, Any]:
     runner = _load_technical_outline_runner()
     chapters, chapter_manifests, chapter_root, workflow_binding = (
         _prepare_outline_chapter_workspaces(manifest_path, structure)
+    )
+    appendix_manifest_path = _prepare_outline_appendix_workspace(
+        manifest_path,
+        chapter_root,
+    )
+    appendix_manifest = json.loads(
+        appendix_manifest_path.read_text(encoding="utf-8")
+    )
+    appendix_work_dir = Path(str(appendix_manifest["workDir"]))
+    appendix_items = runner.review_workflow.decision_appendix_items(
+        appendix_work_dir
     )
     session_ids: dict[str, str] = {}
     chapter_base_urls = _outline_chapter_base_urls()
@@ -266,6 +536,11 @@ def _run_parallel_outline_chapters(
     chapter_indexes = {
         str(chapter["chapter_id"]): index for index, chapter in enumerate(chapters)
     }
+    aggregator = _ChapterDecisionAggregator(
+        chapters,
+        progress_callback,
+        appendix_total=len(appendix_items),
+    )
 
     def run_chapter(chapter: dict[str, Any]) -> tuple[str, str]:
         chapter_id = str(chapter["chapter_id"])
@@ -289,6 +564,16 @@ def _run_parallel_outline_chapters(
                     {**details, "chapterId": chapter_id, "chapterTitle": chapter.get("title")},
                 )
 
+        def stream_delta(details: dict[str, Any]) -> None:
+            if progress_callback:
+                progress_callback("outline_delta", {**details, "suppressPercentage": True})
+            if aggregator.should_read(chapter_id):
+                try:
+                    snapshot = validate_complete()
+                except (Exception, SystemExit):
+                    return
+                aggregator.update(chapter_id, int(snapshot.get("decidedCount") or 0))
+
         result = OpencodeClient(
             base_url=chapter_base_urls[chapter_indexes[chapter_id] % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
@@ -299,25 +584,90 @@ def _run_parallel_outline_chapters(
             session_title=f"S2 目录决策·{chapter.get('number') or chapter_id}",
             completion_validator=validate_complete,
             session_ready_callback=session_ready,
-            stream_callback=(
-                (lambda details: progress_callback("outline_delta", details))
-                if progress_callback
-                else None
-            ),
+            stream_callback=stream_delta if progress_callback else None,
         )
         return chapter_id, str(result["sessionId"])
 
+    def run_appendix() -> dict[str, Any]:
+        appendix_binding = (
+            runner._strict_workflow_binding(appendix_manifest, appendix_work_dir) or {}
+        )
+
+        def validate_complete() -> dict[str, Any]:
+            return runner.decision_workflow.appendix_decision_progress(
+                appendix_work_dir,
+                structure,
+                appendix_items,
+                workflow_binding=appendix_binding,
+            )
+
+        def session_ready(details: dict[str, Any]) -> None:
+            if progress_callback:
+                progress_callback(
+                    "outline_session_ready",
+                    {**details, "phase": "appendix"},
+                )
+
+        def stream_delta(details: dict[str, Any]) -> None:
+            if progress_callback:
+                progress_callback(
+                    "outline_delta",
+                    {**details, "suppressPercentage": True},
+                )
+            try:
+                snapshot = validate_complete()
+            except (Exception, SystemExit):
+                return
+            aggregator.update_appendix(int(snapshot.get("decidedCount") or 0))
+
+        aggregator.update_appendix(0)
+        result = OpencodeClient(
+            base_url=chapter_base_urls[len(chapters) % len(chapter_base_urls)],
+            timeout_ms=int(settings.opencode_timeout_sec * 1000),
+            model_config=model_config,
+            request_slots=_TECH_OUTLINE_REQUEST_SLOTS,
+        ).run_outline_decision_session(
+            _build_outline_appendix_predecision_prompt(appendix_manifest_path),
+            session_title="S2 附表并行预判",
+            completion_validator=validate_complete,
+            session_ready_callback=session_ready,
+            stream_callback=stream_delta if progress_callback else None,
+            session_phase="appendix_predecision",
+        )
+        aggregator.update_appendix(len(appendix_items))
+        return result
+
+    appendix_result: dict[str, Any] | None = None
+    appendix_predecided = not appendix_items
     try:
+        aggregator.emit_initial()
         with ThreadPoolExecutor(
             max_workers=min(
-                TECH_OUTLINE_CHAPTER_WORKERS,
-                max(1, len(chapters)),
+                TECH_OUTLINE_TOTAL_WORKERS,
+                max(1, len(chapters) + (1 if appendix_items else 0)),
             )
         ) as executor:
-            futures = {executor.submit(run_chapter, chapter): chapter for chapter in chapters}
+            futures: dict[Any, tuple[str, Any]] = {
+                executor.submit(run_chapter, chapter): ("chapter", chapter)
+                for chapter in chapters
+            }
+            if appendix_items:
+                futures[executor.submit(run_appendix)] = ("appendix", None)
             for future in as_completed(futures):
+                kind, target = futures[future]
+                if kind == "appendix":
+                    try:
+                        appendix_result = future.result()
+                        appendix_predecided = True
+                    except (Exception, SystemExit) as exc:
+                        logger.warning(
+                            "附表并行预判失败，将在章节合并后串行降级：%s",
+                            exc,
+                        )
+                    continue
                 chapter_id, session_id = future.result()
                 session_ids[chapter_id] = session_id
+                aggregator.mark_done(chapter_id)
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()
@@ -332,11 +682,34 @@ def _run_parallel_outline_chapters(
             },
             workflow_binding=workflow_binding,
         )
+        if appendix_predecided and appendix_items:
+            try:
+                runner.decision_workflow.materialize_appendix_predecisions(
+                    work_dir,
+                    appendix_work_dir,
+                    structure,
+                    appendix_items,
+                    workflow_binding=workflow_binding,
+                )
+            except (Exception, SystemExit) as exc:
+                appendix_predecided = False
+                logger.warning(
+                    "附表并行预判物化失败，将改用串行附表会话：%s",
+                    exc,
+                )
+    except SystemExit as exc:
+        raise RuntimeError(str(exc)) from exc
     except Exception:
         raise
     else:
         shutil.rmtree(chapter_root, ignore_errors=True)
-    return [session_ids[str(chapter["chapter_id"])] for chapter in chapters]
+    return {
+        "chapterSessionIds": [
+            session_ids[str(chapter["chapter_id"])] for chapter in chapters
+        ],
+        "appendixResult": appendix_result,
+        "appendixPredecided": appendix_predecided,
+    }
 
 
 def _technical_outline_handoff_state(
@@ -476,6 +849,7 @@ def generate_outline_for_project_with_progress(
         summary=summary,
         opencode_output=opencode_output,
         rule_evidence=toc_result.get("ruleEvidence") if isinstance(toc_result.get("ruleEvidence"), dict) else {},
+        invalidate_technical_downstream=bool((data or {}).get("regenerateOutline")),
     )
     persist_workspace_project_state(project_for_update)
     return payload
@@ -490,17 +864,41 @@ def _run_outline_skill(
     if _is_business_bid(bid_type):
         return _run_business_outline_skill(manifest_path, progress_callback=progress_callback)
 
-    prompt = _build_outline_finalize_prompt(manifest_path)
     try:
         trusted_input = _capture_trusted_technical_outline_input(manifest_path)
         chapter_session_ids: list[str] = []
+        parallel_appendix_result: dict[str, Any] | None = None
+        appendix_predecided = False
         handoff_kwargs: dict[str, Any] = {}
+        parallel_completed = False
+        finalizing_reported = False
+
+        def emit_finalizing_result() -> None:
+            nonlocal finalizing_reported
+            if progress_callback and not finalizing_reported:
+                progress_callback("finalizing_result", {})
+                finalizing_reported = True
+
         try:
-            chapter_session_ids = _run_parallel_outline_chapters(
+            parallel_result = _run_parallel_outline_chapters(
                 manifest_path,
                 trusted_input["templateStructure"],
                 progress_callback=progress_callback,
             )
+            if isinstance(parallel_result, dict):
+                chapter_session_ids = list(
+                    parallel_result.get("chapterSessionIds") or []
+                )
+                raw_appendix_result = parallel_result.get("appendixResult")
+                if isinstance(raw_appendix_result, dict):
+                    parallel_appendix_result = raw_appendix_result
+                appendix_predecided = bool(
+                    parallel_result.get("appendixPredecided")
+                )
+            else:
+                # 兼容测试和历史调用方的章节会话列表。
+                chapter_session_ids = list(parallel_result or [])
+            parallel_completed = True
         except _ChapterParallelUnsupported:
             previous_decided_count = [-1]
 
@@ -511,6 +909,16 @@ def _run_outline_skill(
                     previous_decided_count=previous_decided_count[0],
                 )
                 previous_decided_count[0] = int(state["decidedCount"])
+                if progress_callback:
+                    decided = int(state["decidedCount"])
+                    progress_callback(
+                        "decision_progress",
+                        {
+                            "phase": "serial",
+                            "decided": decided,
+                            "total": decided + int(state.get("remainingCount") or 0),
+                        },
+                    )
                 return state
 
             handoff_kwargs = {
@@ -521,24 +929,60 @@ def _run_outline_skill(
                 "handoff_state_callback": handoff_state,
             }
 
-        generated = OpencodeClient(
-            timeout_ms=int(settings.opencode_timeout_sec * 1000)
-        ).generate_outline_with_trace(
-                prompt,
-                session_ready_callback=(
-                    (lambda details: progress_callback("outline_session_ready", details))
-                    if progress_callback
-                    else None
-                ),
-                stream_callback=(
-                    (lambda details: progress_callback("outline_delta", details))
-                    if progress_callback
-                    else None
-                ),
-                early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
-                terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
-                **handoff_kwargs,
-            )
+        if chapter_session_ids and not settings.tech_outline_llm_finalize:
+            # 附表预判成功时已在章节合并后受控物化；失败才串行降级。
+            appendix_result = parallel_appendix_result
+            if not appendix_predecided:
+                appendix_result = _run_outline_appendix_session(
+                    manifest_path,
+                    progress_callback=progress_callback,
+                )
+            emit_finalizing_result()
+            generated = {
+                **_close_technical_outline_without_llm(manifest_path),
+                "opencodeOutput": (
+                    appendix_result.get("opencodeOutput")
+                    if isinstance(appendix_result, dict)
+                    else {}
+                )
+                or {},
+            }
+        else:
+            if parallel_completed:
+                emit_finalizing_result()
+
+            def session_ready(details: dict[str, Any]) -> None:
+                if not progress_callback:
+                    return
+                callback_details = (
+                    {**details, "suppressStage": True}
+                    if finalizing_reported
+                    else details
+                )
+                progress_callback("outline_session_ready", callback_details)
+                if str(details.get("sessionPhase") or "") == "finalize":
+                    emit_finalizing_result()
+
+            def stream_delta(details: dict[str, Any]) -> None:
+                if not progress_callback:
+                    return
+                callback_details = (
+                    {**details, "suppressStage": True}
+                    if finalizing_reported
+                    else details
+                )
+                progress_callback("outline_delta", callback_details)
+
+            generated = OpencodeClient(
+                timeout_ms=int(settings.opencode_timeout_sec * 1000)
+            ).generate_outline_with_trace(
+                    _build_outline_finalize_prompt(manifest_path),
+                    session_ready_callback=session_ready if progress_callback else None,
+                    stream_callback=stream_delta if progress_callback else None,
+                    early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
+                    terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
+                    **handoff_kwargs,
+                )
         loaded = _load_outline_result(
             generated,
             manifest_path,
@@ -556,6 +1000,13 @@ def _run_outline_skill(
             output_trace["parallelChapterWorkers"] = min(
                 TECH_OUTLINE_CHAPTER_WORKERS,
                 len(chapter_session_ids),
+            )
+            output_trace["parallelAppendixSessionCount"] = int(
+                bool(parallel_appendix_result)
+            )
+            output_trace["parallelDecisionWorkers"] = min(
+                TECH_OUTLINE_TOTAL_WORKERS,
+                len(chapter_session_ids) + int(bool(parallel_appendix_result)),
             )
         return loaded
     except Exception as exc:

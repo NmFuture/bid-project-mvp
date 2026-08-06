@@ -16,6 +16,11 @@ LEDGER_SCHEMA_VERSION = "tender-requirement-ledger.v1"
 HEADINGS_STATE_SCHEMA_VERSION = "tender-headings-state.v1"
 EVIDENCE_ACCESS_SCHEMA_VERSION = "tender-evidence-access.v1"
 DEFAULT_CHUNK_CHAR_LIMIT = 12_000
+# 导航命令的序列化输出必须低于 run_from_manifest 的 45000 字符硬限
+# （opencode 按字符截断工具输出，上限 51200 字符；字节计量对中文会把预算
+# 收缩到约 1/3，导致长节被切成多页、逐页触发模型深思考）。
+# 分页和截断按这个安全预算收缩，让默认参数在中文语料下也不会触发硬限回滚。
+NAVIGATION_SAFE_OUTPUT_CHARS = 41_000
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{WORD_NS}}}"
 STRUCTURAL_TITLE_PATTERN = re.compile(
@@ -54,6 +59,16 @@ def evidence_search_text(record: dict[str, Any]) -> str:
     if meaningful:
         return min(meaningful, key=len)
     return clean_text(record.get("text"))
+
+
+def _serialized_chars(payload: Any) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+
+def _truncate_text_chars(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)] + "…"
 
 
 def _payload_digest(payload: Any) -> str:
@@ -620,6 +635,17 @@ def _paged_heading_files(
         flattened.extend((file_entry, source, item) for item in selected)
 
     page = flattened[cursor : cursor + page_size]
+    # 按字符预算收缩本页条目数，保证大 page-size 也不会触发 45000 字符硬限。
+    item_budget = NAVIGATION_SAFE_OUTPUT_CHARS - 4_000
+    used_chars = 0
+    kept = 0
+    for _, _, item in page:
+        item_chars = _serialized_chars(item) + 1
+        if kept and used_chars + item_chars > item_budget:
+            break
+        used_chars += item_chars
+        kept += 1
+    page = page[: max(1, kept)] if page else page
     next_cursor = cursor + len(page)
     complete = next_cursor >= len(flattened)
     paged_files_by_id: dict[str, dict[str, Any]] = {}
@@ -1341,7 +1367,10 @@ def read_section(
         None,
     )
     if section is None:
-        raise SystemExit(f"section id not found or not mapped to body: {section_id}")
+        raise SystemExit(
+            f"section id not found or not mapped to body: {section_id}；"
+            "sectionId 必须使用 headings 返回的 items[].section_id，不能用 evidenceId 或标题拼写"
+        )
     all_records = [
         deepcopy(block)
         for block in _all_blocks_by_file(chunks).get(section["file_id"], [])
@@ -1351,30 +1380,44 @@ def read_section(
     ]
     if cursor > len(all_records):
         raise SystemExit(f"section cursor must be between 0 and {len(all_records)}")
+    response = {
+        "schema_version": "tender-section.v1",
+        "section": deepcopy(section),
+        "cursor": str(cursor),
+        "next_cursor": str(len(all_records)),
+        "complete": False,
+        "records": [],
+    }
+    output_budget = NAVIGATION_SAFE_OUTPUT_CHARS - _serialized_chars(response)
     records: list[dict[str, Any]] = []
     used_chars = 0
+    used_output_chars = 0
     index = cursor
     while index < len(all_records):
         record = all_records[index]
         text = clean_text(record.get("text"))
-        if records and used_chars + len(text) > max_chars:
-            break
         public_record = deepcopy(record)
         public_record.pop("rows", None)
+        record_chars = _serialized_chars(public_record) + 1
+        if records and (used_chars + len(text) > max_chars or used_output_chars + record_chars > output_budget):
+            break
+        if not records and record_chars > output_budget:
+            # 单条正文超过字符预算：截断展示并标记，全文用 read/window 继续读。
+            overhead = record_chars - len(text)
+            public_record["text"] = _truncate_text_chars(text, max(200, output_budget - overhead))
+            public_record["text_truncated"] = True
+            record_chars = _serialized_chars(public_record) + 1
         records.append(public_record)
         used_chars += len(text)
+        used_output_chars += record_chars
         index += 1
     evidence_ids = [clean_text(item.get("evidence_id")) for item in records]
     _record_evidence_access(work_dir, chunks, evidence_ids, command="section")
     complete = index >= len(all_records)
-    return {
-        "schema_version": "tender-section.v1",
-        "section": deepcopy(section),
-        "cursor": str(cursor),
-        "next_cursor": "" if complete else str(index),
-        "complete": complete,
-        "records": records,
-    }
+    response["next_cursor"] = "" if complete else str(index)
+    response["complete"] = complete
+    response["records"] = records
+    return response
 
 
 def search_tender(
@@ -1416,27 +1459,39 @@ def search_tender(
                         "snippet": text,
                     }
                 )
-    page: list[dict[str, Any]] = []
-    used_chars = 0
-    index = cursor
-    while index < len(matches) and len(page) < max_results:
-        item = matches[index]
-        item_chars = len(item["snippet"])
-        if page and used_chars + item_chars > max_chars:
-            break
-        page.append(item)
-        used_chars += item_chars
-        index += 1
-    complete = index >= len(matches)
-    return {
+    response = {
         "schema_version": "tender-search.v1",
         "query": query,
         "match_count": len(matches),
         "cursor": str(cursor),
-        "next_cursor": "" if complete else str(index),
-        "complete": complete,
-        "results": page,
+        "next_cursor": str(len(matches)),
+        "complete": False,
+        "results": [],
     }
+    output_budget = NAVIGATION_SAFE_OUTPUT_CHARS - _serialized_chars(response)
+    page: list[dict[str, Any]] = []
+    used_chars = 0
+    used_output_chars = 0
+    index = cursor
+    while index < len(matches) and len(page) < max_results:
+        item = matches[index]
+        item_chars = len(item["snippet"])
+        item_output_chars = _serialized_chars(item) + 1
+        if page and (used_chars + item_chars > max_chars or used_output_chars + item_output_chars > output_budget):
+            break
+        if not page and item_output_chars > output_budget:
+            overhead = item_output_chars - len(item["snippet"])
+            item = {**item, "snippet": _truncate_text_chars(item["snippet"], max(200, output_budget - overhead))}
+            item_output_chars = _serialized_chars(item) + 1
+        page.append(item)
+        used_chars += item_chars
+        used_output_chars += item_output_chars
+        index += 1
+    complete = index >= len(matches)
+    response["next_cursor"] = "" if complete else str(index)
+    response["complete"] = complete
+    response["results"] = page
+    return response
 
 
 def controlled_tender_basis(work_dir: Path, evidence_id: str) -> dict[str, str]:

@@ -113,6 +113,7 @@ class OpencodeClient:
         prompt_text: str,
         *,
         timeout: httpx.Timeout | None = None,
+        tools: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "model": {
@@ -126,6 +127,8 @@ class OpencodeClient:
                 }
             ],
         }
+        if tools is not None:
+            payload["tools"] = dict(tools)
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
             with self._request_slots:
@@ -149,10 +152,20 @@ class OpencodeClient:
         except httpx.HTTPError as exc:
             raise RuntimeError(f"futurecode 生成失败：{self._short_http_error(exc)}") from exc
 
-    def send_text_prompt(self, title: str, prompt_text: str) -> dict[str, Any]:
+    def send_text_prompt(
+        self,
+        title: str,
+        prompt_text: str,
+        *,
+        tools: dict[str, bool] | None = None,
+    ) -> dict[str, Any]:
         session = self.create_session(title)
         session_id = str(session.get("id") or "")
-        response = self.send_prompt(session_id, prompt_text)
+        response = (
+            self.send_prompt(session_id, prompt_text)
+            if tools is None
+            else self.send_prompt(session_id, prompt_text, tools=tools)
+        )
         info = response.get("info") if isinstance(response.get("info"), dict) else {}
         if info.get("error"):
             raise RuntimeError(self._format_response_error(info["error"]))
@@ -179,8 +192,9 @@ class OpencodeClient:
         completion_validator: Callable[[], dict[str, Any]],
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        session_phase: str = "chapter_decision",
     ) -> dict[str, Any]:
-        """运行一个独立章节决策会话，最终结果以持久化状态为准。"""
+        """运行一个独立决策会话（章节或附表），最终结果以持久化状态为准。"""
         session = self.create_session(session_title)
         session_id = str(session.get("id") or "")
         if session_ready_callback:
@@ -189,7 +203,7 @@ class OpencodeClient:
                     "sessionId": session_id,
                     "providerId": self.provider_id,
                     "modelId": self.model_id,
-                    "sessionPhase": "chapter_decision",
+                    "sessionPhase": session_phase,
                 }
             )
         response = self._send_prompt_with_session_polling(
@@ -206,7 +220,7 @@ class OpencodeClient:
         if not isinstance(state, dict):
             state = completion_validator()
         if not bool(state.get("complete")):
-            raise RuntimeError(f"S2 章节决策会话未完成：{session_title}")
+            raise RuntimeError(f"S2 决策会话未完成：{session_title}")
         return {
             "sessionId": session_id,
             "state": state,
@@ -621,6 +635,46 @@ class OpencodeClient:
             **parsed,
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
+
+    def run_tender_parse_shard_with_trace(
+        self,
+        prompt_text: str,
+        *,
+        title: str = "S1 技术标分片解读",
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """运行一个技术标分片会话。
+
+        分片会话的产出是 s1parse submit 写进提交文件的副作用，不是返回值——
+        finalize 由后端在所有分片汇合后统一执行，所以这里不解析业务 JSON，只回传 trace。
+        """
+        session = self.create_session(title)
+        session_id = str(session.get("id") or "")
+        try:
+            if session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": self.provider_id,
+                        "modelId": self.model_id,
+                    }
+                )
+            if cancel_check is not None and cancel_check():
+                raise ParseCancelledError("解析已取消。")
+        except ParseCancelledError:
+            self.abort_session(session_id)
+            raise
+        # 传入 stream_callback 以启用轮询与 idle 监管；不使用 early_tool_command，
+        # 分片会话没有 finalize 这种唯一终止命令，走通用完成判定即可。
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback or (lambda _details: None),
+            cancel_check=cancel_check,
+        )
+        return {"opencodeOutput": self._build_output_trace(session_id, response)}
 
     def review_business_commitments_with_trace(
         self,

@@ -5,13 +5,18 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_cleaned_artifact import cleaned_artifact_is_current
-from app.services.material_cleaning import is_cleanable_material
+from app.services.material_cleaning import is_cleanable_material, is_deep_convertible_material
 from app.services.material_deep_parse import (
+    DEEP_PARSE_FAIL_COUNT_FIELD,
+    DEEP_PARSE_MESSAGE_FIELD,
     DEEP_PARSE_STATUS_FIELD,
+    PDF_EXTRACT_ENABLED,
+    PDF_EXTRACT_MAX_FAILURES,
     deep_parse_profile_for,
     deep_parse_status_allows_enqueue,
     enqueue_deep_parse_job,
@@ -58,6 +63,11 @@ def _preview_signature(name: str, profile: dict[str, Any], folder_path: str = ""
         "paragraphs": list(profile.get("paragraphs") or []),
         "tableCount": int(profile.get("tableCount") or 0),
     }
+    # 待后台解析/提取时把该标记并入签名（仅 pending 时加入，避免存量 completed 缓存全部失效）：
+    # 历史版本对 PDF 写的是终态 fallback 缓存（"非 docx"），签名不变会永远命中旧缓存、
+    # 堵死 extract 排队；extract 产物就绪后 headings/paragraphs 变化再次触发升级。
+    if profile.get("deepParsePending"):
+        basis["deepParsePending"] = True
     raw = json.dumps(basis, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -92,7 +102,7 @@ def _raw_numeric_id(file_id: str) -> int | None:
 
 
 def _should_generate_preview(ext: str, profile: dict[str, Any]) -> tuple[bool, str]:
-    if str(ext or "").lower() != "docx":
+    if str(ext or "").lower() not in {"docx", "pdf"}:
         return False, "非 docx，无可解析正文"
     if profile.get("parseError"):
         return False, str(profile.get("parseError"))
@@ -101,7 +111,7 @@ def _should_generate_preview(ext: str, profile: dict[str, Any]) -> tuple[bool, s
     return True, ""
 
 
-def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
+def _profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
     from app.services.minio_client import minio_client
 
     ext_fields = item.ext_fields or {}
@@ -112,7 +122,9 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         if cleaned_artifact_is_current(int(getattr(item, "version", 1) or 1), ext_fields)
         else ""
     )
-    has_cleaned = is_cleanable_material(name) and bool(cleaned_key)
+    convertible = is_deep_convertible_material(name)
+    # PDF/XLSX 经后台转换产出的 cleaned docx 同样算清洗稿，升级按 docx 解析
+    has_cleaned = (is_cleanable_material(name) or convertible) and bool(cleaned_key)
     ext = "docx" if source_ext == "docx" or has_cleaned else source_ext
     empty: dict[str, Any] = {
         "headings": [],
@@ -123,13 +135,23 @@ def _docx_profile_for_raw_file(item: Any) -> tuple[str, dict[str, Any]]:
         "parseError": "",
     }
 
-    if ext != "docx":
-        return ext, {**empty, "parseError": "非 docx，无可解析正文"}
+    # PDF：Wiki 链优先消费 extract 全文画像（文字层 + OCR 兜底）；convert 链
+    # 产出的图片 docx 无文本，仅作原件版式查看，不作预览依据（详见设计文档 §3.1）。
+    if source_ext == "pdf" and PDF_EXTRACT_ENABLED:
+        extract_profile = deep_parse_profile_for(ext_fields, str(item.minio_key or ""))
+        if extract_profile is not None:
+            return "pdf", {**empty, **extract_profile, "parseError": ""}
+        return "pdf", {**empty, "parseError": "PDF 待后台全文提取", "deepParsePending": True}
 
-    # 后台深度解析产物只对 DOC/DOCX 有效，避免历史非 Word 清洗稿绕过格式边界。
+    # 后台深度解析产物优先：sourceKey 与当前 cleaned/原始对象一致时直接采用
     deep_profile = deep_parse_profile_for(ext_fields, cleaned_key or str(item.minio_key or ""))
     if deep_profile is not None:
         return ext, {**empty, **deep_profile, "parseError": ""}
+    if ext != "docx":
+        # PDF/XLSX 无清洗稿：交给后台深度解析转换，不再终态跳过
+        if convertible:
+            return ext, {**empty, "deepParsePending": True}
+        return ext, {**empty, "parseError": "非 docx，无可解析正文"}
 
     if has_cleaned:
         bucket = str(ext_fields.get("cleanedMinioBucket") or item.minio_bucket or "")
@@ -346,7 +368,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
         if not meta:
             continue
         try:
-            ext, profile = await asyncio.to_thread(_docx_profile_for_raw_file, raw)
+            ext, profile = await asyncio.to_thread(_profile_for_raw_file, raw)
             signature = _preview_signature(
                 str(raw.name or ""), profile, raw.folder.path if raw.folder else ""
             )
@@ -383,19 +405,45 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 _safe_build_evidence_segments(file_id, str(raw.name or ""), file_path, profile),
                 document_outline,
             )
+            if profile.get("fulltextKey"):
+                # extract 产物信息随负载透传到 Wiki 文件卡片，供前端「查看全文」。
+                base["pdfFulltext"] = {
+                    "pageCount": int(profile.get("pageCount") or 0),
+                    "processedPages": int(profile.get("processedPages") or 0),
+                    "truncated": bool(profile.get("truncated")),
+                    "charCount": int(profile.get("charCount") or 0),
+                }
             should, skip_reason = _should_generate_preview(ext, profile)
             clean_status = str(ext_fields.get("cleanStatus") or "")
             if not should:
                 retryable = False
                 deep_status = str(ext_fields.get(DEEP_PARSE_STATUS_FIELD) or "")
                 if profile.get("deepParsePending"):
-                    # 超大 DOCX 待后台解析：保持 retryable，产物就绪后
-                    # 下次刷新自动升级为正式预览。
-                    if deep_parse_status_allows_enqueue(ext_fields):
-                        enqueue_deep_parse_job(file_id)
-                        deep_status = deep_status or "queued"
-                    skip_reason = "已排队后台深度解析，完成后自动补全预览"
-                    retryable = True
+                    # extract 开启时 PDF 走全文提取；否则 PDF/XLSX 走 convert 链（上游 #130）。
+                    is_pdf_extract = ext == "pdf" and PDF_EXTRACT_ENABLED
+                    try:
+                        fail_count = int(ext_fields.get(DEEP_PARSE_FAIL_COUNT_FIELD) or 0)
+                    except (TypeError, ValueError):
+                        fail_count = 0
+                    if is_pdf_extract and deep_status == "failed" and fail_count >= PDF_EXTRACT_MAX_FAILURES:
+                        # extract 连续失败达上限：转终态，不再每次刷新都补排。
+                        skip_reason = (
+                            str(ext_fields.get(DEEP_PARSE_MESSAGE_FIELD) or "") or "PDF 全文提取多次失败"
+                        )
+                    else:
+                        # PDF(extract)/XLSX(convert)/超大 docx 待后台处理：排队深度解析，
+                        # 保持 retryable，产物就绪后下次刷新自动升级为正式预览。
+                        # allowConvert 标记只由技术标闸口下发；PDF 走 extract 不消费该标记，
+                        # XLSX 据此走后台转 Word 分支。
+                        if deep_parse_status_allows_enqueue(ext_fields):
+                            enqueue_deep_parse_job(file_id, {"allowConvert": True, "bidType": TECHNICAL_BID_TYPE})
+                            deep_status = deep_status or "queued"
+                        skip_reason = (
+                            "已排队后台全文提取，完成后自动补全预览"
+                            if is_pdf_extract
+                            else "已排队后台深度解析，完成后自动补全预览"
+                        )
+                        retryable = True
                 preview = _local_preview_from_profile(
                     name=str(raw.name or ""),
                     path=file_path,
@@ -451,6 +499,26 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                 }
             )
     return plans, stats
+
+
+async def count_retryable_previews() -> int:
+    """统计预览停在 retryable 兜底、等下一轮刷新升级的素材条数。
+
+    典型来源是超大 docx / PDF / XLSX：预览阶段先落本地 TLDR，后台深度解析完成后
+    才能升级为正式预览。进度条据此如实收尾，不把「还差几个」演成全部完成。
+    """
+    from sqlalchemy import func, select
+
+    from app.models import async_session
+    from app.models.materials import RawFile
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(RawFile)
+            .where(RawFile.ext_fields[PREVIEW_EXT_FIELD]["retryable"].as_boolean().is_(True))
+        )
+        return int(result.scalar() or 0)
 
 
 async def _persist_preview_payloads(payload_by_id: dict[str, dict[str, Any]]) -> None:
@@ -602,10 +670,23 @@ def _apply_preview_payloads(index_payload: dict[str, Any], payload_by_id: dict[s
                     file_item["documentOutline"] = document_outline
                 else:
                     file_item.pop("documentOutline", None)
+                pdf_fulltext = payload.get("pdfFulltext")
+                if isinstance(pdf_fulltext, dict) and pdf_fulltext:
+                    file_item["pdfFulltext"] = pdf_fulltext
+                else:
+                    file_item.pop("pdfFulltext", None)
 
 
-async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[str, Any]:
-    """增量生成/复用文件内容预览，并把成功预览写回传入 index payload。"""
+async def enrich_technical_wiki_previews(
+    index_payload: dict[str, Any],
+    *,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """增量生成/复用文件内容预览，并把成功预览写回传入 index payload。
+
+    `on_progress` 每完成一个批次回报 {"done": x, "total": y}（按待生成文件数计），
+    供素材流水线进度条展示 AI 预览进度。
+    """
     index_files = _iter_index_files(index_payload)
     plans, stats = await _build_preview_plans(index_files)
     stats.setdefault("fallback", 0)
@@ -628,13 +709,20 @@ async def enrich_technical_wiki_previews(index_payload: dict[str, Any]) -> dict[
     sem = asyncio.Semaphore(PREVIEW_CONCURRENCY)
     batches = [pending[i : i + PREVIEW_BATCH_SIZE] for i in range(0, len(pending), PREVIEW_BATCH_SIZE)]
 
-    async def run_batch(batch: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    async def run_batch(batch: list[dict[str, Any]]) -> tuple[int, dict[str, dict[str, Any]]]:
         async with sem:
-            return await asyncio.to_thread(_compute_batch_preview_payloads, batch)
+            return len(batch), await asyncio.to_thread(_compute_batch_preview_payloads, batch)
 
+    if on_progress is not None:
+        on_progress({"done": 0, "total": len(pending)})
     if batches:
-        for result_map in await asyncio.gather(*[run_batch(batch) for batch in batches]):
+        done = 0
+        for task in asyncio.as_completed([run_batch(batch) for batch in batches]):
+            batch_size, result_map = await task
             payload_by_id.update(result_map)
+            done += batch_size
+            if on_progress is not None:
+                on_progress({"done": done, "total": len(pending)})
 
     for file_id, payload in payload_by_id.items():
         status = payload.get("status") if isinstance(payload, dict) else ""

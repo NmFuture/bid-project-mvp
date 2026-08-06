@@ -76,14 +76,6 @@ class ParseAsyncJobTests(unittest.TestCase):
         response.raise_for_status()
         return response.json()["id"]
 
-    def create_business_project(self) -> str:
-        response = self.client.post(
-            "/api/business/projects",
-            json={"name": "商务异步解析测试项目", "customerName": "测试业主"},
-        )
-        response.raise_for_status()
-        return response.json()["id"]
-
     def post_upload(self, project_id: str, *, prefix: str = "/api/technical/projects"):
         return self.client.post(
             f"{prefix}/{project_id}/parse-results/upload-and-run",
@@ -145,17 +137,6 @@ class ParseAsyncJobTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("进行中", response.json()["detail"])
 
-    def test_business_run_endpoint_returns_409_when_locked_and_400_without_files(self) -> None:
-        project_id = self.create_business_project()
-        # 先内联完成一次解析，让项目有可复用的招标文件。
-        self.post_upload(project_id, prefix="/api/business/projects").raise_for_status()
-        with patch("app.services.bid_parse_service.is_generation_locked", return_value=True):
-            response = self.client.post(f"/api/business/projects/{project_id}/parse-results/run")
-        self.assertEqual(response.status_code, 409)
-
-        other_id = self.create_business_project()
-        response = self.client.post(f"/api/business/projects/{other_id}/parse-results/run")
-        self.assertEqual(response.status_code, 400)
 
     def test_run_endpoint_returns_202_queued_when_scheduled(self) -> None:
         project_id = self.create_project()

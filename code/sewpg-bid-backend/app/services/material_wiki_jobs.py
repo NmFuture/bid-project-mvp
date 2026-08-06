@@ -13,6 +13,7 @@ from app.services.job_queue import (
     enqueue_generation_job,
     find_active_jobs_of_type,
     get_job_status,
+    latest_terminal_job_of_type,
 )
 from app.services.peripheral import PeripheralError
 
@@ -117,7 +118,27 @@ def latest_material_wiki_job_status(bid_type: str) -> dict[str, Any]:
             "MATERIAL_QUEUE_UNAVAILABLE",
         ) from exc
     if not job_id:
-        return {"status": "idle"}
+        # latest pointer 从入队时开始计 TTL，长任务可能在终态快照前先过期。
+        # 只回退同标类 scoped generic terminal，不扫描 active 队列，避免跨标混入。
+        terminal = latest_terminal_job_of_type(MATERIAL_WIKI_JOB_TYPE, resolved_bid_type)
+        if not terminal:
+            return {"status": "idle"}
+        terminal_status = str(terminal.get("status") or "").lower()
+        if terminal_status not in {"succeeded", "failed", "cancelled"}:
+            return {"status": "idle"}
+        result = {
+            "jobId": str(terminal.get("jobId") or ""),
+            "bidType": resolved_bid_type,
+            "status": terminal_status,
+            "progress": {},
+            "message": str(terminal.get("message") or ""),
+        }
+        finished_at = str(terminal.get("finishedAt") or "")
+        if finished_at:
+            result["finishedAt"] = finished_at
+        if terminal_status in {"failed", "cancelled"}:
+            result["error"] = result["message"]
+        return result
     try:
         payload = material_wiki_job_status(job_id, resolved_bid_type)
     except PeripheralError as exc:
@@ -128,10 +149,15 @@ def latest_material_wiki_job_status(bid_type: str) -> dict[str, Any]:
     compatible_state = "running" if state in {"queued", "running"} else state
     result = {
         "jobId": job_id,
+        "bidType": resolved_bid_type,
         "status": compatible_state,
         "progress": payload.get("progress") if isinstance(payload.get("progress"), dict) else {},
         "message": str(payload.get("message") or ""),
     }
+    # 结束时间：终态任务离开轮询视野后，前端仍可据此展示「何时失败/取消」。
+    updated_at = str(payload.get("updatedAt") or "")
+    if compatible_state in {"succeeded", "failed", "cancelled"} and updated_at:
+        result["finishedAt"] = updated_at
     if compatible_state in {"failed", "cancelled"}:
         result["error"] = result["message"]
     return result
@@ -153,9 +179,18 @@ def execute_material_wiki_generation(
 
         result = asyncio.run(generate_business_wiki(**kwargs))
     else:
+        from app.services.technical_material_index import rebuild_technical_material_index
         from app.services.technical_wiki_generation import generate_technical_wiki
 
-        result = asyncio.run(generate_technical_wiki(**kwargs, on_progress=progress_callback))
+        async def _run_technical() -> dict[str, Any]:
+            # 生成仍严格以落盘索引为唯一凭证；这里先把凭证刷新到 DB 最新状态——
+            # 手动流程靠素材页浏览时顺带重建索引，自动链路（上传→清洗→Wiki）没有
+            # 页面环节，不刷新会把新上传文件漏在 Wiki 之外（2026-08-04 冒烟实测）。
+            # rebuild 是 best-effort：失败落日志并沿用现有落盘索引，不阻断生成。
+            await rebuild_technical_material_index()
+            return await generate_technical_wiki(**kwargs, on_progress=progress_callback)
+
+        result = asyncio.run(_run_technical())
     generation = result.get("generation") if isinstance(result.get("generation"), dict) else {}
     return {
         "status": "success",

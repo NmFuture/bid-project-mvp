@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 
 from app.core.config import settings
@@ -275,3 +275,23 @@ auth_service = AuthService()
 async def current_user(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     token = extract_bearer_token(authorization)
     return await auth_service.authenticate_token(token)
+
+
+# 业务线角色矩阵：role 由 SystemUser.to_public_dict 归一化（管理员/admin 归一为 TB）。
+_LINE_ROLE_MATRIX = {
+    "technical": {"T", "TB"},
+    "business": {"B", "TB"},
+}
+
+
+def require_line_role(line: str) -> Any:
+    """按业务线校验角色的依赖工厂：technical 需 T|TB，business 需 B|TB，否则 403。"""
+    allowed = _LINE_ROLE_MATRIX.get(line) or {"TB"}
+
+    async def _checker(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        role = str(user.get("role") or "member")
+        if role not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="当前角色无权访问该业务线数据")
+        return user
+
+    return _checker

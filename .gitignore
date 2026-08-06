@@ -27,6 +27,8 @@ start_checklist/*.local.yaml
 code/.env
 code/.env.local
 code/.env.*.local
+code/.env.bak.*
+code/.localdata/
 code/opencode-auth/auth.json
 
 code/sewpg-bid-frontend/node_modules/

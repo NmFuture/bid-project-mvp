@@ -13,6 +13,27 @@ export const uniqueStrings = (items) => {
     })
 }
 
+export const technicalAppendixSourceMatrixUploadMessage = (payload) => {
+  const rowCount = Math.max(0, Number(payload?.rowCount) || 0)
+  const applied = payload?.applied && typeof payload.applied === 'object' ? payload.applied : {}
+  const routedItems = Math.max(0, Number(applied.routedItems) || 0)
+  const clearedItems = Math.max(0, Number(applied.clearedItems) || 0)
+  const clearedTasks = Math.max(0, Number(applied.clearedTasks) || 0)
+  const clearedParts = [
+    clearedItems ? `${clearedItems} 个目录项` : '',
+    clearedTasks ? `${clearedTasks} 个附表任务` : '',
+  ].filter(Boolean)
+
+  if (routedItems) {
+    const clearedText = clearedParts.length ? `，并已清除 ${clearedParts.join('、')}的旧规则关联` : ''
+    return `已解析 ${rowCount} 条附表来源规则，已应用到 ${routedItems} 个目录项的附表任务${clearedText}`
+  }
+  if (clearedParts.length) {
+    return `已解析 ${rowCount} 条附表来源规则，未新增匹配，已清除 ${clearedParts.join('、')}的旧规则关联`
+  }
+  return `已解析 ${rowCount} 条附表来源规则，将在下次缺口识别时生效`
+}
+
 export const technicalGenerationPresentation = (status) => {
   const assembly = status?.assembly && typeof status.assembly === 'object' ? status.assembly : {}
   const warnings = asObjectArray(assembly.warnings)
@@ -99,26 +120,61 @@ export const isStructuralItem = (item) => (
     || asArray(item?.usages).includes('structural')
 )
 
-// —— 目录标签（v3）：标签是「候选池 × 素材形态 × 人工确认」的派生视图 ——
-// 产品裁决（2026-07-16 / 2026-07-21）：
-// - AI 填写是素材的二次编辑，不是目录项的状态；目录只看匹配到的素材。
-// - 待填写素材靠命名纪律识别：文件名前缀「待填写-」；解析生成的附表空表天然待填写。
-// - 99 分专用于「文件名精确命中」（自动定案并默认选中），30~98 为同档启发式匹配。
-// - 变「已就绪」的唯一途径是人工点目录节点的「确认」（humanConfirmed）；仅文件名精确
-//   命中豁免确认自动就绪。选材/上传/AI填写只改内容，点确认之前标签不变。
-// - 确认可撤销（产品反馈 2026-07-21）：humanConfirmed 是三态——未操作过/人工确认 true/
-//   人工撤销 false。撤销对文件名精确命中的自动就绪同样生效：撤销后跳过自动就绪判定，
-//   按候选分数回落到对应档位标签，需要再次点「确认」才能变回已就绪。
-// - 后端 recompute 会在选材/上传后把 decision 翻成 ready，因此这里不再信任 decision=ready。
+// —— 目录标签（v4）：标签 = 「匹配置信度 × 素材形态 × 处理进度」的派生视图 ——
+// 产品裁决（2026-08-04，S3 树状改造，替代 2026-07-16/21 的旧裁决）：
+// - 八标签两轨，名词管形态、动词管状态：素材轨（直接可用）已就绪素材/待确认素材，
+//   模板轨（需 AI 填写）待确认模板/已就绪模板/待复核模板；缺口为待人工补充。
+// - 选定即定案：人工亲手选/传素材即人工决策（后端 register 落 humanConfirmed），
+//   不再要求二次点「确认」；「确认」动作只服务系统自动匹配的 30~98 档。
+// - AI 填写改变标签（推翻 2026-07-16「AI 填写不改目录状态」）：填写完成 → 待复核模板；
+//   复核通过（qualityStatus=human_confirmed）→ 已就绪素材；复核不通过原地重新 AI 填写。
+// - 0.99 仍专用于「文件名精确命中」，自动定案；人工撤销（humanConfirmed=false）后回落分数档。
+// - 解析生成的附表空表来源天生确定 → 已就绪模板，不参与 30 分线；
+//   甲方已填附表（sourceRouting.status=client_provided 全覆盖）→ 已就绪素材。
+// - 冻结/释放按目录树派生：任一「未忽略且自身有工作标签」的祖先冻结整棵子树（由父章覆盖）；
+//   「忽略」（titleOnly，父级仅保留标题）后子级释放、各自按候选派生标签，逐级递归。
+//   planner 的 coveredByParent 降级为素材继承提示，不再参与标签判定。
+// 正文填写任务的 skill 名（附表是 bid-tech-table-filler，由另一条线负责，不进正文统计）
+export const TECHNICAL_WORD_FILL_SKILL = 'bid-tech-word-placeholder-filler'
+
+// 正文填写汇总：单条填和一键填共用同一份计数，不区分本轮还是历史。
+// 待填写/已填写按「填写任务」计（一个目录项可能有多个待填写 Word），
+// 失败按「目录项」计（失败原因写在目录项上，重填入口也在那里）。
+export const technicalBodyFillCounts = (items) => {
+  const counts = { pending: 0, filled: 0, failed: 0 }
+  asObjectArray(items).forEach((item) => {
+    if (item?.titleOnly || String(item?.decision || '') !== 'fill_required') return
+    asObjectArray(item?.fillTasks).forEach((task) => {
+      if (String(task?.skill || '') !== TECHNICAL_WORD_FILL_SKILL) return
+      if (String(task?.status || 'pending') === 'completed') counts.filled += 1
+      else counts.pending += 1
+    })
+    if (item?.fillError) counts.failed += 1
+  })
+  return counts
+}
+
+// 目录项上一轮填写是否失败：失败原因由后端写在 fillError 上，成功重填后清空
+export const technicalGapFillError = (item) => {
+  const error = item?.fillError
+  if (!error || typeof error !== 'object') return ''
+  return String(error.message || '').trim()
+}
+
 export const TECHNICAL_GAP_READY_SCORE = 0.99
 export const TECHNICAL_GAP_WEAK_SCORE = 0.3
 
-// 标签命名规范（产品意见 2026-07-17）：组合状态用短横线连接，不用逗号；「待完善」统一改叫「待确认」。
+// 标签命名 v6（产品裁决 2026-08-04）：工作态统一三字「待/已 + 二字动作」，
+// 流水线 待补充 → 待确认 → 待填写 → 待审核 → 已就绪；旁路态四字一对。
+// 标签管状态、按钮管动作（AI填写/复核通过在右侧面板按钮上），tip 供 hover 提示。
 export const TECHNICAL_GAP_TAG_CONFIG = {
-  needs_material: { label: '人工补充', variant: 'error' },
-  needs_refine: { label: '已匹配-待确认', variant: 'warn' },
-  needs_fill: { label: '已匹配-待填写', variant: 'info' },
-  ready: { label: '已就绪', variant: 'done' },
+  manual_supplement: { label: '待补充', tip: '系统没找到素材，请上传或从素材库挑选', variant: 'error' },
+  needs_choice: { label: '待确认', tip: '请从备选中确认用哪份素材', variant: 'amber' },
+  template_ready: { label: '待填写', tip: '模板已定，点击发起 AI 填写', variant: 'info' },
+  template_review: { label: '待审核', tip: 'AI 已填写完成，请检查结果', variant: 'cyan' },
+  material_ready: { label: '已就绪', tip: '素材已定案，无需处理', variant: 'done' },
+  parent_covered: { label: '父章覆盖', tip: '跟父章素材走，无需单独处理', variant: 'muted' },
+  title_only: { label: '仅留标题', tip: '本级已忽略，内容由下级承接', variant: 'muted' },
 }
 
 // 待填写素材：严格按命名纪律，文件名（或清洗稿名）前缀「待填写-」。
@@ -128,7 +184,7 @@ export const isFillTemplateMaterial = (material) => (
 )
 
 // 目录节点级人工确认：三态——unset（从未点过）/ confirmed（人工确认）/ revoked（人工撤销）。
-// humanConfirmed 字段本身由后端在「确认」接口调用后才写入，不存在即 unset。
+// humanConfirmed 由「确认」接口或「选定即定案」的 register 写入，不存在即 unset。
 export const technicalGapHumanConfirmState = (item) => {
   if (!item || !Object.prototype.hasOwnProperty.call(item, 'humanConfirmed')) return 'unset'
   return item.humanConfirmed ? 'confirmed' : 'revoked'
@@ -136,45 +192,139 @@ export const technicalGapHumanConfirmState = (item) => {
 
 export const isTechnicalGapHumanConfirmed = (item) => technicalGapHumanConfirmState(item) === 'confirmed'
 
+export const currentResolvedArtifact = (artifact) => (
+  Boolean(artifact)
+  && artifact?.active !== false
+  && !artifact?.supersededAt
+)
+
+export const currentResolvedArtifacts = (selected) => (
+  asObjectArray(selected?.resolvedArtifacts).filter(currentResolvedArtifact)
+)
+
 const candidatePool = (item) => [
   ...asObjectArray(item?.matchedMaterials),
   ...asObjectArray(item?.candidateMaterials),
 ]
 
-// 匹配到待填写素材：附表空表/填写任务，或候选池里带「待填写-」前缀的素材。
-const hasFillMaterial = (item) => (
-  asObjectArray(item?.appendixTasks).length > 0
-    || asObjectArray(item?.fillTasks).length > 0
-    || candidatePool(item).some(isFillTemplateMaterial)
-)
+// 甲方已填附表：附表任务全部命中甲方提供的填好文件（sourceRouting.status=client_provided）。
+const appendixAllClientProvided = (item) => {
+  const tasks = asObjectArray(item?.appendixTasks)
+  return tasks.length > 0 && tasks.every(
+    (task) => String(task?.sourceRouting?.status || '') === 'client_provided'
+  )
+}
 
-const ownTechnicalGapTag = (item) => {
+const bestPoolScore = (item) => candidatePool(item)
+  .reduce((max, material) => Math.max(max, technicalMatchScore(material)), 0)
+
+const bestPoolMaterial = (item) => {
+  let best = null
+  let bestScore = -1
+  candidatePool(item).forEach((material) => {
+    const score = technicalMatchScore(material)
+    if (score > bestScore) {
+      best = material
+      bestScore = score
+    }
+  })
+  return best
+}
+
+// 模板轨判定：有附表/填写任务，或最佳候选本身是待填写模板。形态跟着最佳/选定素材走。
+const isTemplateTrackItem = (item) => {
+  if (asObjectArray(item?.appendixTasks).length > 0) return true
+  if (asObjectArray(item?.fillTasks).length > 0) return true
+  const best = bestPoolMaterial(item)
+  return best ? isFillTemplateMaterial(best) : false
+}
+
+const hasAiFillArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
+  .some((artifact) => currentResolvedArtifact(artifact) && String(artifact?.source || '') === 'ai_fill')
+
+// 人工产物算「成稿」必须与后端 S7 闸口同口径（s7Ready）：人工选中的「待填写-」空模板
+// s7Ready=false（R10-B07-01），只是定下要填的模板，不算成稿，不进「已就绪」。
+const hasManualArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
+  .some((artifact) => ['manual_upload', 'material_library', 'manual'].includes(String(artifact?.source || ''))
+    && currentResolvedArtifact(artifact)
+    && artifact?.s7Ready !== false)
+
+export const technicalGapOwnTag = (item) => {
   if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
+  if (item?.titleOnly) return 'title_only'
   const confirmState = technicalGapHumanConfirmState(item)
-  if (confirmState === 'confirmed') return 'ready'
-  if (hasFillMaterial(item)) return 'needs_fill'
-  const pool = candidatePool(item)
-  const best = pool.reduce((max, material) => Math.max(max, technicalMatchScore(material)), 0)
-  // 文件名精确命中（0.99）豁免人工确认，自动已就绪——除非人工已显式撤销过。
-  if (confirmState !== 'revoked' && best >= TECHNICAL_GAP_READY_SCORE) return 'ready'
+  const confirmed = confirmState === 'confirmed'
+  const revoked = confirmState === 'revoked'
+  const best = bestPoolScore(item)
+  const exact = !revoked && best >= TECHNICAL_GAP_READY_SCORE
+
+  // 甲方已填附表：与 0.99 精确命中同级的定案豁免，人工撤销后回落。
+  if (!revoked && appendixAllClientProvided(item)) return 'material_ready'
+
+  // AI 填写产物存在：待审核；复核通过（human_confirmed）收口为绿色终态。
+  if (hasAiFillArtifact(item)) {
+    return String(item?.qualityStatus || '') === 'human_confirmed' ? 'material_ready' : 'template_review'
+  }
+
+  // 人工上传/选材（选定即定案）：拿到的是成稿，直接绿色终态。
+  if (confirmed && hasManualArtifact(item)) return 'material_ready'
+
+  if (isTemplateTrackItem(item)) {
+    // 解析空表来源天生确定；模板被人工定案或文件名精确命中同样算已定。
+    // 填写轨的实体证据由任务（blankSource/空表）或最佳候选模板天然保证。
+    if (asObjectArray(item?.appendixTasks).length > 0 || confirmed || exact) return 'template_ready'
+    if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
+    return 'manual_supplement'
+  }
+
+  // 空确认防御（产品反馈 2026-08-04）：变绿必须有素材实体证据——人工确认只对
+  // 系统预选素材（matchedMaterials）生效，空项确认不产生任何定案。
+  const hasSelectedMaterial = asObjectArray(item?.matchedMaterials).length > 0
+  if ((confirmed && hasSelectedMaterial) || exact) return 'material_ready'
   // 初判 ready 且无候选无产物的空骨架不算任务（decision 可能被终审改写，仅用于识别空骨架）。
   if (
     String(item?.decision || '') === 'ready'
-    && !pool.length
-    && !asObjectArray(item?.resolvedArtifacts).length
+    && !candidatePool(item).length
+    && !currentResolvedArtifacts(item).length
   ) return ''
-  if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_refine'
-  return 'needs_material'
+  if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
+  return 'manual_supplement'
 }
+
+// 祖先链：3.2.1 → [3.2, 第3章]、附表A.1 → [技术附表根]，最近的祖先在前（level 栈回溯）。
+export const technicalGapAncestorItems = (item, allItems = []) => {
+  const list = asObjectArray(allItems)
+  const index = technicalGapItemIndex(item, list)
+  if (index < 0) return []
+  const ancestors = []
+  let level = technicalGapItemLevel(list[index])
+  for (let cursor = index - 1; cursor >= 0 && level > 1; cursor -= 1) {
+    const entryLevel = technicalGapItemLevel(list[cursor])
+    if (entryLevel < level) {
+      ancestors.push(list[cursor])
+      level = entryLevel
+    }
+  }
+  return ancestors
+}
+
+// 冻结源：任一「未忽略且自身有工作标签」的祖先都会冻结整棵子树；返回最近的一个供展示。
+export const technicalGapFreezerItem = (item, allItems = []) => (
+  technicalGapAncestorItems(item, allItems).find((ancestor) => {
+    const tag = technicalGapOwnTag(ancestor)
+    return tag && tag !== 'title_only'
+  }) || null
+)
 
 export const technicalGapTagOf = (item, allItems = []) => {
   if (!item) return ''
-  const parentId = String(item?.coveredByParent || '').trim()
-  if (parentId && !isTechnicalGapHumanConfirmed(item)) {
-    const parent = asObjectArray(allItems).find((entry) => String(entry?.id || '') === parentId)
-    if (parent) return ownTechnicalGapTag(parent)
-  }
-  return ownTechnicalGapTag(item)
+  const own = technicalGapOwnTag(item)
+  if (own === 'title_only') return 'title_only'
+  // 结构项/人工忽略状态自身无标签，也不参与冻结展示。
+  if (isStructuralItem(item) || String(item?.status || '') === 'ignored') return own
+  // 冻结判定不依赖子级自身标签：空骨架子级同样显示「由父章覆盖」（否则会漏出可操作入口）。
+  if (technicalGapFreezerItem(item, allItems)) return 'parent_covered'
+  return own
 }
 
 // —— 人工「父章节覆盖」（产品需求 2026-07-27）——
@@ -199,13 +349,31 @@ export const technicalGapNumberKey = (number) => {
   return text
 }
 
+// —— 目录树父子关系（2026-08-04 v6.1）：按计划顺序 + level 栈推导 ——
+// TOC 的顺序与层级本来就定义了树；目录号前缀链（3.1→第3章）只是它的特例。
+// 附表（附表A.1 等编号不成链）同样归入最近的上级（附录/技术附表根）。
+const technicalGapItemIndex = (item, allItems) => {
+  const list = asObjectArray(allItems)
+  const id = String(item?.id || '')
+  return list.findIndex((entry) => entry === item || (id && String(entry?.id || '') === id))
+}
+
+const technicalGapItemLevel = (item) => {
+  const level = Number(item?.level)
+  return Number.isFinite(level) && level > 0 ? level : 1
+}
+
 export const technicalGapDescendants = (item, allItems = []) => {
-  const parentKey = technicalGapNumberKey(item?.number)
-  if (!parentKey) return []
-  const prefix = `${parentKey}.`
-  return asObjectArray(allItems).filter(
-    (entry) => entry !== item && technicalGapNumberKey(entry?.number).startsWith(prefix),
-  )
+  const list = asObjectArray(allItems)
+  const index = technicalGapItemIndex(item, list)
+  if (index < 0) return []
+  const level = technicalGapItemLevel(list[index])
+  const descendants = []
+  for (let cursor = index + 1; cursor < list.length; cursor += 1) {
+    if (technicalGapItemLevel(list[cursor]) <= level) break
+    descendants.push(list[cursor])
+  }
+  return descendants
 }
 
 export const technicalGapParentCoverageState = (item, allItems = []) => {
@@ -217,7 +385,7 @@ export const technicalGapParentCoverageState = (item, allItems = []) => {
       && String(entry?.parentCoverageSource || '') === 'manual',
   )
   const hasMaterial = asObjectArray(item?.matchedMaterials).length > 0
-    || asObjectArray(item?.resolvedArtifacts).length > 0
+    || currentResolvedArtifacts(item).length > 0
   return {
     descendantCount: descendants.length,
     coveredCount: manualCovered.length,
@@ -235,6 +403,24 @@ export const appendixTaskForFillTask = (selected, task) => {
     return appendixTasks.find((appendixTask) => String(appendixTask?.id || '').trim() === blankId) || null
   }
   return appendixTasks[0] || null
+}
+
+export const tenderDocumentStateForAiFill = (appendixTask) => {
+  const routing = appendixTask?.sourceRouting && typeof appendixTask.sourceRouting === 'object'
+    ? appendixTask.sourceRouting
+    : {}
+  const required = Boolean(routing.useTenderParseFields)
+  const documents = asObjectArray(routing.tenderDocuments)
+  const count = Number(routing.tenderDocumentCount)
+  const documentCount = Number.isFinite(count) && count >= 0 ? count : documents.length
+  const status = String(routing.tenderDocumentStatus || (documentCount > 0 ? 'available' : required ? 'unknown' : 'not_required'))
+  return {
+    required,
+    status,
+    documentCount,
+    documentNames: uniqueStrings(documents.map((document) => document.name)),
+    missingSource: required && status === 'missing_source',
+  }
 }
 
 export const defaultAiFillReferenceMaterialIds = (selected, selectedMaterialIds = [], task = null) => {
@@ -278,7 +464,7 @@ export const defaultAiFillParseFieldIds = (selected, task) => uniqueStrings([
 ])
 
 export const latestResolvedArtifact = (selected) => {
-  const artifacts = asObjectArray(selected?.resolvedArtifacts)
+  const artifacts = currentResolvedArtifacts(selected)
   return artifacts.length ? artifacts[artifacts.length - 1] : null
 }
 
@@ -306,10 +492,23 @@ export const matchedMaterialForItem = (selected, allItems = []) => {
     }
   }
 
+  // 被冻结的子级继承冻结源的素材：树派生优先，回退 planner 的 coveredByParent 提示。
+  const freezer = technicalGapFreezerItem(selected, allItems)
+  const freezerMaterial = asObjectArray(freezer?.matchedMaterials)[0]
+  if (freezerMaterial) {
+    return {
+      inherited: true,
+      material: freezerMaterial,
+      sourceItem: freezer,
+    }
+  }
+
   const parentId = String(selected?.coveredByParent || '').trim()
   if (!parentId) return null
 
   const parentItem = asObjectArray(allItems).find((item) => String(item?.id || '') === parentId)
+  // 覆盖源已被「忽略」（仅保留标题）：旧 coveredByParent 提示失效，子级不再继承其素材。
+  if (parentItem?.titleOnly) return null
   const parentMaterial = asObjectArray(parentItem?.matchedMaterials)[0]
   if (!parentMaterial) return null
 
@@ -340,7 +539,7 @@ export const previewChoicesForItem = (selected, allItems = []) => {
   if (!selected) return []
 
   const choices = []
-  const artifacts = asObjectArray(selected?.resolvedArtifacts).slice().reverse()
+  const artifacts = currentResolvedArtifacts(selected).slice().reverse()
   artifacts
     .filter((item) => item?.onlyoffice?.fileUrl || item?.onlyoffice?.documentServerFileUrl)
     .forEach((artifact) => {
@@ -398,6 +597,20 @@ export const previewChoicesForItem = (selected, allItems = []) => {
   return choices
 }
 
+// AI 结果预览固定配成「填写前参考稿 + AI 填写结果」。填写前优先使用空表/待填写模板，
+// 没有模板时才退回匹配素材；普通素材或人工上传产物仍使用单文档预览。
+export const aiFillComparisonPair = (choices, selectedChoice) => {
+  if (
+    selectedChoice?.kind !== 'artifact'
+    || String(selectedChoice?.artifact?.source || '') !== 'ai_fill'
+  ) return null
+
+  const candidates = asObjectArray(choices).filter((choice) => choice?.key !== selectedChoice.key)
+  const reference = candidates.find((choice) => choice.kind === 'blankMaterial' || choice.kind === 'appendix')
+    || candidates.find((choice) => choice.kind === 'material')
+  return reference ? { reference, result: selectedChoice } : null
+}
+
 export const resultSummaryForItem = (selected, allItems = []) => {
   const artifact = latestResolvedArtifact(selected)
   if (artifact) {
@@ -406,6 +619,14 @@ export const resultSummaryForItem = (selected, allItems = []) => {
       if (qualityStatus === 'passed') {
         return {
           label: 'AI已填写 · 验收通过',
+          tone: 'resolved',
+        }
+      }
+      // no_fill_required：空白模板本身没有待填单元格，填 0 格是正确终态，
+      // 与 passed 同级放行（后端 FILL_QUALITY_ACCEPTED_STATUSES）。
+      if (qualityStatus === 'no_fill_required') {
+        return {
+          label: 'AI已填写 · 无需填写',
           tone: 'resolved',
         }
       }

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
-from app.services.technical_fact_field_specs import load_specs
+from app.services.technical_fact_field_specs import load_specs, normalize_spec_source_kind
 
 # gap_state["factSpecs"] 的来源标识：项目专属绑定 / 系统默认回落
 FACT_SPECS_SOURCE_PROJECT = "project"
@@ -53,7 +53,10 @@ def resolve_project_specs(gap_state: dict[str, Any]) -> tuple[list[dict[str, Any
     """
     binding = fact_specs_binding(gap_state)
     if binding:
-        specs = [spec for spec in binding["specs"] if isinstance(spec, dict)]
+        # 历史绑定快照里「/」被归成 template，按原始 referenceFile 重算，避免重传才生效
+        specs = [
+            normalize_spec_source_kind(spec) for spec in binding["specs"] if isinstance(spec, dict)
+        ]
         return specs, fact_specs_ref(binding, source=FACT_SPECS_SOURCE_PROJECT)
     return list(load_specs()), {"source": FACT_SPECS_SOURCE_DEFAULT}
 

@@ -17,7 +17,9 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import BASE_DIR, settings
 from app.services import technical_fact_curator as curator
+from app.services.job_queue import EnqueueResult
 from app.services.store import store
+from app.services.technical_fact_curate_job import run_fact_curate_job
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
 
 SCRIPT_PATH = (
@@ -168,11 +170,13 @@ def test_manifest_uses_isolated_run_directory(workspace_dirs, monkeypatch) -> No
 
 
 def test_curate_targets_fill_covers_material_and_cert() -> None:
-    """补抽范围：招标/素材/证书类未提取字段都进 fill 桶；模板/平台/自动生成类不填。"""
+    """补抽范围：招标/素材/证书/来源未指定的未提取字段都进 fill 桶；模板/平台/自动生成类不填。"""
     fields = [
         {"key": "f-tender", "status": "unextracted", "sourceKind": "tender"},
         {"key": "f-material", "status": "unextracted", "sourceKind": "material"},
         {"key": "f-cert", "status": "unextracted", "sourceKind": "cert"},
+        # 清单来源列写「/」：来源未指定但仍需取值，必须交给 AI 在素材范围内找
+        {"key": "f-unspecified", "status": "unextracted", "sourceKind": "unspecified"},
         {"key": "x-platform", "status": "unextracted", "sourceKind": "platform"},
         {"key": "x-derived", "status": "unextracted", "sourceKind": "derived"},
         {"key": "x-template", "status": "unextracted", "sourceKind": "template"},
@@ -180,7 +184,7 @@ def test_curate_targets_fill_covers_material_and_cert() -> None:
 
     targets = curator._curate_targets(fields)
 
-    assert targets["fill"] == ["f-tender", "f-material", "f-cert"]
+    assert targets["fill"] == ["f-tender", "f-material", "f-cert", "f-unspecified"]
 
 
 def test_apply_summary_preserves_project_spec_total_and_tracks_built_progress() -> None:
@@ -228,27 +232,30 @@ def test_manifest_tender_sources_only_existing(workspace_dirs, monkeypatch) -> N
     assert manifest["tenderSources"][0]["path"] == str(combined)
 
 
-def test_manifest_materials_filtered_by_local_path(workspace_dirs, monkeypatch) -> None:
+def test_manifest_materials_carry_path_only_when_materialized(workspace_dirs, monkeypatch) -> None:
+    """已落地素材带 path；未落地的仍进清单不带 path，由 skill 按 materialFetch 现取。"""
     material_file = workspace_dirs / "material.docx"
     material_file.write_text("占位", encoding="utf-8")
     monkeypatch.setattr(
         curator,
         "project_fact_material_index",
-        lambda project, gap_state: [{"id": "RAW-1", "name": "有路径"}, {"id": "RAW-2", "name": "无路径"}],
+        lambda project, gap_state, **_: [
+            {"id": "RAW-1", "name": "已落地", "folderPath": "技术标/项目定制", "materialTier": "project"},
+            {"id": "RAW-2", "name": "未落地", "folderPath": "技术标/标准文件", "materialTier": "standard"},
+        ],
     )
     monkeypatch.setattr(
         curator,
-        "prepare_project_fact_materials",
-        lambda project, materials: [
-            {"id": "RAW-1", "name": "有路径", "path": str(material_file), "folderPath": "技术标/项目定制", "materialTier": "project"},
-            {"id": "RAW-2", "name": "无路径", "path": str(workspace_dirs / "不存在.docx")},
-        ],
+        "project_fact_material_cached_path",
+        lambda cache_dir, material_id: material_file if material_id == "RAW-1" else None,
     )
 
     manifest, _ = curator.build_fact_curator_manifest(_project(), {"projectFactTable": _table()}, {})
 
-    assert [item["id"] for item in manifest["materials"]] == ["RAW-1"]
+    assert [item["id"] for item in manifest["materials"]] == ["RAW-1", "RAW-2"]
     assert manifest["materials"][0]["path"] == str(material_file)
+    assert "path" not in manifest["materials"][1]
+    assert "{materialId}" in manifest["materialFetch"]["url"]
 
 
 # ---------------------------------------------------------------- 回收状态流转
@@ -774,20 +781,20 @@ class FactCurateApiTests(unittest.TestCase):
             )
             return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
 
+        # curate 已任务化：接口只负责提交，执行体由 worker 调用，这里直接跑执行体
         with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
-            response = self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/curate",
-                json={"operator": "测试用户"},
-            )
+            run_fact_curate_job(project_id, {"operator": "测试用户"})
 
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        report = payload["curateReport"]
+        status_payload = self.client.get(
+            f"/api/technical/projects/{project_id}/gaps/facts/curate"
+        ).json()
+        self.assertEqual(status_payload["factCurateState"]["status"], "succeeded")
+        report = status_payload["curateReport"]
         self.assertEqual(report["filled"], [fill_target["key"]])
         self.assertEqual(report["skippedConfirmed"], [confirmed_target["key"]])
         # message 按 report 实际计数给出，不空喊"已置为待人工确认"
-        self.assertIn("补抽 1 条", payload["message"])
-        self.assertIn("已确认跳过 1 条", payload["message"])
+        self.assertIn("补抽 1 条", status_payload["message"])
+        self.assertIn("已确认跳过 1 条", status_payload["message"])
 
         table = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
         by_key = {field["key"]: field for field in table["fields"]}
@@ -798,6 +805,34 @@ class FactCurateApiTests(unittest.TestCase):
         confirmed = by_key[confirmed_target["key"]]
         self.assertEqual(confirmed["status"], "confirmed")
         self.assertEqual(confirmed["value"], confirmed_target["value"])
+
+    def test_curate_endpoint_submits_background_job(self) -> None:
+        """接口只提交任务：立即返回 queued，执行体不在请求里跑；进行中重复提交被拒。"""
+        project_id = self._create_project()
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+
+        with (
+            patch(
+                "app.services.technical_fact_curate_job.enqueue_generation_job",
+                return_value=EnqueueResult(queued=True, job_id="JOB-CURATE-1"),
+            ),
+            patch.object(curator, "run_technical_fact_curator_skill") as skill,
+        ):
+            response = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/facts/curate", json={}
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            state = response.json()["factCurateState"]
+            self.assertEqual(state["status"], "queued")
+            self.assertEqual(state["jobId"], "JOB-CURATE-1")
+            skill.assert_not_called()
+
+            # 任务未结束时重复提交直接拒绝，避免两轮结果互相覆盖
+            conflict = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/facts/curate", json={}
+            )
+            self.assertEqual(conflict.status_code, 409, conflict.text)
 
     def test_curate_endpoint_requires_completed_recognition(self) -> None:
         project_id = self._create_project()
@@ -819,13 +854,15 @@ class FactCurateApiTests(unittest.TestCase):
             "run_technical_fact_curator_skill",
             side_effect=RuntimeError("futurecode 创建 session 失败：mock"),
         ):
-            response = self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/curate",
-                json={"operator": "测试用户"},
-            )
+            with self.assertRaises(RuntimeError):
+                run_fact_curate_job(project_id, {"operator": "测试用户"})
 
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn("mock", response.json()["detail"])
+        # 失败原因如实回写状态，供前端轮询展示
+        status_payload = self.client.get(
+            f"/api/technical/projects/{project_id}/gaps/facts/curate"
+        ).json()
+        self.assertEqual(status_payload["factCurateState"]["status"], "failed")
+        self.assertIn("mock", status_payload["factCurateState"]["message"])
         after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
         # opencode 抛错时表不被污染：字段值与状态逐项一致
         self.assertEqual(
@@ -839,7 +876,7 @@ class FactCurateApiTests(unittest.TestCase):
         self.assertEqual(build_response.status_code, 200, build_response.text)
         target = build_response.json()["fields"][0]
 
-        def fake_run(project_snapshot, gap_state_snapshot, data):
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
             latest_table["fields"][0]["value"] = "人工运行中修改"
@@ -852,16 +889,17 @@ class FactCurateApiTests(unittest.TestCase):
             return stale_result, {"counts": {}, "ignored": []}
 
         with patch(
-            "app.services.technical_gap_service.run_fact_curator_for_project",
+            "app.services.technical_fact_curator.run_fact_curator_for_project",
             side_effect=fake_run,
         ):
-            response = self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/curate",
-                json={"operator": "测试用户"},
-            )
+            with self.assertRaises(ValueError):
+                run_fact_curate_job(project_id, {"operator": "测试用户"})
 
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertIn("本次结果未覆盖保存", response.json()["detail"])
+        status_payload = self.client.get(
+            f"/api/technical/projects/{project_id}/gaps/facts/curate"
+        ).json()
+        self.assertEqual(status_payload["factCurateState"]["status"], "failed")
+        self.assertIn("本次结果未覆盖保存", status_payload["factCurateState"]["message"])
         after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
         by_id = {field["id"]: field for field in after["fields"]}
         self.assertEqual(by_id[target["id"]]["value"], "人工运行中修改")
@@ -898,22 +936,21 @@ def test_manifest_fields_carry_reference_file_and_material_class(workspace_dirs,
 
 
 def _stub_prepare(workspace_dirs: Path, monkeypatch) -> None:
-    def fake_prepare(project: dict, materials: list[dict]) -> list[dict]:
-        prepared = []
-        for index, material in enumerate(materials):
-            path = workspace_dirs / f"material-{material.get('id') or index}.docx"
-            path.write_text("占位", encoding="utf-8")
-            prepared.append({**material, "path": str(path)})
-        return prepared
+    """把清单里的素材都当作 build 阶段已落地，manifest 直接带上本地路径。"""
 
-    monkeypatch.setattr(curator, "prepare_project_fact_materials", fake_prepare)
+    def fake_cached_path(cache_dir: Path, material_id: str) -> Path:
+        path = workspace_dirs / f"material-{material_id}.docx"
+        path.write_text("占位", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(curator, "project_fact_material_cached_path", fake_cached_path)
 
 
 def test_manifest_materials_annotated_with_class_home_project(workspace_dirs, monkeypatch) -> None:
     monkeypatch.setattr(
         curator,
         "project_fact_material_index",
-        lambda project, gap_state: [
+        lambda project, gap_state, **_: [
             {"id": "RAW-OWN", "name": "塔架与基础工程量.xlsx", "folderPath": "技术标/项目定制/事实表维护测试项目"},
         ],
     )
@@ -938,7 +975,7 @@ def test_manifest_injects_cross_project_candidates_for_missing_classes(workspace
     monkeypatch.setattr(
         curator,
         "project_fact_material_index",
-        lambda project, gap_state: [
+        lambda project, gap_state, **_: [
             {"id": "RAW-OWN", "name": "塔架与基础工程量.xlsx", "folderPath": "技术标/项目定制/事实表维护测试项目"},
         ],
     )
@@ -986,7 +1023,7 @@ def test_cross_project_candidates_yield_to_own_materials(workspace_dirs, monkeyp
     monkeypatch.setattr(
         curator,
         "project_fact_material_index",
-        lambda project, gap_state: [
+        lambda project, gap_state, **_: [
             {"id": "RAW-OWN1", "name": "塔架工程量.xlsx", "folderPath": "技术标/项目定制/事实表维护测试项目"},
             {"id": "RAW-OWN2", "name": "基础弯矩表.xlsx", "folderPath": "技术标/项目定制/事实表维护测试项目"},
         ],

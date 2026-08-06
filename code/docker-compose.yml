@@ -30,6 +30,9 @@ services:
       APP_ENV: production
       APP_STORE_BACKEND: postgres
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
+      JOB_TIMING_DB_CONNECT_TIMEOUT_SEC: ${JOB_TIMING_DB_CONNECT_TIMEOUT_SEC:-2}
+      JOB_TIMING_DB_STATEMENT_TIMEOUT_MS: ${JOB_TIMING_DB_STATEMENT_TIMEOUT_MS:-5000}
+      JOB_TIMING_DB_LOCK_TIMEOUT_MS: ${JOB_TIMING_DB_LOCK_TIMEOUT_MS:-2000}
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed
@@ -39,7 +42,10 @@ services:
       OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
       OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
+      TECH_OUTLINE_LLM_FINALIZE: ${TECH_OUTLINE_LLM_FINALIZE:-false}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
+      S1_PARSE_TECHNICAL_SHARD_ENABLED: ${S1_PARSE_TECHNICAL_SHARD_ENABLED:-true}
+      S1_PARSE_SHARD_CONCURRENCY: ${S1_PARSE_SHARD_CONCURRENCY:-7}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
@@ -67,6 +73,10 @@ services:
       S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
       S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
       PARSE_PROGRESS_PERSIST_INTERVAL_SEC: ${PARSE_PROGRESS_PERSIST_INTERVAL_SEC:-2}
+      # 技术标 Wiki PDF 全文提取（material_deep_parse）；默认值为本地安全值，5090 取值只写 docker-compose.5090.yml。
+      TECH_WIKI_PDF_EXTRACT_ENABLED: ${TECH_WIKI_PDF_EXTRACT_ENABLED:-true}
+      TECH_WIKI_EXTRACT_MAX_PAGES: ${TECH_WIKI_EXTRACT_MAX_PAGES:-80}
+      TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY: ${TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY:-4}
       AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-admin@sewpg.com}
       AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-123456}
       AUTH_ADMIN_NAME: ${AUTH_ADMIN_NAME:-当前用户}
@@ -115,6 +125,9 @@ services:
       APP_ENV: production
       APP_STORE_BACKEND: postgres
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://biduser:bidpass@postgres:5432/bidplatform}
+      JOB_TIMING_DB_CONNECT_TIMEOUT_SEC: ${JOB_TIMING_DB_CONNECT_TIMEOUT_SEC:-2}
+      JOB_TIMING_DB_STATEMENT_TIMEOUT_MS: ${JOB_TIMING_DB_STATEMENT_TIMEOUT_MS:-5000}
+      JOB_TIMING_DB_LOCK_TIMEOUT_MS: ${JOB_TIMING_DB_LOCK_TIMEOUT_MS:-2000}
       UPLOADS_DIR: /data/uploads
       DOCUMENTS_DIR: /data/documents
       PARSED_DIR: /data/parsed
@@ -124,7 +137,10 @@ services:
       OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
       OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-1}
+      TECH_OUTLINE_LLM_FINALIZE: ${TECH_OUTLINE_LLM_FINALIZE:-false}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
+      S1_PARSE_TECHNICAL_SHARD_ENABLED: ${S1_PARSE_TECHNICAL_SHARD_ENABLED:-true}
+      S1_PARSE_SHARD_CONCURRENCY: ${S1_PARSE_SHARD_CONCURRENCY:-7}
       BUSINESS_PDF_PARSE_ENGINE: ${BUSINESS_PDF_PARSE_ENGINE:-docling}
       BUSINESS_PDF_ENGINE_FALLBACK: ${BUSINESS_PDF_ENGINE_FALLBACK:-none}
       BID_INTERNAL_API_BASE_URL: ${BID_INTERNAL_API_BASE_URL:-http://fastapi:8000}
@@ -152,6 +168,10 @@ services:
       S1_PARSE_JOB_MAX_ATTEMPTS: ${S1_PARSE_JOB_MAX_ATTEMPTS:-3}
       S1_PARSE_JOB_RETRY_BACKOFF_SEC: ${S1_PARSE_JOB_RETRY_BACKOFF_SEC:-30,120}
       PARSE_PROGRESS_PERSIST_INTERVAL_SEC: ${PARSE_PROGRESS_PERSIST_INTERVAL_SEC:-2}
+      # 技术标 Wiki PDF 全文提取（material_deep_parse）；默认值为本地安全值，5090 取值只写 docker-compose.5090.yml。
+      TECH_WIKI_PDF_EXTRACT_ENABLED: ${TECH_WIKI_PDF_EXTRACT_ENABLED:-true}
+      TECH_WIKI_EXTRACT_MAX_PAGES: ${TECH_WIKI_EXTRACT_MAX_PAGES:-80}
+      TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY: ${TECH_WIKI_EXTRACT_OCR_PAGE_CONCURRENCY:-4}
       AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-admin@sewpg.com}
       AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-123456}
       AUTH_ADMIN_NAME: ${AUTH_ADMIN_NAME:-当前用户}
@@ -319,7 +339,13 @@ services:
     restart: unless-stopped
 
   onlyoffice:
-    image: ${ONLYOFFICE_IMAGE:-onlyoffice/documentserver:9.3.1.2}
+    image: ${ONLYOFFICE_IMAGE:-sewpg-bid/onlyoffice:dev-fontpack-v1}
+    build:
+      context: ./sewpg-bid-backend/onlyoffice
+      args:
+        ONLYOFFICE_BASE_IMAGE: ${ONLYOFFICE_BASE_IMAGE:-onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31}
+        ONLYOFFICE_FONT_BUILDER_IMAGE: ${ONLYOFFICE_FONT_BUILDER_IMAGE:-debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e}
+        SEWPG_BUILD_REVISION: ${ONLYOFFICE_BUILD_REVISION:-dev}
     platform: ${ONLYOFFICE_PLATFORM:-linux/amd64}
     container_name: sewpg_bid_onlyoffice
     environment:
@@ -338,13 +364,16 @@ services:
     expose:
       - "80"
     volumes:
-      - ./sewpg-bid-backend/onlyoffice/docker-entrypoint.sh:/usr/local/bin/sewpg-onlyoffice-entrypoint:ro
-      - ./sewpg-bid-backend/onlyoffice/fontconfig/99-sewpg-cjk-font-aliases.conf:/etc/fonts/conf.d/99-sewpg-cjk-font-aliases.conf:ro
-      - ${ONLYOFFICE_CUSTOM_FONTS_HOST_DIR:-./sewpg-bid-backend/onlyoffice/fonts}:/usr/share/fonts/truetype/custom:ro
       - onlyoffice_logs:/var/log/onlyoffice
       - onlyoffice_data:/var/www/onlyoffice/Data
       - onlyoffice_lib:/var/lib/onlyoffice
       - onlyoffice_db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/sewpg-verify-fonts >/dev/null && curl --fail --silent http://127.0.0.1/healthcheck >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
   postgres:

@@ -637,6 +637,13 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
     if not isinstance(items, list):
         return plan
 
+    title_only_parent_ids = {
+        str(item.get("id") or "").strip()
+        for item in items
+        if isinstance(item, dict)
+        and item.get("titleOnly") is True
+        and str(item.get("id") or "").strip()
+    }
     by_number: dict[str, dict] = {}
     by_numbered_title: dict[str, dict] = {}
     for item in items:
@@ -665,12 +672,27 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
                 entry["status"] = STATUS_UNMATCHED
                 entry["note"] = "gap plan 未选择素材"
             continue
-        entry["coverage_role"] = str(
+        coverage_role = str(
             gap_item.get("coverageRole") or gap_item.get("coverage_role") or ""
         ).strip()
-        entry["covered_by_parent"] = str(
+        covered_by_parent = str(
             gap_item.get("coveredByParent") or gap_item.get("covered_by_parent") or ""
         ).strip()
+        title_only = gap_item.get("titleOnly") is True
+        if title_only:
+            coverage_role = ""
+            covered_by_parent = ""
+        elif covered_by_parent in title_only_parent_ids:
+            covered_by_parent = ""
+            if coverage_role == "covered_by_parent":
+                coverage_role = ""
+        entry["coverage_role"] = coverage_role
+        entry["covered_by_parent"] = covered_by_parent
+        if title_only:
+            entry["status"] = STATUS_STRUCTURAL
+            entry["note"] = "来自缺口识别与处理计划：本级仅保留标题"
+            entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
+            continue
         paths = _gap_plan_paths(gap_item)
         if not paths and _gap_plan_item_is_structural(gap_item):
             entry["paths"] = []
@@ -680,17 +702,19 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
             entry["note"] = "来自缺口识别与处理计划：结构性目录项"
             entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
             continue
+        # 生成前校验：候选未确认 / AI 填写未完成时给出显式提示并阻断合并，
+        # S7 不擅自使用 candidateMaterials 冒充已确认素材；多 fillTask 只完成
+        # 部分时同样阻断，不因存在任一可用产物而放过其余待填写任务（R10-B07-02）。
+        pending_note = _gap_plan_pending_note(gap_item)
+        if pending_note:
+            entry["paths"] = []
+            entry["shifts"] = []
+            entry["attach_modes"] = []
+            entry["status"] = STATUS_UNMATCHED
+            entry["note"] = pending_note
+            entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
+            continue
         if not paths:
-            # 生成前校验：候选未确认 / AI 填写未完成时给出显式提示，
-            # S7 不擅自使用 candidateMaterials 冒充已确认素材。
-            pending_note = _gap_plan_pending_note(gap_item)
-            if pending_note:
-                entry["paths"] = []
-                entry["shifts"] = []
-                entry["attach_modes"] = []
-                entry["status"] = STATUS_UNMATCHED
-                entry["note"] = pending_note
-                entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
             continue
         entry["paths"] = paths
         entry["shifts"] = [0 for _ in paths]
@@ -744,6 +768,9 @@ def _gap_plan_paths(item: dict) -> list[str]:
 
 
 def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
+    # active=False 表示已被撤销/取代的非活动产物（保留审计），一律不进 S7。
+    if artifact.get("active", True) is False:
+        return False
     if artifact.get("s7Ready", True) is False:
         return False
     if str(artifact.get("source") or "") != "ai_fill":
@@ -751,7 +778,9 @@ def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
     if str(artifact.get("qualityGate") or "") == "human_confirmed":
         return True
     quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
-    return str(quality_report.get("status") or "") == "passed"
+    # 本脚本可独立运行，不引 app.services；取值与 technical_gap_domain
+    # .FILL_QUALITY_ACCEPTED_STATUSES 保持一致。
+    return str(quality_report.get("status") or "") in {"passed", "no_fill_required"}
 
 
 def _gap_plan_pending_note(item: dict) -> str:
@@ -760,8 +789,26 @@ def _gap_plan_pending_note(item: dict) -> str:
     S7 只消费 matchedMaterials 与 S7-ready resolvedArtifacts。当缺口项只有
     candidateMaterials（页面"已匹配"其实只是候选/待填写来源）或填写流程未
     走完时，不能用候选冒充已确认素材，必须给出可操作提示。
+
+    多 fillTask 场景（R10-B07-02）：任一任务仍待填写即阻断整项，不因其他任务
+    已有可用产物而只合并部分、漏掉剩余待填写内容；已放行的人工上传/选材产物
+    例外——与决策终审一致，非 AI 可合并产物可替代填写任务。
     """
     artifacts = [a for a in (item.get("resolvedArtifacts") or []) if isinstance(a, dict)]
+    ready_non_ai_artifacts = [
+        a
+        for a in artifacts
+        if str(a.get("source") or "") != "ai_fill" and _resolved_artifact_is_s7_ready(a)
+    ]
+    if ready_non_ai_artifacts:
+        return ""
+    pending_fill_tasks = [
+        t
+        for t in (item.get("fillTasks") or [])
+        if isinstance(t, dict) and str(t.get("status") or "pending") != "completed"
+    ]
+    if pending_fill_tasks:
+        return "AI 填写未完成：请先完成待填写模板并通过质检/人工确认"
     if any(_resolved_artifact_is_s7_ready(a) for a in artifacts):
         return ""
     fill_tasks = [t for t in (item.get("fillTasks") or []) if isinstance(t, dict)]

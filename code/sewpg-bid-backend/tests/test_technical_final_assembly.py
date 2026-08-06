@@ -461,6 +461,128 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             self.assertEqual(result[0]["coverage_role"], "chapter_master")
             self.assertEqual(result[0]["paths"], ["source-1.7.docx"])
 
+    def test_title_only_chapter_master_keeps_independent_descendant_material(self) -> None:
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-PARENT",
+                                "number": "1.7",
+                                "title": "投标方案优势说明",
+                                "titleOnly": True,
+                                "coverageRole": "chapter_master",
+                                "matchedMaterials": [{"path": "old-parent.docx"}],
+                            },
+                            {
+                                "id": "GAP-CHILD",
+                                "number": "1.7.1",
+                                "title": "投标方案整体优势",
+                                "coverageRole": "covered_by_parent",
+                                "coveredByParent": "GAP-PARENT",
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "manual_upload",
+                                        "path": "new-child.docx",
+                                        "s7Ready": True,
+                                    }
+                                ],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no": "1.7",
+                    "chapter_no_flat": "1.7",
+                    "title": "投标方案优势说明",
+                    "status": "UNMATCHED",
+                    "paths": [],
+                },
+                {
+                    "chapter_no": "1.7.1",
+                    "chapter_no_flat": "1.7.1",
+                    "title": "投标方案整体优势",
+                    "status": "UNMATCHED",
+                    "paths": [],
+                },
+            ]
+
+            result = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["status"], "STRUCTURAL")
+        self.assertEqual(result[0]["paths"], [])
+        self.assertEqual(result[0]["coverage_role"], "")
+        self.assertEqual(result[1]["status"], "MATCHED")
+        self.assertEqual(result[1]["paths"], ["new-child.docx"])
+        self.assertEqual(result[1]["coverage_role"], "")
+        self.assertEqual(result[1]["covered_by_parent"], "")
+
+    def test_unset_title_only_restores_chapter_master_coverage(self) -> None:
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-PARENT",
+                                "number": "1.7",
+                                "title": "投标方案优势说明",
+                                "titleOnly": False,
+                                "coverageRole": "chapter_master",
+                                "matchedMaterials": [{"path": "old-parent.docx"}],
+                            },
+                            {
+                                "id": "GAP-CHILD",
+                                "number": "1.7.1",
+                                "title": "投标方案整体优势",
+                                "coverageRole": "covered_by_parent",
+                                "coveredByParent": "GAP-PARENT",
+                                "matchedMaterials": [{"path": "new-child.docx"}],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no": "1.7",
+                    "chapter_no_flat": "1.7",
+                    "title": "投标方案优势说明",
+                    "status": "UNMATCHED",
+                    "paths": [],
+                },
+                {
+                    "chapter_no": "1.7.1",
+                    "chapter_no_flat": "1.7.1",
+                    "title": "投标方案整体优势",
+                    "status": "UNMATCHED",
+                    "paths": [],
+                },
+            ]
+
+            result = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["status"], "MATCHED")
+        self.assertEqual(result[0]["paths"], ["old-parent.docx"])
+        self.assertEqual(result[0]["coverage_role"], "chapter_master")
+
     def test_apply_gap_plan_clears_wiki_materials_without_selected_match(self) -> None:
         with patch.dict(sys.modules, {"yaml": object()}):
             build_assembly = load_assembler_script("build_assembly")
@@ -527,6 +649,66 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                     "s7Ready": False,
                     "qualityReport": {"status": "needs_review"},
                 }
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), [])
+
+    def test_gap_plan_paths_skips_revoked_artifact_without_matched_fallback(self) -> None:
+        # R10-B07-03：撤销「已定案」后产物停用，S7 不再消费，也不回退 matchedMaterials。
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [{"path": "matched-material.docx"}],
+            "resolvedArtifacts": [
+                {
+                    "source": "material_library",
+                    "path": "revoked-material.docx",
+                    "s7Ready": False,
+                    "active": False,
+                    "revokedAt": "2026-08-06T00:00:00Z",
+                }
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), [])
+
+    def test_gap_plan_paths_uses_only_latest_active_artifact(self) -> None:
+        # R10-B07-03：重新选材后旧产物被取代，最终装配只使用最新有效素材。
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [],
+            "resolvedArtifacts": [
+                {
+                    "source": "material_library",
+                    "path": "superseded-a.docx",
+                    "s7Ready": False,
+                    "active": False,
+                    "supersededAt": "2026-08-06T00:00:00Z",
+                },
+                {
+                    "source": "material_library",
+                    "path": "active-b.docx",
+                    "s7Ready": True,
+                    "active": True,
+                },
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), ["active-b.docx"])
+
+    def test_gap_plan_paths_treats_inactive_artifact_as_not_s7_ready(self) -> None:
+        # R10-B07-03：active=False 的非活动产物即使带 s7Ready 缺省值也不进 S7。
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [],
+            "resolvedArtifacts": [
+                {"source": "material_library", "path": "inactive.docx", "active": False}
             ],
         }
 

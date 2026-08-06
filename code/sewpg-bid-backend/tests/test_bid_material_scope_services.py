@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from openpyxl import Workbook
 from starlette.datastructures import URL
 
@@ -67,6 +68,7 @@ from app.services.business_gap_fact_table import (
     PROJECT_FACT_TABLE_SCHEMA_VERSION as BUSINESS_FACT_TABLE_SCHEMA_VERSION,
 )
 from app.services.technical_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
+from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
 from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import (
     build_technical_review_document_content,
@@ -341,32 +343,45 @@ def test_technical_gap_material_index_uses_technical_material_store() -> None:
             "items": [
                 {
                     "id": "RAW-TECH-0001",
-                    "name": "技术方案.docx",
-                    "folderPath": "技术标/通用素材",
+                    "name": "EW10.0-220 技术方案.docx",
+                    "folderPath": "技术标/标准文件/EW10.0-220上置",
                     "materialTier": "standard",
                     "cleanStatus": "cleaned",
                     "hasCleanedWord": True,
-                    "cleanedFileName": "技术方案.docx",
-                }
+                    "cleanedFileName": "EW10.0-220 技术方案.docx",
+                },
+                {
+                    "id": "RAW-TECH-0002",
+                    "name": "技术方案.docx",
+                    "folderPath": "技术标/标准文件/EW6.0-200上置",
+                    "materialTier": "standard",
+                },
+                {
+                    "id": "RAW-TECH-0003",
+                    "name": "通用技术方案.docx",
+                    "folderPath": "技术标/标准文件",
+                    "materialTier": "standard",
+                },
             ],
-            "total": 1,
+            "total": 3,
         }
 
     material_scope = {
         "bidType": "技术标",
         "readableScopes": [
             {
-                "path": "技术标/通用素材",
+                "path": "技术标/标准文件",
                 "materialTier": "standard",
             }
         ],
     }
 
     with patch("app.services.technical_gap_planner.technical_material_store.raw_files", side_effect=fake_raw_files) as raw_files:
-        items = _allowed_technical_material_index(material_scope, {"model": "WTG-1"})
+        items = _allowed_technical_material_index(material_scope, {"model": "EW10.0-220上置"})
 
     assert raw_files.call_count == 1
-    assert items[0]["id"] == "RAW-TECH-0001"
+    # 标准文件池严格 1:1 限定选中机型：其他机型（conflict）与机型无关（generic）都不进池
+    assert [item["id"] for item in items] == ["RAW-TECH-0001"]
 
 
 def test_technical_gap_material_index_scopes_customer_and_project_by_identity() -> None:
@@ -404,9 +419,21 @@ def test_technical_gap_material_index_scopes_customer_and_project_by_identity() 
                         "name": "项目风资源评估报告.docx",
                         "folderPath": "技术标/项目定制/项目全名/风资源评估报告",
                         "materialTier": "project",
-                    }
+                    },
+                    {
+                        "id": "RAW-PROJECT-APPENDIX",
+                        "name": "附表B.5 培训内容和计划表.docx",
+                        "folderPath": "技术标/项目定制/项目全名/附表",
+                        "materialTier": "project",
+                    },
+                    {
+                        "id": "RAW-CLIENT-INPUT",
+                        "name": "附表C.8 升降机.docx",
+                        "folderPath": "技术标/项目定制/项目全名/技术附表输入文件",
+                        "materialTier": "project",
+                    },
                 ],
-                "total": 1,
+                "total": 3,
             }
         return {"items": [], "total": 0}
 
@@ -436,7 +463,9 @@ def test_technical_gap_material_index_scopes_customer_and_project_by_identity() 
     ) as raw_files:
         items = _allowed_technical_material_index(material_scope, {"model": "EW10.0-220上置"})
 
-    assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT"]
+    # 项目定制/附表（空副表约定目录）不进正文素材池；
+    # 技术附表输入文件（甲方已填附表）保留在索引里，供附表查表替换。
+    assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT", "RAW-CLIENT-INPUT"]
     assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件"
     assert raw_files.call_args_list[1].kwargs["folder_path"] == "技术标/客户定制"
     assert raw_files.call_args_list[1].kwargs["customer_name"] == "华能集团"
@@ -579,6 +608,17 @@ def test_business_assembly_does_not_own_technical_formatting() -> None:
     assert "app.services.business_assembly" not in technical_document_source
     assert "app.services.business_document_editing" not in technical_document_source
     assert "OpencodeClient" not in technical_document_source
+
+
+def test_technical_chat_is_owned_by_technical_chat_service() -> None:
+    technical_document_source = Path("app/services/technical_document_service.py").read_text(encoding="utf-8")
+    technical_chat_source = Path("app/services/technical_chat_service.py").read_text(encoding="utf-8")
+    technical_route_source = Path("app/api/routes/technical.py").read_text(encoding="utf-8")
+
+    assert "OpencodeClient" not in technical_document_source
+    assert "OpencodeClient" in technical_chat_source
+    assert "app.services.technical_chat_service" in technical_route_source
+    assert "technical_chat_service.chat" in technical_route_source
 
 
 def test_business_and_technical_document_format_state_rules_are_split() -> None:
@@ -2048,7 +2088,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "update_directory_generation_state(project" in directory_flow_source
     assert "fail_directory_generation_state(project" in directory_flow_source
     assert "save_outline_state(project" in directory_flow_source
-    assert "regenerate_outline_state(project)" in directory_flow_source
+    assert 'return await self.run_generation(project_id, {"regenerateOutline": True})' in directory_flow_source
     assert "confirm_outline_state(project)" in directory_flow_source
     assert "normalize_bid_type" not in business_gap_planning_source
     assert "ensure_workspace_project_type(" in business_gap_planning_source
@@ -3624,6 +3664,129 @@ def test_technical_ai_fill_action_stays_in_technical_ai_fill_module(tmp_path) ->
     assert artifact["onlyoffice"]["browserFileUrl"].startswith("http://testserver/api/technical/")
 
 
+def test_technical_ai_fill_no_fill_required_reaches_s7_ready(tmp_path) -> None:
+    """空白模板没有待填单元格时，填 0 格要走到 S7-ready 终态。
+
+    质量门给出 no_fill_required 后，写回链路若仍按 == "passed" 判定，产物会带
+    s7Ready=False 落库，technical_gap_artifact_is_s7_ready 的第一行短路就再也
+    放行不了——放行逻辑形同虚设。这里从 run_technical_ai_fill_for_gap 端到端断言。
+    """
+    project_id = _seed_technical_gap_project(
+        {
+            "scopeBoundary": {"readableScopes": []},
+            "materialIndex": [],
+            "items": [
+                {
+                    "id": "TG-NOFILL",
+                    "section": "技术方案",
+                    "title": "机型配置品牌表",
+                    "status": "needs_input",
+                    "decision": "fill_required",
+                    "usage": "table_fill",
+                    "appendixTasks": [{"id": "BLANK-NOFILL", "title": "机型配置品牌表"}],
+                    "fillTasks": [
+                        {
+                            "id": "FILL-NOFILL",
+                            "skill": "bid-tech-table-filler",
+                            "status": "pending",
+                            "blankSource": {"id": "BLANK-NOFILL", "title": "机型配置品牌表"},
+                        }
+                    ],
+                    "resolvedArtifacts": [],
+                }
+            ],
+            "summary": {"totalTocItems": 1, "fillableTaskCount": 1},
+        }
+    )
+    project = store._require(project_id)
+
+    def fake_no_fill_runner(manifest_path: Path) -> dict[str, object]:
+        output_path = Path(json.loads(Path(manifest_path).read_text(encoding="utf-8"))["outputFile"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"technical-ai-filled-docx")
+        return {
+            "schema_version": "bid-tech-table-fill-v1",
+            "outputFile": str(output_path),
+            "unfilledFields": [],
+            "evidenceRefs": [{"type": "blank_source", "path": "机型配置品牌表.docx"}],
+            "fillReport": {
+                "targetFieldCount": 0,
+                "filledFieldCount": 0,
+                "unfilledFieldCount": 0,
+                "noFillRequired": True,
+            },
+        }
+
+    with patch.object(
+        technical_gap_ai_fill_module,
+        "technical_workspace_dir",
+        return_value=tmp_path / "technical-workspace",
+    ), patch.object(
+        technical_gap_ai_fill_module,
+        "run_technical_table_filler_skill",
+        side_effect=fake_no_fill_runner,
+    ):
+        payload = technical_gap_actions_module.run_technical_ai_fill_for_gap(
+            project,
+            "TG-NOFILL",
+            {"fillTaskId": "FILL-NOFILL", "operator": "技术用户"},
+            browser_base_url="http://testserver",
+        )
+
+    artifact = payload["artifact"]
+    assert artifact["qualityReport"]["status"] == "no_fill_required"
+    assert artifact["s7Ready"] is True
+    assert technical_gap_artifact_is_s7_ready(artifact) is True
+    assert payload["item"]["status"] == "resolved"
+    assert payload["item"]["qualityStatus"] == "no_fill_required"
+    assert not any("验收未达标" in note for note in payload["item"]["reviewNotes"])
+
+
+def test_technical_body_fill_rejects_fact_table_without_spec_columns() -> None:
+    """正文填写的清单元数据缺失时显式失败，不再静默回退到旧的模糊匹配链路。"""
+    project_id = _seed_technical_gap_project(
+        {
+            "items": [
+                {
+                    "id": "TG-BODY",
+                    "number": "5.8.2",
+                    "title": "变桨系统专题",
+                    "status": "needs_input",
+                    "decision": "fill_required",
+                    "usage": "section_fill",
+                    "appendixTasks": [{"id": "BLANK-BODY", "title": "待填写-变桨系统专题.docx"}],
+                    "fillTasks": [
+                        {
+                            "id": "FILL-BODY",
+                            "skill": "bid-tech-word-placeholder-filler",
+                            "status": "pending",
+                            "blankSource": {
+                                "id": "BLANK-BODY",
+                                "title": "待填写-变桨系统专题.docx",
+                                "sourceType": "material_fill_template",
+                            },
+                        }
+                    ],
+                    "resolvedArtifacts": [],
+                }
+            ],
+            "summary": {"totalTocItems": 1, "fillableTaskCount": 1},
+        }
+    )
+    project = store._require(project_id)
+    project["gap_state"]["projectFactTable"] = {
+        "status": "confirmed",
+        "fields": [{"label": "项目名称", "value": "技术标服务拆分测试项目", "status": "confirmed"}],
+    }
+
+    with pytest.raises(RuntimeError, match="重新上传"):
+        technical_gap_actions_module.run_technical_ai_fill_for_gap(
+            project,
+            "TG-BODY",
+            {"fillTaskId": "FILL-BODY", "operator": "技术用户"},
+        )
+
+
 def test_technical_gap_fact_table_lookup_stays_in_technical_service() -> None:
     project_id = _seed_technical_gap_project({"items": [], "summary": {}})
     record = store._require(project_id)
@@ -3725,7 +3888,9 @@ def test_technical_gap_save_facts_stays_in_technical_service() -> None:
 
     assert payload["status"] == "confirmed"
     assert payload["confirmedBy"] == "技术用户"
-    assert payload["fields"][0]["status"] == "confirmed"
+    # 整表 confirm 只升表级状态；字段级"已人工确认"只能由 PATCH 单字段接口产生，
+    # 否则一次保存就把整张表变成 AI 禁区
+    assert payload["fields"][0]["status"] == "extracted"
     assert store._require(project_id)["gap_state"]["projectFactTable"]["status"] == "confirmed"
 
 

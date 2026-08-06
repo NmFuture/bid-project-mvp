@@ -1,11 +1,12 @@
 from fastapi import APIRouter
 
-from app.api.routes import auth, business, business_gaps, dashboard, performance, project_info, settings, system, technical
+from app.api.routes import auth, business, business_gaps, dashboard, monitoring, performance, project_info, settings, system, technical
 
 api_router = APIRouter()
 api_router.include_router(system.router)
 api_router.include_router(auth.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(monitoring.router)
 api_router.include_router(performance.router)
 api_router.include_router(project_info.router)
 api_router.include_router(business.router)

@@ -19,8 +19,11 @@ from sqlalchemy.orm import selectinload
 from app.core.config import BASE_DIR, settings
 from app.models import async_session
 from app.models.materials import RawFile
+from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.filename_utils import short_filename
 from app.services.material_doc_conversion import convert_doc_to_docx
+from app.services.material_folder_scope import normalize_material_bid_type
+from app.services.material_raw_file_filter import raw_file_bid_type
 from app.services.material_raw_object_operations import enqueue_cleaning_job
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
@@ -30,6 +33,8 @@ logger = logging.getLogger(__name__)
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 # 线上清洗链路只处理 Word；DOC 先经 OnlyOffice 转为 DOCX，其他格式保留原件。
 CLEANABLE_SUFFIXES = {".doc", ".docx"}
+# 可由后台任务转换为 Word 的非 Word 素材（driver 的 pdf/excel 分支，技术标深度解析链使用）
+DEEP_CONVERTIBLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm"}
 _sync_cleaning_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -58,6 +63,12 @@ def _short_file_name_for_path(name: str, fallback: str = "material.docx") -> str
 
 def is_cleanable_material(name: str) -> bool:
     return PurePosixPath(str(name or "")).suffix.lower() in CLEANABLE_SUFFIXES
+
+
+def is_deep_convertible_material(name: str) -> bool:
+    """是否可后台转换为 Word 的非 Word 素材（PDF/XLSX 走 driver 的转换分支）。"""
+
+    return PurePosixPath(str(name or "")).suffix.lower() in DEEP_CONVERTIBLE_SUFFIXES
 
 
 def cleaned_object_key(raw_file_id: int, file_name: str, *, source_version: int | None = None) -> str:
@@ -241,7 +252,9 @@ async def set_material_clean_status(
 async def _requeue_latest_cleaning(file_id: str, *, stale_version: int) -> dict[str, Any]:
     numeric_id = _numeric_raw_file_id(file_id)
     async with async_session() as session:
-        result = await session.execute(select(RawFile).where(RawFile.id == numeric_id))
+        result = await session.execute(
+            select(RawFile).options(selectinload(RawFile.folder)).where(RawFile.id == numeric_id)
+        )
         item = result.scalar_one_or_none()
         if item is None:
             return {"queued": False, "reason": "missing"}
@@ -251,8 +264,17 @@ async def _requeue_latest_cleaning(file_id: str, *, stale_version: int) -> dict[
             return {"queued": False, "reason": "not_pending"}
         source_bucket = str(item.minio_bucket or settings.minio_buckets["materials"])
         source_key = str(item.minio_key or "")
+        raw_bid_type = str(raw_file_bid_type(item) or "").strip()
+        bid_type = normalize_material_bid_type(raw_bid_type)
+    if not raw_bid_type:
+        # 升级前历史素材可能完全缺失标类，兼容原有技术标链路。
+        bid_type = TECHNICAL_BID_TYPE
+    elif not bid_type:
+        logger.warning("清洗补排发现素材 %s 携带非法 bidType=%r，已拒绝入队。", file_id, raw_bid_type)
+        return {"queued": False, "reason": "invalid_bid_type"}
     return enqueue_cleaning_job(
         numeric_id,
+        bid_type=bid_type,
         source_version=current_version,
         source_bucket=source_bucket,
         source_key=source_key,
@@ -310,6 +332,8 @@ async def _set_task_clean_status(
 async def clean_material_file(
     file_id: str,
     data: dict[str, Any] | None = None,
+    *,
+    allow_convert: bool = False,
 ) -> dict[str, Any]:
     numeric_id = _numeric_raw_file_id(file_id)
 
@@ -339,21 +363,28 @@ async def clean_material_file(
             return stale
         source_version = expected_version
 
-    # 非 Word 素材不清洗，直接标记保留原件，同时兜底修正历史 pending 任务。
+    # 非 Word 素材默认不清洗，直接标记保留原件（同时兜底修正历史 pending 任务）；
+    # allow_convert=True（后台深度解析任务）时，PDF/XLSX 走 driver 转换出 Word。
     if not is_cleanable_material(source_name):
-        return await _set_task_clean_status(
-            file_id,
-            source_version,
-            "original_only",
-            "非 Word 素材保留原件，不触发自动清洗。",
-        )
+        if not (allow_convert and is_deep_convertible_material(source_name)):
+            return await _set_task_clean_status(
+                file_id,
+                source_version,
+                "original_only",
+                "非 Word 素材保留原件，不触发自动清洗。",
+            )
 
     converting_doc = PurePosixPath(source_name).suffix.lower() == ".doc"
+    converting_non_word = not is_cleanable_material(source_name)
     cleaning_status = await _set_task_clean_status(
         file_id,
         source_version,
         "cleaning",
-        "正在通过 OnlyOffice 将 DOC 转换为 DOCX。" if converting_doc else "正在清洗 Word 素材。",
+        (
+            "正在通过 OnlyOffice 将 DOC 转换为 DOCX。"
+            if converting_doc
+            else ("正在后台转换为 Word 素材。" if converting_non_word else "正在清洗 Word 素材。")
+        ),
     )
     if cleaning_status.get("cleanStatus") == "stale":
         return cleaning_status

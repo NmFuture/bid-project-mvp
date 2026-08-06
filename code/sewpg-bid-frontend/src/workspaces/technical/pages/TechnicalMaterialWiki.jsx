@@ -1,14 +1,13 @@
 import { useCallback, useMemo, useState, useEffect, useRef } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
+import MaterialPipelineProgress from '../components/MaterialPipelineProgress'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
-import {
-  calculateWikiJobElapsedSeconds,
-  formatWikiJobElapsed,
-  resolveWikiJobElapsedTimestamp,
-} from '../technicalWikiJobProgress'
+import { sortNodesByName } from '../../../utils/materialSort'
+import { startWikiJobStatusPolling } from '../technicalWikiJobPolling'
+import { createFulltextRequestGuard } from './fulltextRequestGuard'
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
@@ -47,6 +46,19 @@ const PREVIEW_STATUS_META = {
 const normalizeTags = (tags) => (
   Array.isArray(tags) ? tags.map((tag) => String(tag || '').trim()).filter(Boolean) : []
 )
+
+// 后端在 PDF extract 产物就绪的文件卡片上打该 tag，作为「查看全文」入口的显示条件。
+const FULLTEXT_TAG = '全文已提取'
+
+// 文件卡片正文里的 material_id 行由后端 run_from_manifest 固定生成。
+const materialIdFromNode = (node) => {
+  const match = String(node?.markdownContent || '').match(/material_id:\s*(RAW-\d+)/)
+  return match ? match[1] : ''
+}
+
+// 全文提取产物里的页标记（HTML 注释）转成用户可读的分页标题。
+const formatFulltextForDisplay = (text) =>
+  String(text || '').replace(/<!--\s*第\s*(\d+)\s*页\s*-->/g, '—— 第 $1 页 ——')
 
 const previewStatusForTags = (tags) => {
   const normalized = normalizeTags(tags)
@@ -128,15 +140,18 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const [wikiJobActive, setWikiJobActive] = useState(() => Boolean(readWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY)))
   const [wikiJobPhase, setWikiJobPhase] = useState('')
   // 优先使用服务端 startedAt；新队列未提供时回退到 createdAt，刷新后仍对齐任务提交时间。
-  const [wikiJobElapsedFrom, setWikiJobElapsedFrom] = useState('')
-  const [wikiJobElapsedSeconds, setWikiJobElapsedSeconds] = useState(0)
   const [collapsedMap, setCollapsedMap] = useState({})
+  const [fulltextState, setFulltextState] = useState({ open: false, loading: false, data: null, error: '' })
+  // 惰性初始化一次即可，守卫本身不随渲染变化。
+  const [fulltextGuard] = useState(createFulltextRequestGuard)
   const refreshingWiki = refreshingWikiPending || (wikiJobActive && wikiJobMode !== 'replace')
   const rebuildingWiki = rebuildingWikiPending || (wikiJobActive && wikiJobMode !== 'refresh')
 
   const splitContainerRef = useRef(null)
   const [treeWidth, setTreeWidth] = useState(TREE_WIDTH_DEFAULT)
   const [resizing, setResizing] = useState(false)
+  // 已刷新过的 Wiki 任务 jobId（手动轮询与流水线回调共用），同一任务只重载一次目录树。
+  const handledWikiJobRef = useRef('')
 
   const startTreeResize = useCallback((event) => {
     if (event.button !== 0) return
@@ -182,6 +197,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }, [])
 
   const loadData = useCallback(async (params = {}, options = {}) => {
+    const isCancelled = () => options.signal?.aborted || options.isCancelled?.()
     // preserveTree：仅切换选中节点内容，不动树结构，也不展示任何加载提示，
     // 避免左栏「正在同步目录树」提示条闪现导致目录树闪烁 / 高度跳动。
     // 非 preserveTree（首屏 / 刷新 / 重建）才展示全屏 loading。
@@ -193,9 +209,11 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       const response = await technicalMaterialsAPI.wiki.list({
         ...params,
         bidType: activeBidType,
-      })
+      }, { signal: options.signal })
+      if (isCancelled()) return
       applyPayload(response, { preserveTree: options.preserveTree })
     } catch (e) {
+      if (isCancelled()) return
       console.error(e)
       const message = safeMessage(e, 'Wiki 数据加载失败，请稍后重试。')
       // preserveTree 下首屏树已在，静默失败时用 toast 提示，不打断当前视图。
@@ -205,7 +223,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         setError(message)
       }
     } finally {
-      if (!options.preserveTree) {
+      if (!options.preserveTree && !isCancelled()) {
         setLoading(false)
       }
     }
@@ -221,73 +239,101 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   // 后台 Wiki 生成任务轮询：到达终态后应用结果或提示失败
   useEffect(() => {
     if (!wikiJobActive || !wikiJobId) return undefined
-    let stopped = false
     const finish = () => {
       setWikiJobActive(false)
       setWikiJobId('')
       setWikiJobMode('')
       setWikiJobPhase('')
-      setWikiJobElapsedFrom('')
-      setWikiJobElapsedSeconds(0)
       setRefreshingWiki(false)
       setRebuildingWiki(false)
       writeWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY, '')
       writeWikiJobStorage(WIKI_JOB_MODE_STORAGE_KEY, '')
     }
-    const tick = async () => {
-      try {
-        const status = await technicalMaterialsAPI.wiki.bootstrapStatus(wikiJobId)
-        if (stopped) return
+
+    return startWikiJobStatusPolling({
+      fetchStatus: (signal) => technicalMaterialsAPI.wiki.bootstrapStatus(wikiJobId, { signal }),
+      onStatus: async (status, pollContext) => {
         const state = String(status?.status || '').toLowerCase()
         if (state === 'queued' || state === 'running') {
           setWikiJobPhase(String(status?.progress?.phase || ''))
-          const timestamp = resolveWikiJobElapsedTimestamp(status)
-          if (timestamp) setWikiJobElapsedFrom(timestamp)
-          return
+          return true
         }
-        finish()
         if (state === 'succeeded') {
-          await loadData()
+          // 标记本任务已刷新，流水线进度条的同一 jobId 成功回调据此跳过，避免重复请求。
+          handledWikiJobRef.current = wikiJobId
+          await loadData({}, pollContext)
+          if (pollContext.isCancelled()) return false
+          finish()
           showToast(status?.message || `${activeBidType} Wiki 已更新`)
         } else if (state === 'failed' || state === 'cancelled') {
+          finish()
           showToast(status?.message || status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
         } else {
           // idle：后端重启丢了任务状态，AI 预览缓存已保留，提示重触续跑
-          showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')
-          loadData()
-        }
-      } catch (error) {
-        if (!stopped && error?.status === 404) {
+          await loadData({}, pollContext)
+          if (pollContext.isCancelled()) return false
           finish()
-          loadData()
+          showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')
         }
-        // 单次轮询失败不影响任务本身，下一轮重试
-      }
-    }
-    const timer = setInterval(tick, 8000)
-    tick()
-    return () => {
-      stopped = true
-      clearInterval(timer)
-    }
+        return false
+      },
+      onNotFound: async (_pollError, pollContext) => {
+        await loadData({}, pollContext)
+        if (pollContext.isCancelled()) return
+        finish()
+      },
+      onUnavailable: (pollError) => {
+        finish()
+        showToast(
+          safeMessage(pollError, 'Wiki 任务状态连续查询失败，已停止本页跟踪，请刷新页面确认结果。'),
+          'error',
+        )
+      },
+    })
   }, [wikiJobActive, wikiJobId, activeBidType, loadData, showToast])
-
-  // 已耗时每秒刷新一次，仅本地计时，不额外请求后端。
-  useEffect(() => {
-    if (!wikiJobActive) return undefined
-    const update = () => {
-      setWikiJobElapsedSeconds(calculateWikiJobElapsedSeconds(wikiJobElapsedFrom))
-    }
-    update()
-    const timer = setInterval(update, 1000)
-    return () => clearInterval(timer)
-  }, [wikiJobActive, wikiJobElapsedFrom])
 
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
+
+  // 流水线进度条回调（R10-B07-04）：页面打开后发现新的 Wiki 成功任务时重新加载目录树。
+  // 按 jobId 去重只刷新一次；本页手动触发的任务由上面的 bootstrapStatus 轮询负责刷新，
+  // 这里跳过避免重复请求。带上当前选中节点刷新：展开位置由 collapsedMap 本地保留，
+  // 选中状态随 nodeId 保留；节点已被任务删掉时后端回退到首个可见节点。
+  const handlePipelineWikiSuccess = useCallback(
+    (jobId) => {
+      const id = String(jobId || '')
+      if (!id || handledWikiJobRef.current === id) return
+      handledWikiJobRef.current = id
+      if (id === wikiJobId) return
+      loadData(selectedNodeId ? { nodeId: selectedNodeId } : {})
+    },
+    [loadData, selectedNodeId, wikiJobId],
+  )
   // 右侧只派生一个用户可读的状态小 tag，后端原始 tags 不再透出到界面。
   const selectedStatus = useMemo(() => previewStatusForTags(selectedNode?.tags), [selectedNode])
-  const tree = data?.tree || []
+  const selectedMaterialId = useMemo(() => materialIdFromNode(selectedNode), [selectedNode])
+  const selectedHasFulltext = Boolean(selectedMaterialId && selectedNode?.tags?.includes(FULLTEXT_TAG))
+
+  const handleOpenFulltext = async () => {
+    if (!selectedMaterialId) return
+    const seq = fulltextGuard.begin()
+    setFulltextState({ open: true, loading: true, data: null, error: '' })
+    try {
+      const payload = await technicalMaterialsAPI.raw.fulltext(selectedMaterialId)
+      if (!fulltextGuard.isCurrent(seq)) return
+      setFulltextState({ open: true, loading: false, data: payload, error: '' })
+    } catch (e) {
+      if (!fulltextGuard.isCurrent(seq)) return
+      console.error(e)
+      setFulltextState({ open: true, loading: false, data: null, error: safeMessage(e, '全文加载失败，请稍后重试。') })
+    }
+  }
+
+  const handleCloseFulltext = () => {
+    fulltextGuard.invalidate()
+    setFulltextState((prev) => ({ ...prev, open: false }))
+  }
+  const tree = useMemo(() => sortNodesByName(data?.tree || []), [data?.tree])
   const previewStatusCounts = useMemo(() => countPreviewStatuses(tree), [tree])
   const previewStatusItems = useMemo(
     () => Object.entries(PREVIEW_STATUS_META)
@@ -345,8 +391,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
     setWikiJobId(jobId)
     setWikiJobMode(mode)
     setWikiJobPhase('')
-    setWikiJobElapsedFrom(resolveWikiJobElapsedTimestamp(status))
-    setWikiJobElapsedSeconds(0)
     setWikiJobActive(true)
     showToast('任务已在后台开始，可离开本页，完成后自动更新。')
   }
@@ -498,28 +542,9 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         )}
         basePath={materialsBasePath}
       />
-      {wikiJobActive && (
-        // 后台生成任务的持续运行提示：阶段文案 + 已耗时 + 无百分比时的滚动条，
-        // 让用户在长耗时阶段也能确认后台仍在执行。
-        <div
-          role="status"
-          className="flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3"
-        >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-[1.6]">
-            <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[16px] text-primary">
-              progress_activity
-            </span>
-            <span className="font-medium text-on-surface">
-              Wiki 生成任务进行中{WIKI_JOB_PHASE_LABELS[wikiJobPhase] ? ` · ${WIKI_JOB_PHASE_LABELS[wikiJobPhase]}` : ''}
-            </span>
-            <span className="tabular-nums text-on-surface-variant">已耗时 {formatWikiJobElapsed(wikiJobElapsedSeconds)}</span>
-            <span className="text-xs text-outline">任务在后台运行，可离开本页，完成后自动更新。</span>
-          </div>
-          <div className="h-1 w-full overflow-hidden rounded-full bg-primary/10">
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/60" />
-          </div>
-        </div>
-      )}
+      {/* 素材流水线统一进度条（2026-08-04）：覆盖清洗 + Wiki（手动/自动触发同一任务类型），
+          替代原先只跟手动刷新联动的任务提示块。 */}
+      <MaterialPipelineProgress onWikiJobSuccess={handlePipelineWikiSuccess} />
       {previewStatusItems.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-outline-variant/45 px-1 py-2 text-xs">
           <span className="font-medium text-on-surface">解析状态</span>
@@ -570,16 +595,29 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex min-h-[520px] max-h-[75vh] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:max-h-none">
-            {selectedStatus && (
-              <div className="flex shrink-0 items-center border-b border-surface-container-high px-5 py-3">
-                <span
-                  className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-xs ${selectedStatus.className}`}
-                >
-                  <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
-                    {selectedStatus.icon}
+            {(selectedStatus || selectedHasFulltext) && (
+              <div className="flex shrink-0 items-center gap-2 border-b border-surface-container-high px-5 py-3">
+                {selectedStatus && (
+                  <span
+                    className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-xs ${selectedStatus.className}`}
+                  >
+                    <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
+                      {selectedStatus.icon}
+                    </span>
+                    {selectedStatus.label}
                   </span>
-                  {selectedStatus.label}
-                </span>
+                )}
+                {selectedHasFulltext && (
+                  <button
+                    onClick={handleOpenFulltext}
+                    className="ml-auto inline-flex h-7 items-center gap-1 rounded border border-primary/30 bg-primary/5 px-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                  >
+                    <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
+                      article
+                    </span>
+                    查看全文
+                  </button>
+                )}
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
@@ -599,6 +637,61 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       </div>
       )}
     </div>
+    {fulltextState.open && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="提取全文"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        onClick={handleCloseFulltext}
+      >
+        <div
+          className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-outline-variant/45 bg-surface-container-lowest shadow-xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-surface-container-high px-5 py-4">
+            <div className="min-w-0">
+              <h3 className="truncate text-[15px] leading-[1.6] font-semibold text-on-surface">
+                {fulltextState.data?.name || '提取全文'}
+              </h3>
+              {fulltextState.data && (
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  共 {fulltextState.data.pageCount} 页 · 全文 {Number(fulltextState.data.charCount || 0).toLocaleString()} 字
+                  {fulltextState.data.truncated
+                    ? ` · 超页数护栏已截断（仅前 ${fulltextState.data.processedPages} 页）`
+                    : ' · 未截断'}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={handleCloseFulltext}
+              aria-label="关闭"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-on-surface-variant transition-colors hover:bg-surface-container-low"
+            >
+              <span aria-hidden="true" className="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto bg-white px-5 py-4">
+            {fulltextState.loading ? (
+              <div className="flex min-h-[200px] items-center justify-center gap-2 text-sm text-on-surface-variant">
+                <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[18px] text-primary">
+                  progress_activity
+                </span>
+                正在加载全文...
+              </div>
+            ) : fulltextState.error ? (
+              <div className="flex min-h-[200px] items-center justify-center text-sm text-rose-600">
+                {fulltextState.error}
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.8] text-on-surface">
+                {formatFulltextForDisplay(fulltextState.data?.text)}
+              </pre>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     </>
   )
 }

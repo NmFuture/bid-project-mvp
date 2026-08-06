@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import subprocess
@@ -11,14 +12,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import BASE_DIR
+from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
+    FILL_QUALITY_ACCEPTED_STATUSES,
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
+from app.services.technical_fact_spec_versions import resolve_project_specs
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -165,6 +169,77 @@ def normalize_technical_gap_plan_fill_task_skills(plan: dict[str, Any]) -> int:
     return repaired
 
 
+def enrich_fact_table_with_spec_columns(
+    fact_table: dict[str, Any],
+    gap_state: dict[str, Any],
+) -> dict[str, Any]:
+    """给事实表字段补上清单第 2/3 列（待填写文件 / 原占位符位置）。
+
+    这两列是随「按清单定位」一起加的，改动前生成并存进 gap_state 的事实表没有它们，
+    正文填写会误判成「清单未下发」而回退到旧的模糊匹配链路（起 agent + 跑 OCR，单条
+    几十秒）。这里按 specKey 从项目当前生效清单现补，只补元数据不碰任何取值，
+    也就不需要用户重建事实表——重建会重跑规则抽取，动到已确认的值。
+    """
+    fields = fact_table.get("fields")
+    if not isinstance(fields, list) or not fields:
+        return fact_table
+    specs, _meta = resolve_project_specs(gap_state)
+    specs_by_key = {str(spec.get("key") or ""): spec for spec in specs if isinstance(spec, dict) and spec.get("key")}
+    if not specs_by_key:
+        return fact_table
+    enriched = copy.deepcopy(fact_table)
+    for field in enriched.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip():
+            continue
+        spec = specs_by_key.get(str(field.get("specKey") or ""))
+        if not spec:
+            continue
+        field["placeholder"] = str(spec.get("placeholder") or "")
+        field["targetFile"] = str(spec.get("targetFile") or "")
+    return enriched
+
+
+def fact_table_spec_coverage(fact_table: dict[str, Any]) -> tuple[int, int]:
+    """事实表字段总数，以及其中带清单第 2/3 列（待填写文件 / 原占位符位置）的字段数。"""
+    fields = _object_items(fact_table.get("fields"))
+    covered = sum(
+        1
+        for field in fields
+        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip()
+    )
+    return len(fields), covered
+
+
+def fact_table_drives_placeholders(fact_table: dict[str, Any]) -> bool:
+    """事实表字段是否带清单第 2/3 列（待填写文件 / 原占位符位置）。
+
+    带了就说明正文填写能按占位符精确查表定位字段，不再需要参考素材做模糊匹配。
+    """
+    return fact_table_spec_coverage(fact_table)[1] > 0
+
+
+def require_spec_driven_fact_table(fact_table: dict[str, Any]) -> None:
+    """正文填写前置校验：事实表必须能驱动占位符定位，否则直接失败。
+
+    以前清单元数据缺失会静默回退到旧的模糊匹配链路（上下文规则 + 全库相似度 + 从素材
+    抽事实 + 起 agent + 跑 OCR），单条几十秒且是错值的主要来源，而界面上只表现为「慢」，
+    用户无从知道自己走错了路。这里改成显式报错并给出修复动作。
+
+    只判零覆盖：部分字段缺列时，缺列的那些会在填写报告里记成 not_in_spec 并标黄，
+    可见且不会填错值，不需要在入口拦截。
+    """
+    total, covered = fact_table_spec_coverage(fact_table)
+    if not total:
+        raise RuntimeError("正文填写需要项目事实表，当前项目还没有可用的事实表字段，请先抽取并确认事实表。")
+    if not covered:
+        raise RuntimeError(
+            f"事实表 {total} 个字段都缺少清单的「待填写文件」「原占位符位置」两列，"
+            "正文填写无法定位字段，请重新上传项目事实表清单后再填写。"
+        )
+
+
 def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     blank_source = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
     blank_id = str(blank_source.get("id") or "").strip()
@@ -173,6 +248,62 @@ def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[
         if blank_id and str(appendix_task.get("id") or "") == blank_id:
             return dict(appendix_task)
     return dict(appendix_tasks[0]) if appendix_tasks else {}
+
+
+def _project_tender_documents_for_fill(
+    project: dict[str, Any],
+    appendix_task: dict[str, Any],
+) -> list[dict[str, Any]]:
+    routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
+    if not routing.get("useTenderParseFields"):
+        return []
+    # 完整文档记录（含 sourcePath/textPath）由解析链路写入 project.parse_storage.documents；
+    # project.parse_result 里只有摘要（sourceFiles），旧数据可能带 documents，均作兜底。
+    parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+    documents = parse_storage.get("documents")
+    if not isinstance(documents, list):
+        parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+        documents = parse_result.get("documents")
+        if not isinstance(documents, list):
+            documents = parse_result.get("sourceFiles")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for document in _object_items(documents):
+        if document.get("status") == "failed":
+            continue
+        source_path = Path(str(document.get("sourcePath") or ""))
+        text_path = Path(str(document.get("textPath") or ""))
+        supported_source = source_path.suffix.lower() in {".docx", ".pdf", ".xlsx", ".xlsm", ".txt", ".md"}
+        readable_source = (
+            source_path
+            if supported_source and source_path.is_file()
+            else text_path
+            if text_path.is_file()
+            else None
+        )
+        if readable_source is None:
+            continue
+        document_id = str(document.get("id") or "").strip()
+        key = document_id or str(readable_source.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        nav_path = Path(str(document.get("documentNavPath") or ""))
+        result.append(
+            {
+                "id": document_id or f"TENDER-{len(result) + 1}",
+                "name": str(document.get("name") or document.get("fileName") or source_path.name or readable_source.name),
+                "sourcePath": str(readable_source),
+                "originalSourcePath": str(source_path) if source_path.is_file() else "",
+                "textPath": str(text_path) if text_path.is_file() else "",
+                "ocrTextPath": str(text_path) if text_path.is_file() else "",
+                "documentNavPath": str(nav_path) if nav_path.is_file() else "",
+                "pageCount": document.get("pageCount") or 0,
+                "sourceType": "project_tender_document",
+                "parsedTextFallback": readable_source == text_path and readable_source != source_path,
+            }
+        )
+    return result
 
 
 def _selected_reference_material_ids(
@@ -339,6 +470,81 @@ async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple
     return payload, "raw"
 
 
+_FILL_ORIGINAL_SUFFIXES = (".xlsx", ".xlsm")
+
+
+async def _original_technical_fill_source_payload(material_id: str) -> dict[str, Any] | None:
+    """取素材 Excel 原件的下载信息。
+
+    清洗稿是 docx 文本化版本，丢掉了 sheet 结构：报价分项转写、功率曲线矩阵、
+    参数表机型列定位都必须读原生 Excel。返回 None 表示该素材没有需要额外落地
+    的 Excel 原件（本身是 Word/PDF，或取不到原件）。PDF 不在此列——其文本已由
+    清洗稿承载，额外落地只会凭空增加 OCR 开销。
+    """
+    try:
+        payload = await technical_material_store.raw_download_content(material_id)
+    except Exception:
+        return None
+    file_name = str(payload.get("fileName") or "").lower()
+    if not file_name.endswith(_FILL_ORIGINAL_SUFFIXES):
+        return None
+    return payload
+
+
+def _material_may_have_excel_original(item: dict[str, Any]) -> bool:
+    """按素材名判断是否值得回源取 Excel 原件，避免逐份多打一次 DB/MinIO。
+
+    素材名是上传时的原始文件名（清洗稿名单独放 cleanedFileName），后缀已足够
+    判定；名称缺失或后缀不认识时返回 True，交给下载分支探测。
+    """
+    for key in ("name", "title"):
+        text = str(item.get(key) or "").strip().lower()
+        if not text:
+            continue
+        if text.endswith(_FILL_ORIGINAL_SUFFIXES):
+            return True
+        if text.endswith((".docx", ".doc", ".pdf", ".txt", ".md")):
+            return False
+    return True
+
+
+def _resolve_original_material_file(
+    material_id: str,
+    item: dict[str, Any],
+    cache_dir: Path,
+) -> Path | None:
+    """把 Excel 原件落地到素材缓存，并在 item 上暴露 originalPath。
+
+    已落地的就是原件（清洗稿缺失走 raw 分支）时直接复用，不重复下载。
+    """
+    current = Path(str(item.get("path") or ""))
+    if current.suffix.lower() in _FILL_ORIGINAL_SUFFIXES and current.exists():
+        item["originalPath"] = str(current)
+        item["originalFileName"] = current.name
+        return current
+    if not _material_may_have_excel_original(item):
+        return None
+    awaitable = _original_technical_fill_source_payload(material_id)
+    try:
+        payload = _run_async(awaitable)
+    except Exception:
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        return None
+    if not payload:
+        return None
+    file_name = _safe_filename(str(payload.get("fileName") or ""), f"{material_id}原件")
+    target_path = cache_dir / f"{material_id}-{file_name}"
+    if not target_path.exists():
+        try:
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        except Exception:
+            return None
+    item["originalPath"] = str(target_path)
+    item["originalFileName"] = target_path.name
+    return target_path
+
+
 async def _downloadable_technical_word_payload(material_id: str) -> tuple[dict[str, Any], str]:
     try:
         payload = await technical_material_store.raw_download_cleaned_content(material_id)
@@ -381,6 +587,59 @@ def _ensure_pdf_ocr_sidecar(pdf_path: Path) -> tuple[str, str]:
     return str(sidecar_path), "generated"
 
 
+def _ensure_pdf_ocr_sidecars_batch(pending: list[tuple[dict[str, Any], Path]]) -> int:
+    """对本轮收集的待 OCR PDF 批量提交、统一等待并回填 sidecar 状态。
+
+    与 _ensure_pdf_ocr_sidecar 的单份状态语义一致（generated / skipped / failed），
+    区别在于全部任务一次性提交给 OCR worker 池并发执行，而不是逐份串行同步等待
+    （R09-B07-01）。OCR 未配置/失败不抛出，仅写入各 item 的 ocrStatus。
+    返回本轮新生成的 sidecar 数。
+    """
+    if not pending:
+        return 0
+
+    def _mark_all(status: str) -> int:
+        for item, _pdf_path in pending:
+            item["ocrStatus"] = status
+        return 0
+
+    try:
+        results = _run_async(
+            ocr_service.recognize_texts_for_parse_batch(
+                files=[(pdf_path.name, pdf_path.read_bytes(), "application/pdf") for _, pdf_path in pending]
+            )
+        )
+    except PeripheralError as exc:
+        if exc.code == "OCR_CONFIG_REQUIRED":
+            return _mark_all("skipped: OCR 模型未启用或未配置")
+        return _mark_all(f"failed: {exc.detail}")
+    except Exception as exc:
+        return _mark_all(f"failed: {exc}")
+
+    generated = 0
+    for (item, pdf_path), result in zip(pending, results, strict=True):
+        if isinstance(result, BaseException):
+            if isinstance(result, PeripheralError) and result.code == "OCR_CONFIG_REQUIRED":
+                item["ocrStatus"] = "skipped: OCR 模型未启用或未配置"
+            elif isinstance(result, PeripheralError):
+                item["ocrStatus"] = f"failed: {result.detail}"
+            else:
+                item["ocrStatus"] = f"failed: {result}"
+            continue
+        text, _meta = result
+        if not str(text or "").strip():
+            item["ocrStatus"] = "failed: OCR 识别结果为空"
+            continue
+        sidecar_path = pdf_path.with_suffix(".ocr.txt")
+        # 批量等待期间其他任务可能已补齐同一 sidecar，缓存优先不覆写
+        if not (sidecar_path.exists() and sidecar_path.stat().st_size > 0):
+            sidecar_path.write_text(str(text), encoding="utf-8")
+        item["ocrTextPath"] = str(sidecar_path)
+        item["ocrStatus"] = "generated"
+        generated += 1
+    return generated
+
+
 def _prepare_material_index_files(
     material_index: list[dict[str, Any]],
     work_dir: Path,
@@ -392,7 +651,9 @@ def _prepare_material_index_files(
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     cache_dir = cache_dir or (work_dir / "material_index")
-    ocr_generated = 0
+    # 两阶段：先逐份串行下载落地（缓存命中秒过），收集本轮需 OCR 的 PDF；
+    # 再对收集列表批量提交、统一等待回填，避免逐份同步阻塞 OCR worker 池。
+    pending_ocr: list[tuple[dict[str, Any], Path]] = []
     for material in material_index[:limit]:
         item = dict(material)
         material_id = str(item.get("id") or item.get("materialId") or "").strip()
@@ -421,19 +682,85 @@ def _prepare_material_index_files(
                 "fileName": target_path.name,
             }
         )
+        # 清洗稿是 docx 文本化版本；Excel 原件另行落地，供报价转写、曲线矩阵等
+        # 依赖 sheet 结构的填表分支使用（见 _resolve_original_material_file）。
+        _resolve_original_material_file(material_id, item, cache_dir)
         if ocr_pdf and target_path.suffix.lower() == ".pdf":
             has_cache = target_path.with_suffix(".ocr.txt").exists()
-            if has_cache or ocr_generated < ocr_budget:
+            if has_cache:
                 sidecar_path, ocr_status = _ensure_pdf_ocr_sidecar(target_path)
                 if sidecar_path:
                     item["ocrTextPath"] = sidecar_path
-                if ocr_status == "generated":
-                    ocr_generated += 1
+                item["ocrStatus"] = ocr_status
+            elif len(pending_ocr) < ocr_budget:
+                pending_ocr.append((item, target_path))
             else:
-                ocr_status = "skipped: 本次运行 OCR 配额已用完，缓存后续运行补齐"
-            item["ocrStatus"] = ocr_status
+                item["ocrStatus"] = _OCR_BUDGET_SKIPPED_STATUS
         prepared.append(item)
+    _ensure_pdf_ocr_sidecars_batch(pending_ocr)
     return prepared
+
+
+# 单轮 OCR 配额跳过的状态文案。填表任务内部按轮循环补齐（见
+# _prepare_fill_materials_with_ocr），一轮内仍受 ocr_budget 约束。
+_OCR_BUDGET_SKIPPED_STATUS = "skipped: 本次运行 OCR 配额已用完，缓存后续运行补齐"
+# 补齐循环兜底轮数：一轮三路最多各新 OCR ocr_budget 份，正常项目 2-3 轮内收敛。
+_AI_FILL_OCR_PREP_MAX_ROUNDS = 10
+
+
+def _prepare_fill_materials_with_ocr(
+    material_index: list[dict[str, Any]],
+    reference_materials: list[dict[str, Any]],
+    recommended_materials: list[dict[str, Any]],
+    work_dir: Path,
+    *,
+    cache_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """在本次填表任务内部循环补齐 PDF OCR sidecar，使一次点击即可用全量素材。
+
+    单轮准备仍受 ocr_budget 约束（排队与并发由 OcrTask worker 保证，配额只是
+    单轮时间封顶）；sidecar 落共享缓存跨轮/跨缺口复用，已就绪的素材秒过。
+    循环到没有"配额跳过"的 PDF 为止，之后填表只跑一次。
+    防死循环：限轮数，且某轮就绪数零增长即停止（OCR 失败为 failed 状态，
+    不计入跳过，不会导致空转）。
+    """
+    prev_ready = -1
+    for _round in range(_AI_FILL_OCR_PREP_MAX_ROUNDS):
+        material_index = _prepare_material_index_files(
+            material_index,
+            work_dir,
+            cache_dir=cache_dir,
+            ocr_pdf=True,
+        )
+        reference_materials = _prepare_material_index_files(
+            reference_materials,
+            work_dir,
+            cache_dir=cache_dir,
+            ocr_pdf=True,
+        )
+        recommended_materials = _prepare_material_index_files(
+            recommended_materials,
+            work_dir,
+            cache_dir=cache_dir,
+            ocr_pdf=True,
+        )
+        prepared_lists = (material_index, reference_materials, recommended_materials)
+        deferred = sum(
+            1
+            for prepared in prepared_lists
+            for item in prepared
+            if str(item.get("ocrStatus") or "") == _OCR_BUDGET_SKIPPED_STATUS
+        )
+        ready = sum(
+            1
+            for prepared in prepared_lists
+            for item in prepared
+            if str(item.get("ocrTextPath") or "").strip()
+        )
+        if deferred == 0 or ready <= prev_ready:
+            break
+        prev_ready = ready
+    return material_index, reference_materials, recommended_materials
 
 
 def _prepare_word_blank_source(blank_source: dict[str, Any], work_dir: Path) -> dict[str, Any]:
@@ -466,6 +793,149 @@ def _prepare_word_blank_source(blank_source: dict[str, Any], work_dir: Path) -> 
         }
     )
     return source
+
+
+# ---------- 待插入：整份素材嵌入的备料 ----------
+#
+# 正文占位符分两型，后缀是权威标记：`待填写` 填一个字段值，`待插入` 嵌一整份素材。
+# 素材检索要联网查库，按「skill 只依据 manifest 工作」的既有约定放在后端：这里按项目
+# 素材范围找同名素材、下载落地，写进 manifest.embedSources，脚本只管插入。
+
+# 只识别待插入后缀，用于备料；占位符解析的权威实现在 filler 的 PLACEHOLDER_RE。
+_EMBED_PLACEHOLDER_RE = re.compile(r"[\[【]\s*([^\]】\r\n]{1,80}?)\s*[,，、:：\s]*待插入\s*[\]】]")
+# 与 filler 的 norm() 同款归一化：全半角括号、分隔符差异不该影响占位符与素材名的比对
+_EMBED_NORM_RE = re.compile(r"[\s（）()、/\\:：；;，,。\-_—×*\[\]【】]+")
+# 素材分层的特异性：同名素材优先取更专的一层，同层撞名才交人工
+_EMBED_TIER_PRIORITY = {"project": 3, "customer": 2, "standard": 1}
+_EMBED_UNSUPPORTED_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
+
+
+def _embed_norm(value: Any) -> str:
+    return _EMBED_NORM_RE.sub("", str(value or "").replace("　", " ").strip().lower())
+
+
+def _scan_embed_placeholders(docx_path: Path) -> list[str]:
+    """扫描待填写 Word 里的待插入占位符，返回去重后的素材名。
+
+    只看段落：待插入要整份嵌入，必须独占段落，表格单元格里的由 filler 标黄交人工，
+    这里不必为它们备料。
+    """
+    from docx import Document
+
+    labels: list[str] = []
+    seen: set[str] = set()
+    for paragraph in Document(str(docx_path)).paragraphs:
+        for match in _EMBED_PLACEHOLDER_RE.finditer(paragraph.text or ""):
+            label = str(match.group(1) or "").strip()
+            key = _embed_norm(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            labels.append(label)
+    return labels
+
+
+def _pick_most_specific_material(materials: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+    """同名素材取最专的一层（项目定制 > 客户定制 > 标准）；同层撞名视为分不开。"""
+
+    def priority(material: dict[str, Any]) -> int:
+        return _EMBED_TIER_PRIORITY.get(str(material.get("materialTier") or ""), 0)
+
+    ranked = sorted(materials, key=priority, reverse=True)
+    top = priority(ranked[0])
+    return ranked[0], sum(1 for material in ranked if priority(material) == top) > 1
+
+
+def _embed_sources_for_fill(
+    project: dict[str, Any],
+    blank_docx_path: Path,
+    work_dir: Path,
+) -> list[dict[str, Any]]:
+    """为待填写 Word 里的每个待插入占位符备好可嵌入的 Word 素材。
+
+    每条都带 status：只有 ready 才会被嵌入，其余由 filler 原地标黄并写明原因，
+    不静默跳过——整份素材没进去却报成功，审核界面上看不出来。
+    """
+    labels = _scan_embed_placeholders(blank_docx_path)
+    if not labels:
+        return []
+    material_scope = build_project_material_scope(project)
+    candidates = _allowed_technical_material_index(material_scope, project_turbine_model(project))
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for material in candidates:
+        key = _embed_norm(Path(str(material.get("name") or "")).stem)
+        if key:
+            by_key.setdefault(key, []).append(material)
+
+    sources: list[dict[str, Any]] = []
+    for label in labels:
+        matches = by_key.get(_embed_norm(label)) or []
+        if not matches:
+            sources.append(
+                {
+                    "placeholder": label,
+                    "status": "not_found",
+                    "statusMessage": f"项目素材范围内未找到名为「{label}」的素材。",
+                }
+            )
+            continue
+        picked, ambiguous = _pick_most_specific_material(matches)
+        material_id = str(picked.get("id") or "")
+        name = str(picked.get("name") or "")
+        entry = {
+            "placeholder": label,
+            "materialId": material_id,
+            "name": name,
+            "folderPath": str(picked.get("folderPath") or ""),
+            "materialTier": str(picked.get("materialTier") or ""),
+        }
+        if ambiguous:
+            sources.append(
+                {
+                    **entry,
+                    "status": "ambiguous",
+                    "statusMessage": f"同一层级存在多个名为「{label}」的素材，请人工指定。",
+                    "candidateCount": len(matches),
+                }
+            )
+            continue
+        # 按素材原始后缀判断，不看能不能取到 docx：xlsx 若被 Wiki 预览转换过，
+        # 取素材时会拿到自动转换的清洗稿，那份转换有损（合并单元格丢失、表头认错），
+        # 悄悄嵌进投标材料就是静默降级。
+        if Path(name).suffix.lower() in _EMBED_UNSUPPORTED_SUFFIXES:
+            sources.append(
+                {
+                    **entry,
+                    "status": "unsupported_format",
+                    "statusMessage": f"「{name}」是 Excel 素材，请人工另存为 Word 后重新上传。",
+                }
+            )
+            continue
+        awaitable = _downloadable_technical_word_payload(material_id)
+        try:
+            payload, source_kind = _run_async(awaitable)
+            file_name = _safe_filename(
+                str(picked.get("cleanedFileName") or payload.get("fileName") or name or f"{material_id}.docx"),
+                f"{material_id}.docx",
+            )
+            if not file_name.lower().endswith(".docx"):
+                file_name = f"{Path(file_name).stem}.docx"
+            target_path = work_dir / "embed_sources" / f"{material_id}-{file_name}"
+            if not target_path.exists():
+                minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        except Exception as exc:  # noqa: BLE001 - 单份素材取不到不能中断整份文件的填写
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            sources.append(
+                {
+                    **entry,
+                    "status": "download_failed",
+                    "statusMessage": f"素材「{name}」下载失败：{exc}",
+                }
+            )
+            continue
+        sources.append({**entry, "status": "ready", "sourceKind": source_kind, "docxPath": str(target_path)})
+    return sources
 
 
 def _field_key(field: dict[str, Any]) -> str:
@@ -547,22 +1017,6 @@ s4fill {manifest_path}
 """.strip()
 
 
-def _build_word_placeholder_filler_prompt(manifest_path: Path) -> str:
-    return f"""
-Use the {TECHNICAL_WORD_FILL_SKILL_NAME} skill.
-
-你现在在做技术标素材库待填写 Word 的 AI 填写。后端已经准备好 manifest，其中包含待填写 Word、人工指定参考素材、解析字段、项目投标机型和输出路径。
-
-manifest：{manifest_path}
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
-
-s4wordfill {manifest_path}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-""".strip()
-
-
 def run_technical_table_filler_skill(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
@@ -582,23 +1036,13 @@ def run_technical_table_filler_skill(
         return _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
 
 
-def run_technical_word_placeholder_filler_skill(
-    manifest_path: Path,
-    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
-) -> dict[str, Any]:
-    prompt = _build_word_placeholder_filler_prompt(manifest_path)
-    try:
-        return OpencodeClient().run_bid_tech_table_filler_with_trace(
-            prompt,
-            stream_callback=(
-                (lambda details: progress_callback("word_filler_delta", details))
-                if progress_callback
-                else None
-            ),
-            early_tool_command="s4wordfill",
-        )
-    except Exception:
-        return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
+def run_technical_word_placeholder_filler_skill(manifest_path: Path) -> dict[str, Any]:
+    """正文填写：直接跑本地脚本。
+
+    脚本是纯确定性查表（占位符原文 → 事实表字段），agent 在这条链路上只做一件事——
+    转发一条 shell 命令，起会话的开销远大于执行本身。
+    """
+    return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
 
 
 def _numeric_report_value(report: dict[str, Any], *keys: str) -> int:
@@ -687,7 +1131,10 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         "correctnessRate": 0.85,
         "completenessRate": 0.85,
     }
-    status = "passed" if (
+    # 空白模板本身没有待填单元格（招标原文已写满，或整列留空即不限制）时，
+    # 填 0 格是正确终态，不是缺口。按覆盖率会误判 needs_review 并混进缺口统计。
+    no_fill_required = bool(report.get("noFillRequired")) and output_exists and filled_count == 0
+    status = "no_fill_required" if no_fill_required else "passed" if (
         coverage_rate >= thresholds["coverageRate"]
         and correctness_rate >= thresholds["correctnessRate"]
         and completeness_rate >= thresholds["completenessRate"]
@@ -696,9 +1143,12 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         and failed_target_count == 0
         and output_exists
     ) else "needs_review"
+    source_coverage = report.get("sourceCoverage") if isinstance(report.get("sourceCoverage"), dict) else None
     return {
         "schemaVersion": "bid-fill-quality-report-v1",
         "status": status,
+        "noFillRequired": no_fill_required,
+        "sourceCoverage": source_coverage,
         "coverageRate": round(coverage_rate, 4),
         "correctnessRate": round(correctness_rate, 4),
         "completenessRate": round(completeness_rate, 4),
@@ -783,6 +1233,7 @@ def _build_ai_fill_artifacts(
     reference_materials: list[dict[str, Any]],
     recommended_materials: list[dict[str, Any]],
     parse_fields: list[dict[str, Any]],
+    tender_documents: list[dict[str, Any]],
     manifest_path: Path,
     s7_ready: bool,
     browser_base_url: str = "",
@@ -797,7 +1248,7 @@ def _build_ai_fill_artifacts(
         artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
         title = str(target_report.get("title") or item_title or output_file.stem)
         quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
-        artifact_s7_ready = s7_ready and quality_report["status"] == "passed"
+        artifact_s7_ready = s7_ready and quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES
         artifacts.append(
             {
                 "id": artifact_id,
@@ -822,6 +1273,14 @@ def _build_ai_fill_artifacts(
                 "referenceMaterials": reference_materials,
                 "recommendedMaterials": recommended_materials,
                 "parseFields": parse_fields,
+                "tenderDocuments": [
+                    {
+                        "id": str(document.get("id") or ""),
+                        "name": str(document.get("name") or ""),
+                        "sourceType": str(document.get("sourceType") or "project_tender_document"),
+                    }
+                    for document in tender_documents
+                ],
                 "manifestPath": str(manifest_path),
                 "batchReportPath": str(batch_report_path) if batch_count > 1 else "",
                 "batchTargetIndex": index if batch_count > 1 else 0,
@@ -873,6 +1332,7 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
             or [_material_key(material) for material in reference_materials]
         ),
         "referenceMaterials": reference_materials,
+        "tenderDocuments": _object_items(artifact.get("tenderDocuments")),
         "manifestPath": artifact.get("manifestPath"),
         "batchReportPath": artifact.get("batchReportPath") or "",
         "batchTargetIndex": artifact.get("batchTargetIndex") or 0,
@@ -884,6 +1344,7 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "confirmedAt": str(artifact.get("confirmedAt") or ""),
         "confirmedBy": str(artifact.get("confirmedBy") or ""),
         "referenceMaterialCount": len(artifact.get("referenceMaterials") or []),
+        "tenderDocumentCount": len(artifact.get("tenderDocuments") or []),
         "recommendedMaterialCount": len(artifact.get("recommendedMaterials") or []),
     }
 
@@ -926,6 +1387,7 @@ def run_technical_ai_fill_for_gap(
     gap_state = project.get("gap_state") or {}
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     project_fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+    project_fact_table = enrich_fact_table_with_spec_columns(project_fact_table, gap_state)
     normalize_technical_gap_plan_fill_task_skills(plan)
     items = plan.get("items") if isinstance(plan.get("items"), list) else []
     item = next((entry for entry in items if str(entry.get("id") or "") == gap_id), None)
@@ -948,8 +1410,15 @@ def run_technical_ai_fill_for_gap(
     skill_name = str(task.get("skill") or TECHNICAL_TABLE_FILL_SKILL_NAME)
     appendix_task = _appendix_task_for_fill(item, task)
     blank_source = dict(task.get("blankSource") or {}) if isinstance(task.get("blankSource"), dict) else {}
-    selected_reference_ids = _selected_reference_material_ids(item, appendix_task, data)
-    reference_materials = _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+    # 正文填写只走清单定位（占位符原文 → 事实表字段），素材既不参与定位也不提供取值，
+    # 因此不备素材、不跑 OCR、不起 agent；附表填写仍按原路准备素材。
+    is_word_fill = skill_name == TECHNICAL_WORD_FILL_SKILL_NAME
+    if is_word_fill:
+        require_spec_driven_fact_table(project_fact_table)
+    selected_reference_ids = [] if is_word_fill else _selected_reference_material_ids(item, appendix_task, data)
+    reference_materials = (
+        [] if is_word_fill else _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+    )
     blank_source_id = str(blank_source.get("id") or blank_source.get("materialId") or "").strip()
     reference_materials = [
         material
@@ -957,41 +1426,40 @@ def run_technical_ai_fill_for_gap(
         if str(material.get("id") or material.get("materialId") or "").strip() != blank_source_id
     ]
     recommended_materials = list(reference_materials)
-    material_index = _material_index_for_fill(
-        project,
-        plan,
-        item,
-        selected_reference_ids,
-        reference_materials,
+    material_index = (
+        []
+        if is_word_fill
+        else _material_index_for_fill(
+            project,
+            plan,
+            item,
+            selected_reference_ids,
+            reference_materials,
+        )
     )
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
+    tender_documents = _project_tender_documents_for_fill(project, appendix_task)
+    source_routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
+    if source_routing.get("useTenderParseFields") and not tender_documents:
+        raise RuntimeError("附表填写规则要求读取招标文件，但项目当前没有可读取的原始文件或全文解析结果，请重新解析招标文件。")
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
     shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
     # PDF 素材（认证证书等）三路都做 OCR sidecar：证书 PDF 通常只经 materialIndex
-    # 关键词选源进入填表。sidecar 落在共享缓存跨缺口复用，单次运行有 OCR 配额上限。
-    material_index = _prepare_material_index_files(
-        material_index,
-        work_dir,
-        cache_dir=shared_material_cache_dir,
-        ocr_pdf=True,
-    )
+    # 关键词选源进入填表。sidecar 落在共享缓存跨缺口复用。
     # referenceMaterials/recommendedMaterials 只带素材库虚拟目录路径（如
     # "技术标/通用素材/.../证书.pdf"），不是本地可读路径；只下载过 material_index，
     # 这两路（尤其是路由命中的认证证书 PDF）从未落地过，table-filler 拿到手时
     # material_path() 解析不出真实文件，会静默丢弃——即使上游路由完全正确。
-    reference_materials = _prepare_material_index_files(
-        reference_materials,
-        work_dir,
-        cache_dir=shared_material_cache_dir,
-        ocr_pdf=True,
-    )
-    recommended_materials = _prepare_material_index_files(
-        recommended_materials,
-        work_dir,
-        cache_dir=shared_material_cache_dir,
-        ocr_pdf=True,
-    )
+    # 单轮准备有 OCR 配额上限，这里在任务内部循环补齐，保证一次点击用全量素材。
+    if not is_word_fill:
+        material_index, reference_materials, recommended_materials = _prepare_fill_materials_with_ocr(
+            material_index,
+            reference_materials,
+            recommended_materials,
+            work_dir,
+            cache_dir=shared_material_cache_dir,
+        )
     artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
     output_stem = _safe_filename(str(item.get("title") or gap_id), gap_id)
@@ -1001,8 +1469,10 @@ def run_technical_ai_fill_for_gap(
     else:
         output_file = work_dir / f"{output_stem}_AI填写.docx"
     manifest_path = work_dir / ("word_fill_input.json" if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else "table_fill_input.json")
+    embed_sources: list[dict[str, Any]] = []
     if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
         blank_source = _prepare_word_blank_source(blank_source, work_dir)
+        embed_sources = _embed_sources_for_fill(project, Path(str(blank_source["docxPath"])), work_dir)
     manifest = {
         "schemaVersion": WORD_FILL_SCHEMA_VERSION if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else TABLE_FILL_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),
@@ -1032,8 +1502,10 @@ def run_technical_ai_fill_for_gap(
             "rowCount": appendix_task.get("rowCount") or 0,
             "sourceRouting": appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {},
             "availableParseFields": parse_fields,
+            "tenderDocuments": tender_documents,
         },
         "blankSource": blank_source,
+        "embedSources": embed_sources,
         "referenceMaterialIds": selected_reference_ids,
         "referenceMaterials": reference_materials,
         "projectFactTable": project_fact_table,
@@ -1041,6 +1513,7 @@ def run_technical_ai_fill_for_gap(
         "recommendedMaterials": recommended_materials,
         "parseFieldIds": _string_items(data.get("parseFieldIds")),
         "parseFields": parse_fields,
+        "tenderDocuments": tender_documents,
         "constraints": str(data.get("constraints") or ""),
         "operator": str(data.get("operator") or "当前用户"),
         "outputFile": str(output_file),
@@ -1084,8 +1557,9 @@ def run_technical_ai_fill_for_gap(
         reference_materials=reference_materials,
         recommended_materials=recommended_materials,
         parse_fields=parse_fields,
+        tender_documents=tender_documents,
         manifest_path=manifest_path,
-        s7_ready=quality_report["status"] == "passed",
+        s7_ready=quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES,
         browser_base_url=browser_base_url,
         onlyoffice_base_url=onlyoffice_base_url,
     )
@@ -1095,7 +1569,7 @@ def run_technical_ai_fill_for_gap(
     task["outputArtifactId"] = artifact["id"]
     task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
     task["completedAt"] = created_at
-    item["status"] = "resolved" if quality_report["status"] == "passed" else "needs_input"
+    item["status"] = "resolved" if quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES else "needs_input"
     item["qualityStatus"] = quality_report["status"]
     item["qualityReport"] = quality_report
     item["resolvedArtifacts"] = _replace_resolved_artifacts(
@@ -1110,7 +1584,7 @@ def run_technical_ai_fill_for_gap(
     unfilled_count = len(result.get("unfilledFields") or [])
     if unfilled_count:
         item["reviewNotes"].append(f"AI 填写仍有未填字段：{unfilled_count} 项")
-    if quality_report["status"] != "passed":
+    if quality_report["status"] not in FILL_QUALITY_ACCEPTED_STATUSES:
         item["reviewNotes"].append("AI 填写质量验收未达标，请人工复核或补充事实表后重填。")
 
     plan["updatedAt"] = created_at

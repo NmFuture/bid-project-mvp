@@ -1,22 +1,21 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { technicalDocumentAPI } from '../../../api'
+import { technicalDocumentAPI, technicalGenerateAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
+import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
+import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
 import IconButton from '../../../components/ui/IconButton'
+import { DOCUMENT_FONT_OPTIONS } from '../../shared/fontOptions'
 import {
   technicalFormatDocumentAfterApply,
   technicalFormatRequest,
   technicalFormatStateFromDocument,
 } from './technicalGapRecognitionHelpers'
-
-const FONT_OPTIONS = {
-  zh: ['等线', '宋体', '仿宋', '黑体', '楷体', '微软雅黑', '方正仿宋_GBK', '方正小标宋_GBK'],
-  en: ['Times New Roman', 'Arial', 'Calibri', 'Cambria', 'Georgia'],
-}
 
 const technicalFormatPresets = [
   {
@@ -33,6 +32,12 @@ const technicalFormatPresets = [
 
 const TECHNICAL_BID_LABEL = '技术标'
 const TECHNICAL_DOCUMENT_PART_LABEL = '技术部分'
+const INITIAL_TECHNICAL_CHAT_MESSAGES = [
+  {
+    role: 'assistant',
+    content: '可在这里询问技术标内容、风险和表达建议。AI 回复仅供参考，不会自动修改 Word。',
+  },
+]
 
 const DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES = {
   bodyZhFont: '等线',
@@ -79,14 +84,27 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [technicalPreviewFullscreen, setTechnicalPreviewFullscreen] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const [pdfData, setPdfData] = useState(null)
+  const [generationStatus, setGenerationStatus] = useState(null)
+  const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
+  const [regenerationStarting, setRegenerationStarting] = useState(false)
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
+  const [chatMessages, setChatMessages] = useState(() => [...INITIAL_TECHNICAL_CHAT_MESSAGES])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatSessionId, setChatSessionId] = useState('')
+  const chatHistoryRef = useRef(null)
+  const chatRequestVersionRef = useRef(0)
+  const regenerationRequestedRef = useRef(false)
   const [formatPreset, setFormatPreset] = useState('standard')
   const [formatApplying, setFormatApplying] = useState('')
   const [customFormat, setCustomFormat] = useState(DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES)
 
-  const loadDocument = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const loadDocument = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError('')
+    }
     try {
       const [payload, finalPayload] = await Promise.all([
         technicalDocumentAPI.get(id),
@@ -102,16 +120,44 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     } catch (e) {
       setError(e?.message || '技术标共创文档加载失败')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
+    }
+  }, [id])
+
+  const loadGenerationStatus = useCallback(async () => {
+    try {
+      const payload = await technicalGenerateAPI.status(id)
+      if (payload?.status === 'running') regenerationRequestedRef.current = true
+      setGenerationStatus(payload)
+      return payload
+    } catch {
+      return null
     }
   }, [id])
 
   useEffect(() => {
     const timer = setTimeout(() => {
       loadDocument()
+      loadGenerationStatus()
     }, 0)
     return () => clearTimeout(timer)
-  }, [loadDocument])
+  }, [loadDocument, loadGenerationStatus])
+
+  useEffect(() => {
+    chatRequestVersionRef.current += 1
+    setChatMessages([...INITIAL_TECHNICAL_CHAT_MESSAGES])
+    setChatInput('')
+    setChatLoading(false)
+    setChatSessionId('')
+    return () => {
+      chatRequestVersionRef.current += 1
+    }
+  }, [id])
+
+  useEffect(() => {
+    if (!chatHistoryRef.current) return
+    chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight
+  }, [chatMessages, chatLoading])
 
   const hasOnlyOfficeSession = Boolean(data?.onlyoffice?.fileUrl && data?.onlyoffice?.callbackUrl)
   const useFallbackEditor = !hasOnlyOfficeSession || Boolean(onlyofficeError)
@@ -120,6 +166,28 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
   const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
+  const generationRunning = generationStatus?.status === 'running'
+  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
+
+  useEffect(() => {
+    if (!generationRunning) return undefined
+    const timer = window.setInterval(() => {
+      loadGenerationStatus()
+    }, 1200)
+    return () => window.clearInterval(timer)
+  }, [generationRunning, loadGenerationStatus])
+
+  useEffect(() => {
+    if (generationStatus?.status === 'failed') {
+      regenerationRequestedRef.current = false
+      return
+    }
+    if (generationStatus?.status !== 'completed' || !regenerationRequestedRef.current) return
+    regenerationRequestedRef.current = false
+    setPdfData(null)
+    loadDocument({ silent: true })
+    showToast?.('技术标正文已重新生成，当前文档已刷新。')
+  }, [generationStatus?.status, loadDocument, showToast])
 
   useEffect(() => {
     if (!technicalPreviewFullscreen) return undefined
@@ -154,6 +222,57 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     }
   }
 
+  const handleTechnicalChat = async () => {
+    const message = chatInput.trim()
+    if (!message || chatLoading) return
+    const requestVersion = ++chatRequestVersionRef.current
+
+    setChatMessages((current) => [...current, { role: 'user', content: message }])
+    setChatInput('')
+    setChatLoading(true)
+    try {
+      const response = await technicalDocumentAPI.technicalChat(id, {
+        message,
+        sessionId: chatSessionId,
+      })
+      if (requestVersion !== chatRequestVersionRef.current) return
+      const modelLabel = response?.providerId && response?.modelId
+        ? `${response.providerId}/${response.modelId}`
+        : ''
+      if (response?.sessionId) setChatSessionId(response.sessionId)
+      setChatMessages((current) => [
+        ...current,
+        {
+          role: 'assistant',
+          content: response?.reply || '未返回有效建议。',
+          fallbackModelUsed: Boolean(response?.fallbackModelUsed),
+          modelLabel,
+        },
+      ])
+      if (response?.fallbackModelUsed) {
+        showToast?.(`系统设置模型不可用，已使用 ${modelLabel || 'opencode 默认模型'} 完成回复。`, 'warning')
+      }
+    } catch (e) {
+      if (requestVersion !== chatRequestVersionRef.current) return
+      setChatMessages((current) => [
+        ...current,
+        { role: 'assistant', content: e?.message || 'AI 对话失败，请稍后重试。', error: true },
+      ])
+      showToast?.(e?.message || 'AI 对话失败', 'error')
+    } finally {
+      if (requestVersion === chatRequestVersionRef.current) setChatLoading(false)
+    }
+  }
+
+  const handleNewTechnicalChat = () => {
+    if (chatLoading) return
+    chatRequestVersionRef.current += 1
+    setChatSessionId('')
+    setChatInput('')
+    setChatLoading(false)
+    setChatMessages([])
+  }
+
   const handlePreparePdf = async () => {
     if (pdfPreparing) return
     setPdfPreparing(true)
@@ -166,6 +285,31 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       showToast?.(e?.message || 'PDF 生成失败', 'error')
     } finally {
       setPdfPreparing(false)
+    }
+  }
+
+  const handleRequestRegenerate = () => {
+    if (regenerationStarting || generationRunning) return
+    setTechnicalPreviewFullscreen(false)
+    setRegenerationConfirmOpen(true)
+  }
+
+  const handleConfirmRegenerate = async () => {
+    if (regenerationStarting || generationRunning) return
+    setRegenerationConfirmOpen(false)
+    setRegenerationStarting(true)
+    setGenerationModalOpen(true)
+    regenerationRequestedRef.current = true
+    try {
+      const payload = await technicalGenerateAPI.run(id)
+      setGenerationStatus(payload)
+      showToast?.(payload?.message || '已开始重新生成技术标正文。')
+    } catch (e) {
+      regenerationRequestedRef.current = false
+      setGenerationModalOpen(false)
+      showToast?.(e?.message || '重新生成技术标正文失败', 'error')
+    } finally {
+      setRegenerationStarting(false)
     }
   }
 
@@ -223,11 +367,13 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     <label className="block">
       <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
       <select
-        value={customFormat[field] || options[0] || ''}
+        value={customFormat[field] || options[0]?.value || ''}
         onChange={(event) => updateCustomFormat(field, event.target.value)}
         className="h-9 w-full rounded-md border border-surface-container-high bg-white px-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
       >
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
       </select>
     </label>
   )
@@ -275,38 +421,73 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   }
 
   const renderTechnicalChatPanel = () => (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-surface-container-high bg-white">
-        <div className="shrink-0 border-b border-surface-container-high px-3 py-2">
-          <div className="text-sm font-semibold text-on-surface">通用 AI 对话</div>
-        </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
-          <div className="mr-8 rounded-lg bg-surface-container-low px-3 py-2 text-sm leading-6 text-on-surface">
-            <div className="mb-1 text-[11px] font-semibold opacity-70">AI助手</div>
-            <div className="whitespace-pre-wrap">技术标 AI 对话接口尚未接入；当前技术标正文仍通过左侧文档和下方格式设置完成受控处理。</div>
+    <>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
+        <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-surface-container-high bg-white">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-surface-container-high px-3 py-2">
+            <div className="text-sm font-semibold text-on-surface">通用 AI 对话</div>
+            <button
+              type="button"
+              onClick={handleNewTechnicalChat}
+              disabled={chatLoading}
+              className="rounded px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
+            >新对话</button>
           </div>
-        </div>
-      </section>
+          <div ref={chatHistoryRef} role="log" aria-live="polite" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
+            {chatMessages.length === 0 && (
+              <div className="px-3 py-8 text-center text-xs leading-5 text-on-surface-variant">
+                已开始新对话。输入问题后将创建新的 AI 会话。
+              </div>
+            )}
+            {chatMessages.map((message, index) => (
+              <div
+                key={`${message.role}-${index}`}
+                className={`rounded-lg px-3 py-2 text-sm leading-6 ${message.role === 'user' ? 'ml-8 bg-primary text-on-primary' : message.error ? 'mr-8 bg-error/10 text-error' : 'mr-8 bg-surface-container-low text-on-surface'}`}
+              >
+                <div className="mb-1 text-[11px] font-semibold opacity-70">
+                  {message.role === 'user' ? '我' : message.fallbackModelUsed ? `AI助手（${message.modelLabel || '默认模型'}）` : 'AI助手'}
+                </div>
+                {message.role === 'assistant' && !message.error ? (
+                  <MarkdownLite content={message.content} compact />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
+                )}
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="mr-8 rounded-lg bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">
+                AI 正在生成建议...
+              </div>
+            )}
+          </div>
+        </section>
 
-      <section className="shrink-0 overflow-hidden rounded-lg border border-primary/20 bg-primary/5">
-        <div className="flex w-full items-start justify-between gap-3 px-3 py-3 text-left">
-          <div>
-            <h4 className="text-sm font-semibold text-on-surface">受控应用到 Word</h4>
-          </div>
-          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-primary">人工确认后写入</span>
-        </div>
-        <div className="border-t border-primary/10 p-3">
-          <Button
+      </div>
+
+      <div className="border-t border-surface-container-high bg-surface-container-low p-3">
+        <textarea
+          aria-label="技术标 AI 对话输入"
+          value={chatInput}
+          onChange={(event) => setChatInput(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+              event.preventDefault()
+              handleTechnicalChat()
+            }
+          }}
+          placeholder="输入技术标问题或修改建议。Ctrl/⌘ + Enter 发送。"
+          className="min-h-[96px] w-full resize-none rounded-md border border-surface-container-high bg-white px-3 py-2 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
+        <div className="mt-2 flex items-center justify-end">
+          <button
             type="button"
-            onClick={() => setTechnicalRightTab('format')}
-            size="sm"
-            variant="primary"
-          >
-            前往格式设置
-          </Button>
+            onClick={handleTechnicalChat}
+            disabled={chatLoading || !chatInput.trim()}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
+          >发送给AI</button>
         </div>
-      </section>
-    </div>
+      </div>
+    </>
   )
 
   const renderTechnicalFormatPanel = () => (
@@ -331,8 +512,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
             <div>
               <div className="text-sm font-semibold text-on-surface">正文格式</div>
               <div className="mt-2 grid grid-cols-2 gap-2">
-                {renderFormatFontSelect('bodyZhFont', '中文字体', FONT_OPTIONS.zh)}
-                {renderFormatFontSelect('bodyEnFont', '英文字体', FONT_OPTIONS.en)}
+                {renderFormatFontSelect('bodyZhFont', '中文字体', DOCUMENT_FONT_OPTIONS.zh)}
+                {renderFormatFontSelect('bodyEnFont', '英文字体', DOCUMENT_FONT_OPTIONS.en)}
                 {renderFormatNumberInput('bodySizePt', '正文字号 pt', { min: 8, max: 22, step: 0.5 })}
                 {renderFormatNumberInput('bodyLineSpacing', '正文行距', { min: 1, max: 3, step: 0.05 })}
                 {renderFormatNumberInput('bodyFirstLineIndentChars', '首行缩进字符', { min: 0, max: 4, step: 0.5 })}
@@ -355,7 +536,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 {renderFormatNumberInput('pageBottomCm', '下边距 cm', { min: 0.5, max: 6, step: 0.1 })}
                 {renderFormatNumberInput('pageLeftCm', '左边距 cm', { min: 0.5, max: 6, step: 0.1 })}
                 {renderFormatNumberInput('pageRightCm', '右边距 cm', { min: 0.5, max: 6, step: 0.1 })}
-                {renderFormatFontSelect('tableZhFont', '表格字体', FONT_OPTIONS.zh)}
+                {renderFormatFontSelect('tableZhFont', '表格字体', DOCUMENT_FONT_OPTIONS.zh)}
                 {renderFormatNumberInput('tableSizePt', '表格字号 pt', { min: 8, max: 16, step: 0.5 })}
               </div>
             </div>
@@ -452,6 +633,16 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 {pdfPreparing ? '生成中...' : '下载PDF'}
               </Button>
             )}
+            <Button
+              type="button"
+              onClick={handleRequestRegenerate}
+              disabled={regenerationStarting || generationRunning}
+              icon="refresh"
+              size="sm"
+              variant="secondary"
+            >
+              {regenerationStarting || generationRunning ? '重新生成中...' : '重新生成正文'}
+            </Button>
           </div>
         </div>
         <div className="min-h-0 flex-1 p-4">
@@ -516,6 +707,39 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       <StageBreadcrumb />
       <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
       {renderProjectWorkspace()}
+      <Dialog
+        open={regenerationConfirmOpen}
+        onClose={() => setRegenerationConfirmOpen(false)}
+        size="sm"
+      >
+        <DialogHeader onClose={() => setRegenerationConfirmOpen(false)}>
+          <h3 className="text-lg font-headline font-bold text-on-surface">确认重新生成正文？</h3>
+          <p className="mt-1 text-sm text-on-surface-variant">系统将重新执行技术标正文装配流程。</p>
+        </DialogHeader>
+        <DialogBody className="space-y-3 px-5 py-4">
+          <p className="text-sm leading-6 text-on-surface">
+            新正文将根据素材匹配页的当前结果生成，并覆盖共创导出页正在使用的正文。
+          </p>
+          <div className="rounded-md border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm leading-6 text-on-tertiary-fixed-variant">
+            尚未保存的共创修改可能丢失。请先完成保存，或下载当前 Word 留档后再继续。
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" onClick={() => setRegenerationConfirmOpen(false)} variant="quiet">
+            取消
+          </Button>
+          <Button type="button" onClick={handleConfirmRegenerate} variant="danger">
+            继续重新生成
+          </Button>
+        </DialogFooter>
+      </Dialog>
+      <TechnicalGenerationProgressModal
+        open={generationModalOpen || generationRunning}
+        status={generationStatus}
+        progress={generationProgress}
+        completedMessage="技术标正文已重新生成，共创文档已刷新为最新版本。"
+        onClose={() => setGenerationModalOpen(false)}
+      />
     </div>
   )
 }

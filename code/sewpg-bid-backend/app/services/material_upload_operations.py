@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import logging
@@ -12,6 +13,7 @@ from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile, RawFolder
 from app.services.material_folder_maintenance import ensure_material_target_folder
+from app.services.material_fulltext_artifacts import purge_material_fulltext_objects
 from app.services.material_taxonomy import (
     MATERIAL_LIBRARY_ALLOWED_SUFFIXES,
     SHORTCUT_MATERIAL_SUFFIXES,
@@ -196,6 +198,7 @@ async def upload_raw_files(
         written_object_keys: list[tuple[str, str]] = []
         # 覆盖上传时旧 cleaned 对象延后到 DB commit 成功后再删，写失败不动旧对象（H2）
         pending_cleaned_removals: list[dict[str, Any]] = []
+        pending_fulltext_cleanups: list[tuple[int, int]] = []
         materials_bucket = settings.minio_buckets["materials"]
         try:
             await ensure_runtime_tables(session)
@@ -359,6 +362,7 @@ async def upload_raw_files(
                                 "key": stale_cleaned_key,
                             }
                         )
+                    pending_fulltext_cleanups.append((int(existing.id), int(existing.version or 1)))
                     existing.size_bytes = size
                     existing.minio_key = minio_key
                     existing.mime_type = mime_type
@@ -373,6 +377,7 @@ async def upload_raw_files(
                         clean_job_targets.append(
                             {
                                 "file_id": int(existing.id),
+                                "bid_type": normalized_bid_type,
                                 "source_version": next_version,
                                 "source_bucket": materials_bucket,
                                 "source_key": minio_key,
@@ -413,6 +418,7 @@ async def upload_raw_files(
                     clean_job_targets.append(
                         {
                             "file_id": int(record.id),
+                            "bid_type": normalized_bid_type,
                             "source_version": int(record.version or 1),
                             "source_bucket": materials_bucket,
                             "source_key": minio_key,
@@ -430,7 +436,14 @@ async def upload_raw_files(
                     logger.warning("上传失败回滚清理对象 %s/%s 失败：%s", bucket, key, cleanup_exc)
             raise
 
-        # commit 成功后再清理被覆盖的旧 cleaned 对象（H2）
+        # commit 成功后再清理被覆盖的旧产物；清理失败不影响已成功的上传。
+        for raw_file_id, source_version in pending_fulltext_cleanups:
+            await asyncio.to_thread(
+                purge_material_fulltext_objects,
+                raw_file_id,
+                source_version,
+                max_source_version=source_version,
+            )
         for removal in pending_cleaned_removals:
             try:
                 minio_client.remove_object(removal["bucket"], removal["key"])

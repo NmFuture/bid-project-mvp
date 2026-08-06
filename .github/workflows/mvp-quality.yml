@@ -37,6 +37,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Test material pipeline helpers
+        run: npm run test:material-pipeline
+
       - name: Build
         run: npm run build
 

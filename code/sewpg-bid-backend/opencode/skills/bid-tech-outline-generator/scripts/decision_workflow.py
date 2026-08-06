@@ -9,17 +9,24 @@ from typing import Any
 import outline_composer
 
 
-STATE_SCHEMA = "technical-outline-decision-state.v6"
+STATE_SCHEMA = "technical-outline-decision-state.v7"
 LEGACY_STATE_SCHEMAS = {
     "technical-outline-decision-state.v1",
     "technical-outline-decision-state.v2",
     "technical-outline-decision-state.v3",
     "technical-outline-decision-state.v4",
     "technical-outline-decision-state.v5",
+    "technical-outline-decision-state.v6",
 }
 STATE_FILE_NAME = "outline_decision_state.json"
-MAX_DECISION_RESPONSE_BYTES = 24000
-MAX_DECISION_UNIT_ITEMS = 50
+# 与 run_from_manifest 的 45000 字符硬限对齐（opencode 按字符截断，上限 51200）。
+MAX_DECISION_RESPONSE_CHARS = 45_000
+# 决策只到二级；三级节点由 outline_composer 跟随二级父节点下沉。
+DECISION_MAX_LEVEL = outline_composer.DECISION_MAX_LEVEL
+TEMPLATE_HEADINGS_MAX_LEVEL = 3
+# 二级节点数不超过该阈值的章视为稀疏章：需要从招标原文构建子目录，
+# 决策单元切换为"圈定上级章节 + 大页连续通读"纪律，抑制搜索式发散探索。
+SPARSE_CHAPTER_L2_THRESHOLD = 1
 
 
 def _payload_digest(payload: Any) -> str:
@@ -27,10 +34,8 @@ def _payload_digest(payload: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _compact_json_bytes(payload: Any) -> int:
-    return len(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    )
+def _compact_json_chars(payload: Any) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -51,7 +56,6 @@ def _empty_active_batch() -> dict[str, Any]:
     return {
         "token": "",
         "chapter_id": "",
-        "decision_unit_id": "",
         "target_ids": [],
     }
 
@@ -79,7 +83,6 @@ def _new_state(
         "finalized_decisions_digest": "",
         "global_review_digest": "",
         "global_review_summary": "",
-        "global_review_read_baseline": None,
     }
 
 
@@ -126,14 +129,59 @@ def _load_state(
     return state
 
 
-def _annotated_items(structure: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _annotated_items(
+    structure: dict[str, Any],
+    *,
+    max_level: int = DECISION_MAX_LEVEL,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     annotated = outline_composer.annotate_template_structure(structure)
     items = [
         item
         for item in annotated.get("items") or []
-        if isinstance(item, dict) and int(item.get("level") or 1) <= 3
+        if isinstance(item, dict) and int(item.get("level") or 1) <= max_level
     ]
     return annotated, items
+
+
+def _template_levels(annotated: dict[str, Any]) -> dict[str, int]:
+    return {
+        str(item.get("template_id") or ""): int(item.get("level") or 1)
+        for item in annotated.get("items") or []
+        if isinstance(item, dict) and str(item.get("template_id") or "")
+    }
+
+
+def _node_levels(
+    annotated: dict[str, Any],
+    additions: list[dict[str, Any]],
+) -> dict[str, int]:
+    levels = _template_levels(annotated)
+    for change in additions:
+        node_id = str(change.get("node_id") or "")
+        if not node_id:
+            continue
+        parent_id = change.get("parent_id")
+        levels[node_id] = 1 if parent_id is None else levels.get(str(parent_id), 1) + 1
+    return levels
+
+
+def _addition_level(
+    levels: dict[str, int],
+    parent_id: Any,
+    field_path: str,
+) -> int:
+    """新增节点只允许落在一级或二级；父节点决定其层级。"""
+    if parent_id is None:
+        return 1
+    parent_key = str(parent_id).strip()
+    if parent_key not in levels:
+        raise SystemExit(f"{field_path}.parent_id is invalid: {parent_key}")
+    level = levels[parent_key] + 1
+    if level > DECISION_MAX_LEVEL:
+        raise SystemExit(
+            f"{field_path} 只能新增一级章或二级节点；三级节点跟随二级父节点，不单独新增"
+        )
+    return level
 
 
 def _batch_token(
@@ -175,18 +223,33 @@ def template_headings(
     structure: dict[str, Any],
     *,
     cursor: int = 0,
-    page_size: int = 40,
+    page_size: int = 200,
 ) -> dict[str, Any]:
     if cursor < 0:
         raise SystemExit("template-headings --cursor must be >= 0")
     if page_size < 1 or page_size > 200:
         raise SystemExit("template-headings --page-size must be between 1 and 200")
-    _, items = _annotated_items(structure)
+    # 决策只到二级，但模板视图仍返回三级，供判断二级子树的整体内容。
+    _, items = _annotated_items(structure, max_level=TEMPLATE_HEADINGS_MAX_LEVEL)
     if cursor > len(items):
         raise SystemExit("template-headings --cursor exceeds item count")
-    end = min(len(items), cursor + page_size)
     by_id = {str(item["template_id"]): item for item in items}
-    target_ids = [str(item["template_id"]) for item in items[cursor:end]]
+    # 按字符预算收缩本页条目数，保证大 page-size 也不会触发 45000 字符硬限。
+    page_items = _decision_items(
+        [str(item["template_id"]) for item in items[cursor : cursor + page_size]],
+        by_id,
+    )
+    item_budget = MAX_DECISION_RESPONSE_CHARS - 4_000
+    used_chars = 0
+    kept = 0
+    for item in page_items:
+        item_chars = _compact_json_chars(item) + 1
+        if kept and used_chars + item_chars > item_budget:
+            break
+        used_chars += item_chars
+        kept += 1
+    page_items = page_items[: max(1, kept)] if page_items else page_items
+    end = cursor + len(page_items)
     complete = end >= len(items)
     return {
         "schema_version": "technical-template-headings.v1",
@@ -194,7 +257,7 @@ def template_headings(
         "next_cursor": "" if complete else str(end),
         "complete": complete,
         "item_count": len(items),
-        "items": _decision_items(target_ids, by_id),
+        "items": page_items,
     }
 
 
@@ -206,30 +269,54 @@ def _decision_batch_response(
     decided_count: int,
     item_count: int,
     chapter_id: str,
-    decision_unit_id: str,
+    chapter_l2_count: int,
 ) -> dict[str, Any]:
-    return {
+    sparse = chapter_l2_count <= SPARSE_CHAPTER_L2_THRESHOLD
+    decision_steps = (
+        [
+            "本章模板二级节点稀疏，需要从招标原文构建子目录：先通读完整招标目录，再自主圈定与本章主题对应的少数上级章节",
+            "对圈定章节用 section --max-chars 30000 连续通读原文，不逐段跳读；search 全会话最多 2 次，仅用于跨章定位",
+            "从已读原文自主提炼响应单元并确定标题与粒度，一次性提交全部新增；每个新增 reason + evidence_id",
+            "章根与既有二级节点仍按 retain / suggest_delete 表态",
+        ]
+        if sparse
+        else [
+            "读本章相关的招标正文，判断本章主题在本项目还需要哪些响应",
+            (
+                "招标要求已构成完整响应单元、模板却没有粒度相当的二级节点时，"
+                "作为当前一级章的子节点写进 additions"
+                if chapter_id
+                else "招标要求已构成完整响应单元、模板却没有粒度相当的一级章或二级节点时，写进 additions"
+            ),
+            "模板侧不适用、重复、可合并或没有独立表达价值的二级节点，写 suggest_delete",
+            "其余节点 retain；每个判断覆盖该节点的整个三级子树",
+        ]
+    )
+    response = {
         "schema_version": STATE_SCHEMA,
         "batch_token": token,
         "chapter_id": chapter_id,
-        "decision_unit_id": decision_unit_id,
+        "decision_level": DECISION_MAX_LEVEL,
         "items": _decision_items(target_ids, by_id),
-        "decision_steps": [
-            "定位本章相关的全部招标二、三级章节，即使与模板同名也逐个用 section 连续读到 complete=true；同名父节点或标题相似不等于响应粒度相当，search 只用于跨章节定位，关键词抽查不算完成",
-            "逐项提取正文中“提供、提交、编制、出具”指向的方案、报告、承诺、计算书、清单和交付物；只有完整模板存在语义等价且粒度相当的节点才算覆盖，未覆盖且值得独立表达的形成 additions",
-            "再从模板侧找出不适用、重复、可合并或没有独立成章价值的节点，形成 suggest_delete",
-            "最后把剩余节点 retain；不得用 reason 把招标直接要求伪装成历史模板经验",
-        ],
+        "decision_steps": decision_steps,
         "submission_contract": {
             "required_fields": ["batch_token", "items", "additions"],
             "items_must_match_batch": True,
             "additions_must_be_explicit": True,
-            "new_controlled_read_required": True,
+            "decision_covers_subtree": "对二级节点的判断适用于其下全部三级节点",
+            "addition_levels": (
+                "章节会话只能在当前一级章下新增二级节点，parent_id 必须引用当前章根；不新增一级章或三级节点"
+                if chapter_id
+                else "parent_id=null 新增一级章；parent_id 为一级章新增二级节点；不新增三级节点"
+            ),
         },
         "decided_count": decided_count,
         "remaining_count": item_count - decided_count,
         "complete": False,
     }
+    if sparse:
+        response["authoring_mode"] = "sparse_chapter"
+    return response
 
 
 def _chapter_groups(items: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
@@ -297,70 +384,33 @@ def chapter_decision_progress(
     }
 
 
-def _decision_units(items: list[dict[str, Any]]) -> list[tuple[str, str, list[str]]]:
-    by_id = {str(item["template_id"]): item for item in items}
-    units: list[tuple[str, str, list[str]]] = []
-    for chapter_id, chapter_ids in _chapter_groups(items):
-        if len(chapter_ids) <= MAX_DECISION_UNIT_ITEMS:
-            units.append((chapter_id, chapter_id, chapter_ids))
-            continue
-
-        root_ids = [chapter_id]
-        section_units: list[tuple[str, str, list[str]]] = []
-        section_id = ""
-        section_ids: list[str] = []
-        for target_id in chapter_ids[1:]:
-            level = int(by_id[target_id].get("level") or 1)
-            if level == 2:
-                if section_ids:
-                    section_units.append((chapter_id, section_id, section_ids))
-                section_id = target_id
-                section_ids = [target_id]
-            elif section_ids:
-                section_ids.append(target_id)
-            else:
-                root_ids.append(target_id)
-        if section_ids:
-            section_units.append((chapter_id, section_id, section_ids))
-        units.append((chapter_id, chapter_id, root_ids))
-        units.extend(section_units)
-    return units
+def appendix_decision_progress(
+    work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """只读返回附表决策进度，供后端校验附表会话是否完成；不发放批次令牌。"""
+    annotated, _ = _annotated_items(structure)
+    state = _load_state(work_dir, annotated["input_fingerprint"], workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    expected_ids = {str(item["appendix_id"]) for item in inventory}
+    decided_ids = expected_ids & set(state.get("appendix_decisions") or {})
+    active = state.get("active_appendix_batch") or {}
+    return {
+        "decidedCount": len(decided_ids),
+        "remainingCount": len(expected_ids - decided_ids),
+        "activeBatch": bool(active.get("appendix_ids")),
+        "complete": decided_ids == expected_ids and not active.get("appendix_ids"),
+    }
 
 
 def _invalidate_global_review(state: dict[str, Any]) -> None:
     state["global_review_digest"] = ""
     state["global_review_summary"] = ""
     state["finalized_decisions_digest"] = ""
-    state["global_review_read_baseline"] = None
-
-
-def _evidence_read_event_count(work_dir: Path) -> int | None:
-    path = work_dir / "tender_evidence_access.json"
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"tender evidence access is invalid: {path}: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != "tender-evidence-access.v1":
-        raise SystemExit(f"tender evidence access schema is invalid: {path}")
-    return int(payload.get("read_event_count") or 0)
-
-
-def _arm_global_review_if_ready(
-    state: dict[str, Any],
-    work_dir: Path,
-    template_items: list[dict[str, Any]],
-    appendix_items: list[dict[str, Any]],
-) -> None:
-    expected_template_ids = {str(item["template_id"]) for item in template_items}
-    expected_appendix_ids = {str(item["appendix_id"]) for item in appendix_items}
-    if set(state.get("template_decisions") or {}) != expected_template_ids:
-        return
-    if set(state.get("appendix_decisions") or {}) != expected_appendix_ids:
-        return
-    if state.get("global_review_read_baseline") is None:
-        state["global_review_read_baseline"] = _evidence_read_event_count(work_dir)
 
 
 def _current_decisions_digest(state: dict[str, Any]) -> str:
@@ -377,12 +427,9 @@ def next_decision_batch(
     work_dir: Path,
     structure: dict[str, Any],
     *,
-    max_items: int = 50,
     chapter_id: str = "",
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    if max_items < 1 or max_items > 50:
-        raise SystemExit("decision-next max_items must be between 1 and 50")
     annotated, items = _annotated_items(structure)
     fingerprint = annotated["input_fingerprint"]
     state = _load_state(work_dir, fingerprint, workflow_binding)
@@ -396,31 +443,31 @@ def next_decision_batch(
     active = state.get("active_batch") or {}
     active_ids = list(active.get("target_ids") or [])
     if active_ids:
+        active_chapter_id = str(active.get("chapter_id") or active_ids[0])
         return _decision_batch_response(
             token=str(active.get("token") or ""),
             target_ids=active_ids,
             by_id=by_id,
             decided_count=decided_count,
             item_count=len(scoped_ids),
-            chapter_id=str(active.get("chapter_id") or active_ids[0]),
-            decision_unit_id=str(active.get("decision_unit_id") or active_ids[0]),
+            chapter_id=active_chapter_id,
+            chapter_l2_count=max(0, len(chapter_groups.get(active_chapter_id) or []) - 1),
         )
 
     decided = set((state.get("template_decisions") or {}).keys())
-    pending_unit = next(
+    pending_group = next(
         (
             (
-                unit_chapter_id,
-                decision_unit_id,
-                [target_id for target_id in unit_ids if target_id not in decided],
+                group_chapter_id,
+                [target_id for target_id in group_ids if target_id not in decided],
             )
-            for unit_chapter_id, decision_unit_id, unit_ids in _decision_units(items)
-            if (not chapter_id or unit_chapter_id == chapter_id)
-            if any(target_id not in decided for target_id in unit_ids)
+            for group_chapter_id, group_ids in _chapter_groups(items)
+            if (not chapter_id or group_chapter_id == chapter_id)
+            if any(target_id not in decided for target_id in group_ids)
         ),
         None,
     )
-    chapter_id, decision_unit_id, pending_ids = pending_unit or ("", "", [])
+    chapter_id, pending_ids = pending_group or ("", [])
     if not pending_ids:
         return {
             "schema_version": STATE_SCHEMA,
@@ -432,27 +479,30 @@ def next_decision_batch(
             "complete": True,
         }
 
+    # 一个决策单元就是一个一级章；只有超出响应预算时才裁剪，剩余节点下一轮继续。
+    chapter_l2_count = max(0, len(chapter_groups.get(chapter_id) or []) - 1)
     target_ids = pending_ids
-    token = _batch_token(fingerprint, target_ids, workflow_binding)
-    selected_response = _decision_batch_response(
-        token=token,
-        target_ids=target_ids,
-        by_id=by_id,
-        decided_count=decided_count,
-        item_count=len(scoped_ids),
-        chapter_id=chapter_id,
-        decision_unit_id=decision_unit_id,
-    )
-    if _compact_json_bytes(selected_response) >= MAX_DECISION_RESPONSE_BYTES:
-        raise SystemExit("单个目录决策小节超过 24000 字节响应上限，请精简模板章节标题")
-    selected_state = {
+    while target_ids:
+        token = _batch_token(fingerprint, target_ids, workflow_binding)
+        selected_response = _decision_batch_response(
+            token=token,
+            target_ids=target_ids,
+            by_id=by_id,
+            decided_count=decided_count,
+            item_count=len(scoped_ids),
+            chapter_id=chapter_id,
+            chapter_l2_count=chapter_l2_count,
+        )
+        if _compact_json_chars(selected_response) < MAX_DECISION_RESPONSE_CHARS:
+            break
+        target_ids = target_ids[:-1]
+    if not target_ids:
+        raise SystemExit("单个模板节点标题超过决策响应上限，请精简模板章节标题")
+    state["active_batch"] = {
         "token": token,
         "chapter_id": chapter_id,
-        "decision_unit_id": decision_unit_id,
         "target_ids": target_ids,
-        "read_event_baseline": _evidence_read_event_count(work_dir),
     }
-    state["active_batch"] = selected_state
     _write_json(_state_path(work_dir), state)
     return selected_response
 
@@ -497,6 +547,10 @@ def merge_chapter_decisions(
         allowed_parent_ids = set(target_ids) | local_ids
         for addition in chapter_additions:
             node_id = str(addition.get("node_id") or "")
+            if addition.get("parent_id") is None:
+                raise SystemExit(
+                    f"chapter addition must stay under the active chapter: {node_id}"
+                )
             parent_id = str(addition.get("parent_id") or "")
             if not parent_id or parent_id == node_id or parent_id not in allowed_parent_ids:
                 raise SystemExit(f"chapter addition parent_id is outside the active chapter: {node_id}")
@@ -539,7 +593,6 @@ def submit_decision_batch(
     structure: dict[str, Any],
     payload: dict[str, Any],
     *,
-    appendix_items: list[dict[str, Any]] | None = None,
     chapter_id: str = "",
     workflow_binding: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -581,18 +634,14 @@ def submit_decision_batch(
                 raise SystemExit(f"decision-batch items[{index}] retain has unsupported fields")
             has_reason = bool(str(item.get("reason") or "").strip())
             has_basis = isinstance(item.get("tender_basis"), dict)
-            if has_reason and has_basis:
-                raise SystemExit(
-                    f"decision-batch items[{index}] retain requires exactly one of reason or tender_basis"
-                )
             if not has_reason and not has_basis and (work_dir / "tender_evidence_access.json").is_file():
                 raise SystemExit(
-                    f"decision-batch items[{index}] retain requires exactly one of reason or tender_basis"
+                    f"decision-batch items[{index}] retain requires evidence_id or reason"
                 )
             normalized_retain = {"target_id": target_id, "decision": "retain"}
             if has_reason:
                 normalized_retain["reason"] = str(item["reason"]).strip()
-            elif has_basis:
+            if has_basis:
                 normalized_retain["tender_basis"] = deepcopy(item["tender_basis"])
             normalized_decisions[target_id] = normalized_retain
             continue
@@ -611,12 +660,6 @@ def submit_decision_batch(
         if set(item) != {"target_id", "decision", "reason"}:
             raise SystemExit(f"decision-batch items[{index}] suggest_delete has unsupported fields")
         normalized_decisions[target_id] = normalized
-
-    read_event_baseline = active.get("read_event_baseline")
-    if read_event_baseline is not None:
-        current_read_count = _evidence_read_event_count(work_dir)
-        if current_read_count is None or current_read_count <= int(read_event_baseline):
-            raise SystemExit("decision-batch 前必须针对当前决策单元完成至少一次新的受控正文阅读")
 
     decisions = state.setdefault("template_decisions", {})
     decisions.update(normalized_decisions)
@@ -645,16 +688,27 @@ def submit_decision_batch(
         allowed_parent_ids = chapter_target_ids | existing_ids | batch_addition_ids
         for index, addition in enumerate(additions):
             node_id = str(addition.get("node_id") or "").strip()
-            parent_id = str(addition.get("parent_id") or "").strip()
-            if not parent_id or parent_id == node_id or parent_id not in allowed_parent_ids:
+            parent_id = addition.get("parent_id")
+            if parent_id is None:
+                raise SystemExit(
+                    f"decision-batch additions[{index}] must stay under the active chapter"
+                )
+            parent_key = str(parent_id).strip()
+            if not parent_key or parent_key == node_id or parent_key not in allowed_parent_ids:
                 raise SystemExit(
                     f"decision-batch additions[{index}].parent_id is outside the active chapter"
                 )
+    levels = _node_levels(annotated, state.get("additions") or [])
     for index, addition in enumerate(additions):
         node_id = str(addition.get("node_id") or "").strip()
         reason = str(addition.get("reason") or "").strip()
         if not reason:
             raise SystemExit(f"decision-batch additions[{index}].reason is required")
+        levels[node_id] = _addition_level(
+            levels,
+            addition.get("parent_id"),
+            f"decision-batch additions[{index}]",
+        )
         if (
             not isinstance(addition.get("tender_basis"), dict)
             and (work_dir / "tender_evidence_access.json").is_file()
@@ -681,8 +735,6 @@ def submit_decision_batch(
 
     state["active_batch"] = _empty_active_batch()
     _invalidate_global_review(state)
-    inventory, _ = _normalized_appendix_inventory(appendix_items or [])
-    _arm_global_review_if_ready(state, work_dir, items, inventory)
     _write_json(_state_path(work_dir), state)
     decided_count = len(decisions)
     return {
@@ -832,9 +884,11 @@ def next_appendix_batch(
             "reason",
         ],
         "include_parent_id": "必须引用本批 root_addition.node_id 或已有唯一技术附表根节点",
+        "reason_required": "include 与 exclude 都必须提交 reason",
         "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
         "root_addition": {
             "required_when": "首次 include 且尚无唯一的技术附表根节点",
+            "omit_when": "根节点已建立后的所有后续批次禁止再提交 root_addition",
             "fields": ["node_id", "reason"],
             "generated_fields": {
                 "parent_id": None,
@@ -842,6 +896,82 @@ def next_appendix_batch(
                 "title": "技术附表",
             },
         },
+    }
+    if active_ids:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "batch_token": str(active.get("token") or ""),
+            "items": _appendix_items_for_response([by_id[item_id] for item_id in active_ids]),
+            "submission_contract": submission_contract,
+            "decided_count": len(decisions),
+            "remaining_count": len(inventory) - len(decisions),
+            "complete": False,
+        }
+    pending = [item for item in inventory if item["appendix_id"] not in decisions]
+    if not pending:
+        return {
+            "schema_version": STATE_SCHEMA,
+            "batch_token": "",
+            "items": [],
+            "decided_count": len(decisions),
+            "remaining_count": 0,
+            "complete": True,
+        }
+    selected = pending[:max_items]
+    appendix_ids = [str(item["appendix_id"]) for item in selected]
+    token = _appendix_batch_token(
+        fingerprint, inventory_digest, appendix_ids, workflow_binding
+    )
+    state["appendix_inventory_digest"] = inventory_digest
+    state["active_appendix_batch"] = {
+        "token": token,
+        "appendix_ids": appendix_ids,
+    }
+    _write_json(_state_path(work_dir), state)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "batch_token": token,
+        "items": _appendix_items_for_response(selected),
+        "submission_contract": submission_contract,
+        "decided_count": len(decisions),
+        "remaining_count": len(inventory) - len(decisions),
+        "complete": False,
+    }
+
+
+def next_appendix_predecision_batch(
+    work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    max_items: int = 40,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """在独立工作区发放附表语义预判批次，不依赖正文决策。"""
+    if max_items < 1 or max_items > 40:
+        raise SystemExit("appendix-predecision-next max_items must be between 1 and 40")
+    annotated, _ = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    by_id = {str(item["appendix_id"]): item for item in inventory}
+    decisions = state.get("appendix_decisions") or {}
+    unknown_decisions = set(decisions) - set(by_id)
+    if unknown_decisions:
+        raise SystemExit(
+            "appendix predecision state contains unknown appendix_id: "
+            + ", ".join(sorted(unknown_decisions)[:20])
+        )
+    active = state.get("active_appendix_batch") or {}
+    active_ids = list(active.get("appendix_ids") or [])
+    submission_contract = {
+        "items_must_match_batch": True,
+        "items_must_keep_returned_order": True,
+        "include_fields": ["appendix_id", "decision", "reason"],
+        "exclude_fields": ["appendix_id", "decision", "reason"],
+        "reason_required": "include 与 exclude 都必须提交 reason",
+        "missing_rule": "source_status=missing 必须 exclude；只有 source_status=present 才自主判断 include 或 exclude",
     }
     if active_ids:
         return {
@@ -1183,7 +1313,6 @@ def submit_appendix_batch(
     state.setdefault("additions", []).extend(new_changes)
     state["active_appendix_batch"] = _empty_active_appendix_batch()
     _invalidate_global_review(state)
-    _arm_global_review_if_ready(state, work_dir, template_items, inventory)
     _write_json(_state_path(work_dir), state)
     return {
         "schema_version": STATE_SCHEMA,
@@ -1191,6 +1320,210 @@ def submit_appendix_batch(
         "remaining_count": len(inventory) - len(decisions),
         "addition_count": len(state.get("additions") or []),
         "complete": len(decisions) == len(inventory),
+    }
+
+
+def submit_appendix_predecision_batch(
+    work_dir: Path,
+    structure: dict[str, Any],
+    payload: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """只保存 include/exclude 语义判断，不生成节点或执行 composition。"""
+    annotated, _ = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    _reject_changed_appendix_inventory(state, inventory_digest)
+    active = state.get("active_appendix_batch") or {}
+    expected_ids = list(active.get("appendix_ids") or [])
+    token = str(payload.get("batch_token") or "")
+    if not expected_ids or token != str(active.get("token") or ""):
+        raise SystemExit(
+            "appendix-predecision-batch must use the current appendix-predecision-next batch_token"
+        )
+    if token != _appendix_batch_token(
+        fingerprint, inventory_digest, expected_ids, workflow_binding
+    ):
+        raise SystemExit("appendix-predecision-batch batch_token binding is invalid")
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise SystemExit("appendix-predecision-batch items must be a list")
+    actual_ids = [
+        str(item.get("appendix_id") or "")
+        for item in raw_items
+        if isinstance(item, dict)
+    ]
+    if actual_ids != expected_ids or len(raw_items) != len(expected_ids):
+        raise SystemExit(
+            "appendix-predecision-batch items must exactly match the current batch"
+        )
+    inventory_by_id = {str(item["appendix_id"]): item for item in inventory}
+    normalized: list[dict[str, str]] = []
+    for index, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}] must be an object"
+            )
+        if set(raw_item) != {"appendix_id", "decision", "reason"}:
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}] has unsupported fields"
+            )
+        appendix_id = _required_json_string(
+            raw_item.get("appendix_id"),
+            f"appendix-predecision-batch items[{index}].appendix_id",
+        )
+        decision = _required_json_string(
+            raw_item.get("decision"),
+            f"appendix-predecision-batch items[{index}].decision",
+        )
+        reason = _required_json_string(
+            raw_item.get("reason"),
+            f"appendix-predecision-batch items[{index}].reason",
+        )
+        if decision not in {"include", "exclude"}:
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}].decision must be include or exclude"
+            )
+        if (
+            decision == "include"
+            and str(inventory_by_id[appendix_id].get("source_status") or "")
+            == "missing"
+        ):
+            raise SystemExit(
+                f"appendix-predecision-batch items[{index}] source_status=missing must be exclude"
+            )
+        normalized.append(
+            {"appendix_id": appendix_id, "decision": decision, "reason": reason}
+        )
+    decisions = state.setdefault("appendix_decisions", {})
+    for item in normalized:
+        decisions[item["appendix_id"]] = item
+    state["active_appendix_batch"] = _empty_active_appendix_batch()
+    _invalidate_global_review(state)
+    _write_json(_state_path(work_dir), state)
+    return {
+        "schema_version": STATE_SCHEMA,
+        "decided_count": len(decisions),
+        "remaining_count": len(inventory) - len(decisions),
+        "complete": len(decisions) == len(inventory),
+    }
+
+
+def _available_addition_id(base: str, occupied: set[str]) -> str:
+    candidate = base
+    suffix = 2
+    while candidate in occupied:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    occupied.add(candidate)
+    return candidate
+
+
+def materialize_appendix_predecisions(
+    work_dir: Path,
+    predecision_work_dir: Path,
+    structure: dict[str, Any],
+    appendix_items: list[dict[str, Any]],
+    *,
+    workflow_binding: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """正文合并后，将隔离的附表预判转换为受控目录节点。"""
+    annotated, template_items = _annotated_items(structure)
+    fingerprint = annotated["input_fingerprint"]
+    state = _load_state(work_dir, fingerprint, workflow_binding)
+    _require_template_decisions_complete(state, template_items)
+    inventory, inventory_digest = _normalized_appendix_inventory(appendix_items)
+    predecision_state = _load_state(
+        predecision_work_dir,
+        fingerprint,
+        workflow_binding,
+    )
+    _reject_changed_appendix_inventory(predecision_state, inventory_digest)
+    expected_ids = [str(item["appendix_id"]) for item in inventory]
+    predecisions = predecision_state.get("appendix_decisions") or {}
+    if set(predecisions) != set(expected_ids):
+        raise SystemExit("appendix predecisions are incomplete")
+    if (predecision_state.get("active_appendix_batch") or {}).get("appendix_ids"):
+        raise SystemExit("appendix predecision batch is still active")
+
+    while True:
+        batch = next_appendix_batch(
+            work_dir,
+            structure,
+            appendix_items,
+            workflow_binding=workflow_binding,
+        )
+        if batch["complete"]:
+            break
+        current_state = _load_state(work_dir, fingerprint, workflow_binding)
+        additions = current_state.get("additions") or []
+        occupied = {
+            str(item.get("template_id") or "")
+            for item in annotated.get("items") or []
+            if isinstance(item, dict)
+        }
+        occupied.update(
+            str(item.get("node_id") or "")
+            for item in additions
+            if isinstance(item, dict)
+        )
+        roots = [
+            item
+            for item in additions
+            if isinstance(item, dict)
+            and str(item.get("operation") or "") == "add"
+            and item.get("parent_id") is None
+            and str(item.get("title") or "") == "技术附表"
+        ]
+        root_id = str(roots[0].get("node_id") or "") if len(roots) == 1 else ""
+        payload_items: list[dict[str, str]] = []
+        has_include = False
+        for appendix in batch["items"]:
+            appendix_id = str(appendix["appendix_id"])
+            semantic = predecisions[appendix_id]
+            item = {
+                "appendix_id": appendix_id,
+                "decision": str(semantic["decision"]),
+                "reason": str(semantic["reason"]),
+            }
+            if item["decision"] == "include":
+                has_include = True
+                if not root_id:
+                    root_id = _available_addition_id("ADD-TECH-APPENDIX", occupied)
+                item["node_id"] = _available_addition_id(
+                    "ADD-" + appendix_id,
+                    occupied,
+                )
+                item["parent_id"] = root_id
+            payload_items.append(item)
+        payload: dict[str, Any] = {
+            "batch_token": batch["batch_token"],
+            "items": payload_items,
+        }
+        if has_include and not roots:
+            payload["root_addition"] = {
+                "node_id": root_id,
+                "reason": "招标文件包含需要独立填写的技术附表。",
+            }
+        submit_appendix_batch(
+            work_dir,
+            structure,
+            payload,
+            appendix_items,
+            workflow_binding=workflow_binding,
+        )
+
+    included_count = sum(
+        1 for item in predecisions.values() if item.get("decision") == "include"
+    )
+    return {
+        "schema_version": STATE_SCHEMA,
+        "included_count": included_count,
+        "excluded_count": len(predecisions) - included_count,
+        "complete": True,
     }
 
 
@@ -1266,12 +1599,6 @@ def apply_global_review_corrections(
     if not raw_items and not additions:
         raise SystemExit("review-corrections requires at least one correction")
 
-    baseline = state.get("global_review_read_baseline")
-    current_read_count = _evidence_read_event_count(work_dir)
-    if current_read_count is not None:
-        if baseline is None or current_read_count <= int(baseline):
-            raise SystemExit("全局纠偏前必须从招标侧完成至少一次新的正文阅读")
-
     normalized_decisions: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
@@ -1303,14 +1630,14 @@ def apply_global_review_corrections(
             raise SystemExit(f"review-corrections items[{index}] retain has unsupported fields")
         has_reason = bool(str(item.get("reason") or "").strip())
         has_basis = isinstance(item.get("tender_basis"), dict)
-        if has_reason == has_basis and (has_reason or (work_dir / "tender_evidence_access.json").is_file()):
+        if not has_reason and not has_basis and (work_dir / "tender_evidence_access.json").is_file():
             raise SystemExit(
-                f"review-corrections items[{index}] retain requires exactly one of reason or tender_basis"
+                f"review-corrections items[{index}] retain requires evidence_id or reason"
             )
         normalized = {"target_id": target_id, "decision": "retain"}
         if has_reason:
             normalized["reason"] = str(item["reason"]).strip()
-        elif has_basis:
+        if has_basis:
             normalized["tender_basis"] = deepcopy(item["tender_basis"])
         normalized_decisions[target_id] = normalized
 
@@ -1325,6 +1652,7 @@ def apply_global_review_corrections(
     }
     new_changes: list[dict[str, Any]] = []
     new_owners: dict[str, str] = {}
+    levels = _node_levels(annotated, state.get("additions") or [])
     for index, addition in enumerate(additions):
         if not isinstance(addition, dict):
             raise SystemExit(f"review-corrections additions[{index}] must be an object")
@@ -1340,8 +1668,11 @@ def apply_global_review_corrections(
             )
         if not reason:
             raise SystemExit(f"review-corrections additions[{index}].reason is required")
-        if parent_id is not None and parent_key not in template_ids | existing_ids | set(new_owners):
-            raise SystemExit(f"review-corrections additions[{index}].parent_id is invalid")
+        levels[node_id] = _addition_level(
+            levels,
+            parent_id,
+            f"review-corrections additions[{index}]",
+        )
         if (
             not isinstance(addition.get("tender_basis"), dict)
             and (work_dir / "tender_evidence_access.json").is_file()
@@ -1370,7 +1701,6 @@ def apply_global_review_corrections(
     state.setdefault("additions", []).extend(new_changes)
     state.setdefault("addition_chapters", {}).update(new_owners)
     _invalidate_global_review(state)
-    _arm_global_review_if_ready(state, work_dir, items, inventory)
     _write_json(_state_path(work_dir), state)
     return {
         "schema_version": STATE_SCHEMA,
@@ -1410,11 +1740,6 @@ def complete_global_review(
         raise SystemExit("review-complete issues must be a list")
     if issues:
         raise SystemExit("全局复核仍有问题；请按 chapter_id 重开对应章节")
-    baseline = state.get("global_review_read_baseline")
-    current_read_count = _evidence_read_event_count(work_dir)
-    if current_read_count is not None:
-        if baseline is None or current_read_count <= int(baseline):
-            raise SystemExit("全局复核阶段必须从招标侧完成至少一次新的正文阅读")
     digest = _current_decisions_digest(state)
     state["global_review_digest"] = digest
     state["global_review_summary"] = summary

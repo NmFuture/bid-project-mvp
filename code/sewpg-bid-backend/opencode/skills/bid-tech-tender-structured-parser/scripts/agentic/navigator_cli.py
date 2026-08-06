@@ -5,7 +5,21 @@ from pathlib import Path
 from typing import Any
 
 from . import nav_store
+from .checklist import checklist_for_shard, shard_by_key
 from .paths import nav_store_path
+
+
+# 预检索：把清单「具体内容」里的名词短语直接拿去检索，命中结果随分片清单一起下发。
+# 目的是省掉模型逐个关键词试探的 LLM 往返，纯 Python 计算、无模型成本。
+HINT_SPLIT_PATTERN = r"[、，,；;。/／()（）\s]+"
+HINT_STOPWORDS = frozenset(
+    {
+        "要求", "适配", "配置", "设计", "方案", "标准", "规则", "责任", "界定", "提供",
+        "保障", "能力", "情况", "内容", "相关", "以及", "及其", "包括", "等", "的",
+        "合规性", "全流程", "定义", "流程", "措施", "范围",
+    }
+)
+HINT_TRAILING_SUFFIXES = ("要求", "配置", "设计", "责任", "适配", "标准", "规则")
 
 
 def _limit_text(text: str, max_chars: int) -> str:
@@ -49,12 +63,8 @@ def _ordered_subsequence(needles: list[str], haystack: str) -> bool:
     return True
 
 
-def _ranked_search(conn, query: str, limit: int) -> list[dict[str, Any]]:
-    tokens = _query_tokens(query)
-    chars = _query_chars(query)
-    if not tokens and not chars:
-        return []
-    rows = nav_store.fetch_all(
+def _fetch_all_evidence_rows(conn) -> list[dict[str, Any]]:
+    return nav_store.fetch_all(
         conn,
         """
         SELECT id, document_id AS documentId, kind, body_index AS bodyIndex, page_no AS pageNo,
@@ -64,23 +74,56 @@ def _ranked_search(conn, query: str, limit: int) -> list[dict[str, Any]]:
         ORDER BY document_id, body_index, COALESCE(row_index, 0), COALESCE(col_index, 0)
         """,
     )
-    compact_query = re.sub(r"\s+", "", query.strip()).lower()
-    ranked: list[tuple[int, dict[str, Any]]] = []
+
+
+def _build_fuzzy_index(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str, str]]:
+    """预先算好每行的规整文本。
+
+    打分本身按 (行数 × 关键词数) 增长，而文本规整是其中最贵的一步。批量场景下
+    每个关键词都重算一遍会主导整体耗时，所以按行只算一次并复用。
+    """
+    index = []
     for row in rows:
         text = str(row.get("text") or "")
-        compact_text = re.sub(r"\s+", "", text).lower()
+        index.append((row, re.sub(r"\s+", "", text).lower(), text.lower()))
+    return index
+
+
+def _ranked_search(
+    conn,
+    query: str,
+    limit: int,
+    *,
+    index: list[tuple[dict[str, Any], str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """模糊回退打分。
+
+    整张 evidence 表要拉进 Python 打分，成本随文档规模线性增长。批量场景（预检索）
+    必须传入 index 复用同一份快照，否则每个未命中词都会重新全表拉取并重算一遍。
+    """
+    tokens = _query_tokens(query)
+    chars = _query_chars(query)
+    if not tokens and not chars:
+        return []
+    if index is None:
+        index = _build_fuzzy_index(_fetch_all_evidence_rows(conn))
+    compact_query = re.sub(r"\s+", "", query.strip()).lower()
+    lowered_tokens = [token.lower() for token in tokens]
+    lowered_chars = [char.lower() for char in chars]
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for row, compact_text, lower_text in index:
         score = 0
         if compact_query and compact_query in compact_text:
             score += 100
-        for token in tokens:
-            if token.lower() in text.lower():
+        for token in lowered_tokens:
+            if token in lower_text:
                 score += 30
-        if chars:
-            matched = sum(1 for char in chars if char.lower() in compact_text)
-            coverage = matched / len(chars)
+        if lowered_chars:
+            matched = sum(1 for char in lowered_chars if char in compact_text)
+            coverage = matched / len(lowered_chars)
             if coverage >= 0.65:
                 score += int(coverage * 60)
-            if _ordered_subsequence([char.lower() for char in chars], compact_text):
+            if _ordered_subsequence(lowered_chars, compact_text):
                 score += 25
         if score > 0:
             ranked.append((score, row))
@@ -129,11 +172,10 @@ def overview(manifest_path: Path, manifest: dict[str, Any], *, page: int = 1, pa
     }
 
 
-def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: int = 20) -> dict[str, Any]:
-    conn = _connect(manifest_path, manifest)
+def _exact_search(conn, query: str, limit: int) -> list[dict[str, Any]]:
     tokens = _query_tokens(query)
     if not tokens:
-        return {"schemaVersion": nav_store.SCHEMA_VERSION, "query": query, "matchCount": 0, "matches": []}
+        return []
     conditions = " AND ".join(["text LIKE ?" for _ in tokens])
     params = [f"%{token}%" for token in tokens]
     sql = f"""
@@ -145,12 +187,158 @@ def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: 
         ORDER BY document_id, body_index, COALESCE(row_index, 0), COALESCE(col_index, 0)
         LIMIT ?
     """
-    rows = nav_store.fetch_all(conn, sql, (*params, max(1, min(80, limit))))
+    return nav_store.fetch_all(conn, sql, (*params, max(1, min(80, limit))))
+
+
+def _search_with_conn(
+    conn,
+    query: str,
+    limit: int,
+    *,
+    fuzzy_index: list[tuple[dict[str, Any], str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    rows = _exact_search(conn, query, limit)
     if not rows:
-        rows = _ranked_search(conn, query, limit)
-    for row in rows:
-        row["text"] = _limit_text(row.get("text") or "", 260)
-    return {"schemaVersion": nav_store.SCHEMA_VERSION, "query": query, "matchCount": len(rows), "matches": rows}
+        rows = _ranked_search(conn, query, limit, index=fuzzy_index)
+    # 复制后再截断：模糊回退命中的是共享快照里的行对象，就地改写会把快照
+    # 的正文永久截短，污染后续关键词的检索结果。
+    return [{**row, "text": _limit_text(row.get("text") or "", 260)} for row in rows]
+
+
+def search(manifest_path: Path, manifest: dict[str, Any], query: str, *, limit: int = 20) -> dict[str, Any]:
+    conn = _connect(manifest_path, manifest)
+    try:
+        if not _query_tokens(query):
+            return {"schemaVersion": nav_store.SCHEMA_VERSION, "query": query, "matchCount": 0, "matches": []}
+        rows = _search_with_conn(conn, query, limit)
+        return {"schemaVersion": nav_store.SCHEMA_VERSION, "query": query, "matchCount": len(rows), "matches": rows}
+    finally:
+        conn.close()
+
+
+def search_many(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    queries: list[str],
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """一次执行多个检索。
+
+    与逐条调用等价，只是把 N 次 LLM 往返压成 1 次——模型一轮就能把一条清单行
+    需要的所有关键词发出去。
+    """
+    conn = _connect(manifest_path, manifest)
+    results = []
+    total = 0
+    fuzzy_index: list[tuple[dict[str, Any], str, str]] | None = None
+    try:
+        for query in queries:
+            text = str(query or "").strip()
+            if not text or not _query_tokens(text):
+                continue
+            rows = _exact_search(conn, text, limit)
+            if not rows:
+                if fuzzy_index is None:
+                    fuzzy_index = _build_fuzzy_index(_fetch_all_evidence_rows(conn))
+                rows = _ranked_search(conn, text, limit, index=fuzzy_index)
+            matches = [{**row, "text": _limit_text(row.get("text") or "", 260)} for row in rows]
+            total += len(matches)
+            results.append(
+                {
+                    "query": text,
+                    "matchCount": len(matches),
+                    "matches": matches,
+                }
+            )
+    finally:
+        conn.close()
+    return {
+        "schemaVersion": nav_store.SCHEMA_VERSION,
+        "queryCount": len(results),
+        "matchCount": total,
+        "results": results,
+    }
+
+
+def _hint_terms(specific_content: str, *, max_terms: int) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(HINT_SPLIT_PATTERN, str(specific_content or "")):
+        term = raw.strip()
+        if not term:
+            continue
+        for suffix in HINT_TRAILING_SUFFIXES:
+            if len(term) > len(suffix) + 1 and term.endswith(suffix):
+                term = term[: -len(suffix)]
+                break
+        if len(term) < 2 or term in HINT_STOPWORDS or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+        if len(terms) >= max_terms:
+            break
+    return terms
+
+
+def shard_checklist(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    shard_key: str,
+    *,
+    with_hints: bool = True,
+    max_terms: int = 5,
+    per_term_limit: int = 3,
+    hint_limit: int = 8,
+) -> dict[str, Any]:
+    shard = shard_by_key(shard_key)
+    conn = _connect(manifest_path, manifest) if with_hints else None
+    # 全表快照只拉一次并预先规整，供本分片所有关键词的模糊回退复用。
+    fuzzy_index = _build_fuzzy_index(_fetch_all_evidence_rows(conn)) if conn is not None else None
+    rows = []
+    for item in checklist_for_shard(shard_key):
+        row = {
+            "rowNo": item["rowNo"],
+            "displayGroup": item["displayGroup"],
+            "primaryCategory": item["primaryCategory"],
+            "secondaryCategory": item["secondaryCategory"],
+            "specificContent": item["specificContent"],
+        }
+        if with_hints:
+            hints: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for term in _hint_terms(item["specificContent"], max_terms=max_terms):
+                matches = _search_with_conn(conn, term, per_term_limit, fuzzy_index=fuzzy_index)
+                for match in matches:
+                    evidence_id = str(match.get("id") or "")
+                    if not evidence_id or evidence_id in seen_ids:
+                        continue
+                    seen_ids.add(evidence_id)
+                    hints.append(
+                        {
+                            "term": term,
+                            "id": evidence_id,
+                            "documentId": match.get("documentId"),
+                            "pageNo": match.get("pageNo"),
+                            "tableId": match.get("tableId"),
+                            "text": _limit_text(str(match.get("text") or ""), 140),
+                        }
+                    )
+                    if len(hints) >= hint_limit:
+                        break
+                if len(hints) >= hint_limit:
+                    break
+            row["hints"] = hints
+        rows.append(row)
+    return {
+        "schemaVersion": nav_store.SCHEMA_VERSION,
+        "shard": shard["key"],
+        "shardLabel": shard["label"],
+        "rowCount": len(rows),
+        "rowNos": list(shard["rowNos"]),
+        "hintsIncluded": bool(with_hints),
+        "rows": rows,
+    }
 
 
 def read(manifest_path: Path, manifest: dict[str, Any], evidence_id: str, *, mode: str = "summary", max_chars: int = 2000) -> dict[str, Any]:

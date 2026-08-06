@@ -3,9 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${REPO_ROOT}/sewpg-bid-backend/onlyoffice/image-policy.sh"
 BUNDLE_DIR="${1:-${REPO_ROOT}/offline-dist}"
 TAG="${2:-offline-$(date +%Y%m%d%H%M)}"
-ONLYOFFICE_SOURCE_IMAGE="${ONLYOFFICE_SOURCE_IMAGE:-onlyoffice/documentserver:9.3.1.2}"
+ONLYOFFICE_SOURCE_IMAGE="${ONLYOFFICE_SOURCE_IMAGE:-onlyoffice/documentserver:9.3.1.2@sha256:0d263ef0bc0cd11d036586fd0aafe7de41a3cdb281dd582c012b142cd961fc31}"
+ONLYOFFICE_FONT_BUILDER_SOURCE_IMAGE="${ONLYOFFICE_FONT_BUILDER_SOURCE_IMAGE:-debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e}"
 REDIS_SOURCE_IMAGE="${REDIS_SOURCE_IMAGE:-redis:7-alpine}"
 POSTGRES_SOURCE_IMAGE="${POSTGRES_SOURCE_IMAGE:-pgvector/pgvector:pg16}"
 MINIO_SOURCE_IMAGE="${MINIO_SOURCE_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
@@ -13,6 +15,11 @@ INCLUDE_OCR="${INCLUDE_OCR:-false}"
 OCR_SOURCE_IMAGE="${OCR_SOURCE_IMAGE:-vllm/vllm-openai:unlimited-ocr}"
 DEPLOY_TARGET="${DEPLOY_TARGET:-generic}"
 GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
+  echo "Refusing to build a release bundle from a dirty worktree." >&2
+  echo "Commit or remove tracked and untracked changes before retrying." >&2
+  exit 1
+fi
 
 compose_build_args=(-f "${REPO_ROOT}/docker-compose.yml")
 if [[ "${DEPLOY_TARGET}" == "5090" ]]; then
@@ -30,7 +37,10 @@ export WEB_IMAGE="sewpg-bid/web:${TAG}"
 export FASTAPI_IMAGE="sewpg-bid/fastapi:${TAG}"
 export DOCLING_IMAGE="sewpg-bid/docling-worker:${TAG}"
 export OPENCODE_IMAGE="sewpg-bid/opencode:${TAG}"
-export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:9.3.1.2"
+export ONLYOFFICE_IMAGE="sewpg-bid/onlyoffice:${TAG}-fontpack-v1"
+export ONLYOFFICE_BASE_IMAGE="${ONLYOFFICE_SOURCE_IMAGE}"
+export ONLYOFFICE_FONT_BUILDER_IMAGE="${ONLYOFFICE_FONT_BUILDER_SOURCE_IMAGE}"
+export ONLYOFFICE_BUILD_REVISION="${GIT_SHA}"
 export REDIS_IMAGE="${REDIS_SOURCE_IMAGE}"
 export OCR_IMAGE="${OCR_SOURCE_IMAGE}"
 
@@ -50,12 +60,24 @@ ensure_image() {
   fi
 }
 
-echo "==> Building application images..."
-docker compose "${compose_build_args[@]}" build web fastapi docling-worker opencode
+require_digest_reference() {
+  case "$1" in
+    *@sha256:*) ;;
+    *)
+      echo "${2} must be pinned by sha256 digest: $1" >&2
+      exit 1
+      ;;
+  esac
+}
 
-ensure_image "${ONLYOFFICE_SOURCE_IMAGE}" "OnlyOffice"
-echo "==> Retagging OnlyOffice image..."
-docker tag "${ONLYOFFICE_SOURCE_IMAGE}" "${ONLYOFFICE_IMAGE}"
+require_digest_reference "${ONLYOFFICE_SOURCE_IMAGE}" "OnlyOffice base image"
+require_digest_reference "${ONLYOFFICE_FONT_BUILDER_SOURCE_IMAGE}" "OnlyOffice font builder image"
+
+echo "==> Building application and OnlyOffice font images..."
+configure_compose_build_compat_args
+docker compose "${compose_build_args[@]}" build \
+  ${COMPOSE_BUILD_PROVENANCE_ARG:+"${COMPOSE_BUILD_PROVENANCE_ARG}"} \
+  web fastapi docling-worker opencode onlyoffice
 ensure_image "${REDIS_SOURCE_IMAGE}" "Redis"
 ensure_image "${POSTGRES_SOURCE_IMAGE}" "PostgreSQL"
 ensure_image "${MINIO_SOURCE_IMAGE}" "MinIO"
@@ -68,6 +90,7 @@ OCR_SOURCE_DIGEST=""
 if [[ "${INCLUDE_OCR}" == "1" || "${INCLUDE_OCR}" == "true" || "${INCLUDE_OCR}" == "yes" ]]; then
   OCR_SOURCE_DIGEST="$(docker image inspect --format '{{join .RepoDigests ","}}' "${OCR_SOURCE_IMAGE}" | cut -d, -f1)"
 fi
+ONLYOFFICE_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${ONLYOFFICE_IMAGE}")"
 
 rm -f "${IMAGE_TAR}"
 
@@ -98,6 +121,7 @@ awk -v tag="${TAG}" '
   /^FASTAPI_IMAGE=/ { print "FASTAPI_IMAGE=sewpg-bid/fastapi:" tag; next }
   /^DOCLING_IMAGE=/ { print "DOCLING_IMAGE=sewpg-bid/docling-worker:" tag; next }
   /^OPENCODE_IMAGE=/ { print "OPENCODE_IMAGE=sewpg-bid/opencode:" tag; next }
+  /^ONLYOFFICE_IMAGE=/ { print "ONLYOFFICE_IMAGE=sewpg-bid/onlyoffice:" tag "-fontpack-v1"; next }
   { print }
 ' "${REPO_ROOT}/.env.airgap.example" > "${BUNDLE_DIR}/.env.airgap.example"
 mkdir -p "${BUNDLE_DIR}/sewpg-bid-backend/onlyoffice"
@@ -116,6 +140,7 @@ cat > "${MANIFEST_PATH}" <<EOF
   "createdAt": "$(date +%Y-%m-%dT%H:%M:%S)",
   "deployTarget": "${DEPLOY_TARGET}",
   "gitSha": "${GIT_SHA}",
+  "onlyofficeImageId": "${ONLYOFFICE_IMAGE_ID}",
   "ocrSourceDigest": "${OCR_SOURCE_DIGEST}",
   "bundleFile": "$(basename "${IMAGE_TAR}")",
   "images": [

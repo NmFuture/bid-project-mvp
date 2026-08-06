@@ -2,10 +2,12 @@ import { Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useCallback, useEffect, useState } from 'react'
 import AppShell from './components/layout/AppShell'
 import Dashboard from './pages/Dashboard'
+import JobMonitor from './pages/JobMonitor'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Toast from './components/shared/Toast'
 import { AUTH_EXPIRED_EVENT, AUTH_STORAGE_KEY, authAPI } from './api'
+import { initTracker } from './telemetry/tracker'
 import { workspaceFromSlug, workspaceRoute } from './utils/workspace'
 import { renderTechnicalRoutes } from './workspaces/technical/routes'
 import { renderBusinessRoutes } from './workspaces/business/routes'
@@ -70,6 +72,11 @@ export default function App() {
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type })
     setTimeout(() => setToast(null), 3000)
+  }, [])
+
+  // 埋点采集器全局只挂载一次（内部有防重，StrictMode 双调用安全）
+  useEffect(() => {
+    initTracker()
   }, [])
 
   useEffect(() => {
@@ -153,6 +160,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard currentUser={session?.user} />} />
+          <Route path="/monitoring" element={<JobMonitor />} />
           {renderTechnicalRoutes({ user: session?.user, showToast })}
           {renderBusinessRoutes({ user: session?.user, showToast })}
           {renderSharedRoutes({ user: session?.user, showToast })}

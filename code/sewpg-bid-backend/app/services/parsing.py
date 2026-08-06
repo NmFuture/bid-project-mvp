@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import zipfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -41,6 +42,7 @@ from app.services.parse_profiles import (
     resolve_parse_profile,
 )
 from app.services.peripheral import PeripheralError
+from app.services.system_settings import system_settings_service
 
 PARSER_CORE_DIR = (
     Path(__file__).resolve().parents[2] / "opencode" / "skills" / TECHNICAL_PARSE_SKILL_NAME / "scripts"
@@ -6042,6 +6044,72 @@ s1parse finalize {skill_manifest_path}
 """.strip()
 
 
+def _build_technical_project_basics_prompt(skill_manifest_path: Path, profile: ParseProfile) -> str:
+    return f"""
+Use the {profile.skill_name} skill.
+
+你在做 S1 技术标解读，本次会话只负责一个目标：项目基础信息 `projectBasics`。技术解读清单由其他并发会话负责，你不要碰。
+
+manifest：{skill_manifest_path}
+
+导航索引已由后端准备完毕，不要执行 `s1parse prepare`，也不要执行 `s1parse validate` / `s1parse finalize`——收口由后端统一完成。
+
+必须用 Bash 执行 `s1parse` 小输出命令，timeout 设置为 600000 毫秒或更高。`s1parse search` 支持一次传多个关键词，请尽量合并成一条命令，减少往返：
+
+s1parse overview {skill_manifest_path} --page 1 --page-size 30
+s1parse search {skill_manifest_path} "招标编号" "招标人" "递交截止" "招标代理" --limit 15
+s1parse window {skill_manifest_path} <evidenceId> --before 4 --after 6
+s1parse submit {skill_manifest_path} projectBasics '<json>'
+
+项目基础信息必须按六项提交：项目名称 `projectName`、招标编号 `tenderNo`、项目单位 `projectUnit`、招标人 `tenderer`、招标代理机构 `tenderAgency`、递交截止时间 `bidDeadline`。每条必须显式提交标准 key 或 fieldKey，label 只作展示。原文中的不同叫法由你结合上下文归入标准 key。封面、公告、前附表都是可用证据来源。递交截止时间只指投标/响应文件最晚递交、提交截止或开标时间，不要把交货期、供货期、服务期、工期当作截止时间。
+
+只使用 s1parse 返回过的 evidenceId，不要编造证据。项目名称、招标人、递交截止时间如有值必须带字段级 evidenceIds，提交值必须能被证据文本直接支撑。当前文件确实没有的字段，仍按标准 key 提交，status 写 missing 或 needs_spec，value 写明未提及并建议补充上传对应文件。
+
+完成 submit 后直接结束，只返回 submit 命令 stdout 的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
+
+
+def _build_technical_shard_prompt(
+    skill_manifest_path: Path,
+    profile: ParseProfile,
+    shard: dict[str, Any],
+) -> str:
+    shard_key = str(shard["key"])
+    row_nos = ", ".join(str(row_no) for row_no in shard["rowNos"])
+    return f"""
+Use the {profile.skill_name} skill.
+
+你在做 S1 技术标解读。本次会话只负责技术解读清单的一个分片：`{shard_key}`（{shard["label"]}），共 {len(shard["rowNos"])} 行，行号为 {row_nos}。其余清单行由其他并发会话负责，你不要判断、不要提交。
+
+manifest：{skill_manifest_path}
+
+导航索引已由后端准备完毕，不要执行 `s1parse prepare`，也不要执行 `s1parse validate` / `s1parse finalize`——收口由后端在所有分片完成后统一执行。
+
+第一步必须先取回本分片的清单行和预检索命中：
+
+s1parse checklist {skill_manifest_path} --shard {shard_key}
+
+返回的每行都带 `hints`，那是后端按「具体内容」离线预检索出的候选证据，直接可用。先看 hints 判断够不够，只在 hints 不足以支撑结论时才补充检索。
+
+补充检索时 `s1parse search` 支持一次传多个关键词，必须合并成一条命令，不要一个关键词发一次：
+
+s1parse search {skill_manifest_path} "关键词A" "关键词B" "关键词C" --limit 20
+s1parse read {skill_manifest_path} <evidenceId> --mode summary --max-chars 2000
+s1parse window {skill_manifest_path} <evidenceId> --before 4 --after 6
+s1parse table {skill_manifest_path} <tableId> --rows 1-12 --max-chars 4000
+
+判断完本分片全部 {len(shard["rowNos"])} 行后，一次性提交：
+
+s1parse submit {skill_manifest_path} technicalInterpretation '<json>' --shard {shard_key}
+
+提交数组只能包含本分片的行号 {row_nos}；提交越界行号会被脚本硬拒绝。每条字段为 rowNo、status、conclusion、evidenceSummary、evidenceIds，needs_spec 时另加 neededSourceName。status 只能是 found、partial、missing、needs_spec，判定口径以 SKILL.md 为准。
+
+禁止用 opencode 的 read 工具读取或打印大 JSON；证据定位必须通过 s1parse 小输出命令完成。禁止调用 Task/subagent/子代理/任务委派工具。只使用 s1parse 返回过的 evidenceId，不要编造证据。found 和 partial 必须有 evidenceIds；needs_spec 必须写招标文件原文里的 neededSourceName，不要固定写“第二卷技术规范书”。
+
+完成 submit 后直接结束，只返回 submit 命令 stdout 的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
+
+
 def _build_tender_parse_retry_prompt(
     skill_manifest_path: Path,
     profile: ParseProfile,
@@ -6242,6 +6310,405 @@ def _fallback_parse_skill_result(
     return fallback, f"S1 解析 Skill 调用失败，已使用本地结构化解析兜底：{exc}"
 
 
+def _s1parse_runner_path() -> Path:
+    return PARSER_CORE_DIR / "run_from_manifest.py"
+
+
+def _run_s1parse_cli(command: str, skill_manifest_path: Path, *extra: str) -> dict[str, Any]:
+    """后端侧确定性执行 s1parse 子命令。
+
+    prepare 和 finalize 都不需要模型判断，交给模型只会白白多花 LLM 往返，
+    而且并发分片下 prepare 必须只跑一次，否则多个会话会同时重建导航索引。
+    """
+    runner = _s1parse_runner_path()
+    if not runner.is_file():
+        raise RuntimeError(f"S1 技术标解析 runner 不存在：{runner}")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(runner), command, str(skill_manifest_path), *extra],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"s1parse {command} 执行超时（600 秒）。") from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"s1parse {command} 执行失败（exit={completed.returncode}）：{(completed.stderr or '').strip()[:600]}"
+        )
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        raise RuntimeError(f"s1parse {command} 没有返回任何输出。")
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"s1parse {command} 输出不是合法 JSON：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"s1parse {command} 输出不是 JSON 对象。")
+    return payload
+
+
+# 分片会话的并发槽位。全局 _OPENCODE_REQUEST_SLOTS 默认只有 1（compose 默认值），
+# 会把并发分片重新压回串行，所以分片走独立槽位池，由 S1_PARSE_SHARD_CONCURRENCY 控制。
+_S1_SHARD_REQUEST_SLOTS = threading.BoundedSemaphore(max(1, settings.s1_parse_shard_concurrency))
+
+
+# 进度条第一行展示的条款数每次都要读提交文件，读盘节流到这个间隔，
+# 避免 7 个分片的流式片段各触发一次 JSON 解析。
+_SHARD_ITEM_COUNT_TTL_SEC = 3.0
+
+
+def _technical_total_item_count() -> int:
+    """进度条的条款总数：技术解读清单行数 + 项目基础信息字段数。"""
+    from agentic.checklist import load_checklist  # noqa: PLC0415
+    from agentic.delivery_contract import FRONTEND_PROJECT_BASIC_FIELDS  # noqa: PLC0415
+
+    return len(load_checklist()) + len(FRONTEND_PROJECT_BASIC_FIELDS)
+
+
+def _technical_submitted_item_count(skill_manifest_path: Path) -> int:
+    """已落盘的条款数：提交文件里的清单行数 + 已提交的基础信息字段数。
+
+    口径与 _technical_submission_state 一致，只认真正 submit 过的内容，
+    不用会话百分比反推——反推出来的数字用户无法核对。
+    """
+    from agentic.delivery_contract import FRONTEND_PROJECT_BASIC_FIELDS  # noqa: PLC0415
+    from agentic.paths import load_manifest as load_skill_manifest  # noqa: PLC0415
+    from agentic.submission_store import load as load_submissions  # noqa: PLC0415
+
+    try:
+        manifest = load_skill_manifest(skill_manifest_path)
+        payload = load_submissions(skill_manifest_path, manifest)
+    except (OSError, ValueError, RuntimeError):
+        return 0
+    targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+    interpretation = targets.get("technicalInterpretation")
+    row_nos = {
+        int(row["rowNo"])
+        for row in (interpretation if isinstance(interpretation, list) else [])
+        if isinstance(row, dict) and str(row.get("rowNo") or "").isdigit()
+    }
+    project_basics = targets.get("projectBasics")
+    submitted_fields = {
+        str(row.get("key") or row.get("fieldKey") or "").strip()
+        for row in (project_basics if isinstance(project_basics, list) else [])
+        if isinstance(row, dict)
+    }
+    expected_fields = {key for key, _label in FRONTEND_PROJECT_BASIC_FIELDS}
+    return len(row_nos) + len(submitted_fields & expected_fields)
+
+
+class _ShardProgressAggregator:
+    """把 N 个并发会话的进度合成一条整体进度。
+
+    单个会话的 trace 不能直接透传：任一分片完成时 status 就是 completed，
+    前端会在其余分片仍在运行时把进度条推到 100%。
+    """
+
+    def __init__(
+        self,
+        task_keys: list[str],
+        progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
+        *,
+        skill_manifest_path: Path | None = None,
+        item_counter: Callable[[Path], int] | None = None,
+        item_count_ttl_sec: float = _SHARD_ITEM_COUNT_TTL_SEC,
+    ) -> None:
+        self._total = max(1, len(task_keys))
+        self._callback = progress_callback
+        self._percent: dict[str, int] = {key: 0 for key in task_keys}
+        self._lock = threading.Lock()
+        self._skill_manifest_path = skill_manifest_path
+        self._item_counter = item_counter or _technical_submitted_item_count
+        self._item_count_ttl_sec = max(0.0, float(item_count_ttl_sec))
+        # 条款总数只服务于进度条文案，取不到时退回 0（前端回退成非量化文案），
+        # 不能让展示层的问题打断整条解析链路。
+        self._total_items = 0
+        if skill_manifest_path is not None:
+            try:
+                self._total_items = _technical_total_item_count()
+            except (ImportError, OSError, ValueError, RuntimeError):
+                logger.warning("无法读取技术标条款总数，进度条将回退为非量化文案。", exc_info=True)
+        self._completed_items = 0
+        self._items_read_at: float | None = None
+
+    def _refresh_item_counts(self) -> None:
+        """在锁内刷新已提交条款数，读盘按 TTL 节流，并保证只增不减。
+
+        读取失败时计数器返回 0，直接采用会让第一行从 20/64 掉回 0/64。
+        """
+        if self._total_items <= 0 or self._skill_manifest_path is None:
+            return
+        if self._completed_items >= self._total_items:
+            return
+        now = time.monotonic()
+        if self._items_read_at is not None and now - self._items_read_at < self._item_count_ttl_sec:
+            return
+        self._items_read_at = now
+        self._completed_items = max(
+            self._completed_items,
+            min(self._total_items, max(0, int(self._item_counter(self._skill_manifest_path)))),
+        )
+
+    def _emit(self, key: str, percent: int, details: dict[str, Any] | None) -> None:
+        if self._callback is None:
+            return
+        with self._lock:
+            self._percent[key] = max(self._percent.get(key, 0), max(0, min(100, percent)))
+            overall = int(sum(self._percent.values()) / self._total)
+            completed = sum(1 for value in self._percent.values() if value >= 100)
+            self._refresh_item_counts()
+            completed_items = self._completed_items
+            total_items = self._total_items
+        payload = {
+            **(details or {}),
+            "status": "running",
+            "shard": key,
+            "shardProgress": min(99, overall),
+            "completedShards": completed,
+            "totalShards": self._total,
+        }
+        if total_items > 0:
+            payload["completedItems"] = completed_items
+            payload["totalItems"] = total_items
+        self._callback("opencode_delta", payload)
+
+    def on_stream(self, key: str, details: dict[str, Any]) -> None:
+        parts = details.get("parts") if isinstance(details.get("parts"), list) else []
+        # 会话内进度只能粗估，封顶 95，真正的 100 留给会话结束。
+        self._emit(key, min(95, 12 + len(parts) * 6), details)
+
+    def on_finished(self, key: str) -> None:
+        self._emit(key, 100, None)
+
+
+def _run_technical_shard_session(
+    task: dict[str, Any],
+    *,
+    model_config: dict[str, Any],
+    aggregator: _ShardProgressAggregator,
+    cancel_check: Callable[[], bool] | None,
+) -> dict[str, Any]:
+    key = str(task["key"])
+    try:
+        client = OpencodeClient(
+            model_config=model_config,
+            request_slots=_S1_SHARD_REQUEST_SLOTS,
+        )
+        client.run_tender_parse_shard_with_trace(
+            task["prompt"],
+            title=f"S1 技术标解析 · {task['label']}",
+            stream_callback=lambda details: aggregator.on_stream(key, details),
+            cancel_check=cancel_check,
+        )
+        return {"key": key, "label": task["label"], "status": "succeeded", "error": ""}
+    except ParseCancelledError:
+        raise
+    except (RuntimeError, TypeError, ValueError) as exc:
+        return {"key": key, "label": task["label"], "status": "failed", "error": str(exc)}
+    finally:
+        aggregator.on_finished(key)
+
+
+def _technical_submission_state(skill_manifest_path: Path) -> tuple[set[str], dict[str, str]]:
+    """读取提交文件，返回完整落盘的任务 key 与不完整原因。
+
+    会话正常结束不等于模型调用了 submit。只看会话状态会把「跑完但没提交」当成成功，
+    分片只提交部分行也不能算成功，否则剩余行会被 finalize 静默输出成未找到。
+    """
+    from agentic.checklist import shard_by_key  # noqa: PLC0415
+    from agentic.delivery_contract import FRONTEND_PROJECT_BASIC_FIELDS  # noqa: PLC0415
+    from agentic.paths import load_manifest as load_skill_manifest  # noqa: PLC0415
+    from agentic.submission_store import load as load_submissions  # noqa: PLC0415
+
+    try:
+        manifest = load_skill_manifest(skill_manifest_path)
+        payload = load_submissions(skill_manifest_path, manifest)
+    except (OSError, ValueError, RuntimeError):
+        return set(), {}
+    targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+    shards = payload.get("shards") if isinstance(payload.get("shards"), dict) else {}
+    interpretation = targets.get("technicalInterpretation")
+    submitted_row_nos = {
+        int(row["rowNo"])
+        for row in (interpretation if isinstance(interpretation, list) else [])
+        if isinstance(row, dict)
+        and str(row.get("rowNo") or "").isdigit()
+    }
+    submitted: set[str] = set()
+    incomplete: dict[str, str] = {}
+    for raw_key in shards:
+        key = str(raw_key)
+        try:
+            expected = {int(row_no) for row_no in shard_by_key(key)["rowNos"]}
+        except (TypeError, ValueError, RuntimeError):
+            incomplete[key] = "提交记录引用了未知分片。"
+            continue
+        missing = sorted(expected - submitted_row_nos)
+        if not missing:
+            submitted.add(key)
+            continue
+        incomplete[key] = (
+            f"提交不完整（已提交 {len(expected) - len(missing)}/{len(expected)} 行，"
+            f"缺少行号 {missing}）。"
+        )
+    project_basics = targets.get("projectBasics")
+    if project_basics is not None:
+        expected_fields = {key for key, _label in FRONTEND_PROJECT_BASIC_FIELDS}
+        submitted_fields = {
+            str(row.get("key") or row.get("fieldKey") or "").strip()
+            for row in (project_basics if isinstance(project_basics, list) else [])
+            if isinstance(row, dict)
+        }
+        missing_fields = sorted(expected_fields - submitted_fields)
+        if not missing_fields:
+            submitted.add("projectBasics")
+        else:
+            incomplete["projectBasics"] = (
+                f"提交不完整（已提交 {len(expected_fields) - len(missing_fields)}/{len(expected_fields)} 项，"
+                f"缺少字段 {missing_fields}）。"
+            )
+    return submitted, incomplete
+
+
+def _technical_shard_tasks(skill_manifest_path: Path, profile: ParseProfile) -> list[dict[str, Any]]:
+    from agentic.checklist import load_shards  # noqa: PLC0415 - 仅技术标分片路径需要
+
+    tasks = [
+        {
+            "key": "projectBasics",
+            "label": "项目基础信息",
+            "prompt": _build_technical_project_basics_prompt(skill_manifest_path, profile),
+        }
+    ]
+    for shard in load_shards():
+        tasks.append(
+            {
+                "key": str(shard["key"]),
+                "label": str(shard["label"]),
+                "prompt": _build_technical_shard_prompt(skill_manifest_path, profile, shard),
+            }
+        )
+    return tasks
+
+
+def _run_technical_sharded_parse_skill(
+    skill_manifest_path: Path,
+    *,
+    local_result: dict[str, Any],
+    profile: ParseProfile,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """并发分片执行技术标解读。
+
+    链路：后端 prepare（一次） → 并发 N 个分片会话（各自 submit --shard） → 后端 validate+finalize。
+    单个分片失败不会中断其它分片；重试一轮后仍失败的分片，其清单行由 finalize 按 missing 输出，
+    并把失败明细挂到 workflow 上显式暴露，不静默当成成功。
+    """
+    _raise_if_parse_cancelled(cancel_check)
+    from agentic.paths import load_manifest as load_skill_manifest  # noqa: PLC0415
+    from agentic.submission_store import reset as reset_submissions  # noqa: PLC0415
+
+    reset_submissions(skill_manifest_path, load_skill_manifest(skill_manifest_path))
+    _run_s1parse_cli("prepare", skill_manifest_path)
+    model_config = system_settings_service.get_opencode_model_config_sync()
+    tasks = _technical_shard_tasks(skill_manifest_path, profile)
+    _raise_if_parse_cancelled(cancel_check)
+
+    max_workers = max(1, min(len(tasks), settings.s1_parse_shard_concurrency))
+    logger.info(
+        "S1 技术标分片解析启动：%s 个分片，并发度 %s。",
+        len(tasks),
+        max_workers,
+    )
+
+    def run_wave(pending: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        aggregator = _ShardProgressAggregator(
+            [str(task["key"]) for task in pending],
+            progress_callback,
+            skill_manifest_path=skill_manifest_path,
+        )
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="s1-shard") as pool:
+            futures = [
+                pool.submit(
+                    _run_technical_shard_session,
+                    task,
+                    model_config=model_config,
+                    aggregator=aggregator,
+                    cancel_check=cancel_check,
+                )
+                for task in pending
+            ]
+            return [future.result() for future in futures]
+
+    def settle(wave_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """以提交文件为准判定成败，会话状态只用来补充失败原因。"""
+        submitted, incomplete = _technical_submission_state(skill_manifest_path)
+        settled = []
+        for item in wave_results:
+            if item["key"] in submitted:
+                settled.append({**item, "status": "succeeded", "error": ""})
+                continue
+            error = item["error"] or incomplete.get(item["key"]) or "会话已结束但没有提交结果（未调用 s1parse submit）。"
+            settled.append({**item, "status": "failed", "error": error})
+        return settled
+
+    results = settle(run_wave(tasks))
+    _raise_if_parse_cancelled(cancel_check)
+
+    failed_keys = {item["key"] for item in results if item["status"] != "succeeded"}
+    if failed_keys:
+        logger.warning("S1 技术标分片首轮失败：%s，开始重试。", sorted(failed_keys))
+        retry_results = settle(run_wave([task for task in tasks if task["key"] in failed_keys]))
+        by_key = {item["key"]: item for item in results}
+        for item in retry_results:
+            by_key[item["key"]] = item
+        results = [by_key[task["key"]] for task in tasks]
+        _raise_if_parse_cancelled(cancel_check)
+
+    failures = [item for item in results if item["status"] != "succeeded"]
+    if len(failures) == len(tasks):
+        raise RuntimeError(
+            "S1 技术标分片解析全部失败："
+            + "；".join(f"{item['label']}：{item['error']}" for item in failures[:3])
+        )
+
+    finalize_payload = _run_s1parse_cli("finalize", skill_manifest_path)
+    resolved = _resolve_skill_structured_result(
+        finalize_payload,
+        local_result=local_result,
+        profile=profile,
+    )
+    structured = resolved.get("structured") if isinstance(resolved.get("structured"), dict) else {}
+    if isinstance(structured, dict):
+        workflow = copy.deepcopy(structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {})
+        workflow_stage = str(workflow.get("stage") or "").strip()
+        if workflow_stage != "finalized":
+            failure_details = workflow.get("validationErrors") or workflow.get("missingTargets") or []
+            if isinstance(failure_details, list):
+                failure_message = "；".join(str(item) for item in failure_details if str(item).strip())
+            else:
+                failure_message = str(failure_details).strip()
+            if not failure_message:
+                failure_message = f"workflow.stage={workflow_stage or 'missing'}"
+            raise RuntimeError(f"S1 技术标分片 finalize 校验失败：{failure_message}")
+        workflow["mode"] = "opencode-agentic-navigation-sharded"
+        workflow["shardConcurrency"] = max_workers
+        workflow["shardResults"] = copy.deepcopy(results)
+        workflow["failedShards"] = [item["key"] for item in failures]
+        structured["workflow"] = workflow
+
+    if failures:
+        message = "部分技术解读分片未完成，对应清单行按未找到输出：" + "；".join(
+            f"{item['label']}（{item['error'][:120]}）" for item in failures
+        )
+        return resolved, message
+    return resolved, ""
+
+
 def _run_parse_skill(
     skill_manifest_path: Path,
     *,
@@ -6253,6 +6720,20 @@ def _run_parse_skill(
     _raise_if_parse_cancelled(cancel_check)
     if not settings.s1_parse_opencode_enabled:
         return local_result, ""
+    if profile.key != "business" and settings.s1_parse_technical_shard_enabled:
+        try:
+            return _run_technical_sharded_parse_skill(
+                skill_manifest_path,
+                local_result=local_result,
+                profile=profile,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+            )
+        except ParseCancelledError:
+            raise
+        except RuntimeError as exc:
+            # 分片链路整体失败时回落到原单会话链路，保证不因为新链路把解析打死。
+            logger.warning("S1 技术标分片解析失败，回落到单会话链路：%s", exc)
     client = OpencodeClient()
     stream_callback = (
         (lambda details: progress_callback("opencode_delta", details))
@@ -6797,6 +7278,12 @@ def parse_tender_documents(
     business_section_tree_path = ""
     business_section_tree_summary: dict[str, Any] = {}
 
+    # 技术标且真的会跑 opencode 时，附表提取与结构化解析并行；其余情况保持原来的串行顺序。
+    appendix_runs_with_skill = profile.key != "business" and settings.s1_parse_opencode_enabled
+    appendices: list[dict[str, Any]] = []
+    appendices_future: Future[list[dict[str, Any]]] | None = None
+    appendix_pool: ThreadPoolExecutor | None = None
+
     if profile.key == "business":
         _raise_if_parse_cancelled(cancel_check)
         section_tree_path, section_tree_payload = write_business_section_tree(parseable_documents, project_dir)
@@ -6853,44 +7340,63 @@ def parse_tender_documents(
                 )
             )
     else:
-        _raise_if_parse_cancelled(cancel_check)
-        if progress_callback:
-            progress_callback("appendices_started", {"documentCount": len(parseable_documents), "fileExtension": primary_extension})
-        appendices = _extract_markdown_appendices(project_id, parseable_documents, texts_by_id, profile=profile)
-        appendices.extend(
-            _extract_docx_appendices(
+
+        def extract_appendices(
+            appendix_progress: Callable[[str, dict[str, Any] | None], None] | None,
+        ) -> list[dict[str, Any]]:
+            _raise_if_parse_cancelled(cancel_check)
+            if appendix_progress:
+                appendix_progress(
+                    "appendices_started",
+                    {"documentCount": len(parseable_documents), "fileExtension": primary_extension},
+                )
+            collected = _extract_markdown_appendices(project_id, parseable_documents, texts_by_id, profile=profile)
+            collected.extend(
+                _extract_docx_appendices(
+                    project_id,
+                    parseable_documents,
+                    start_index=len(collected),
+                    profile=profile,
+                    progress_callback=appendix_progress,
+                    cancel_check=cancel_check,
+                )
+            )
+            document_nav_appendices = _extract_document_nav_appendices(
                 project_id,
                 parseable_documents,
-                start_index=len(appendices),
+                start_index=len(collected),
                 profile=profile,
-                progress_callback=progress_callback,
-                cancel_check=cancel_check,
             )
-        )
-        document_nav_appendices = _extract_document_nav_appendices(
-            project_id,
-            parseable_documents,
-            start_index=len(appendices),
-            profile=profile,
-        )
-        appendices.extend(document_nav_appendices)
-        document_nav_document_ids = {
-            str(item.get("sourceDocumentId") or "")
-            for item in document_nav_appendices
-            if str(item.get("sourceDocumentId") or "")
-        }
-        appendices.extend(
-            _extract_text_appendices(
-                project_id,
-                parseable_documents,
-                texts_by_id,
-                start_index=len(appendices),
-                profile=profile,
-                skip_document_ids=document_nav_document_ids,
+            collected.extend(document_nav_appendices)
+            document_nav_document_ids = {
+                str(item.get("sourceDocumentId") or "")
+                for item in document_nav_appendices
+                if str(item.get("sourceDocumentId") or "")
+            }
+            collected.extend(
+                _extract_text_appendices(
+                    project_id,
+                    parseable_documents,
+                    texts_by_id,
+                    start_index=len(collected),
+                    profile=profile,
+                    skip_document_ids=document_nav_document_ids,
+                )
             )
-        )
-    appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
-    structured_result["structured"]["appendices"] = appendices
+            return collected
+
+        if appendix_runs_with_skill:
+            # 附表提取与 opencode 会话之间没有依赖：导航索引只读 manifest.documents，
+            # finalize 重写结构化结果时也不含 appendices，附表是 finalize 之后才从内存合并回去的。
+            # 所以放到后台线程与 prepare + 分片会话同时跑，把这段本地耗时藏进会话等待里。
+            # 重叠期间不上报附表阶段进度：两个阶段同时写进度会让阶段标签来回跳。
+            appendix_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s1-appendix")
+            appendices_future = appendix_pool.submit(extract_appendices, None)
+        else:
+            appendices = extract_appendices(progress_callback)
+    if appendices_future is None:
+        appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
+        structured_result["structured"]["appendices"] = appendices
     if profile.key == "business" and not settings.s1_parse_opencode_enabled:
         local_business_result = _business_local_contract_result(
             project_id,
@@ -6902,7 +7408,7 @@ def parse_tender_documents(
         structured_result = local_business_result
     else:
         local_business_result = structured_result
-    if progress_callback:
+    if progress_callback and appendices_future is None:
         progress_callback(
             "appendices_extracted",
             {
@@ -6936,28 +7442,49 @@ def parse_tender_documents(
     if progress_callback:
         progress_callback("skill_manifest_ready", {"manifestPath": str(skill_manifest_path), "fileExtension": primary_extension})
     _raise_if_parse_cancelled(cancel_check)
-    structured_result, skill_warning = _run_parse_skill(
-        skill_manifest_path,
-        local_result=structured_result,
-        profile=profile,
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
-    )
-    _raise_if_parse_cancelled(cancel_check)
-    if progress_callback and settings.s1_parse_opencode_enabled:
-        progress_callback("opencode_finished", {})
-    if _needs_business_s1_finalize_guard(
-        profile=profile,
-        structured_result=structured_result,
-        skill_manifest_path=skill_manifest_path,
-    ):
-        structured_result, finalize_warning = _finalize_business_s1_result(
+    try:
+        structured_result, skill_warning = _run_parse_skill(
             skill_manifest_path,
-            structured_result,
-            profile,
+            local_result=structured_result,
+            profile=profile,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
-        if finalize_warning:
-            skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+        _raise_if_parse_cancelled(cancel_check)
+        if progress_callback and settings.s1_parse_opencode_enabled:
+            progress_callback("opencode_finished", {})
+        if _needs_business_s1_finalize_guard(
+            profile=profile,
+            structured_result=structured_result,
+            skill_manifest_path=skill_manifest_path,
+        ):
+            structured_result, finalize_warning = _finalize_business_s1_result(
+                skill_manifest_path,
+                structured_result,
+                profile,
+            )
+            if finalize_warning:
+                skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+    except BaseException:
+        # 主链路已经失败，这里只负责回收附表线程，避免解析结束后还有线程在往项目目录写文件。
+        # 附表自身的异常只记日志，不能盖掉原始失败原因。
+        if appendices_future is not None:
+            try:
+                appendices_future.result()
+            except BaseException:
+                logger.warning("解析失败后回收附表提取线程时报错。", exc_info=True)
+            if appendix_pool is not None:
+                appendix_pool.shutdown(wait=True)
+        raise
+    if appendices_future is not None:
+        # 附表分支的异常必须在这里显式抛出，不能因为会话成功就当作附表也成功。
+        # 结果由下面既有的合并块写回 structured；这里不再补发附表阶段事件，
+        # 否则结构化解析已经结束后阶段标签会倒回“提取附表中”。
+        try:
+            appendices = appendices_future.result()
+        finally:
+            if appendix_pool is not None:
+                appendix_pool.shutdown(wait=True)
     if template_extraction_warning:
         warnings.append(template_extraction_warning)
     structured_result = _merge_business_local_artifacts(

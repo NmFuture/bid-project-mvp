@@ -42,6 +42,8 @@ AGENTIC_COMMANDS = {
     "review-corrections",
     "appendix-next",
     "appendix-decision-batch",
+    "appendix-predecision-next",
+    "appendix-predecision-batch",
     "review-complete",
     "decisions",
     "compose",
@@ -50,16 +52,27 @@ AGENTIC_COMMANDS = {
     "finalize",
 }
 NAVIGATION_COMMANDS = frozenset(
-    {"template-headings", "headings", "search", "section", "decision-next", "appendix-next"}
+    {
+        "template-headings",
+        "headings",
+        "search",
+        "section",
+        "decision-next",
+        "appendix-next",
+        "appendix-predecision-next",
+    }
 )
-NAVIGATION_OUTPUT_HARD_LIMIT_BYTES = 24000
+# opencode 对工具输出按字符截断（上限 51200）；预算必须按字符计量，
+# 字节计量会把中文预算压到约 1/3，长节被切成多页、逐页触发模型深思考。
+NAVIGATION_OUTPUT_HARD_LIMIT_CHARS = 45_000
 NAVIGATION_RETRY_HINTS = {
     "template-headings": "请减小 --page-size，并使用同一 --cursor 重试",
     "headings": "请减小 --page-size，并使用同一 --cursor 重试",
     "search": "请减小 --max-results 或 --max-chars，并使用同一 --cursor 重试",
     "section": "请减小 --max-chars，并使用同一 --cursor 重试",
-    "decision-next": "请减小 --max-items 或 --max-chars 后重试",
+    "decision-next": "请精简模板章节标题后重试",
     "appendix-next": "请减小 --max-items 后重试",
+    "appendix-predecision-next": "请减小 --max-items 后重试",
 }
 ALLOWED_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 NODE_KEYS = {
@@ -98,7 +111,7 @@ class NavigationOutputBudgetError(SystemExit):
 def _navigation_state_paths(command: str, work_dir: Path) -> tuple[Path, ...]:
     if command == "headings":
         return (work_dir / "tender_headings_state.json",)
-    if command in {"decision-next", "appendix-next"}:
+    if command in {"decision-next", "appendix-next", "appendix-predecision-next"}:
         return (work_dir / decision_workflow.STATE_FILE_NAME,)
     return ()
 
@@ -125,12 +138,12 @@ def _serialize_command_output(command: str, result: dict[str, Any]) -> str:
     if command not in NAVIGATION_COMMANDS:
         return json.dumps(result, ensure_ascii=False, indent=2)
     output = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-    output_bytes = len(f"{output}\n".encode("utf-8"))
-    if output_bytes >= NAVIGATION_OUTPUT_HARD_LIMIT_BYTES:
+    output_chars = len(f"{output}\n")
+    if output_chars >= NAVIGATION_OUTPUT_HARD_LIMIT_CHARS:
         raise NavigationOutputBudgetError(
             "导航输出内部协议错误: "
-            f"command={command}, actual_bytes={output_bytes}, "
-            f"required_bytes<{NAVIGATION_OUTPUT_HARD_LIMIT_BYTES}; "
+            f"command={command}, actual_chars={output_chars}, "
+            f"required_chars<{NAVIGATION_OUTPUT_HARD_LIMIT_CHARS}; "
             f"retry_hint={NAVIGATION_RETRY_HINTS[command]}"
         )
     return output
@@ -174,7 +187,7 @@ def resolve_invocation(manifest_option: str | None, positional_args: list[str]) 
         command = args.pop(0)
     elif args and args[0] not in AGENTIC_COMMANDS and len(args) > 1:
         raise SystemExit(
-            "usage: s2outline [prepare|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|review-complete|decisions|compose|status|finalize] <manifest> [...]"
+            "usage: s2outline [prepare|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|appendix-predecision-next|appendix-predecision-batch|review-complete|decisions|compose|status|finalize] <manifest> [...]"
         )
     manifest_text = str(manifest_option or (args[0] if args else "")).strip()
     if args and not manifest_option:
@@ -226,18 +239,18 @@ def _resolve_decision_evidence(
             raise SystemExit(f"decision-batch items[{index}] must be an object")
         decision = str(item.get("decision") or "").strip()
         if decision == "retain":
-            has_evidence = bool(str(item.get("evidence_id") or "").strip())
-            has_reason = bool(str(item.get("reason") or "").strip())
-            if has_evidence == has_reason:
-                if not has_evidence and not (work_dir / "tender_evidence_access.json").is_file():
-                    item["reason"] = "历史兼容：保留模板节点。"
-                    continue
-                raise SystemExit(
-                    f"decision-batch items[{index}] retain requires exactly one of evidence_id or reason"
-                )
             allowed = {"target_id", "decision", "evidence_id", "reason"}
             if set(item) - allowed:
                 raise SystemExit(f"decision-batch items[{index}] retain has unsupported fields")
+            has_evidence = bool(str(item.get("evidence_id") or "").strip())
+            has_reason = bool(str(item.get("reason") or "").strip())
+            if not has_evidence and not has_reason:
+                if (work_dir / "tender_evidence_access.json").is_file():
+                    raise SystemExit(
+                        f"decision-batch items[{index}] retain requires evidence_id or reason"
+                    )
+                item["reason"] = "历史兼容：保留模板节点。"
+                continue
             if has_evidence:
                 item["tender_basis"] = review_workflow.resolve_tender_basis(
                     work_dir, str(item.pop("evidence_id"))
@@ -277,7 +290,7 @@ def dispatch_command(
         return write_template_structure(manifest, manifest_path)
     if command == "template-headings":
         cursor = int(_option_value(command_args, "--cursor", "0"))
-        page_size = int(_option_value(command_args, "--page-size", "40"))
+        page_size = int(_option_value(command_args, "--page-size", "200"))
         structure = load_json_dict(
             work_dir / "template_structure.json",
             "templateStructureFile",
@@ -398,6 +411,8 @@ def dispatch_command(
         "review-corrections",
         "appendix-next",
         "appendix-decision-batch",
+        "appendix-predecision-next",
+        "appendix-predecision-batch",
         "review-complete",
         "decisions",
     }:
@@ -413,6 +428,47 @@ def dispatch_command(
             "templateStructureFile",
         )
         appendix_items = review_workflow.decision_appendix_items(work_dir)
+        if command == "appendix-predecision-next":
+            if command_args and (
+                len(command_args) != 2 or command_args[0] != "--max-items"
+            ):
+                raise SystemExit(
+                    "appendix-predecision-next usage: appendix-predecision-next <manifest> [--max-items 40]"
+                )
+            try:
+                max_items = int(_option_value(command_args, "--max-items", "40"))
+            except ValueError as exc:
+                raise SystemExit(
+                    "appendix-predecision-next --max-items must be an integer"
+                ) from exc
+            return decision_workflow.next_appendix_predecision_batch(
+                work_dir,
+                structure,
+                appendix_items,
+                max_items=max_items,
+                workflow_binding=workflow_binding,
+            )
+        if command == "appendix-predecision-batch":
+            if len(command_args) != 1:
+                raise SystemExit(
+                    "appendix-predecision-batch requires exactly one JSON payload"
+                )
+            batch_text = _required_arg(command_args, 0, "appendix predecision batch JSON")
+            try:
+                appendix_batch = json.loads(batch_text)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(
+                    f"appendix predecision batch JSON is invalid: {exc}"
+                ) from exc
+            if not isinstance(appendix_batch, dict):
+                raise SystemExit("appendix predecision batch JSON must be an object")
+            return decision_workflow.submit_appendix_predecision_batch(
+                work_dir,
+                structure,
+                appendix_batch,
+                appendix_items,
+                workflow_binding=workflow_binding,
+            )
         if command == "appendix-next":
             if command_args and (
                 len(command_args) != 2 or command_args[0] != "--max-items"
@@ -451,14 +507,11 @@ def dispatch_command(
                 workflow_binding=workflow_binding,
             )
         if command == "decision-next":
-            try:
-                max_items = int(_option_value(command_args, "--max-items", "50"))
-            except ValueError as exc:
-                raise SystemExit("decision-next --max-items must be an integer") from exc
+            if command_args:
+                raise SystemExit("decision-next usage: decision-next <manifest>")
             return decision_workflow.next_decision_batch(
                 work_dir,
                 structure,
-                max_items=max_items,
                 chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
                 workflow_binding=workflow_binding,
             )
@@ -530,7 +583,6 @@ def dispatch_command(
             work_dir,
             structure,
             normalized_batch,
-            appendix_items=appendix_items,
             chapter_id=str(manifest.get("_runtimeDecisionChapterId") or ""),
             workflow_binding=workflow_binding,
         )

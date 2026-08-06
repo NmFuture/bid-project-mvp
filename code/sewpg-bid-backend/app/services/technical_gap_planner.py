@@ -15,7 +15,6 @@ from typing import Any
 from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.identity import build_project_material_scope
-from app.services.opencode_client import OpencodeClient
 from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
 from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
@@ -572,6 +571,26 @@ def _technical_wiki_cards_by_path_tail() -> dict[str, dict[str, Any]]:
         return {}
 
 
+def _folder_path_parts(value: Any) -> list[str]:
+    return [part.strip() for part in str(value or "").replace("\\", "/").split("/") if part.strip()]
+
+
+# 项目定制下的两个约定目录不进正文素材候选池：
+# - 附表/：解析阶段生成的空副表/Word，消费通道是 appendixTasks/fillTasks（parseResult）；
+# - 技术附表输入文件/：甲方已填附表，只参与附表查表替换（client_appendix_input）。
+PROJECT_APPENDIX_FOLDER_NAME = "附表"
+CLIENT_APPENDIX_INPUT_FOLDER_NAME = "技术附表输入文件"
+
+
+def _is_project_appendix_folder_material(material: dict[str, Any]) -> bool:
+    return PROJECT_APPENDIX_FOLDER_NAME in _folder_path_parts(material.get("folderPath"))
+
+
+def _is_non_body_pool_material(material: dict[str, Any]) -> bool:
+    parts = _folder_path_parts(material.get("folderPath"))
+    return PROJECT_APPENDIX_FOLDER_NAME in parts or CLIENT_APPENDIX_INPUT_FOLDER_NAME in parts
+
+
 def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any]:
     """事实表「投标机型」字段值 → 归一化机型 dict；无事实表/无值时返回空 dict。"""
     if not isinstance(gap_state, dict):
@@ -587,20 +606,32 @@ def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any
     return {}
 
 
+def _keep_by_turbine_model(item: dict[str, Any], selected: dict[str, Any]) -> bool:
+    """标准文件池严格 1:1 限定选中机型文件夹（含上置/下置等布局后缀）：
+
+    只有机型判定为 match 的标准档素材才进池，generic（无型号标记）与 conflict 一律
+    剔除——新建项目已选定机型，其他机型目录下的散置通用素材也不能混入正文候选。
+    客户/项目档维持「剔除 conflict、保留 match 与 generic」的宽松语义。
+    """
+    fit = material_model_fit(item, selected)
+    if str(item.get("materialTier") or "").strip().lower() == "standard":
+        return fit == "match"
+    return fit != "conflict"
+
+
 def _filter_material_index_by_fact_table(
     items: list[dict[str, Any]],
     gap_state: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     """事实表已有「投标机型」值时，按该机型收紧素材索引。
 
-    与素材库机型过滤同一语义（technical_material_store.raw_files）：
-    剔除机型冲突素材，保留匹配与机型无关（generic）素材。
-    首轮缺口检测时事实表尚未构建，此过滤为空操作，不形成循环依赖。
+    标准档严格 match 才保留（同 _keep_by_turbine_model），客户/项目档剔除冲突、
+    保留机型无关素材。首轮缺口检测时事实表尚未构建，此过滤为空操作，不形成循环依赖。
     """
     selected = _fact_table_turbine_model(gap_state)
     if not selected:
         return items
-    return [item for item in items if material_model_fit(item, selected) != "conflict"]
+    return [item for item in items if _keep_by_turbine_model(item, selected)]
 
 
 def _allowed_technical_material_index(
@@ -640,6 +671,13 @@ def _allowed_technical_material_index(
                 continue
             material_id = str(raw.get("id") or "")
             if not material_id or material_id in seen:
+                continue
+            raw_with_tier = raw if raw.get("materialTier") else {**raw, "materialTier": material_tier}
+            # 标准文件：已选机型时严格 1:1 限定选中机型文件夹（generic/conflict 都不进池）。
+            if turbine_model and not _keep_by_turbine_model(raw_with_tier, turbine_model):
+                continue
+            # 项目定制/附表：解析生成的空副表约定目录，不进正文素材候选池。
+            if material_tier == "project" and _is_project_appendix_folder_material(raw):
                 continue
             seen.add(material_id)
             entry = {
@@ -854,35 +892,11 @@ def _run_local_skill_runner(runner: Path, manifest_path: Path, schema_version: s
     return payload
 
 
-def _build_gap_planner_prompt(manifest_path: Path) -> str:
-    return f"""
-Use the {TECHNICAL_GAP_PLANNER_SKILL_NAME} skill.
-
-你现在在做 S3 技术标缺口识别。后端已经准备好 manifest，其中包含人工确认后的目录 JSON、招标解析结构化结果、S2 素材 Wiki 副本、项目/客户/通用素材边界、素材索引、项目身份信息和人工确认的投标机型信息。
-
-manifest：{manifest_path}
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径。命令会把完整 gap_plan.json 写入 manifest 指定路径，并只在 stdout 打印小型摘要 JSON：
-
-s4gap {manifest_path}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-返回格式必须是：
-{{
-  "schema_version": "{TECHNICAL_GAP_PLAN_SCHEMA_VERSION}",
-  "outputFile": "/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/gap_plan.json",
-  "summary": {{"totalTocItems": 0, "matchedCount": 0, "missingCount": 0, "resolvedCount": 0, "ignoredCount": 0, "structuralCount": 0, "fillableTaskCount": 0, "blockingCount": 0}},
-  "itemCount": 0
-}}
-""".strip()
-
-
 def run_technical_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
-    prompt = _build_gap_planner_prompt(manifest_path)
-    try:
-        return OpencodeClient().run_bid_tech_gap_planner_with_trace(prompt)
-    except Exception:
-        return _run_local_skill_runner(GAP_PLANNER_RUNNER, manifest_path, TECHNICAL_GAP_PLAN_SCHEMA_VERSION)
+    # 缺口识别是纯脚本计算（不调 LLM），直接子进程执行（产品裁决 2026-08-04）：
+    # 原先经 OpenCode 会话让模型代跑一条 s4gap 命令，平添一次模型往返、轮询开销和
+    # 模型乱执行的失败模式；产物与审计字段不变（providerId=local-skill）。
+    return _run_local_skill_runner(GAP_PLANNER_RUNNER, manifest_path, TECHNICAL_GAP_PLAN_SCHEMA_VERSION)
 
 
 def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
@@ -942,18 +956,21 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     plan["manifestPath"] = str(manifest_path)
     plan["phase"] = "gap_detection"
     plan["scopeBoundary"] = material_scope
+    # 后处理召回池与正文匹配池同边界：附表/（空副表）与 技术附表输入文件/（甲方已填附表）
+    # 都不进正文候选；manifest 里仍保留完整索引，供 run_from_manifest 做附表查表替换。
+    body_material_index = [item for item in material_index if not _is_non_body_pool_material(item)]
     # 确定性后处理：无论 plan 由 opencode agent 还是本地 fallback 脚本产出，都在这里
     # 给「非附表正文缺口」的候选素材补段落级证据片段（A 层 evidenceSegments）。
     # agent 负责召回哪些素材，这一步只做确定性的「片段挂载 + 打分」，不改附表路径。
-    _attach_evidence_segments_to_plan(plan, material_index)
+    _attach_evidence_segments_to_plan(plan, body_material_index)
     # 弱关联召回兜底：对「正文缺口候选为空 → 误判人工补料」和「无子节结构项」的项补候选并修正决策。
-    _attach_topic_recall_to_plan(plan, material_index)
+    _attach_topic_recall_to_plan(plan, body_material_index)
     # 固定素材通道收紧：自动定案只信文件名命中；目录名撞章节名转人工选用拼装。
-    _normalize_literal_matches(plan, material_index)
+    _normalize_literal_matches(plan, body_material_index)
     # 已匹配素材补盖展示分（整章素材不走片段召回，缺分会被前端回落成 confidence 低分）。
     _stamp_missing_match_scores(plan)
     # 正文 AI 填写项候选并入弱召回素材（参考素材盲区）。
-    _augment_fill_candidates(plan, material_index)
+    _augment_fill_candidates(plan, body_material_index)
     # 同名目录项互链：同一张表在目录两处出现时，空的一侧指向有解决路径的一侧。
     _link_duplicate_title_items(plan)
     # 非附表项候选统一 top-4（金标反评 D3；同名目录素材豁免）。

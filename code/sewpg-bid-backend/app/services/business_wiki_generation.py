@@ -650,7 +650,7 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         elif parse_size > MAX_SYNC_DOCX_BYTES:
             size_mb = parse_size / 1024 / 1024
             if deep_parse_status_allows_enqueue(ext_fields):
-                enqueue_deep_parse_job(str(profile["id"]))
+                enqueue_deep_parse_job(str(profile["id"]), {"bidType": BUSINESS_BID_TYPE})
             profile["parseError"] = (
                 f"文件 {size_mb:.1f}MB，超过同步解析上限 30MB；"
                 "已排队后台深度解析，完成后自动补充 Heading 和正文摘录。"

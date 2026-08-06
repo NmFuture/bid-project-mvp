@@ -892,6 +892,7 @@ class TechnicalMaterialStore:
         root_markdown_content: str = "",
         nodes: list[dict[str, Any]],
         mode: str = "create",
+        on_progress: Any = None,
     ) -> dict[str, Any]:
         payload = await material_store.import_generated_wiki_blueprint(
             root_title=root_title,
@@ -899,6 +900,7 @@ class TechnicalMaterialStore:
             nodes=nodes,
             mode=mode,
             bid_type=TECHNICAL_BID_TYPE,
+            on_progress=on_progress,
         )
         selected_id = str((payload.get("selectedNode") or {}).get("id") or "")
         filtered = await self.wiki_list(selected_id)

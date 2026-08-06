@@ -9,6 +9,7 @@ from typing import Any
 from app.core.config import settings
 from app.core.redis import redis_is_available
 from app.services.job_queue import (
+    MATERIAL_QUEUE_KEY,
     QUEUE_KEY,
     claim_s1_workflow_lock,
     clear_job_inflight,
@@ -24,6 +25,8 @@ from app.services.job_queue import (
     requeue_processing_job,
     renew_generation_lock,
 )
+from app.services.job_timing import run_job_timing_writer
+from app.services.job_timing_events import track_job_timing
 from app.services.workspace_project_access import get_any_workspace_project_runtime_state
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,8 @@ def _finish_expired_s1_job(
     return True
 
 
+# 耗时监控：仅对跟踪的任务类型在终态时汇总写 job_timings，中间态（等待/重试）跳过。
+@track_job_timing(tracked_types={"s1_parse", "s1_parse_continue", "directory_generation"})
 def _run_job(job: dict[str, Any]) -> bool:
     job_type = str(job.get("type") or "")
     project_id = str(job.get("projectId") or "")
@@ -126,6 +131,7 @@ def _run_job(job: dict[str, Any]) -> bool:
     lock_job = workflow_parent or job
     deferred = False
     workflow_terminal = False
+    post_release_wiki_bid_type = ""
 
     mark_job_status(job, "running")
     mark_job_inflight(job)
@@ -198,17 +204,38 @@ def _run_job(job: dict[str, Any]) -> bool:
             final_state = project_state.get("fill_state") if isinstance(project_state.get("fill_state"), dict) else {}
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
+            from app.services.material_wiki_auto import on_material_cleaning_job_finished
 
             result = clean_material_file_sync(str(data.get("fileId") or project_id), data)
             final_state = _material_cleaning_final_state(result)
+            try:
+                # 素材流水线自动衔接：本任务是技术标清洗队列最后一个时，触发 Wiki 增量构建。
+                # 商务标清洗任务由钩子内按 bidType 隔离，不进入技术标 Wiki 链路。
+                on_material_cleaning_job_finished(
+                    current_job_id=str(job.get("id") or ""),
+                    bid_type=str(data.get("bidType") or ""),
+                )
+            except Exception as auto_exc:
+                logger.warning("素材流水线自动衔接失败（清洗钩子）：%s", auto_exc)
         elif job_type == "material_deep_parse":
             from app.services.material_deep_parse import deep_parse_material_file_sync
+            from app.services.material_wiki_auto import on_material_deep_parse_job_finished
 
             result = deep_parse_material_file_sync(project_id, data)
             final_state = {
                 "status": "failed" if result.get("deepParseStatus") == "failed" else "success",
                 "summary": result.get("deepParseMessage") or "",
             }
+            try:
+                # 素材流水线自动衔接：解析产物就绪后补跑 Wiki，把兜底卡片升级为正式预览。
+                # 商务标深度解析任务由钩子内按 bidType 隔离，不进入技术标 Wiki 链路。
+                on_material_deep_parse_job_finished(
+                    str(data.get("fileId") or project_id),
+                    current_job_id=str(job.get("id") or ""),
+                    bid_type=str(data.get("bidType") or ""),
+                )
+            except Exception as auto_exc:
+                logger.warning("素材流水线自动衔接失败（深度解析钩子）：%s", auto_exc)
         elif job_type == "material_wiki_generation":
             from app.services.material_wiki_jobs import execute_material_wiki_generation
 
@@ -216,6 +243,15 @@ def _run_job(job: dict[str, Any]) -> bool:
                 data,
                 progress_callback=lambda progress: mark_job_progress(job, progress),
             )
+            post_release_wiki_bid_type = str(data.get("bidType") or "")
+        elif job_type == "fact_curate":
+            from app.services.technical_fact_curate_job import run_fact_curate_job
+
+            final_state = run_fact_curate_job(project_id, data)
+        elif job_type == "technical_body_fill":
+            from app.services.technical_body_fill_job import run_body_fill_job
+
+            final_state = run_body_fill_job(project_id, data)
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
@@ -335,6 +371,14 @@ def _run_job(job: dict[str, Any]) -> bool:
             release_generation_lock(job)
             if job_type == "s1_parse":
                 release_s1_workflow_lock(job)
+    if post_release_wiki_bid_type:
+        try:
+            # 旧任务先完整收口并释放 owner 锁，补跑才能拿到独立的新锁。
+            from app.services.material_wiki_auto import on_material_wiki_job_finished
+
+            on_material_wiki_job_finished(post_release_wiki_bid_type)
+        except Exception as auto_exc:
+            logger.warning("素材流水线自动衔接失败（Wiki 钩子）：%s", auto_exc)
     return True
 
 
@@ -355,35 +399,66 @@ def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> Non
         queue_key,
         settings.redis_worker_poll_timeout_sec,
     )
+    timing_stop: threading.Event | None = None
+    timing_writer: threading.Thread | None = None
+    if queue_key == QUEUE_KEY:
+        timing_stop = threading.Event()
+        timing_writer = threading.Thread(
+            target=run_job_timing_writer,
+            args=(timing_stop,),
+            daemon=True,
+            name="job-timing-redis-writer",
+        )
+        timing_writer.start()
     next_reclaim_at = 0.0
     recovery_done = False
-    while not _stop_requested:
-        if not redis_is_available():
-            time.sleep(2)
-            continue
+    try:
+        while not _stop_requested:
+            if not redis_is_available():
+                time.sleep(2)
+                continue
 
-        if not recovery_done:
-            recover_processing_jobs(queue_key)
-            if queue_key == QUEUE_KEY:
-                # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
-                recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)
-            recovery_done = True
+            if not recovery_done:
+                recover_processing_jobs(queue_key)
+                if queue_key == QUEUE_KEY:
+                    # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
+                    recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)
+                recovery_done = True
 
-        if time.monotonic() >= next_reclaim_at:
-            reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec, queue_key)
-            next_reclaim_at = time.monotonic() + RECLAIM_INTERVAL_SEC
+            if time.monotonic() >= next_reclaim_at:
+                reclaim_stale_inflight_jobs(settings.redis_job_lock_ttl_sec, queue_key)
+                next_reclaim_at = time.monotonic() + RECLAIM_INTERVAL_SEC
 
-        job = dequeue_generation_job(queue_key=queue_key)
-        if not job:
-            continue
+            job = dequeue_generation_job(queue_key=queue_key)
+            if not job:
+                if queue_key == MATERIAL_QUEUE_KEY:
+                    try:
+                        from app.services.material_wiki_auto import retry_pending_technical_wiki_auto_refresh
 
-        try:
-            completed_or_deferred = _run_job(job)
-            if not completed_or_deferred:
-                time.sleep(1)
-        except Exception:
-            recovery_done = False
-            continue
+                        retry_pending_technical_wiki_auto_refresh(claim_retry=True)
+                    except Exception as auto_exc:
+                        logger.warning("素材流水线自动衔接失败（Wiki 补跑恢复）：%s", auto_exc)
+                continue
+
+            try:
+                completed_or_deferred = _run_job(job)
+                if not completed_or_deferred:
+                    time.sleep(1)
+            except Exception:
+                recovery_done = False
+                continue
+    finally:
+        if timing_stop is not None and timing_writer is not None:
+            timing_stop.set()
+            timing_writer.join(
+                timeout=max(
+                    2,
+                    settings.job_timing_db_connect_timeout_sec
+                    + settings.job_timing_db_statement_timeout_ms / 1000
+                    + settings.job_timing_db_lock_timeout_ms / 1000
+                    + 1,
+                )
+            )
 
     logger.info("%s worker stopped.", worker_name)
 

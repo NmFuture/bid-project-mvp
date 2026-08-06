@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from docx import Document
 
 
@@ -112,6 +113,7 @@ def test_enqueue_cleaning_job_binds_source_version_and_uses_versioned_lock() -> 
     ) as enqueue_mock:
         result = enqueue_cleaning_job(
             7,
+            bid_type="技术标",
             source_version=3,
             source_bucket="materials",
             source_key="raw-versions/RAW-0007/v3/授权书.doc",
@@ -123,11 +125,66 @@ def test_enqueue_cleaning_job_binds_source_version_and_uses_versioned_lock() -> 
         "RAW-0007:v3",
         {
             "fileId": "RAW-0007",
+            "bidType": "技术标",
             "sourceVersion": 3,
             "sourceBucket": "materials",
             "sourceKey": "raw-versions/RAW-0007/v3/授权书.doc",
         },
     )
+
+
+def test_enqueue_cleaning_job_requires_bid_type() -> None:
+    from app.services.material_raw_object_operations import enqueue_cleaning_job
+
+    # 清洗任务必须携带并校验 bidType（R10-B04-01），缺失或非法直接拒绝入队。
+    with pytest.raises(ValueError):
+        enqueue_cleaning_job(7, bid_type="")
+    with pytest.raises(ValueError):
+        enqueue_cleaning_job(7, bid_type="标书")
+
+
+def test_requeue_latest_cleaning_defaults_only_missing_bid_type_to_technical() -> None:
+    from app.services import material_cleaning
+
+    item = SimpleNamespace(
+        id=7,
+        version=3,
+        minio_bucket="materials",
+        minio_key="raw-versions/RAW-0007/v3/授权书.doc",
+        ext_fields={"cleanStatus": "pending"},
+        folder=None,
+    )
+    with (
+        patch.object(material_cleaning, "async_session", return_value=_RawFileSession(item)),
+        patch.object(material_cleaning, "enqueue_cleaning_job", return_value={"queued": True}) as enqueue,
+    ):
+        result = asyncio.run(material_cleaning._requeue_latest_cleaning("RAW-0007", stale_version=2))
+
+    assert result == {"queued": True}
+    assert enqueue.call_args.kwargs["bid_type"] == "技术标"
+
+
+def test_requeue_latest_cleaning_rejects_explicit_invalid_bid_type() -> None:
+    from app.services import material_cleaning
+
+    item = SimpleNamespace(
+        id=7,
+        version=3,
+        minio_bucket="materials",
+        minio_key="raw-versions/RAW-0007/v3/授权书.doc",
+        ext_fields={"cleanStatus": "pending", "bidType": "其他标"},
+        folder=None,
+    )
+    with (
+        patch.object(material_cleaning, "async_session", return_value=_RawFileSession(item)),
+        patch.object(material_cleaning, "enqueue_cleaning_job") as enqueue,
+        patch.object(material_cleaning.logger, "warning") as warning,
+    ):
+        result = asyncio.run(material_cleaning._requeue_latest_cleaning("RAW-0007", stale_version=2))
+
+    assert result == {"queued": False, "reason": "invalid_bid_type"}
+    enqueue.assert_not_called()
+    warning.assert_called_once()
 
 
 def test_overwrite_ext_fields_discards_previous_cleaned_artifact() -> None:
@@ -481,6 +538,7 @@ def test_overwrite_upload_uses_versioned_source_and_enqueues_that_version() -> N
     put_mock.assert_called_once_with("bid-materials", expected_key, b"version-b", content_type="application/msword")
     enqueue_job.assert_called_once_with(
         file_id=7,
+        bid_type="技术标",
         source_version=3,
         source_bucket="bid-materials",
         source_key=expected_key,
@@ -499,3 +557,155 @@ def test_stale_cleaning_job_is_reported_as_cancelled_instead_of_success() -> Non
         "status": "cancelled",
         "summary": "清洗任务对应的素材版本已过期。",
     }
+
+
+def test_overwrite_upload_cleans_fulltext_only_after_final_commit() -> None:
+    from app.services import material_upload_operations
+    from app.services.material_raw_object_operations import raw_version_object_key
+
+    folder = SimpleNamespace(
+        id=11,
+        path="技术标/项目定制/PRJ-1/授权文件",
+        tier="project",
+        bid_type="技术标",
+        project_id="PRJ-1",
+        sort_order=0,
+        customer_name="",
+    )
+    existing = _UploadItem(
+        id=7,
+        name="授权书.pdf",
+        size_bytes=10,
+        minio_bucket="bid-materials",
+        minio_key="raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf",
+        mime_type="application/pdf",
+        version=2,
+        ext_fields={
+            "deepParseProfile": {
+                "profile": {
+                    "fulltextBucket": "other-bucket",
+                    "fulltextKey": "parsed/RAW-9999/v9/fulltext.md",
+                }
+            },
+        },
+        folder=folder,
+    )
+    session = _UploadSession(folder, existing)
+    events: list[str] = []
+
+    async def commit() -> None:
+        events.append("db-commit")
+
+    def purge_fulltext(
+        raw_file_id: int,
+        source_version: int,
+        *,
+        max_source_version: int | None = None,
+    ) -> None:
+        assert (raw_file_id, source_version, max_source_version) == (7, 2, 2)
+        events.append("fulltext-purge")
+
+    session.commit.side_effect = commit
+    with (
+        patch.object(material_upload_operations, "async_session", return_value=session),
+        patch.object(material_upload_operations.minio_client, "put_object", return_value="etag"),
+        patch.object(material_upload_operations.minio_client, "remove_object"),
+        patch.object(
+            material_upload_operations,
+            "purge_material_fulltext_objects",
+            side_effect=purge_fulltext,
+        ),
+    ):
+        asyncio.run(
+            material_upload_operations.upload_raw_files(
+                target_path=folder.path,
+                bid_type="技术标",
+                on_conflict="overwrite",
+                files=[
+                    {
+                        "name": "授权书.pdf",
+                        "mimeType": "application/pdf",
+                        "data": b"version-b",
+                    }
+                ],
+                ensure_runtime_tables=AsyncMock(),
+                ensure_folder_path=AsyncMock(),
+                clear_default_folder_deletion=AsyncMock(),
+                ensure_nested_folder=AsyncMock(),
+                archive_raw_file_version=AsyncMock(),
+                remove_cleaned_object_from_ext=lambda _ext: None,
+                raw_object_key=lambda path, name: f"raw/{path}/{name}",
+                raw_version_object_key=raw_version_object_key,
+                infer_material_tier_from_folder=lambda _folder: "project",
+                enqueue_cleaning_job=MagicMock(return_value={"queued": True, "jobId": "job-v3"}),
+            )
+        )
+
+    assert events == ["db-commit", "db-commit", "fulltext-purge"]
+
+
+def test_overwrite_commit_failure_preserves_old_fulltext() -> None:
+    from app.services import material_upload_operations
+    from app.services.material_raw_object_operations import raw_version_object_key
+
+    folder = SimpleNamespace(
+        id=11,
+        path="技术标/项目定制/PRJ-1/授权文件",
+        tier="project",
+        bid_type="技术标",
+        project_id="PRJ-1",
+        sort_order=0,
+        customer_name="",
+    )
+    existing = _UploadItem(
+        id=7,
+        name="授权书.pdf",
+        size_bytes=10,
+        minio_bucket="bid-materials",
+        minio_key="raw/技术标/项目定制/PRJ-1/授权文件/授权书.pdf",
+        mime_type="application/pdf",
+        version=2,
+        ext_fields={},
+        folder=folder,
+    )
+    session = _UploadSession(folder, existing)
+    session.commit.side_effect = [None, RuntimeError("commit failed")]
+
+    with (
+        patch.object(material_upload_operations, "async_session", return_value=session),
+        patch.object(material_upload_operations.minio_client, "put_object", return_value="etag"),
+        patch.object(material_upload_operations.minio_client, "remove_object"),
+        patch.object(material_upload_operations, "purge_material_fulltext_objects") as purge_fulltext,
+    ):
+        try:
+            asyncio.run(
+                material_upload_operations.upload_raw_files(
+                    target_path=folder.path,
+                    bid_type="技术标",
+                    on_conflict="overwrite",
+                    files=[
+                        {
+                            "name": "授权书.pdf",
+                            "mimeType": "application/pdf",
+                            "data": b"version-b",
+                        }
+                    ],
+                    ensure_runtime_tables=AsyncMock(),
+                    ensure_folder_path=AsyncMock(),
+                    clear_default_folder_deletion=AsyncMock(),
+                    ensure_nested_folder=AsyncMock(),
+                    archive_raw_file_version=AsyncMock(),
+                    remove_cleaned_object_from_ext=lambda _ext: None,
+                    raw_object_key=lambda path, name: f"raw/{path}/{name}",
+                    raw_version_object_key=raw_version_object_key,
+                    infer_material_tier_from_folder=lambda _folder: "project",
+                    enqueue_cleaning_job=MagicMock(return_value={"queued": True, "jobId": "job-v3"}),
+                )
+            )
+        except RuntimeError as exc:
+            assert str(exc) == "commit failed"
+        else:  # pragma: no cover - regression guard
+            raise AssertionError("upload should expose the commit failure")
+
+    session.rollback.assert_awaited_once()
+    purge_fulltext.assert_not_called()

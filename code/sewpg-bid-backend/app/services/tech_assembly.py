@@ -24,6 +24,7 @@ from app.services.onlyoffice_documents import document_path
 from app.services.bid_runtime_state import now_iso
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
 from app.services.technical_gap_domain import (
+    FILL_QUALITY_ACCEPTED_STATUSES,
     technical_gap_artifact_is_s7_ready,
     technical_outline_number_and_title,
 )
@@ -379,7 +380,7 @@ def _with_recovered_ai_fill_artifacts(project_id: str, plan: dict[str, Any]) -> 
             report = _load_ai_fill_report(output_file)
             title = str(report.get("title") or item.get("title") or output_file.stem)
             quality_report = report.get("qualityReport") if isinstance(report.get("qualityReport"), dict) else {}
-            s7_ready = bool(report.get("s7Ready")) or quality_report.get("status") == "passed"
+            s7_ready = bool(report.get("s7Ready")) or quality_report.get("status") in FILL_QUALITY_ACCEPTED_STATUSES
             artifacts.append(
                 {
                     "id": f"RECOVERED-{gap_dir.name}-{index:03d}",
@@ -944,12 +945,24 @@ def _stage_selected_gap_plan_materials(
 
     plan = json.loads(gap_plan_path.read_text(encoding="utf-8"))
     items = plan.get("items") if isinstance(plan, dict) else []
+    title_only_parent_ids = {
+        str(item.get("id") or "").strip()
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict)
+        if item.get("titleOnly") is True and str(item.get("id") or "").strip()
+    }
     staged_materials: list[dict[str, Any]] = []
     try:
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("coverageRole") or item.get("coverage_role") or "").strip() == "covered_by_parent":
+            if item.get("titleOnly") is True:
+                continue
+            coverage_role = str(item.get("coverageRole") or item.get("coverage_role") or "").strip()
+            covered_by_parent = str(
+                item.get("coveredByParent") or item.get("covered_by_parent") or ""
+            ).strip()
+            if coverage_role == "covered_by_parent" and covered_by_parent not in title_only_parent_ids:
                 continue
 
             resolved_artifacts = item.get("resolvedArtifacts") or []

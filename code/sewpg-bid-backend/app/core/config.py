@@ -138,10 +138,13 @@ class Settings:
     opencode_timeout_sec: float
     opencode_max_concurrency: int
     s1_parse_opencode_enabled: bool
+    s1_parse_technical_shard_enabled: bool
+    s1_parse_shard_concurrency: int
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
     business_pdf_ocr_fallback_enabled: bool
+    material_wiki_auto_refresh: bool
     docling_artifacts_path: Path
     docling_device: str
     bid_internal_api_base_url: str
@@ -156,11 +159,15 @@ class Settings:
     onlyoffice_download_max_bytes: int
     s2_toc_output_file_name: str
     s2_toc_evidence_file_name: str
+    tech_outline_llm_finalize: bool
     fact_specs_override_path: Path
     fact_specs_versions_dir: Path
 
     # PostgreSQL
     database_url: str
+    job_timing_db_connect_timeout_sec: int
+    job_timing_db_statement_timeout_ms: int
+    job_timing_db_lock_timeout_ms: int
 
     # MinIO
     minio_endpoint: str
@@ -227,10 +234,14 @@ settings = Settings(
         "S1_PARSE_OPENCODE_ENABLED",
         os.getenv("APP_ENV", "development") == "production",
     ),
+    s1_parse_technical_shard_enabled=_bool_env("S1_PARSE_TECHNICAL_SHARD_ENABLED", True),
+    # projectBasics 与 6 个清单分片共 7 个独立会话，默认全部并发执行。
+    s1_parse_shard_concurrency=_int_env("S1_PARSE_SHARD_CONCURRENCY", 7),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",
     business_pdf_ocr_fallback_enabled=_bool_env("BUSINESS_PDF_OCR_FALLBACK_ENABLED", True),
+    material_wiki_auto_refresh=_bool_env("MATERIAL_WIKI_AUTO_REFRESH", True),
     docling_artifacts_path=Path(
         _first_env("BID_DOCLING_ARTIFACTS_PATH", "DOCLING_ARTIFACTS_PATH", default="/opt/docling-models")
     ),
@@ -262,6 +273,9 @@ settings = Settings(
     s2_toc_output_file_name=os.getenv("S2_TOC_OUTPUT_FILE_NAME", "toc.json").strip() or "toc.json",
     s2_toc_evidence_file_name=os.getenv("S2_TOC_EVIDENCE_FILE_NAME", "toc_evidence.json").strip()
     or "toc_evidence.json",
+    # 置 1 恢复旧串行 LLM 收口会话（附表判断 + LLM 全局复核 + compose/finalize 由 LLM 驱动）。
+    # 默认关闭：5 次实测复核仅产出 1 次改判且为重复章节，质量兜底交给下游人工审核。
+    tech_outline_llm_finalize=_bool_env("TECH_OUTLINE_LLM_FINALIZE", False),
     fact_specs_override_path=Path(
         os.getenv(
             "FACT_SPECS_OVERRIDE_PATH",
@@ -278,6 +292,9 @@ settings = Settings(
         "DATABASE_URL",
         "postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform",
     ),
+    job_timing_db_connect_timeout_sec=_int_env("JOB_TIMING_DB_CONNECT_TIMEOUT_SEC", 2),
+    job_timing_db_statement_timeout_ms=_int_env("JOB_TIMING_DB_STATEMENT_TIMEOUT_MS", 5000),
+    job_timing_db_lock_timeout_ms=_int_env("JOB_TIMING_DB_LOCK_TIMEOUT_MS", 2000),
     minio_endpoint=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
     minio_access_key=os.getenv("MINIO_ROOT_USER", "minioadmin"),
     minio_secret_key=os.getenv("MINIO_ROOT_PASSWORD", "minioadmin"),

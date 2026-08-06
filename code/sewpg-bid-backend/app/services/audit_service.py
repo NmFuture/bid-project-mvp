@@ -6,11 +6,17 @@ from sqlalchemy import desc, select
 
 from app.models import async_session
 from app.models.materials import AuditLog
+from app.services.column_text import fit_text, varchar_limits
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.peripheral import PeripheralError, now_day
 
 
 SYSTEM_USER = {"id": "system", "name": "系统"}
+COLUMN_LIMITS = varchar_limits(AuditLog.__table__)
+
+
+def _fit(value: Any, column: str) -> str:
+    return fit_text(value, COLUMN_LIMITS.get(column))
 
 
 def user_id_of(user: dict[str, Any] | None) -> str:
@@ -44,17 +50,17 @@ class AuditService:
     ) -> dict[str, Any]:
         await self._ensure_tables()
         item = AuditLog(
-            user_id=user_id_of(user),
-            user_name=user_name_of(user),
-            action=action,
-            action_type=action_type,
-            module_id=module_id,
-            module_label=module_label,
-            target=target,
-            status=status,
+            user_id=_fit(user_id_of(user), "user_id"),
+            user_name=_fit(user_name_of(user), "user_name"),
+            action=_fit(action, "action"),
+            action_type=_fit(action_type, "action_type"),
+            module_id=_fit(module_id, "module_id"),
+            module_label=_fit(module_label, "module_label"),
+            target=_fit(target, "target"),
+            status=_fit(status, "status"),
             diff=diff or {"before": {}, "after": {}},
             meta=metadata or {},
-            ip_address=ip_address,
+            ip_address=_fit(ip_address, "ip_address"),
             user_agent=user_agent,
         )
         async with async_session() as session:

@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from fastapi import HTTPException, Request
@@ -16,14 +17,14 @@ from app.services.bid_outline_state import (
     confirm_outline_state,
     directory_state_with_rule_evidence,
     fail_directory_generation_state,
-    regenerate_outline_state,
     save_outline_state,
     start_directory_generation_state,
     update_directory_generation_state,
 )
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService
-from app.services.job_queue import enqueue_generation_job, is_generation_locked
+from app.services.job_queue import EnqueueResult, enqueue_generation_job, is_generation_locked
+from app.services.job_timing import current_locked_job_id, record_phase
 from app.services.local_job_executor import submit_local_job
 from app.services.onlyoffice_documents import build_editor_session_key
 from app.services.outline_generation import generate_outline_for_project_with_progress
@@ -37,6 +38,53 @@ from app.services.workspace_project_access import (
 
 
 _OUTLINE_PREVIEW_EXTENSIONS = {".doc", ".docx", ".pdf"}
+
+# 目录生成阶段 → 中文标签（耗时监控 phases 展示用）。
+_DIRECTORY_STAGE_LABELS = {
+    "inputs_ready": "准备目录输入",
+    "outline_session_ready": "建立生成会话",
+    "outline_delta": "LLM 生成目录",
+    "finalizing_result": "合并校验目录结果",
+    "normalizing_result": "整理保存结果",
+    "outline_failed": "生成失败",
+    "outline_fallback": "回退本地生成",
+}
+
+# 进度锚点按真实耗时占比分配：准备 0-5，判定 5-88（章节 5-78、附表 78-88），保存 88-100。
+_DECISION_PHASE_PERCENT_RANGES = {
+    "chapters": (5, 78),
+    "serial": (5, 78),
+    "appendix": (78, 88),
+}
+
+
+def _decision_progress_percentage(
+    phase: str,
+    decided: int,
+    total: int,
+    *,
+    chapter_decided: int = 0,
+    chapter_total: int = 0,
+    appendix_decided: int = 0,
+    appendix_total: int = 0,
+) -> int | None:
+    if phase == "parallel":
+        chapter_ratio = (
+            max(0.0, min(1.0, chapter_decided / chapter_total))
+            if chapter_total > 0
+            else 0.0
+        )
+        appendix_ratio = (
+            max(0.0, min(1.0, appendix_decided / appendix_total))
+            if appendix_total > 0
+            else 0.0
+        )
+        return int(round(5 + 73 * chapter_ratio + 10 * appendix_ratio))
+    if total <= 0:
+        return None
+    low, high = _DECISION_PHASE_PERCENT_RANGES.get(phase, (5, 78))
+    ratio = max(0.0, min(1.0, decided / total))
+    return int(round(low + (high - low) * ratio))
 
 
 def _directory_tasks(step1: str, step2: str, step3: str) -> list[dict[str, Any]]:
@@ -69,28 +117,141 @@ def _directory_state(project_id: str) -> dict[str, Any]:
     return directory_state_with_rule_evidence(_any_project(project_id))
 
 
+def _directory_state_with_active_lock(
+    project_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    if state.get("status") == "running" or not is_generation_locked(
+        "directory_generation",
+        project_id,
+    ):
+        return state
+    payload = copy.deepcopy(state)
+    payload.update(
+        {
+            "status": "running",
+            "percentage": 2,
+            "summary": "目录生成任务正在启动，请稍候。",
+            "startedAt": "",
+            "generatedAt": "",
+            "output": None,
+            "opencodeOutput": {
+                "status": "idle",
+                "sessionId": "",
+                "providerId": "",
+                "modelId": "",
+                "receivedAt": "",
+                "parts": [],
+            },
+            "decisionProgress": {},
+            "ruleEvidence": {},
+            "events": [],
+            "tasks": _directory_tasks("running", "pending", "pending"),
+        }
+    )
+    return payload
+
+
+# 目录 state 的写入是「加载 → 改 → 回写」，接 postgres 时加载还会走一次库往返。
+# 并行章节会话与计数聚合同时上报时，后写会整份覆盖先写（实测丢过 5 条会话事件），
+# 因此所有写路径必须串行。生成任务已按项目上锁，只会落在单个 worker 进程内，
+# 进程内锁足够；换成多进程并发写同一项目时需要改为分布式锁。
+_directory_state_write_lock = threading.RLock()
+
+
 def _update_directory_state(project_id: str, **kwargs: Any) -> dict[str, Any]:
-    project = _any_project_for_update(project_id)
-    state = update_directory_generation_state(project, **kwargs)
-    persist_workspace_project_state(project)
-    return state
+    with _directory_state_write_lock:
+        project = _any_project_for_update(project_id)
+        state = update_directory_generation_state(project, **kwargs)
+        persist_workspace_project_state(project)
+        return state
 
 
 def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    project = _any_project_for_update(project_id)
-    state = fail_directory_generation_state(project, message=message, tasks=tasks)
-    persist_workspace_project_state(project)
-    return state
+    with _directory_state_write_lock:
+        project = _any_project_for_update(project_id)
+        state = fail_directory_generation_state(project, message=message, tasks=tasks)
+        persist_workspace_project_state(project)
+        return state
 
 
 def _handle_directory_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
     meta = details or {}
+    if stage == "decision_progress":
+        # 高频计数上报：不写事件、不进耗时埋点，只更新计数与百分比
+        phase = str(meta.get("phase") or "chapters")
+        decided = max(0, int(meta.get("decided") or 0))
+        total = max(0, int(meta.get("total") or 0))
+        decision_progress: dict[str, Any] = {"phase": phase, "decided": decided, "total": total}
+        chapter_decided = max(0, int(meta.get("chapterDecided") or 0))
+        chapter_total = max(0, int(meta.get("chapterTotal") or 0))
+        appendix_decided = max(0, int(meta.get("appendixDecided") or 0))
+        appendix_total = max(0, int(meta.get("appendixTotal") or 0))
+        if phase == "parallel":
+            decision_progress.update(
+                {
+                    "chapterDecided": chapter_decided,
+                    "chapterTotal": chapter_total,
+                    "appendixDecided": appendix_decided,
+                    "appendixTotal": appendix_total,
+                }
+            )
+        if meta.get("chaptersTotal") is not None:
+            decision_progress["chaptersDone"] = max(0, int(meta.get("chaptersDone") or 0))
+            decision_progress["chaptersTotal"] = max(0, int(meta.get("chaptersTotal") or 0))
+        if phase == "parallel":
+            summary = (
+                f"正在并行判定目录条款与技术附表：目录条款 {chapter_decided}/{chapter_total}，"
+                f"技术附表 {appendix_decided}/{appendix_total}。"
+            )
+        else:
+            label = "技术附表" if phase == "appendix" else "目录条款"
+            summary = (
+                f"正在逐项判定{label}，已完成 {decided}/{total} 项。"
+                if total > 0
+                else f"正在逐项判定{label}。"
+            )
+        _update_directory_state(
+            project_id,
+            percentage=_decision_progress_percentage(
+                phase,
+                decided,
+                total,
+                chapter_decided=chapter_decided,
+                chapter_total=chapter_total,
+                appendix_decided=appendix_decided,
+                appendix_total=appendix_total,
+            ),
+            summary=summary,
+            tasks=_directory_tasks("done", "running", "pending"),
+            decision_progress=decision_progress,
+        )
+        return
+
+    # 耗时埋点：目录 state 无 runId，用项目级任务锁反查当前 directory_generation job_id。
+    record_phase(
+        current_locked_job_id("directory_generation", project_id),
+        stage,
+        _DIRECTORY_STAGE_LABELS.get(stage, stage),
+    )
+    if stage == "finalizing_result":
+        _update_directory_state(
+            project_id,
+            percentage=90,
+            summary="目录条款与技术附表判定已完成，正在合并校验并保存结果。",
+            tasks=_directory_tasks("done", "done", "running"),
+            decision_progress={},
+            event_message="目录判定已完成，正在合并校验并保存结果。",
+            event_step="finalizing",
+        )
+        return
+
     if stage == "inputs_ready":
         tender_file_count = int(meta.get("tenderFileCount") or 0)
         template_file_count = int(meta.get("templateFileCount") or 0)
         _update_directory_state(
             project_id,
-            percentage=30,
+            percentage=5,
             summary=f"已准备目录生成输入（招标文件 {tender_file_count} 个，投标模板 {template_file_count} 个），准备调用 futurecode。",
             tasks=_directory_tasks("done", "running", "pending"),
             event_message=f"已完成目录输入准备：招标文件 {tender_file_count} 个，投标模板 {template_file_count} 个。",
@@ -99,12 +260,13 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         return
 
     if stage == "outline_session_ready":
+        suppress_stage = bool(meta.get("suppressStage"))
         _update_directory_state(
             project_id,
-            percentage=45,
-            summary="futurecode session 已建立，正在运行 S2 目录生成 Skill。",
-            tasks=_directory_tasks("done", "running", "pending"),
-            event_message="futurecode session 已建立，正在等待目录语义审核结果。",
+            percentage=None if suppress_stage else 8,
+            summary=None if suppress_stage else "futurecode session 已建立，正在运行 S2 目录生成 Skill。",
+            tasks=None if suppress_stage else _directory_tasks("done", "running", "pending"),
+            event_message=None if suppress_stage else "futurecode session 已建立，正在等待目录语义审核结果。",
             event_step="futurecode_session",
             opencode_output={
                 "status": "waiting",
@@ -116,18 +278,35 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         return
 
     if stage == "outline_delta":
-        previous_parts = list((_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
-        parts = list(meta.get("parts") or [])
-        first_delta = bool(parts) and not previous_parts
-        _update_directory_state(
-            project_id,
-            percentage=65 if first_delta else 70,
-            summary="futurecode 正在执行目录生成和语义审核，请稍候。",
-            tasks=_directory_tasks("done", "running", "pending"),
-            event_message="futurecode 已返回 S2 流式片段。" if first_delta else None,
-            event_step="futurecode_delta",
-            opencode_output=meta,
-        )
+        # first_delta 由「读上一份 parts → 写新 parts」推导，读写必须在同一把锁内，
+        # 否则并行章节会各自读到空 parts，重复写入首片段事件。
+        with _directory_state_write_lock:
+            previous_parts = list((_directory_state(project_id).get("opencodeOutput") or {}).get("parts") or [])
+            suppress_stage = bool(meta.get("suppressStage"))
+            meta = {
+                key: value
+                for key, value in meta.items()
+                if key not in {"suppressPercentage", "suppressStage"}
+            }
+            parts = list(meta.get("parts") or [])
+            first_delta = bool(parts) and not previous_parts
+            # 技术标并行章节路径由 decision_progress 驱动百分比；未标记的路径（商务标/串行）沿用流式锚点
+            suppress_percentage = suppress_stage or bool(
+                (details or {}).get("suppressPercentage")
+            )
+            _update_directory_state(
+                project_id,
+                percentage=None if suppress_percentage else (65 if first_delta else 70),
+                summary=None if suppress_percentage else "futurecode 正在执行目录生成和语义审核，请稍候。",
+                tasks=None if suppress_stage else _directory_tasks("done", "running", "pending"),
+                event_message=(
+                    "futurecode 已返回 S2 流式片段。"
+                    if first_delta and not suppress_stage
+                    else None
+                ),
+                event_step="futurecode_delta",
+                opencode_output=meta,
+            )
         return
 
     if stage == "outline_fallback":
@@ -158,7 +337,7 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
         chapter_count = int(meta.get("chapterCount") or 0)
         _update_directory_state(
             project_id,
-            percentage=85,
+            percentage=90,
             summary=f"futurecode 已生成目录结果，正在整理 {chapter_count} 个一级章节。",
             tasks=_directory_tasks("done", "done", "running"),
             event_message=f"futurecode 已返回目录结果，正在整理 {chapter_count} 个一级章节。",
@@ -193,12 +372,24 @@ def _run_directory_generation_job(project_id: str, data: dict[str, Any]) -> None
         )
 
 
-def _schedule_directory_generation_job(project_id: str, data: dict[str, Any]) -> None:
-    queue_result = enqueue_generation_job("directory_generation", project_id, data)
+def _schedule_directory_generation_job(
+    project_id: str,
+    data: dict[str, Any],
+    *,
+    on_lock_acquired: Callable[[], None],
+) -> EnqueueResult:
+    queue_result = enqueue_generation_job(
+        "directory_generation",
+        project_id,
+        data,
+        on_lock_acquired=on_lock_acquired,
+    )
     if queue_result.queued or queue_result.locked:
-        return
+        return queue_result
 
+    on_lock_acquired()
     submit_local_job(_run_directory_generation_job, project_id, data)
+    return queue_result
 
 
 def _add_callback_token(url: str) -> str:
@@ -376,8 +567,19 @@ class BidDirectoryService:
         persist_workspace_project_state(project)
         return payload
 
+    def ensure_outline_editable(self, project_id: str) -> None:
+        current = self.directory_state(project_id)
+        if str(current.get("status") or "").strip().lower() in {"running", "processing", "queued"} or is_generation_locked(
+            "directory_generation",
+            project_id,
+        ):
+            raise HTTPException(status_code=409, detail="目录生成任务正在执行，请等待完成后再修改或确认目录。")
+
     async def generation_status(self, project_id: str) -> dict[str, Any]:
-        return self.directory_state(project_id)
+        return _directory_state_with_active_lock(
+            project_id,
+            self.directory_state(project_id),
+        )
 
     async def generation_stream(self, project_id: str, request: Request) -> StreamingResponse:
         self.directory_state(project_id)
@@ -390,7 +592,10 @@ class BidDirectoryService:
                 if await request.is_disconnected():
                     break
 
-                payload = self.directory_state(project_id)
+                payload = _directory_state_with_active_lock(
+                    project_id,
+                    self.directory_state(project_id),
+                )
                 serialized = json.dumps(payload, ensure_ascii=False)
                 if serialized != last_payload:
                     yield f"data: {serialized}\n\n"
@@ -415,24 +620,51 @@ class BidDirectoryService:
         )
 
     async def run_generation(self, project_id: str, data: dict[str, Any] | None = None) -> JSONResponse:
-        current = self.directory_state(project_id)
-        if current.get("status") == "running" or is_generation_locked("directory_generation", project_id):
+        generation_data = data or {}
+        current = _directory_state_with_active_lock(
+            project_id,
+            self.directory_state(project_id),
+        )
+        if current.get("status") == "running":
             return JSONResponse(
                 status_code=202,
                 content={**current, "message": "目录生成任务正在执行中，请稍候。"},
             )
 
+        payload: dict[str, Any] | None = None
+
+        def initialize_state() -> None:
+            nonlocal payload
+            if payload is None:
+                payload = self.start_directory_generation(project_id)
+
         try:
-            payload = self.start_directory_generation(project_id)
+            queue_result = _schedule_directory_generation_job(
+                project_id,
+                generation_data,
+                on_lock_acquired=initialize_state,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        _schedule_directory_generation_job(project_id, data or {})
+        if queue_result.locked:
+            current = _directory_state_with_active_lock(
+                project_id,
+                self.directory_state(project_id),
+            )
+            return JSONResponse(
+                status_code=202,
+                content={**current, "message": "目录生成任务正在执行中，请稍候。"},
+            )
+
+        if payload is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=502, detail="目录生成任务初始化失败。")
+        message = "已开始重新生成目录，请稍候。" if generation_data.get("regenerateOutline") else "已开始生成目录，请稍候。"
         return JSONResponse(
             status_code=202,
-            content={**payload, "message": "已开始生成目录，请稍候。"},
+            content={**payload, "message": message},
         )
 
     async def outline(self, project_id: str, request: Request, *, file_id: str = "") -> dict[str, Any]:
@@ -448,18 +680,17 @@ class BidDirectoryService:
         return payload
 
     async def save_outline(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.ensure_outline_editable(project_id)
         project = self.require_project_for_update(project_id)
         payload = save_outline_state(project, (data or {}).get("nodes") or [])
         persist_workspace_project_state(project)
         return {**payload, "message": "目录已保存"}
 
-    async def regenerate_outline(self, project_id: str) -> dict[str, Any]:
-        project = self.require_project_for_update(project_id)
-        payload = regenerate_outline_state(project)
-        persist_workspace_project_state(project)
-        return {**payload, "message": "已重生成目录审核稿"}
+    async def regenerate_outline(self, project_id: str) -> JSONResponse:
+        return await self.run_generation(project_id, {"regenerateOutline": True})
 
     async def confirm_outline(self, project_id: str) -> dict[str, Any]:
+        self.ensure_outline_editable(project_id)
         project = self.require_project_for_update(project_id)
         payload = confirm_outline_state(project)
         persist_workspace_project_state(project)

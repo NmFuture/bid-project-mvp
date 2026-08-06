@@ -21,7 +21,17 @@ const clampPercentage = (value) => Math.max(0, Math.min(100, Number(value || 0))
 const runningStatuses = new Set(['running', 'processing', 'queued'])
 const internalAiParseTextPattern = /opencode|S1|Skill|manifest|输出片段|AI/i
 
-const formatElapsedDuration = (value) => {
+const finiteNumber = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+const parseTime = (value) => {
+  const parsed = Date.parse(String(value || ''))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export const formatParseDuration = (value) => {
   const seconds = Math.max(0, Math.floor(Number(value || 0)))
   if (seconds <= 0) return ''
   const minutes = Math.floor(seconds / 60)
@@ -30,13 +40,32 @@ const formatElapsedDuration = (value) => {
   return `${seconds} 秒`
 }
 
-const getAiParseElapsedSeconds = (progress = {}) => {
-  const output = progress?.opencodeOutput || {}
-  return Math.max(
-    0,
-    Number(output?.elapsedSeconds || 0),
-    Number(output?.idleSeconds || 0),
-  )
+const parseStartMs = (progress = {}) => {
+  const startedAt = parseTime(progress?.startedAt)
+  if (startedAt !== null) return startedAt
+  const eventTimes = (Array.isArray(progress?.events) ? progress.events : [])
+    .map((event) => parseTime(event?.at))
+    .filter((value) => value !== null)
+  return eventTimes.length ? Math.min(...eventTimes) : null
+}
+
+const parseTerminalMs = (progress = {}) => {
+  const completedAt = parseTime(progress?.completedAt || progress?.cancelledAt)
+  if (completedAt !== null) return completedAt
+  const eventTimes = (Array.isArray(progress?.events) ? progress.events : [])
+    .map((event) => parseTime(event?.at))
+    .filter((value) => value !== null)
+  return eventTimes.length ? Math.max(...eventTimes) : null
+}
+
+export const parseElapsedSeconds = (progress = {}, nowMs = Date.now()) => {
+  const startMs = parseStartMs(progress)
+  if (startMs === null) return 0
+  const status = normalizeStatus(progress)
+  const endMs = status === 'completed' || failedStatuses.has(status)
+    ? (parseTerminalMs(progress) ?? finiteNumber(nowMs))
+    : finiteNumber(nowMs)
+  return Math.max(0, (endMs - startMs) / 1000)
 }
 
 const isAiParsePhase = (progress = {}) => {
@@ -45,13 +74,28 @@ const isAiParsePhase = (progress = {}) => {
   return phaseKey === 'opencode' || internalAiParseTextPattern.test(phaseLabel)
 }
 
+// 已解析条款数由后端按提交文件真实统计（清单行 + 项目基础信息字段），
+// 没拿到计数时宁可回退成非量化文案，也不用会话数或百分比反推。
 const buildAiParseSummary = (progress = {}, summary = '') => {
-  const elapsedText = formatElapsedDuration(getAiParseElapsedSeconds(progress))
-  if (elapsedText) {
-    return `正在识别招标文件中的技术要求和原文依据，已执行 ${elapsedText}。`
+  const output = progress?.opencodeOutput || {}
+  const total = Math.max(0, Math.floor(finiteNumber(output?.totalItems)))
+  if (total > 0) {
+    const completed = Math.max(0, Math.min(total, Math.floor(finiteNumber(output?.completedItems))))
+    return `已解析条款 ${completed}/${total} 项`
   }
   if (summary && !internalAiParseTextPattern.test(summary)) return summary
   return '正在识别招标文件中的技术要求和原文依据，请稍候。'
+}
+
+const isAppendixPhase = (progress = {}) => String(progress?.phaseKey || '').toLowerCase() === 'appendix'
+
+const buildAppendixSummary = (progress = {}, summary = '') => {
+  const total = Math.max(0, Math.floor(finiteNumber(progress?.total)))
+  if (total > 0) {
+    const current = Math.max(0, Math.min(total, Math.floor(finiteNumber(progress?.current))))
+    return `已提取附表 ${current}/${total} 项`
+  }
+  return summary
 }
 
 export const mergeMonotonicParseProgress = (previous = null, incoming = null) => {
@@ -79,6 +123,33 @@ export const mergeMonotonicParseProgress = (previous = null, incoming = null) =>
     const incomingPhasePercent = clampPercentage(incoming.phasePercent)
     if (incomingPhasePercent < previousPhasePercent) {
       merged.phasePercent = previousPhasePercent
+    }
+  }
+  // 并发轮询响应可能乱序返回，量化计数一旦倒退（27/64 掉回 15/64）用户会以为解析出错。
+  if (samePhase) {
+    const previousOutput = previous?.opencodeOutput || {}
+    const incomingOutput = incoming?.opencodeOutput || {}
+    const previousTotal = Math.max(0, Math.floor(finiteNumber(previousOutput?.totalItems)))
+    const incomingTotal = Math.max(0, Math.floor(finiteNumber(incomingOutput?.totalItems)))
+    if (previousTotal > 0 && (incomingTotal === 0 || incomingTotal === previousTotal)) {
+      merged.opencodeOutput = {
+        ...incomingOutput,
+        completedItems: Math.max(
+          Math.floor(finiteNumber(previousOutput?.completedItems)),
+          Math.floor(finiteNumber(incomingOutput?.completedItems)),
+        ),
+        totalItems: previousTotal,
+      }
+    }
+  }
+  if (samePhase) {
+    const previousTotal = Math.max(0, Math.floor(finiteNumber(previous?.total)))
+    const incomingTotal = Math.max(0, Math.floor(finiteNumber(incoming?.total)))
+    if (previousTotal > 0 && incomingTotal === previousTotal) {
+      merged.current = Math.max(
+        Math.floor(finiteNumber(previous?.current)),
+        Math.floor(finiteNumber(incoming?.current)),
+      )
     }
   }
   return merged
@@ -121,7 +192,9 @@ export const summarizeParseProgress = (progress = {}) => {
     statusText: statusTextByStatus[status] || '解析中',
     title: phaseLabel || summary || '解析进度',
     detail: '',
-    summary,
+    summary: status !== 'completed' && isAppendixPhase(progress)
+      ? buildAppendixSummary(progress, summary)
+      : summary,
     percentage,
     tone,
   }

@@ -19,33 +19,45 @@ allowed-tools: [Read, Bash]
 
 ## 工作方式
 
-先运行：
+后端默认按分片并发调用本 skill：每个会话只负责一个清单分片或只负责 `projectBasics`，`prepare` 与 `finalize` 由后端确定性执行。**分片会话不要执行 `prepare` / `validate` / `finalize`**，提示词会说明本次会话负责哪个分片。
+
+分片会话先取回本分片的清单行和预检索命中：
 
 ```bash
-s1parse prepare <manifest>
+s1parse checklist <manifest> --shard <shardKey>
 ```
 
-用小输出命令探索文档，不要读取或打印大 JSON：
+返回的每行都带 `hints`——后端按「具体内容」离线预检索出的候选证据。先看 hints，只在不足以支撑结论时才补充检索。
+
+用小输出命令探索文档，不要读取或打印大 JSON。`search` 支持一次传多个关键词，必须合并成一条命令，不要一个关键词发一次：
 
 ```bash
 s1parse overview <manifest> --page 1 --page-size 30
-s1parse search <manifest> "<query>" --limit 20
+s1parse search <manifest> "<query1>" "<query2>" "<query3>" --limit 20
 s1parse read <manifest> <evidenceId> --mode summary --max-chars 2000
 s1parse window <manifest> <evidenceId> --before 4 --after 6
 s1parse table <manifest> <tableId> --rows 1-12 --max-chars 4000
 ```
 
-提交、校验并收口：
+分片会话判断完本分片全部行后一次性提交，并带上 `--shard`：
 
 ```bash
+s1parse submit <manifest> technicalInterpretation '<json>' --shard <shardKey>
 s1parse submit <manifest> projectBasics '<json>'
-s1parse submit <manifest> technicalInterpretation '<json>'
+```
+
+`--shard` 提交按 `rowNo` 增量合并，不会覆盖其它分片；提交越界行号会被脚本硬拒绝。
+
+单会话整体模式（分片链路不可用时的兜底）仍然可用，此时由会话自己完成全流程：
+
+```bash
+s1parse prepare <manifest>
 s1parse validate <manifest>
 s1parse status <manifest>
 s1parse finalize <manifest>
 ```
 
-`validate` 暴露缺口时，继续用导航命令回查证据并重新提交对应目标。最终必须执行 `finalize`，完整 JSON 由 finalize 写入 manifest 的 `structuredResultPath`，最后只返回 finalize stdout 的小型 JSON。
+`validate` 暴露缺口时，继续用导航命令回查证据并重新提交对应目标。整体模式下最终必须执行 `finalize`，完整 JSON 由 finalize 写入 manifest 的 `structuredResultPath`，最后只返回 finalize stdout 的小型 JSON。
 
 ## 输出目标一：基础信息 projectBasics
 
@@ -160,6 +172,8 @@ s1parse finalize <manifest>
 
 ## 技术标解读清单
 
-清单全文（58 条）在 `references/checklist.md`，开始解读前必须完整读取一次。
+清单全文（58 条）在 `references/checklist.md`。分片会话只需 `s1parse checklist <manifest> --shard <shardKey>` 取回本分片的行，不要通读全表；整体模式下开始解读前必须完整读取一次。
+
+分片划分定义在 `scripts/agentic/checklist.py` 的 `SHARDS`，按「证据来源重叠 + 行数均衡」分组，与展示大类无关。分片必须完整覆盖 58 行且互不重叠，`load_shards()` 会强校验；改动清单行数时必须同步改分片配置，否则解析直接中断。
 
 > ⚠ `references/checklist.md` 同时是 `checklist.py` 的运行时数据（强校验 58 行），修改须遵守该文件头部的规则；不要把清单表复制回本文件。

@@ -7,6 +7,10 @@ const VARIANTS = {
   warn: 'bg-tertiary-container text-on-tertiary-container',
   error: 'bg-error/10 text-error',
   info: 'bg-ai-accent-light text-on-tertiary-container',
+  amber: 'bg-amber-100 text-amber-800',
+  purple: 'bg-violet-100 text-violet-700',
+  cyan: 'bg-cyan-100 text-cyan-700',
+  muted: 'bg-surface-container-high text-outline',
 }
 
 const SHAPES = {

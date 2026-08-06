@@ -28,9 +28,16 @@ from pathlib import Path
 from docx import Document
 
 
+# 占位符标记词：待填写/待补充/待确认要填一个值，待插入要嵌一整份素材，
+# 待人工补充/待人工插入是正文填写链路定位不到时留下的待人工标记，缺失来自解析链路。
+_PLACEHOLDER_MARKERS = "待人工补充|待人工插入|待填写|待补充|待确认|待插入|缺失"
+
+# 前缀式与后缀式各一条，两条互不重叠——匹配结果直接累进同一个列表，重叠会让计数翻倍。
+# 只写前缀式 `[待填写：xxx]` 会漏掉素材库里占主流的后缀式 `[xxx，待填写]`，
+# 最终稿残留这类占位符时组装验证一声不吭。
 PLACEHOLDER_PATTERNS = [
-    re.compile(r"\[待填写[:：].*?\]"),
-    re.compile(r"\[缺失[:：].*?\]"),
+    re.compile(rf"[\[【]\s*(?:{_PLACEHOLDER_MARKERS})\s*[:：][^\]】\r\n]*[\]】]"),
+    re.compile(rf"[\[【][^\]】\r\n]{{1,80}}?[,，、:：\s]*(?:{_PLACEHOLDER_MARKERS})\s*[\]】]"),
     re.compile(r"\[[A-Z_]{4,}\]"),  # [PROJECT_NAME] / [MODEL_NO] 等
 ]
 

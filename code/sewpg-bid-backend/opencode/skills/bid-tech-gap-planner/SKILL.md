@@ -28,8 +28,8 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 - `parseResultPath`: S0/S1 招标解析结果，包含解析生成的空副表/Word。
 - `wikiDir`: 当前项目的技术标 Wiki 副本。
 - `materialScope`: 允许读取的素材边界，通常只包含技术标通用素材、该客户素材、该项目素材。
-- `materialIndex`: 已按 `materialScope` 和投标机型预过滤的素材索引。
-- `projectTurbineModel`: 已确认投标机型，用于判断素材是否适配。
+- `materialIndex`: 已按 `materialScope` 和投标机型预过滤的素材索引。正文匹配池在此基础上再排除两个约定目录：项目定制下的 `附表/`（解析生成的空副表，走 appendixTasks/fillTasks 消费）和 `技术附表输入文件/`（甲方已填附表，只参与附表查表替换）。
+- `projectTurbineModel`: 已确认投标机型，用于判断素材是否适配。标准文件档严格 1:1 限定选中机型文件夹（含上置/下置等布局后缀），其他机型与机型无关素材都不进正文池。
 
 不得跨项目、跨客户、跨标段读取素材。`tocJsonPath` 或 `wikiDir` 中的引用只能作为线索，必须能回到 manifest 的 `materialIndex` 或当前测试 manifest 明确给出的目录素材；不能因为旧目录引用就越过 `materialScope`。
 
@@ -87,6 +87,7 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 - 如果父章标题不完全出现在文件名中，但至少多个子节标题能被同一份素材解释，也可以作为整章候选。
 - 父章选中一份整章 Word 后，父章标记 `coverageRole=chapter_master`；所有子节标记 `coverageRole=covered_by_parent`、`coveredByParent=<父章 gap id>`。
 - 子节不要重复挂同一份整章素材，`matchedMaterials` 必须为空，避免一个目录项对应多份或重复素材。
+- 被覆盖子节仍保留自身 `candidateMaterials`（脚本自动完成）：S3 页面「忽略」父级后子节按候选就地派生标签，不重跑识别。覆盖字段只是初始提示，冻结/释放由前端按目录树派生。
 - 整章素材若是待填写模板，父章使用 `usage=chapter_fill` 并创建一个填写任务；子节继承 `fill_required`，但不重复创建填写任务。
 
 ## 空副表规则
@@ -96,6 +97,15 @@ s4gap /data/documents/<projectId>/technical-workspace/s4_gap_workdir/s4_gap_inpu
 - 附表编号或空表目录项应作为 `fill_required`，不应被相似父章整章素材吞并。
 - 附表推荐素材可以使用相似整章素材作为填写参考，但只能出现在推荐/候选列表。
 - 每个 `appendixTask` 应包含空表来源、字段/行数信息、推荐素材和后续填写 Skill。
+
+## 甲方已填附表（技术附表输入文件）
+
+项目定制目录下的 `技术附表输入文件/` 是甲方已填写完成附表的约定目录（业主侧固定结构约定）：
+
+- 该目录素材不进正文匹配池，只参与附表查表替换，避免按标题打分误挂到正文章节。
+- 查表键严格按命名：文件 `附表C.8 …` 精确覆盖 C.8；`附表G.3 …` 覆盖 G.3 组全部子表（G.3.1/G.3.2/…）；`技术附H …`（含无「表」写法）覆盖 H 组全部。精确编号优先于组前缀。
+- 同编号/同字母命中多个不同文件时不自动定案，保持 `fill_required` 由人工选择。
+- 目录项附表全部被覆盖时：对应 `appendixTask.sourceRouting.status=client_provided`，不产生 `fillTasks`，写入非 ai_fill 的 `resolvedArtifacts`（`source=client_appendix_input`、`s7Ready`、带 `materialId`），经终审 recompute 判 `decision=ready`、`status=resolved`，S7 装配直接取甲方文件；部分覆盖时只标记已覆盖任务，目录项维持 `fill_required`。
 
 ## 运行方式
 

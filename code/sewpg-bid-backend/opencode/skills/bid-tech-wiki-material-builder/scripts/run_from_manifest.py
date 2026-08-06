@@ -188,6 +188,9 @@ def build_file_card(file: dict[str, Any], tier_code: str, folder: dict[str, Any]
     status_tag = preview_status_tag(file)
     if status_tag:
         tags.append(status_tag)
+    if isinstance(file.get("pdfFulltext"), dict):
+        # PDF extract 产物已就绪：前端据此显示「查看全文」入口。
+        tags.append("全文已提取")
     if ext:
         tags.append(ext)
     return node(name, "\n".join(lines) + "\n", tags=tags)

@@ -60,6 +60,7 @@ def verify_cleaned_docx(
         "tocPresent": toc_present,
         "headerCleaned": header_cleaned,
         "pagination": dict((clean_result or {}).get("pagination") or {}),
+        "fontFamilies": list((clean_result or {}).get("fontFamilies") or []),
         "formatRisks": risks,
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +151,7 @@ def _render_report(report: dict[str, Any], output_path: Path, outline_path: Path
         f"- 未匹配标题数：{len(report['unmatchedHeadings'])}",
         f"- TOC 是否插入：{'是' if report['tocPresent'] else '否'}",
         f"- 页眉是否清理：{'是' if report['headerCleaned'] else '否'}",
+        f"- 实际写入字体族：{', '.join(report.get('fontFamilies') or []) or '未记录'}",
         f"- 新增小节分页符数：{report.get('pagination', {}).get('insertedPageBreaks', 0)}",
         f"- 清理多余分页符数：{report.get('pagination', {}).get('removedBlankPageBreaks', 0)}",
         f"- 清理分页间空段数：{report.get('pagination', {}).get('removedBlankParagraphs', 0)}",

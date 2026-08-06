@@ -3,13 +3,36 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 import {
+  aiFillComparisonPair,
   appendixTaskForFillTask,
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
+  tenderDocumentStateForAiFill,
   technicalGapTagOf,
 } from './technicalGapRecognitionHelpers.js'
 
 import * as technicalHelpers from './technicalGapRecognitionHelpers.js'
+
+test('附表来源规则上传提示区分新增、清除和延后生效', () => {
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({
+      rowCount: 3,
+      applied: { routedItems: 2, clearedItems: 1, clearedTasks: 1 },
+    }),
+    '已解析 3 条附表来源规则，已应用到 2 个目录项的附表任务，并已清除 1 个目录项、1 个附表任务的旧规则关联',
+  )
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({
+      rowCount: 1,
+      applied: { routedItems: 0, clearedItems: 1, clearedTasks: 2 },
+    }),
+    '已解析 1 条附表来源规则，未新增匹配，已清除 1 个目录项、2 个附表任务的旧规则关联',
+  )
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({ rowCount: 4, applied: {} }),
+    '已解析 4 条附表来源规则，将在下次缺口识别时生效',
+  )
+})
 
 test('生成完成提示展示 warning 数量且格式清洗失败时明确回退', () => {
   const presentation = technicalHelpers.technicalGenerationPresentation({
@@ -27,6 +50,19 @@ test('生成完成提示展示 warning 数量且格式清洗失败时明确回�
   assert.equal(presentation.warningCount, 2)
   assert.equal(presentation.formatCleanFailed, true)
   assert.equal(presentation.formatCleanMessage, '格式清洗失败，当前使用组装稿')
+})
+
+test('AI 填写结果优先与待填写模板形成左右对比', () => {
+  const result = { key: 'artifact:A1', kind: 'artifact', artifact: { source: 'ai_fill' } }
+  const material = { key: 'material:M1', kind: 'material' }
+  const blank = { key: 'blank-material:B1', kind: 'blankMaterial' }
+
+  assert.deepEqual(aiFillComparisonPair([result, material, blank], result), {
+    reference: blank,
+    result,
+  })
+  assert.equal(aiFillComparisonPair([result], result), null)
+  assert.equal(aiFillComparisonPair([material, blank], material), null)
 })
 
 test('生成提示在 summary 未给数量时累计 warning count', () => {
@@ -130,12 +166,59 @@ test('格式应用响应缺 document 时按本次请求推进本地格式状态'
 test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持不变', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+  const progressSource = await readFile(new URL('../components/TechnicalGenerationProgressModal.jsx', import.meta.url), 'utf8')
 
-  assert.match(gapSource, /warningCount/)
+  assert.match(progressSource, /warningCount/)
   assert.match(gapSource, /disabled=\{Boolean\(busyAction\) \|\| !generationCompleted\}/)
   assert.match(editorSource, /technicalDocumentAPI\.technicalFormat\(id, payload\)/)
   assert.match(editorSource, /download=\{finalData\?\.fileName \|\| data\?\.fileName \|\| defaultWordFileName\}/)
   assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
+})
+
+test('重新生成正文只在共创导出页展示，并位于 Word、PDF 下载控件之后', async () => {
+  const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+  const wordIndex = editorSource.indexOf('下载Word')
+  const pdfIndex = editorSource.indexOf('下载PDF')
+  const regenerateIndex = editorSource.indexOf("'重新生成正文'")
+
+  assert.doesNotMatch(gapSource, /重新生成正文/)
+  assert.ok(wordIndex >= 0)
+  assert.ok(pdfIndex > wordIndex)
+  assert.ok(regenerateIndex > pdfIndex)
+})
+
+test('共创导出页二次确认后沿用正文生成接口并刷新最新文档', async () => {
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(editorSource, /确认重新生成正文？/)
+  assert.match(editorSource, /尚未保存的共创修改可能丢失/)
+  assert.match(editorSource, /const payload = await technicalGenerateAPI\.run\(id\)/)
+  assert.match(editorSource, /loadDocument\(\{ silent: true \}\)/)
+  assert.match(editorSource, /<TechnicalGenerationProgressModal/)
+})
+
+test('事实表清单和素材范围变更后自动重建，不保留手动刷新入口', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const uploadStart = source.indexOf('const handleFactSpecsUpload')
+  const scopeStart = source.indexOf('const handleSaveMaterialPaths')
+  const curateStart = source.indexOf('const handleCurateFacts')
+  const uploadFlow = source.slice(uploadStart, scopeStart)
+  const scopeFlow = source.slice(scopeStart, curateStart)
+
+  assert.ok(uploadStart >= 0 && scopeStart > uploadStart && curateStart > scopeStart)
+  assert.ok(uploadFlow.indexOf('uploadFactSpecs') < uploadFlow.indexOf('buildFacts'))
+  assert.ok(scopeFlow.indexOf('saveMaterialSources') < scopeFlow.indexOf('buildFacts'))
+  assert.doesNotMatch(source, /onBuild|刷新事实/)
+})
+
+test('事实表弹窗筛选时保持固定高度并只滚动表格区域', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  assert.match(source, /h-\[calc\(100vh-64px\)\] max-h-\[860px\]/)
+  assert.match(source, /mb-2 flex h-6 shrink-0 items-center/)
+  assert.match(source, /h-full overflow-auto \[scrollbar-gutter:stable\]/)
+  assert.match(source, /sticky top-0 z-10 grid items-center/)
 })
 
 test('技术标 AI 填表默认选中来源矩阵推荐素材', () => {
@@ -181,6 +264,38 @@ test('技术标 AI 填表在仅附表任务有规则时使用对应空表推荐�
   )
 })
 
+test('招标文件来源规则允许零素材并展示项目完整招标文件', () => {
+  const state = tenderDocumentStateForAiFill({
+    sourceRouting: {
+      useTenderParseFields: true,
+      tenderDocumentStatus: 'available',
+      tenderDocumentCount: 2,
+      tenderDocuments: [
+        { id: 'TEN-1', name: '技术规范.pdf' },
+        { id: 'TEN-2', name: '招标附图.docx' },
+      ],
+    },
+  })
+
+  assert.equal(state.required, true)
+  assert.equal(state.missingSource, false)
+  assert.equal(state.documentCount, 2)
+  assert.deepEqual(state.documentNames, ['技术规范.pdf', '招标附图.docx'])
+})
+
+test('招标文件来源规则在项目无源文件时阻止空跑', () => {
+  const state = tenderDocumentStateForAiFill({
+    sourceRouting: {
+      useTenderParseFields: true,
+      tenderDocumentStatus: 'missing_source',
+      tenderDocumentCount: 0,
+    },
+  })
+
+  assert.equal(state.required, true)
+  assert.equal(state.missingSource, true)
+})
+
 test('待填写素材严格按「待填写-」前缀识别', () => {
   assert.equal(isFillTemplateMaterial({ name: '待填写-附表D3桨距角曲线.docx' }), true)
   assert.equal(isFillTemplateMaterial({ cleanedFileName: '待填写-项目技术承诺函.docx' }), true)
@@ -188,148 +303,329 @@ test('待填写素材严格按「待填写-」前缀识别', () => {
   assert.equal(isFillTemplateMaterial({ name: '本表待填写内容清单.docx' }), false)
 })
 
-test('目录标签：无候选或全部低于30%判人工补充', () => {
-  assert.equal(technicalGapTagOf({ id: 'G1', decision: 'material_required' }), 'needs_material')
+test('目录标签v4：无候选或全部低于30%判待人工补充', () => {
+  assert.equal(technicalGapTagOf({ id: 'G1', decision: 'material_required' }), 'manual_supplement')
   assert.equal(
     technicalGapTagOf({ id: 'G2', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.2 }] }),
-    'needs_material',
+    'manual_supplement',
   )
-})
-
-test('目录标签：30~98分候选且无待填写素材判已匹配-待确认', () => {
-  assert.equal(
-    technicalGapTagOf({ id: 'G1', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] }),
-    'needs_refine',
-  )
-  assert.equal(
-    technicalGapTagOf({ id: 'G2', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.98 }] }),
-    'needs_refine',
-  )
-})
-
-test('目录标签：匹配到待填写素材（附表/前缀/填写任务）判已匹配待填写', () => {
-  assert.equal(
-    technicalGapTagOf({ id: 'G1', decision: 'fill_required', appendixTasks: [{ id: 'APPX-C1' }] }),
-    'needs_fill',
-  )
-  assert.equal(
-    technicalGapTagOf({
-      id: 'G2',
-      decision: 'review_required',
-      candidateMaterials: [{ id: 'M1', name: '待填写-附表F31部件参数表.docx', matchScore: 0.5 }],
-    }),
-    'needs_fill',
-  )
-})
-
-test('目录标签：同时命中99分素材与待填写素材时单独拉出为待填写', () => {
-  assert.equal(
-    technicalGapTagOf({
-      id: 'G1',
-      decision: 'ready',
-      matchedMaterials: [{ id: 'M1', matchScore: 0.99 }],
-      candidateMaterials: [{ id: 'M2', name: '待填写-同名模板.docx', matchScore: 0.4 }],
-    }),
-    'needs_fill',
-  )
-})
-
-test('目录标签：99分（文件名精确命中）豁免确认自动就绪', () => {
-  assert.equal(
-    technicalGapTagOf({ id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }),
-    'ready',
-  )
-})
-
-test('目录标签：自动就绪也可人工撤销（产品反馈 2026-07-21：撤销要真正生效，不是无操作）', () => {
-  // 未操作过：99 分自动就绪。
-  const autoReady = { id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
-  assert.equal(technicalGapTagOf(autoReady), 'ready')
-  // 人工撤销（humanConfirmed 显式为 false）：跳过自动就绪判定，按分数回落到「已匹配-待确认」。
-  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: false }), 'needs_refine')
-  // 撤销后再次人工确认：恢复已就绪。
-  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: true }), 'ready')
-})
-
-test('目录标签：除精确命中外，人工点「确认」是变已就绪的唯一途径（产品裁决 2026-07-21）', () => {
-  // 选用素材/上传产物本身不再翻绿：点确认之前标签不变。
-  assert.equal(
-    technicalGapTagOf({
-      id: 'G2',
-      decision: 'ready',
-      candidateMaterials: [{ id: 'M1', name: '待填写-模板.docx', matchScore: 0.5 }],
-      resolvedArtifacts: [{ id: 'ART-1', source: 'material_library' }],
-    }),
-    'needs_fill',
-  )
-  // AI 填写完成（含质检通过）也不翻绿。
+  // 低分待填写模板同样落待人工补充（<30 不分轨）。
   assert.equal(
     technicalGapTagOf({
       id: 'G3',
-      decision: 'fill_required',
-      fillTasks: [{ id: 'T1', status: 'completed' }],
-      resolvedArtifacts: [{ id: 'ART-2', source: 'ai_fill', qualityGate: 'human_confirmed' }],
+      decision: 'review_required',
+      candidateMaterials: [{ id: 'M1', name: '待填写-模板.docx', matchScore: 0.2 }],
     }),
-    'needs_fill',
+    'manual_supplement',
   )
-  // 后端 recompute 会把选材后的 decision 翻成 ready，不能据此判绿。
+})
+
+test('目录标签v6：30~98分统一为待确认（needs_choice），确认后按所选素材形态分流', () => {
+  assert.equal(
+    technicalGapTagOf({ id: 'G1', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] }),
+    'needs_choice',
+  )
+  assert.equal(
+    technicalGapTagOf({ id: 'G2', decision: 'review_required', candidateMaterials: [{ id: 'M1', matchScore: 0.98 }] }),
+    'needs_choice',
+  )
+  // 填写模板候选同样是待确认；确认后进「待填写」而不是「已就绪」（后续用例覆盖）。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G3',
+      decision: 'review_required',
+      candidateMaterials: [{ id: 'M1', name: '待填写-附表F31部件参数表.docx', matchScore: 0.5 }],
+    }),
+    'needs_choice',
+  )
+  // 形态跟最佳素材走：最佳是直用素材时，低分待填写候选不改轨。
   assert.equal(
     technicalGapTagOf({
       id: 'G4',
       decision: 'ready',
-      candidateMaterials: [{ id: 'M1', matchScore: 0.6 }],
-      resolvedArtifacts: [{ id: 'ART-3', source: 'material_library' }],
+      matchedMaterials: [{ id: 'M1', matchScore: 0.99 }],
+      candidateMaterials: [{ id: 'M2', name: '待填写-同名模板.docx', matchScore: 0.4 }],
     }),
-    'needs_refine',
+    'material_ready',
   )
-  // 人工确认（humanConfirmed）无前置条件，确认即就绪；撤销后回到派生标签。
+})
+
+test('目录标签v4：解析生成的附表空表来源确定，直接判已就绪模板，不参与30分线', () => {
   assert.equal(
-    technicalGapTagOf({ id: 'G5', decision: 'material_required', humanConfirmed: true }),
-    'ready',
+    technicalGapTagOf({ id: 'G1', decision: 'fill_required', appendixTasks: [{ id: 'APPX-C1' }] }),
+    'template_ready',
+  )
+  // 模板 0.99 文件名精确命中：模板已定。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G2',
+      decision: 'fill_required',
+      fillTasks: [{ id: 'T1', status: 'pending' }],
+      candidateMaterials: [{ id: 'M1', name: '待填写-项目技术承诺函.docx', matchScore: 0.99 }],
+    }),
+    'template_ready',
+  )
+  // 人工选定模板（选定即定案落 humanConfirmed）：模板已定。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G3',
+      decision: 'fill_required',
+      fillTasks: [{ id: 'T1', status: 'pending' }],
+      candidateMaterials: [{ id: 'M1', name: '待填写-模板.docx', matchScore: 0.5 }],
+      humanConfirmed: true,
+    }),
+    'template_ready',
+  )
+})
+
+test('目录标签v6：99分（文件名精确命中）自动定案，人工撤销后回落待确认', () => {
+  const autoReady = { id: 'G1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  assert.equal(technicalGapTagOf(autoReady), 'material_ready')
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: false }), 'needs_choice')
+  assert.equal(technicalGapTagOf({ ...autoReady, humanConfirmed: true }), 'material_ready')
+})
+
+test('目录标签v4：甲方已填附表全覆盖判已就绪素材，部分覆盖回到已就绪模板', () => {
+  const clientProvidedTask = { id: 'APPX-1', sourceRouting: { status: 'client_provided' } }
+  const fillTask = { id: 'APPX-2', sourceRouting: {} }
+  assert.equal(
+    technicalGapTagOf({ id: 'G1', decision: 'ready', status: 'resolved', appendixTasks: [clientProvidedTask] }),
+    'material_ready',
+  )
+  // 部分覆盖：剩余空表仍要填，空表来源确定 → 已就绪模板。
+  assert.equal(
+    technicalGapTagOf({ id: 'G2', decision: 'fill_required', appendixTasks: [clientProvidedTask, fillTask] }),
+    'template_ready',
+  )
+  // 人工撤销豁免后回落到已就绪模板（改为自己填），再次确认恢复。
+  const covered = { id: 'G3', decision: 'ready', status: 'resolved', appendixTasks: [clientProvidedTask] }
+  assert.equal(technicalGapTagOf({ ...covered, humanConfirmed: false }), 'template_ready')
+  assert.equal(technicalGapTagOf({ ...covered, humanConfirmed: true }), 'material_ready')
+})
+
+test('目录标签v4：AI填写完成变待复核模板，复核通过收口已就绪素材（行为改动① 2026-08-04）', () => {
+  const filled = {
+    id: 'G1',
+    decision: 'fill_required',
+    fillTasks: [{ id: 'T1', status: 'completed' }],
+    resolvedArtifacts: [{ id: 'ART-1', source: 'ai_fill' }],
+  }
+  assert.equal(technicalGapTagOf(filled), 'template_review')
+  // 复核通过：qualityStatus=human_confirmed → 绿色终态。
+  assert.equal(technicalGapTagOf({ ...filled, qualityStatus: 'human_confirmed' }), 'material_ready')
+  // 质检报告存在但未人工复核，仍是待复核。
+  assert.equal(technicalGapTagOf({ ...filled, qualityStatus: 'passed' }), 'template_review')
+})
+
+test('目录标签v6：已取代产物不参与标签、预览和当前产物列表', () => {
+  const item = {
+    id: 'G1',
+    decision: 'ready',
+    status: 'resolved',
+    humanConfirmed: true,
+    resolvedArtifacts: [
+      {
+        id: 'ART-OLD',
+        source: 'ai_fill',
+        fileName: '旧AI填写.docx',
+        active: false,
+        supersededAt: '2026-08-06T00:00:00Z',
+        onlyoffice: { fileUrl: '/old.docx' },
+      },
+      {
+        id: 'ART-NEW',
+        source: 'material_library',
+        fileName: '新选素材.docx',
+        materialId: 'RAW-NEW',
+        s7Ready: true,
+        active: true,
+        onlyoffice: { fileUrl: '/new.docx' },
+      },
+    ],
+  }
+
+  assert.equal(technicalGapTagOf(item), 'material_ready')
+  assert.equal(technicalHelpers.latestResolvedArtifact(item).id, 'ART-NEW')
+  assert.deepEqual(technicalHelpers.currentResolvedArtifacts(item).map((artifact) => artifact.id), ['ART-NEW'])
+  assert.deepEqual(technicalHelpers.previewChoicesForItem(item).map((choice) => choice.artifact.id), ['ART-NEW'])
+})
+
+test('目录标签v6：选定即定案——人工选材/上传直接变已就绪（行为改动② 2026-08-04）', () => {
+  // 后端 register 已在人工选材/上传时落 humanConfirmed + resolvedArtifacts。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G1',
+      decision: 'ready',
+      candidateMaterials: [{ id: 'M1', matchScore: 0.6 }],
+      resolvedArtifacts: [{ id: 'ART-1', source: 'material_library' }],
+      humanConfirmed: true,
+    }),
+    'material_ready',
   )
   assert.equal(
     technicalGapTagOf({
-      id: 'G6',
+      id: 'G2',
+      decision: 'material_required',
+      resolvedArtifacts: [{ id: 'ART-2', source: 'manual_upload' }],
+      humanConfirmed: true,
+    }),
+    'material_ready',
+  )
+  // 「确认」确认的是系统预选素材（matchedMaterials），确认即定案。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G3',
+      decision: 'review_required',
+      matchedMaterials: [{ id: 'M1', matchScore: 0.6 }],
+      humanConfirmed: true,
+    }),
+    'material_ready',
+  )
+  assert.equal(
+    technicalGapTagOf({ id: 'G4', decision: 'material_required', humanConfirmed: false }),
+    'manual_supplement',
+  )
+  // 人工定案的是待填写模板：进入蓝色待填写，不是绿色。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G5',
       decision: 'fill_required',
       fillTasks: [{ id: 'T1', status: 'pending' }],
       humanConfirmed: true,
     }),
-    'ready',
-  )
-  assert.equal(
-    technicalGapTagOf({ id: 'G7', decision: 'material_required', humanConfirmed: false }),
-    'needs_material',
+    'template_ready',
   )
 })
 
-test('目录标签：结构项无标签，被父章覆盖的子节跟随父章', () => {
-  const parent = { id: 'P1', decision: 'ready', matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
-  const child = { id: 'C1', decision: 'ready', coveredByParent: 'P1' }
-  const fillParent = { id: 'P2', decision: 'fill_required', fillTasks: [{ id: 'T1', status: 'pending' }] }
-  const fillChild = { id: 'C2', decision: 'fill_required', coveredByParent: 'P2' }
+test('目录标签v6：空确认防御——没有素材实体证据时确认不变绿（产品反馈 2026-08-04）', () => {
+  // 空项（无预选/无候选/无产物）即使 humanConfirmed 也不变绿，维持待补充。
+  assert.equal(
+    technicalGapTagOf({ id: 'G1', decision: 'material_required', humanConfirmed: true }),
+    'manual_supplement',
+  )
+  // 只有候选、没有系统预选（matchedMaterials 为空）：确认标记不生效，仍是待确认。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G2',
+      decision: 'review_required',
+      candidateMaterials: [{ id: 'M1', matchScore: 0.6 }],
+      humanConfirmed: true,
+    }),
+    'needs_choice',
+  )
+})
 
+test('目录标签v6：人工选中未填写的「待填写-」模板进待填写，不进已就绪（R10-B07-01）', () => {
+  // 后端 register 对空模板产物落 s7Ready=false：它只是定下要填的模板，不算成稿。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G1',
+      decision: 'fill_required',
+      status: 'needs_input',
+      fillTasks: [{ id: 'FILL-G1-RAW-TPL1', status: 'pending', blankSource: { materialId: 'RAW-TPL1', sourceType: 'material_fill_template' } }],
+      resolvedArtifacts: [{ id: 'ART-1', source: 'material_library', fileName: '01-待填写-投标说明函.docx', s7Ready: false }],
+      humanConfirmed: true,
+    }),
+    'template_ready',
+  )
+  // 对照：s7Ready 的人工选材产物（成稿）仍是已就绪。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G2',
+      decision: 'ready',
+      status: 'resolved',
+      resolvedArtifacts: [{ id: 'ART-2', source: 'material_library', fileName: '01-性能保证.docx', s7Ready: true }],
+      humanConfirmed: true,
+    }),
+    'material_ready',
+  )
+})
+
+test('目录标签v6：树状冻结——未忽略的活动祖先冻结整棵子树（父章覆盖）', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  const mid = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
+  const leaf = { id: 'C2', number: '3.1.1', level: 3, candidateMaterials: [{ id: 'M3', matchScore: 0.5 }] }
+  const items = [chapter, mid, leaf]
+
+  // 结构项与空骨架无标签。
   assert.equal(technicalGapTagOf({ id: 'S1', usage: 'structural', decision: 'ready' }), '')
   assert.equal(technicalGapTagOf({ id: 'S2', decision: 'ready' }), '')
-  assert.equal(technicalGapTagOf(child, [parent, child]), 'ready')
-  assert.equal(technicalGapTagOf(fillChild, [fillParent, fillChild]), 'needs_fill')
-  // 子节自身被人工确认后不再跟随父章标签。
-  const confirmedChild = { id: 'C3', decision: 'fill_required', coveredByParent: 'P2', humanConfirmed: true }
-  assert.equal(technicalGapTagOf(confirmedChild, [fillParent, confirmedChild]), 'ready')
+  // 父章活动（无论已定还是待确认还是缺素材）：所有后代冻结。
+  assert.equal(technicalGapTagOf(chapter, items), 'material_ready')
+  assert.equal(technicalGapTagOf(mid, items), 'parent_covered')
+  assert.equal(technicalGapTagOf(leaf, items), 'parent_covered')
+  // 缺素材的父章同样冻结子级（决策①：红色也冻结，先补或忽略）。
+  const emptyChapter = { id: 'P2', number: '第4章', level: 1, decision: 'material_required' }
+  const emptyChild = { id: 'C3', number: '4.1', level: 2, candidateMaterials: [{ id: 'M4', matchScore: 0.7 }] }
+  assert.equal(technicalGapTagOf(emptyChild, [emptyChapter, emptyChild]), 'parent_covered')
 })
 
-test('父章节覆盖：目录号归一化与后代识别', () => {
+test('目录标签v6：忽略（仅留标题）释放子级，逐级递归', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, titleOnly: true, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
+  const mid = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
+  const leaf = { id: 'C2', number: '3.1.1', level: 3, candidateMaterials: [{ id: 'M3', matchScore: 0.99 }] }
+  const items = [chapter, mid, leaf]
+
+  // 忽略的父章自己显示仅留标题。
+  assert.equal(technicalGapTagOf(chapter, items), 'title_only')
+  // 一级忽略后二级释放、按自身候选派生；二级活动继续冻结三级。
+  assert.equal(technicalGapTagOf(mid, items), 'needs_choice')
+  assert.equal(technicalGapTagOf(leaf, items), 'parent_covered')
+  // 二级也忽略：三级释放（0.99 自动定案）。
+  const midIgnored = { ...mid, titleOnly: true }
+  const itemsBothIgnored = [chapter, midIgnored, leaf]
+  assert.equal(technicalGapTagOf(midIgnored, itemsBothIgnored), 'title_only')
+  assert.equal(technicalGapTagOf(leaf, itemsBothIgnored), 'material_ready')
+  // 结构性祖先不冻结子级。
+  const structuralRoot = { id: 'P9', number: '第9章', level: 1, usage: 'structural', decision: 'ready' }
+  const structuralChild = { id: 'C9', number: '9.1', level: 2, candidateMaterials: [{ id: 'M9', matchScore: 0.6 }] }
+  assert.equal(technicalGapTagOf(structuralChild, [structuralRoot, structuralChild]), 'needs_choice')
+})
+
+test('目录标签v6：附表按 level 归入技术附表根，冻结/忽略同样适用（产品反馈 2026-08-04）', () => {
+  // 附表编号不成目录号链（附表A.1 的“父号”附表A 不存在），层级由顺序 + level 决定。
+  const appendixRoot = { id: 'R1', number: '附录', title: '技术附表', level: 1, appendixTasks: [{ id: 'APPX-0' }] }
+  const tableA = { id: 'A1', number: '附表A.1', level: 2, appendixTasks: [{ id: 'APPX-1' }] }
+  const tableB = { id: 'B1', number: '附表B.1.1', level: 2, appendixTasks: [{ id: 'APPX-2' }] }
+  const items = [appendixRoot, tableA, tableB]
+
+  assert.deepEqual(
+    technicalHelpers.technicalGapDescendants(appendixRoot, items).map((item) => item.id),
+    ['A1', 'B1'],
+  )
+  // 附录根活动（待填写）：附表子级冻结。
+  assert.equal(technicalGapTagOf(appendixRoot, items), 'template_ready')
+  assert.equal(technicalGapTagOf(tableA, items), 'parent_covered')
+  // 附录根被忽略：附表各自按空表任务派生（待填写）。
+  const rootIgnored = { ...appendixRoot, titleOnly: true }
+  const itemsIgnored = [rootIgnored, tableA, tableB]
+  assert.equal(technicalGapTagOf(rootIgnored, itemsIgnored), 'title_only')
+  assert.equal(technicalGapTagOf(tableA, itemsIgnored), 'template_ready')
+  assert.equal(technicalGapTagOf(tableB, itemsIgnored), 'template_ready')
+})
+
+test('目录标签v6：冻结子级继承冻结源素材（树派生优先于 coveredByParent 提示）', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1', name: '整章素材.docx', matchScore: 0.99 }] }
+  const leaf = { id: 'C1', number: '3.2', level: 2, candidateMaterials: [] }
+  const match = technicalHelpers.matchedMaterialForItem(leaf, [chapter, leaf])
+  assert.equal(match.inherited, true)
+  assert.equal(match.material.id, 'M1')
+  assert.equal(match.sourceItem.id, 'P1')
+})
+
+test('父章节覆盖：目录号归一化与 level 后代识别', () => {
   assert.equal(technicalHelpers.technicalGapNumberKey('第3章'), '3')
   assert.equal(technicalHelpers.technicalGapNumberKey('第十二章'), '12')
   assert.equal(technicalHelpers.technicalGapNumberKey('5.8.2'), '5.8.2')
 
-  const chapter = { id: 'P1', number: '第3章' }
+  const chapter = { id: 'P1', number: '第3章', level: 1 }
   const items = [
     chapter,
-    { id: 'C1', number: '3.1' },
-    { id: 'C2', number: '3.1.1' },
-    { id: 'X1', number: '4.1' },
-    // 前缀相同但不是下级：30.1 不能被「3.」误吞。
-    { id: 'X2', number: '30.1' },
+    { id: 'C1', number: '3.1', level: 2 },
+    { id: 'C2', number: '3.1.1', level: 3 },
+    // 后代识别按顺序 + level：遇到同级或更高级即截断，第4章不被误吞。
+    { id: 'X1', number: '第4章', level: 1 },
+    { id: 'X2', number: '4.1', level: 2 },
   ]
   const descendants = technicalHelpers.technicalGapDescendants(chapter, items)
   assert.deepEqual(descendants.map((item) => item.id), ['C1', 'C2'])
@@ -337,8 +633,8 @@ test('父章节覆盖：目录号归一化与后代识别', () => {
 
 test('父章节覆盖：本节点没素材时不可设置，设置后可撤销', () => {
   const items = [
-    { id: 'P1', number: '第3章' },
-    { id: 'C1', number: '3.1' },
+    { id: 'P1', number: '第3章', level: 1 },
+    { id: 'C1', number: '3.1', level: 2 },
   ]
   const empty = technicalHelpers.technicalGapParentCoverageState(items[0], items)
   assert.equal(empty.descendantCount, 1)
@@ -346,20 +642,53 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
   assert.equal(empty.canApply, false)
 
   const withMaterial = [
-    { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1' }] },
-    { id: 'C1', number: '3.1' },
+    { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1' }] },
+    { id: 'C1', number: '3.1', level: 2 },
   ]
   const ready = technicalHelpers.technicalGapParentCoverageState(withMaterial[0], withMaterial)
   assert.equal(ready.canApply, true)
   assert.equal(ready.applied, false)
 
   const applied = [
-    { id: 'P1', number: '第3章', matchedMaterials: [{ id: 'M1' }] },
-    { id: 'C1', number: '3.1', coveredByParent: 'P1', parentCoverageSource: 'manual' },
+    { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1' }] },
+    { id: 'C1', number: '3.1', level: 2, coveredByParent: 'P1', parentCoverageSource: 'manual' },
     // planner 自动判定的覆盖不计入人工态，不由这个按钮撤销。
-    { id: 'C2', number: '3.2', coveredByParent: 'P1' },
+    { id: 'C2', number: '3.2', level: 2, coveredByParent: 'P1' },
   ]
   const state = technicalHelpers.technicalGapParentCoverageState(applied[0], applied)
   assert.equal(state.applied, true)
   assert.equal(state.coveredCount, 1)
+})
+
+test('正文填写汇总只数正文任务，失败按目录项计', () => {
+  const items = [
+    {
+      id: 'G1',
+      decision: 'fill_required',
+      fillTasks: [
+        { id: 'T1', skill: 'bid-tech-word-placeholder-filler', status: 'completed' },
+        { id: 'T2', skill: 'bid-tech-word-placeholder-filler', status: 'pending' },
+        // 附表由另一条线负责，不进正文汇总
+        { id: 'T3', skill: 'bid-tech-table-filler', status: 'pending' },
+      ],
+    },
+    {
+      id: 'G2',
+      decision: 'fill_required',
+      fillTasks: [{ id: 'T4', skill: 'bid-tech-word-placeholder-filler', status: 'pending' }],
+      fillError: { message: 'MinIO 取件失败' },
+    },
+    // 仅留标题与非填写轨不计入
+    { id: 'G3', decision: 'fill_required', titleOnly: true, fillTasks: [{ id: 'T5', skill: 'bid-tech-word-placeholder-filler' }] },
+    { id: 'G4', decision: 'ready', fillTasks: [{ id: 'T6', skill: 'bid-tech-word-placeholder-filler' }] },
+  ]
+
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 2, filled: 1, failed: 1 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0 })
+})
+
+test('目录项填写失败原因用于标红与重填提示', () => {
+  assert.equal(technicalHelpers.technicalGapFillError({ fillError: { message: '素材缺失' } }), '素材缺失')
+  assert.equal(technicalHelpers.technicalGapFillError({}), '')
+  assert.equal(technicalHelpers.technicalGapFillError({ fillError: 'bad' }), '')
 })

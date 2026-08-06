@@ -50,6 +50,7 @@ from app.services.technical_parse_assets import (
     set_technical_appendix_asset_selected,
 )
 from app.services.job_queue import enqueue_generation_job, is_generation_locked, request_job_cancel
+from app.services.job_timing import record_phase, record_timing_meta
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
 from app.services.parsing import (
     IMAGE_SUFFIXES,
@@ -491,6 +492,18 @@ def _opencode_progress_from_payload(payload: dict[str, Any]) -> tuple[int, int, 
     parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
     part_count = len(parts)
     trace_status = str(payload.get("status") or "").lower()
+    # 分片并发时单个会话的进度不代表整体：任一分片完成都会把 status 置为 completed，
+    # 直接采用会让进度条在其余分片仍在跑时跳到 100%。编排层给出聚合百分比时以它为准。
+    if payload.get("shardProgress") is not None:
+        try:
+            shard_percent = max(0, min(99, int(payload.get("shardProgress") or 0)))
+        except (TypeError, ValueError):
+            shard_percent = 0
+        return (
+            _technical_phase_progress("word", "structured", shard_percent),
+            shard_percent,
+            int(payload.get("completedShards") or 0),
+        )
     try:
         heartbeat_index = max(0, int(payload.get("heartbeatIndex") or 0))
     except (TypeError, ValueError):
@@ -1971,6 +1984,11 @@ class BidParseService:
         stale_after_seconds: int | None = None,
     ) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
+        # 耗时埋点：按解析 runId 记录阶段首达时间（同 step 只记首次），失败仅降级日志。
+        existing_progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
+        parse_run_id = str(existing_progress.get("runId") or "")
+        if parse_run_id:
+            record_phase(parse_run_id, event_step, phase_label or event_step)
         progress = update_parse_progress_state(
             project,
             status=status,
@@ -2387,6 +2405,7 @@ class BidParseService:
     ) -> dict[str, Any]:
         if is_generation_locked(S1_PARSE_JOB_TYPE, project_id):
             raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
+        upload_started_at = time.monotonic()
         existing_tender, existing_template = self.parse_inputs(project_id, include_fallback=False)
         uploaded_tender_files = tender_files or []
         uploaded_template_files = template_files or []
@@ -2426,6 +2445,10 @@ class BidParseService:
         )
         if mode == "locked":
             raise HTTPException(status_code=409, detail=S1_PARSE_LOCKED_DETAIL)
+        if job_id:
+            # 耗时埋点：上传落盘阶段；上传耗时作为元数据随 finalize 写入 job_timings.meta。
+            record_phase(job_id, "upload", "文件上传落盘")
+            record_timing_meta(job_id, uploadMs=int((time.monotonic() - upload_started_at) * 1000))
         return self._parse_schedule_response(
             project_id,
             mode=mode,

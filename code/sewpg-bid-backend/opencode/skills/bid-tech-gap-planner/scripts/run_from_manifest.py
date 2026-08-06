@@ -120,6 +120,22 @@ def parse_fields_from_parse(parse_result: dict[str, Any]) -> list[dict[str, Any]
     return fields[:320]
 
 
+def tender_document_summaries(parse_result: dict[str, Any]) -> list[dict[str, str]]:
+    documents = parse_result.get("documents")
+    if not isinstance(documents, list):
+        documents = parse_result.get("sourceFiles")
+    result: list[dict[str, str]] = []
+    for document in documents or []:
+        if not isinstance(document, dict) or document.get("status") == "failed":
+            continue
+        document_id = str(document.get("id") or "").strip()
+        name = str(document.get("name") or document.get("fileName") or "").strip()
+        if not document_id and not name:
+            continue
+        result.append({"id": document_id, "name": name})
+    return result
+
+
 def wiki_cards_by_section(wiki_dir: Path | None) -> dict[str, list[dict[str, Any]]]:
     if not wiki_dir or not (wiki_dir / "卡片").exists():
         return {}
@@ -259,7 +275,19 @@ def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
     start_code = normalize_appendix_code(rule_match.group(1))
     end_code = normalize_appendix_code(rule_match.group(2) or "")
     if not end_code:
-        return 0.96 if table_code == start_code else 0.0
+        if table_code == start_code:
+            return 0.96
+        # 子编号覆盖：规则只写父级编号（如 F.2）时覆盖附表子编号（F.2.1/F.2.2）。
+        # 分值低于精确命中与区间命中，更具体的规则（若有）仍然优先。
+        table_parts = _appendix_code_parts(table_code)
+        start_parts = _appendix_code_parts(start_code)
+        if table_parts and start_parts:
+            table_prefix, table_numbers = table_parts
+            start_prefix, start_numbers = start_parts
+            if not (table_prefix and start_prefix and table_prefix != start_prefix):
+                if len(table_numbers) > len(start_numbers) and table_numbers[: len(start_numbers)] == start_numbers:
+                    return 0.93
+        return 0.0
 
     table_parts = _appendix_code_parts(table_code)
     start_parts = _appendix_code_parts(start_code)
@@ -555,13 +583,19 @@ def material_requires_fill(material: dict[str, Any] | None) -> bool:
     if int(material.get("placeholderCount") or 0) > 0:
         return True
     text = material_text(material)
-    return any(marker in text for marker in ("待填写", "待补充", "待确认"))
+    # 「待插入」同样要走 AI 填写：正文填写链路把它当整份素材嵌入，与待填写共用一条任务。
+    # 漏掉它的话，正文只剩待插入占位符的模板（如塔筒设计方案专题报告）就拿不到填写任务，
+    # 嵌入功能对该文件静默失效——此前能跑通只是因为文件名仍带「待填写-」前缀被这里命中。
+    return any(marker in text for marker in ("待填写", "待补充", "待确认", "待插入"))
 
 
 # 展示分口径（产品裁决 2026-07-16）：0.99 专用于「文件名精确命中」（与自动定案同款
 # 判据 title_matches_file_name），一切启发式分（文件级/片段/主题/近名）封顶 0.98。
 HEURISTIC_SCORE_CAP = 0.98
 EXACT_MATCH_SCORE = 0.99
+# 展示分诚实化（产品裁决 2026-08-04）：字面证据不足、仅靠弱召回/片段加成撑起的
+# 展示分封顶到低置信档——弱召回的多路求和是排序分，不能冒充置信度。
+WEAK_RECALL_DISPLAY_CAP = 0.49
 
 
 def material_score(material: dict[str, Any], title: str) -> float:
@@ -784,9 +818,14 @@ def attach_recalled_segments(materials: list[dict[str, Any]], title: str, *, lim
             item["matchScore"] = EXACT_MATCH_SCORE
             item["matchReason"] = item.get("matchReason") or "文件名精确命中章节标题"
         else:
-            base = max(material_score(material, title), _weak_recall_rank(material))
+            literal = material_score(material, title)
+            base = max(literal, _weak_recall_rank(material))
             segment_bonus = min(recalled[0]["matchScore"] if recalled else 0.0, 0.25)
-            item["matchScore"] = round(min(base + segment_bonus, HEURISTIC_SCORE_CAP), 2)
+            score = round(min(base + segment_bonus, HEURISTIC_SCORE_CAP), 2)
+            # 字面分不足半档时，弱召回/片段加成只能把展示分抬到低置信档上限。
+            if literal < WEAK_RECALL_DISPLAY_CAP:
+                score = min(score, WEAK_RECALL_DISPLAY_CAP)
+            item["matchScore"] = score
         if recalled:
             item["recalledSegments"] = recalled
             item["matchReason"] = f"段落级证据召回（{len(recalled)} 段相关）" if item["matchScore"] < EXACT_MATCH_SCORE else item["matchReason"]
@@ -1683,6 +1722,148 @@ def pure_letter_appendix_code(value: Any) -> str:
     return match.group(1).upper() if match else ""
 
 
+# 甲方已填附表的约定目录（项目定制/<项目>/技术附表输入文件）：业主侧的固定结构约定，
+# 目录内文件视为甲方已填写完成的附表，命名命中即替代表格填写任务（结构约定可硬编码）。
+CLIENT_APPENDIX_INPUT_FOLDER = "技术附表输入文件"
+# 甲方文件名里的整组编号（无数字）：「技术附H」「附表B」覆盖该字母组下所有附表（H.1/H.2/…）。
+# 注意兼容「技术附H」这种无「表」写法；带数字的（附表B.5）由 appendix_code 走精确匹配。
+_CLIENT_APPENDIX_GROUP_RE = re.compile(r"^\s*(?:技术)?附表?\s*([A-Za-z])\s*(?![.．\dA-Za-z])")
+
+
+def is_client_appendix_input_material(material: dict[str, Any]) -> bool:
+    """素材是否位于甲方附表输入约定目录（…/技术附表输入文件）。"""
+    folder = str(material.get("folderPath") or material.get("folder_path") or "")
+    parts = [part.strip() for part in folder.replace("\\", "/").split("/") if part.strip()]
+    return CLIENT_APPENDIX_INPUT_FOLDER in parts
+
+
+# 空副表约定目录（项目定制/<项目>/附表）：解析阶段生成的待填空表/Word，
+# 消费通道是 appendixTasks/fillTasks（parseResult 空表），不进正文素材匹配池。
+PROJECT_APPENDIX_FOLDER = "附表"
+
+
+def is_project_appendix_folder_material(material: dict[str, Any]) -> bool:
+    """素材是否位于项目定制的空副表约定目录（…/附表，精确目录段匹配）。"""
+    folder = str(material.get("folderPath") or material.get("folder_path") or "")
+    parts = [part.strip() for part in folder.replace("\\", "/").split("/") if part.strip()]
+    return PROJECT_APPENDIX_FOLDER in parts
+
+
+def client_appendix_file_keys(material: dict[str, Any]) -> tuple[str, str]:
+    """甲方已填附表文件的匹配键：(精确编号, 整组字母)，二者必居其一。
+
+    「附表B.5 …」→ ("B.5", "")，只覆盖附表B.5；
+    「技术附H …」→ ("", "H")，覆盖 H 组下所有附表（H.1/H.2/…）。
+    """
+    name = str(material.get("name") or material.get("cleanedFileName") or "")
+    code = appendix_code(name)
+    if code:
+        return code, ""
+    group = _CLIENT_APPENDIX_GROUP_RE.match(name)
+    return "", (group.group(1).upper() if group else "")
+
+
+def client_appendix_input_index(materials: list[dict[str, Any]]) -> dict[str, Any]:
+    """甲方附表输入目录的查表索引：exact=编号→素材，group=字母→素材，ambiguous=冲突键。
+
+    同编号/同字母命中多个不同文件时不自动定案——猜错一张已填表的代价高于人工挑选。
+    """
+    exact: dict[str, dict[str, Any]] = {}
+    group: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for material in dedupe_materials(materials):
+        if not is_client_appendix_input_material(material):
+            continue
+        code, group_letter = client_appendix_file_keys(material)
+        for key, table in ((code, exact), (group_letter, group)):
+            if not key or key in ambiguous:
+                continue
+            existing = table.get(key)
+            if existing is not None and str(existing.get("id") or "") != str(material.get("id") or ""):
+                table.pop(key, None)
+                ambiguous.add(key)
+                continue
+            table[key] = material
+    return {"exact": exact, "group": group, "ambiguous": ambiguous}
+
+
+def client_appendix_input_match(
+    appendix: dict[str, Any],
+    index: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """按附表编号查甲方已填表：精确编号 → 逐级向上按点号前缀 → 整组字母。
+
+    「附表C.8」文件只覆盖 C.8；「附表G.3」文件覆盖 G.3.1/G.3.2/…；「技术附H」覆盖 H 组全部。
+    返回 (命中素材, 匹配键)；未命中或命中键冲突（在 ambiguous 中已被剔除）返回 (None, "")。
+    """
+    title = str(appendix.get("title") or "")
+    code = appendix_code(title) or appendix_code(str(appendix.get("id") or ""))
+    if code:
+        exact = index.get("exact") or {}
+        hit = exact.get(code)
+        if hit is not None:
+            return hit, code
+        # 逐级向上剥离尾段：G.3.1 → G.3（「附表G.3」文件覆盖 G.3 组全部子表）
+        parts = code.split(".")
+        for cut in range(len(parts) - 1, 0, -1):
+            prefix = ".".join(parts[:cut])
+            prefix_hit = exact.get(prefix)
+            if prefix_hit is not None:
+                return prefix_hit, prefix
+        head = re.match(r"([A-Za-z])", code)
+        if head:
+            letter = head.group(1).upper()
+            group_hit = (index.get("group") or {}).get(letter)
+            if group_hit is not None:
+                return group_hit, letter
+        return None, ""
+    letter = pure_letter_appendix_code(title)
+    if letter:
+        hit = (index.get("group") or {}).get(letter)
+        if hit is not None:
+            return hit, letter
+    return None, ""
+
+
+def client_appendix_resolved_artifact(
+    appendix: dict[str, Any],
+    material: dict[str, Any],
+    *,
+    gap_id: str,
+    match_key: str,
+) -> dict[str, Any]:
+    """甲方已填附表的就绪产物：source 非 ai_fill 且 s7Ready，终审 recompute 据此判 ready，
+    S7 装配经 materialId 从素材库取原始 docx（见 tech_assembly._stage_selected_gap_plan_materials）。
+    """
+    appendix_id = str(appendix.get("id") or appendix.get("title") or "APP-UNKNOWN")
+    material_id = str(material.get("id") or "")
+    return {
+        "id": f"CLIENT-{gap_id}-{appendix_id}",
+        "source": "client_appendix_input",
+        "title": str(appendix.get("title") or "招标附表"),
+        "fileName": str(material.get("name") or material.get("cleanedFileName") or ""),
+        "path": "",
+        "materialId": material_id,
+        "matchKey": match_key,
+        "createdAt": now_iso(),
+        "operator": "系统（甲方附表输入）",
+        "s7Ready": True,
+        "confirmed": True,
+        "qualityGate": "client_provided",
+        "referenceMaterialIds": [material_id] if material_id else [],
+        "referenceMaterials": [
+            {
+                "id": material_id,
+                "name": str(material.get("name") or material.get("cleanedFileName") or ""),
+                "folderPath": str(material.get("folderPath") or ""),
+                "materialTier": str(material.get("materialTier") or ""),
+            }
+        ]
+        if material_id
+        else [],
+    }
+
+
 def appendix_container_letters(appendices: list[dict[str, Any]]) -> set[str]:
     """有子附表（附表X.数字）的字母集合。
 
@@ -2166,7 +2347,16 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     raw_wiki_dir = str(manifest.get("wikiDir") or "").strip()
     wiki_index = wiki_cards_by_section(Path(raw_wiki_dir) if raw_wiki_dir else None)
     project_turbine_model = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
-    indexed_materials = material_index_from_manifest(manifest)
+    indexed_materials_all = material_index_from_manifest(manifest)
+    # 甲方已填附表（…/技术附表输入文件）不进正文素材匹配池，只用于附表查表替换，
+    # 避免按标题打分被误挂到正文章节（如已填的「附表G.4 叶片…」挂到业绩章节）；
+    # 空副表约定目录（…/附表）同样不进正文池，其消费通道是 appendixTasks/fillTasks。
+    client_input_index = client_appendix_input_index(indexed_materials_all)
+    indexed_materials = [
+        m
+        for m in indexed_materials_all
+        if not is_client_appendix_input_material(m) and not is_project_appendix_folder_material(m)
+    ]
     allowed_paths = material_scope_paths(manifest)
     toc_materials_all: list[dict[str, Any]] = []
     for toc_item in items:
@@ -2229,6 +2419,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         required_inputs: list[dict[str, Any]] = []
         appendix_matches = matching_appendices(item, appendices, allow_title_match=not structural)
         appendix_tasks: list[dict[str, Any]] = []
+        resolved_artifacts: list[dict[str, Any]] = []
         decision = ""
         next_actions: list[str] = []
         coverage_role = ""
@@ -2271,9 +2462,20 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
             next_actions = ["ai_fill_word"] if parent_decision == "fill_required" else ["s4_merge_material"]
             # 覆盖锚点：本子节在整章素材内部对应的标题/片段，供 UI 预览与 S4 按节切分。
             source_anchor = outline_anchor_for_title(parent_coverage.get("material"), title)
+            # 释放预备（S3 树状改造）：被覆盖子级同样保留自身候选，父章被「忽略」后
+            # 前端直接按候选派生标签，无需重跑缺口识别；覆盖期间 matchedMaterials 仍为空。
+            own_pick, own_alternatives = pick_material(candidate_materials, title)
+            alternative_materials = dedupe_materials(
+                ([own_pick] if own_pick else []) + own_alternatives
+            )
+            alternative_materials = attach_recalled_segments(alternative_materials, title)
+            alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
+            alternative_materials = alternative_materials[:4]
         elif appendix_matches:
             recommended_pool = dedupe_materials(candidate_materials + indexed_materials + toc_materials_all)
             appendix_tasks = []
+            client_provided: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+            uncovered_appendices: list[dict[str, Any]] = []
             for appendix in appendix_matches:
                 source_rule = find_source_matrix_rule(manifest, appendix)
                 recommended = recommended_materials_for_appendix(
@@ -2281,18 +2483,40 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     recommended_pool,
                     source_rule=source_rule,
                 )
-                appendix_tasks.append(
-                    build_appendix_task(
-                        appendix,
-                        recommended,
-                        parse_fields,
-                        source_routing=source_routing_payload(source_rule, recommended),
-                    )
+                routing = source_routing_payload(source_rule, recommended)
+                if routing.get("useTenderParseFields"):
+                    tender_documents = tender_document_summaries(parse_result)
+                    routing["tenderDocuments"] = tender_documents
+                    routing["tenderDocumentCount"] = len(tender_documents)
+                    routing["tenderDocumentStatus"] = "available" if tender_documents else "missing_source"
+                task = build_appendix_task(
+                    appendix,
+                    recommended,
+                    parse_fields,
+                    source_routing=routing,
                 )
-            fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in appendix_matches]
-            required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写空表"})
-            status = "needs_input"
-            decision = "fill_required"
+                # 查表替换：甲方已填附表（…/技术附表输入文件）按命名严格命中——
+                # 精确编号（附表C.8）或整组字母（技术附H 覆盖 H 组全部），冲突键不定案。
+                client_material, client_key = client_appendix_input_match(appendix, client_input_index)
+                if client_material is not None:
+                    task["sourceRouting"] = {
+                        "status": "client_provided",
+                        "source": "client_appendix_input",
+                        "matchKey": client_key,
+                        "material": {
+                            "id": str(client_material.get("id") or ""),
+                            "name": str(client_material.get("name") or client_material.get("cleanedFileName") or ""),
+                            "folderPath": str(client_material.get("folderPath") or ""),
+                            "materialTier": str(client_material.get("materialTier") or ""),
+                        },
+                    }
+                    client_provided.append((appendix, client_material, client_key))
+                else:
+                    uncovered_appendices.append(appendix)
+                appendix_tasks.append(task)
+            # 已被甲方填好文件覆盖的附表不再产生填写任务；全部覆盖时写就绪产物，
+            # 终审 recompute（非 ai_fill 且 s7Ready）据此判 ready，S7 装配经 materialId 取文件。
+            fill_tasks = [build_fill_task(item, appendix, gap_id) for appendix in uncovered_appendices]
             usage = "appendix_fill"
             matched_materials = []
             alternative_materials = dedupe_materials(
@@ -2306,8 +2530,25 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     )[:5]
                 ]
             )
-            gap_reason = "解析阶段已生成空副表/Word，需要进入 S3 发起填写任务。"
-            next_actions = ["ai_fill_appendix", "select_reference_material", "manual_upload"]
+            if client_provided and not uncovered_appendices:
+                status = "resolved"
+                decision = "ready"
+                resolved_artifacts = [
+                    client_appendix_resolved_artifact(appendix, material, gap_id=gap_id, match_key=match_key)
+                    for appendix, material, match_key in client_provided
+                ]
+                names = "、".join(artifact["fileName"] for artifact in resolved_artifacts[:3])
+                gap_reason = f"甲方已提供填写完成的附表（{CLIENT_APPENDIX_INPUT_FOLDER}/{names}），自动就绪。"
+                next_actions = []
+            else:
+                required_inputs.append({"type": "ai_fill", "label": "选择参考素材并填写空表"})
+                status = "needs_input"
+                decision = "fill_required"
+                gap_reason = "解析阶段已生成空副表/Word，需要进入 S3 发起填写任务。"
+                if client_provided:
+                    covered_titles = "、".join(str(app.get("title") or "") for app, _, _ in client_provided[:3])
+                    gap_reason += f"其中「{covered_titles}」已由甲方提供填好文件（{CLIENT_APPENDIX_INPUT_FOLDER}），无需填写。"
+                next_actions = ["ai_fill_appendix", "select_reference_material", "manual_upload"]
         elif structural:
             children = chapter_children(item, items)
             child_titles = [str(child.get("title") or "") for child in children]
@@ -2380,6 +2621,23 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     matched_material["matchReason"] = f"整章素材覆盖“{title}”及其子节。"
             if matched_material:
                 coverage_role = "chapter_master"
+                # 展示分诚实化（产品裁决 2026-08-04）：整章定案的依据是标题树覆盖或
+                # 剥修饰同名，不是字面包含；展示分按证据强度给（覆盖 50%→0.74、全覆盖
+                # →0.98），不再把强证据素材显示成字面低分。后端补盖只补空缺，不会改写。
+                if title_matches_file_name(matched_material, title):
+                    matched_material["matchScore"] = EXACT_MATCH_SCORE
+                else:
+                    master_coverage = outline_child_coverage(matched_material, child_titles)
+                    if master_coverage > 0:
+                        matched_material["matchScore"] = round(
+                            min(0.5 + 0.48 * master_coverage, HEURISTIC_SCORE_CAP), 2
+                        )
+                        matched_material["matchReason"] = f"整章素材·标题树覆盖{round(master_coverage * 100)}%子节"
+                    elif strong_title_material_match(matched_material, title) == "name":
+                        matched_material["matchScore"] = 0.95
+                        matched_material["matchReason"] = "整章素材·剥修饰同名"
+                    else:
+                        matched_material["matchScore"] = display_match_score(matched_material, title)
                 matched_materials = [matched_material]
                 parent_fill_required = material_requires_fill(matched_material)
                 if parent_fill_required:
@@ -2599,7 +2857,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "appendixTasks": appendix_tasks,
                 "requiredInputs": required_inputs,
                 "fillTasks": fill_tasks,
-                "resolvedArtifacts": [],
+                "resolvedArtifacts": resolved_artifacts,
                 "reviewNotes": [],
                 "gapReason": gap_reason,
                 "projectTurbineModel": project_turbine_model,

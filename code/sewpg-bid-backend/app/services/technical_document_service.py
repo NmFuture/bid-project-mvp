@@ -20,7 +20,6 @@ from app.services.technical_document_format import TECH_FORMAT_PRESETS, apply_te
 from app.services.url_utils import now_message
 from app.services.workspace_project_access import persist_workspace_project_state, require_workspace_project_for_update
 
-
 def _technical_project_for_update(project_id: str) -> dict[str, Any]:
     return require_workspace_project_for_update(
         project_id,
