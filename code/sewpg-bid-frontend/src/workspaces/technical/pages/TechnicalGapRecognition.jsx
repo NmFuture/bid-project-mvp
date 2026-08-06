@@ -19,6 +19,8 @@ import {
   appendixTaskForFillTask,
   defaultAiFillParseFieldIds,
   defaultAiFillReferenceMaterialIds,
+  currentResolvedArtifact,
+  currentResolvedArtifacts,
   isFillTemplateMaterial,
   isStructuralItem,
   latestResolvedArtifact,
@@ -1449,10 +1451,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   const selectedResolvedArtifact = latestResolvedArtifact(selected)
   // 本章合并清单（产品意见 2026-07-17 方案A）：展示本章全部已选用素材/上传/AI 产物，
   // 替代只显示最新一条产物的旧结果行。2026-08-02：每个目录项只定案一份素材，无合并顺序概念。
-  const mergeArtifacts = asObjectArray(selected?.resolvedArtifacts)
+  const mergeArtifacts = currentResolvedArtifacts(selected)
   // 已选用素材 id 集合：选用产物 source=material_library，对齐商务标已选高亮。
   const selectedMaterialIdSet = new Set(
-    asObjectArray(selected?.resolvedArtifacts)
+    currentResolvedArtifacts(selected)
       .filter((artifact) => String(artifact?.source || '') === 'material_library')
       .map((artifact) => String(artifact?.materialId || '').trim())
       .filter(Boolean),
@@ -1936,7 +1938,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 「复核通过」（产品裁决 2026-08-04 行为①）：确认全部 AI 填写产物，本条收口为已就绪素材。
   const handleReviewPassAiFill = (item) => {
     const artifact = asObjectArray(item?.resolvedArtifacts)
-      .filter((entry) => String(entry?.source || '') === 'ai_fill')
+      .filter((entry) => currentResolvedArtifact(entry) && String(entry?.source || '') === 'ai_fill')
       .pop()
     if (!artifact?.id) return null
     return runAction(

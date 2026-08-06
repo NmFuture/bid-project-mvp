@@ -768,6 +768,9 @@ def _gap_plan_paths(item: dict) -> list[str]:
 
 
 def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
+    # active=False 表示已被撤销/取代的非活动产物（保留审计），一律不进 S7。
+    if artifact.get("active", True) is False:
+        return False
     if artifact.get("s7Ready", True) is False:
         return False
     if str(artifact.get("source") or "") != "ai_fill":
