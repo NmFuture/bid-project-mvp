@@ -241,6 +241,10 @@ def _run_job(job: dict[str, Any]) -> bool:
                 on_material_wiki_job_finished()
             except Exception as auto_exc:
                 logger.warning("素材流水线自动衔接失败（Wiki 钩子）：%s", auto_exc)
+        elif job_type == "fact_curate":
+            from app.services.technical_fact_curate_job import run_fact_curate_job
+
+            final_state = run_fact_curate_job(project_id, data)
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type

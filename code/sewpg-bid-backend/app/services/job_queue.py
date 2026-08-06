@@ -28,6 +28,7 @@ INTERNAL_JOB_TYPES = {
 }
 KNOWN_JOB_TYPES = {
     "directory_generation",
+    "fact_curate",
     "fill_generation",
     "material_cleaning",
     "material_deep_parse",

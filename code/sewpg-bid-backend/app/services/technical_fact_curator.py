@@ -16,10 +16,11 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from app.core.config import BASE_DIR
+from app.core.config import BASE_DIR, settings
 from app.services.opencode_client import OpencodeClient
 from app.services.technical_fact_spec_versions import resolve_project_specs
 from app.services.technical_fact_material_classes import (
@@ -29,6 +30,7 @@ from app.services.technical_fact_material_classes import (
     material_home_project,
 )
 from app.services.technical_gap_fact_table import (
+    FACT_MATERIAL_USAGE_CURATE,
     FACT_STATUS_CONFIRMED,
     FACT_STATUS_EXTRACTED,
     FACT_STATUS_MISSING_SOURCE,
@@ -38,9 +40,10 @@ from app.services.technical_gap_fact_table import (
     fact_label_key,
     normalize_fact_source_refs,
     project_fact_material_index,
-    prepare_project_fact_materials,
+    project_fact_material_work_dir,
     summarize_project_fact_fields,
 )
+from app.services.project_fact_materials import project_fact_material_cached_path
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import technical_workspace_dir, technical_workspace_parse_dir
 
@@ -66,8 +69,9 @@ _FACT_TERMINAL_STATUSES = {
     FACT_STATUS_MISSING_SOURCE,
 }
 
-# manifest 中带给 skill 的相关素材上限，避免长尾项目把 prompt 撑爆
-_CURATOR_MATERIAL_LIMIT = 40
+# manifest 中带给 skill 的素材清单上限：清单只有元数据（约 370B/条），正文由 skill 按
+# materialFetch 现取，所以按覆盖三层素材范围来设，而不是按 prompt 体积压缩
+_CURATOR_MATERIAL_LIMIT = 200
 
 # 缺失类别注入的跨项目候选每类上限（占用 _CURATOR_MATERIAL_LIMIT 额度，本项目素材优先）
 _CURATOR_CROSS_PROJECT_LIMIT = 3
@@ -148,42 +152,58 @@ def _cross_project_curator_candidates(
     return candidates
 
 
+def _material_fetch_endpoint(project_id: str) -> dict[str, str]:
+    """素材按需拉取入口：以 {materialId} 占位，skill 替换后 POST 即得本地路径。"""
+    base = settings.bid_internal_api_base_url.rstrip("/")
+    return {
+        "method": "POST",
+        "url": f"{base}/api/technical/projects/{project_id}/gaps/facts/materials/{{materialId}}/fetch",
+        "responseField": "path",
+    }
+
+
 def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
-    """相关素材路径：复用事实表构建的素材索引与落地逻辑，只保留本地可读文件。
+    """相关素材清单：复用事实表构建的素材索引，已落地的给路径，其余留给 skill 按需拉取。
 
     每条素材标注 materialClass / homeProject / crossProject（homeProject 非空且 ≠ 本项目名）；
-    预检缺失的类别追加跨项目候选（走 prepare_project_fact_materials 落地，
-    占用 _CURATOR_MATERIAL_LIMIT 额度且本项目素材优先），供 skill 定向读取。
+    预检缺失的类别追加跨项目候选（占用 _CURATOR_MATERIAL_LIMIT 额度，本项目素材优先），
+    供 skill 定向读取。清单只带元数据，正文由 skill 按需取，不在构造 manifest 时全量下载。
     """
-    materials = project_fact_material_index(project, gap_state)
+    materials = project_fact_material_index(project, gap_state, usage=FACT_MATERIAL_USAGE_CURATE)
     own = materials[:_CURATOR_MATERIAL_LIMIT]
     candidates = _cross_project_curator_candidates(
         project, gap_state, own, _CURATOR_MATERIAL_LIMIT - len(own)
     )
     if not own and not candidates:
         return []
-    prepared = prepare_project_fact_materials(project, [*own, *candidates])
+    cache_dir = project_fact_material_work_dir(project) / "material_index"
     project_name = str(project.get("name") or "")
     result: list[dict[str, Any]] = []
-    for material in prepared:
+    for material in [*own, *candidates]:
         if not isinstance(material, dict):
             continue
-        path_text = str(material.get("path") or "").strip()
-        if not path_text or not Path(path_text).is_file():
+        material_id = str(material.get("id") or material.get("materialId") or "")
+        if not material_id:
             continue
         home_project = str(material.get("homeProject") or "") or material_home_project(material)
-        result.append(
-            {
-                "id": str(material.get("id") or material.get("materialId") or ""),
-                "name": str(material.get("name") or material.get("cleanedFileName") or ""),
-                "path": path_text,
-                "folderPath": str(material.get("folderPath") or ""),
-                "materialTier": str(material.get("materialTier") or ""),
-                "materialClass": classify_material(material) or "",
-                "homeProject": home_project,
-                "crossProject": bool(home_project and home_project != project_name),
-            }
-        )
+        item = {
+            "id": material_id,
+            "name": str(material.get("name") or material.get("cleanedFileName") or ""),
+            "folderPath": str(material.get("folderPath") or ""),
+            "materialTier": str(material.get("materialTier") or ""),
+            "materialClass": classify_material(material) or "",
+            "homeProject": home_project,
+            "crossProject": bool(home_project and home_project != project_name),
+        }
+        # build 阶段已落地的素材直接给路径；未落地的不带 path，由 skill 按 materialFetch 现取
+        cached = project_fact_material_cached_path(cache_dir, material_id)
+        if cached is None:
+            existing = str(material.get("path") or "").strip()
+            if existing and Path(existing).is_file():
+                cached = Path(existing)
+        if cached is not None:
+            item["path"] = str(cached)
+        result.append(item)
     return result
 
 
@@ -264,6 +284,8 @@ def build_fact_curator_manifest(
         "targets": _curate_targets(fields),
         "tenderSources": _tender_sources(project),
         "materials": _curator_materials(project, gap_state),
+        # 素材按需拉取入口：materials 里没有 path 的条目，读取前先取一次拿到本地路径
+        "materialFetch": _material_fetch_endpoint(str(project.get("id") or "")),
         # 本次维护任务实际使用的规则版本快照（审计追溯）
         "factSpecsRef": fact_specs_meta,
         "briefFile": str(work_dir / "fact_curate_brief.json"),
@@ -519,11 +541,26 @@ def run_fact_curator_for_project(
     project: dict[str, Any],
     gap_state: dict[str, Any],
     data: dict[str, Any],
+    *,
+    on_phase: Callable[[str, str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """同步重活入口（由 service 经 asyncio.to_thread 调用）：组 manifest → 调 skill → 回收落表。"""
+    """同步重活入口（由后台任务调用）：组 manifest → 调 skill → 回收落表。
+
+    on_phase(phase, message) 在阶段切换时回调，供任务层写进度；不传则静默执行。
+    """
+
+    def notify(phase: str, message: str = "") -> None:
+        if on_phase is None:
+            return
+        try:
+            on_phase(phase, message)
+        except Exception:  # noqa: BLE001 - 进度上报失败不该中断主流程
+            logger.warning("事实表维护进度上报失败：%s", phase)
+
     table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     if not table.get("fields"):
         raise ValueError("项目事实表为空，请先构建事实表再运行维护 Skill。")
+    notify("组装素材清单", "正在按素材范围组装候选清单。")
     manifest, manifest_path = build_fact_curator_manifest(project, gap_state, data)
     # 清掉上一轮产物：会话未能写出新建议文件时，残留的上一轮回 outputFile 会被
     # load_fact_curator_suggestions 当作本轮结果回收（表现为建议数与上次完全相同）
@@ -533,7 +570,11 @@ def run_fact_curator_for_project(
             artifact = Path(artifact_text)
             if artifact.is_file():
                 artifact.unlink()
+    targets = manifest.get("targets") if isinstance(manifest.get("targets"), dict) else {}
+    target_total = sum(len(targets.get(key) or []) for key in ("fill", "fix", "confirmAdvice"))
+    notify("AI 分析素材", f"AI 正在按 {target_total} 个目标字段查证素材（耗时较长）。")
     result = run_technical_fact_curator_skill(manifest_path)
+    notify("回收建议落表", "正在回收 AI 建议并写入事实表。")
     suggestions = load_fact_curator_suggestions(result, manifest)
     saved_at = _now_iso()
     operator = str(data.get("operator") or "当前用户")

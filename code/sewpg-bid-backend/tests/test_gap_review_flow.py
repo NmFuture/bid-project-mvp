@@ -793,7 +793,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertTrue(model["sourceRefs"])
         # 未提取骨架计 unextracted，missingCount 只统计 missing_source
         self.assertEqual(payload["summary"]["missingCount"], 0)
-        self.assertEqual(payload["summary"]["specTotal"], 128)
+        self.assertEqual(payload["summary"]["specTotal"], 148)
 
         confirmed = self._confirm_project_fact_table(project_id, {"承诺函致函对象全称": "按招标文件要求执行"})
 

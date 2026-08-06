@@ -27,14 +27,36 @@ class TestTechnicalFactFieldSpecs(unittest.TestCase):
         specs = load_specs()
         self.assertEqual(len(specs), 148)
         fillable = fillable_specs()
-        self.assertEqual(len(fillable), 128)
+        # 0722 清单来源列没有整格留空的条目，20 条「/」是来源未指定而非模板占位，同样要取值
+        self.assertEqual(len(fillable), 148)
         self.assertEqual(sum(1 for spec in specs if spec.get("needsConfirmation")), 14)
-        self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "template"), 20)
+        self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "template"), 0)
+        self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "unspecified"), 20)
         # 模板更新条目不进填值流程
         self.assertTrue(all(spec.get("valueRequired") for spec in fillable))
         # 每条 spec 都有稳定 key 与字段名
         self.assertTrue(all(spec.get("key") and spec.get("label") for spec in specs))
         self.assertEqual(len({spec["key"] for spec in specs}), 148)
+
+    def test_slash_reference_is_unspecified_not_template(self) -> None:
+        """来源列「/」= 来源未指定但仍需取值；只有整格留空才是模板占位。"""
+        from app.services.technical_fact_field_specs import normalize_spec_source_kind
+        from app.services.technical_fact_spec_import import classify_source
+
+        self.assertEqual(classify_source("/"), "unspecified")
+        self.assertEqual(classify_source(""), "template")
+        self.assertEqual(classify_source("项目定制-风资源报告"), "material")
+
+        # 历史快照里「/」被归成 template，加载时按原始 referenceFile 重算
+        migrated = normalize_spec_source_kind(
+            {"label": "主机舱-超细干粉灭火装置数量（件）", "referenceFile": "/", "sourceKind": "template", "valueRequired": False}
+        )
+        self.assertEqual(migrated["sourceKind"], "unspecified")
+        self.assertTrue(migrated["valueRequired"])
+
+        # 口径一致的 spec 原样返回，不产生多余拷贝
+        intact = {"label": "x", "referenceFile": "招标文件", "sourceKind": "tender", "valueRequired": True}
+        self.assertIs(normalize_spec_source_kind(intact), intact)
 
     def test_legacy_status_mapping(self) -> None:
         self.assertEqual(normalize_fact_status("candidate", has_value=True), FACT_STATUS_EXTRACTED)
@@ -49,11 +71,11 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
     def test_skeleton_fields_cover_all_fillable_specs(self) -> None:
         fields_by_key: dict[str, dict] = {}
         reconcile_fact_fields_with_specs(fields_by_key)
-        self.assertEqual(len(fields_by_key), 128)
+        self.assertEqual(len(fields_by_key), 148)
         statuses = {field["status"] for field in fields_by_key.values()}
         self.assertEqual(statuses, {FACT_STATUS_UNEXTRACTED})
         seqs = {field["specSeq"] for field in fields_by_key.values()}
-        self.assertEqual(len(seqs), 128)
+        self.assertEqual(len(seqs), 148)
 
     def test_matched_field_gets_spec_metadata(self) -> None:
         fields_by_key = {
@@ -70,7 +92,7 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
         self.assertEqual(field["specSeq"], 4)
         self.assertEqual(field["label"], "功率曲线保证率")
         # 其余 spec 仍为骨架
-        self.assertEqual(len(fields_by_key), 128)
+        self.assertEqual(len(fields_by_key), 148)
 
     def test_needs_confirmation_spec_becomes_pending(self) -> None:
         # spec 87「函件签署日期」别名「日期」，无待确认；spec 7「发电小时数/电量承诺函版本」需确认
@@ -215,8 +237,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         table = build_project_fact_table(project, gap_state)
         self.assertEqual(table["schemaVersion"], "bid-project-fact-table-v2")
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
-        self.assertEqual(len(spec_fields), 128)
-        self.assertEqual(table["summary"]["specTotal"], 128)
+        self.assertEqual(len(spec_fields), 148)
+        self.assertEqual(table["summary"]["specTotal"], 148)
         # 项目名称命中 spec 112
         name_field = next(field for field in spec_fields if field["specSeq"] == 112)
         self.assertEqual(name_field["value"], "翁牛特旗120万千瓦风电项目")
@@ -237,7 +259,7 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
             "parse_result": {},
         }
         table = build_project_fact_table(project, self._spec_gap_state())
-        self.assertEqual(len(table["fields"]), 128)
+        self.assertEqual(len(table["fields"]), 148)
         self.assertTrue(all(field.get("specSeq") for field in table["fields"]))
         # 项目名称（硬编码候选，type=project）并入 spec 112 行
         name_field = next(field for field in table["fields"] if field["specSeq"] == 112)
@@ -268,12 +290,12 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
             },
         }
         table = build_project_fact_table(project, gap_state)
-        self.assertEqual(len(table["fields"]), 129)
+        self.assertEqual(len(table["fields"]), 149)
         manual = table["fields"][-1]
         self.assertEqual(manual["label"], "业主特殊要求")
         self.assertEqual(manual["value"], "按补充协议执行")
         self.assertFalse(manual.get("specSeq"))
-        self.assertEqual(table["summary"]["specTotal"], 128)
+        self.assertEqual(table["summary"]["specTotal"], 148)
 
     def test_build_preserves_confirmed_field_removed_from_current_specs(self) -> None:
         """规则换版后，旧规则下已确认字段保留为清单外历史事实，不污染新规则进度。"""

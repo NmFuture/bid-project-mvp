@@ -54,9 +54,16 @@ def normalize_key(text: str) -> str:
 
 
 def classify_source(reference_file: str) -> str:
+    """来源文件列 → 来源类别。
+
+    「/」与整格留空语义不同：前者是编制清单时未指定来源，字段仍需取值，交给 AI 在
+    素材范围内找；后者才是模板占位，不进取数流程。
+    """
     ref = (reference_file or "").strip()
-    if not ref or ref == "/":
+    if not ref:
         return "template"
+    if ref == "/":
+        return "unspecified"
     for prefix, kind in SOURCE_KIND_RULES:
         if ref.startswith(prefix):
             return kind

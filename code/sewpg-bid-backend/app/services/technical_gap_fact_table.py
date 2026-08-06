@@ -1166,7 +1166,18 @@ def project_material_fact_fields(
     return facts
 
 
-def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
+# 素材索引口径：build 供规则抽取（只认项目定制素材的格式），
+# curate 供 AI 补抽（机型标准配置类字段的来源只在标准文件目录下）
+FACT_MATERIAL_USAGE_BUILD = "build"
+FACT_MATERIAL_USAGE_CURATE = "curate"
+
+
+def project_fact_material_index(
+    project: dict[str, Any],
+    gap_state: dict[str, Any],
+    *,
+    usage: str = FACT_MATERIAL_USAGE_BUILD,
+) -> list[dict[str, Any]]:
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     materials: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1214,11 +1225,19 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
     try:
         selected_model = project_turbine_model(project)
 
-        def collect_scope_files(folder_path: str, material_tier: str) -> None:
+        def collect_scope_files(
+            folder_path: str,
+            material_tier: str,
+            *,
+            customer_name: str = "",
+            project_id: str = "",
+        ) -> None:
             payload = run_async_material_files(
                 folder_path=folder_path,
                 bid_type=TECHNICAL_BID_TYPE,
                 material_tier=material_tier,
+                customer_name=customer_name,
+                project_id=project_id,
                 turbine_model=selected_model,
                 recursive=True,
                 page=1,
@@ -1249,13 +1268,26 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
             for scope in material_scope.get("readableScopes") or []:
                 if not isinstance(scope, dict):
                     continue
-                # 事实表匹配只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
-                # 相关项目素材由用户归置到该目录下），不扫标准文件/客户定制目录
-                if str(scope.get("materialTier") or "") != "project":
+                # build 只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
+                # 相关项目素材由用户归置到该目录下）：规则抽取器只认这些素材的格式。
+                # curate 三层都扫，标准文件目录已由 turbine_model 收敛到本机型。
+                tier = str(scope.get("materialTier") or "")
+                if usage == FACT_MATERIAL_USAGE_BUILD and tier != "project":
                     continue
                 folder_path = str(scope.get("path") or "").strip()
-                if folder_path:
-                    collect_scope_files(folder_path, str(scope.get("materialTier") or ""))
+                if not folder_path:
+                    continue
+                # 素材库按客户别名建目录（如「华能」而非规范名「华能集团」），拼全路径查不到。
+                # 与 planner 同口径：客户/项目层路径截到标类根，改用 customer_name/project_id
+                # 交给 customer_matches/project_matches 做别名匹配。
+                if tier in {"customer", "project"}:
+                    folder_path = "/".join([part for part in folder_path.split("/") if part][:2])
+                collect_scope_files(
+                    folder_path,
+                    tier,
+                    customer_name=str(scope.get("customerName") or "") if tier == "customer" else "",
+                    project_id=str(scope.get("projectId") or "") if tier == "project" else "",
+                )
 
         # 用户显式选择的目录始终叠加到计划索引，并按素材 ID 去重。
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
@@ -1268,7 +1300,7 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                 collect_scope_files(folder_path, "")
     except Exception:
         logger.exception("项目事实素材索引查询失败，保留已收集素材继续构建")
-    return [item for item in materials if material_is_fact_relevant(item)]
+    return [item for item in materials if material_is_fact_relevant(item, usage=usage)]
 
 
 # 业主待填目标表格模板的文件名前缀（「待填写-附表X….docx」「待填写、待用印-….docx」等，
@@ -1282,11 +1314,20 @@ def material_is_fill_template(material: dict[str, Any]) -> bool:
     return name.startswith(FILL_TEMPLATE_NAME_PREFIX)
 
 
-def material_is_fact_relevant(material: dict[str, Any]) -> bool:
+def material_is_fact_relevant(
+    material: dict[str, Any],
+    *,
+    usage: str = FACT_MATERIAL_USAGE_BUILD,
+) -> bool:
     if material_is_fill_template(material):
         return False
     tier = str(material.get("materialTier") or "").strip()
     if tier == "project":
+        return True
+    # curate 的范围已由 build_project_material_scope 按机型/客户收敛，无需再按关键词猜内容：
+    # 白名单会挡掉机型标准配置类素材（如自动消防系统），而这类素材正是 Excel 未指定来源
+    # （referenceFile 为「/」）的字段的唯一取值处。
+    if usage == FACT_MATERIAL_USAGE_CURATE:
         return True
     text = " ".join(
         str(material.get(key) or "")
@@ -1301,19 +1342,24 @@ def material_is_fact_relevant(material: dict[str, Any]) -> bool:
     )
 
 
+def project_fact_material_work_dir(project: dict[str, Any]) -> Path:
+    """事实表素材物化目录：build 批量落地与 curate 按需拉取共用同一份缓存。"""
+    project_id = str(project.get("id") or "project")
+    return settings.documents_dir / project_id / "technical-workspace" / "gaps" / "fact_table_materials"
+
+
 def prepare_project_fact_materials(project: dict[str, Any], materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     path_materials = [item for item in materials if item.get("path")]
     if path_materials and len(path_materials) == len(materials) and all(
         Path(str(item.get("path") or "")).exists() for item in path_materials
     ):
         return materials
-    project_id = str(project.get("id") or "project")
-    bid_type = TECHNICAL_BID_TYPE
-    workspace_dir = "technical-workspace"
-    work_dir = settings.documents_dir / project_id / workspace_dir / "gaps" / "fact_table_materials"
+    work_dir = project_fact_material_work_dir(project)
     work_dir.mkdir(parents=True, exist_ok=True)
     try:
-        return prepare_project_fact_material_files(materials, work_dir, bid_type=bid_type, limit=120)
+        return prepare_project_fact_material_files(
+            materials, work_dir, bid_type=TECHNICAL_BID_TYPE, limit=120
+        )
     except Exception:
         return materials
 

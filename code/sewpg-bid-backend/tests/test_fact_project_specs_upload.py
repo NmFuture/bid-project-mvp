@@ -257,13 +257,13 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
 
 
 class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
-    """素材回退扫描只查本项目「项目定制」目录，不扫标准/客户定制目录。"""
+    """素材回退扫描按 usage 分口径：build 只查项目定制，curate 三层都查。"""
 
     def test_fallback_scan_only_queries_project_tier_scope(self) -> None:
         scopes = [
             {"materialTier": "standard", "path": "技术标/标准素材"},
-            {"materialTier": "customer", "path": "技术标/客户定制/测试业主"},
-            {"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目"},
+            {"materialTier": "customer", "path": "技术标/客户定制/测试业主", "customerName": "测试业主"},
+            {"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目", "projectId": "P-SCOPE"},
         ]
         calls: list[dict] = []
 
@@ -295,10 +295,10 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
                 {"id": "P-SCOPE", "name": "实时表上传测试项目"}, {"plan": {}}
             )
 
-        self.assertEqual(
-            [call["folder_path"] for call in calls], ["技术标/项目定制/实时表上传测试项目"]
-        )
+        # 素材库按别名建目录，路径截到标类根，项目归属交给 project_id 匹配（与 planner 同口径）
+        self.assertEqual([call["folder_path"] for call in calls], ["技术标/项目定制"])
         self.assertTrue(all(call["material_tier"] == "project" for call in calls))
+        self.assertEqual([call["project_id"] for call in calls], ["P-SCOPE"])
         self.assertEqual([material["id"] for material in materials], ["RAW-P1"])
 
     def test_fallback_scan_includes_custom_material_paths(self) -> None:
@@ -329,12 +329,68 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
                 {"plan": {}, "factMaterialPaths": ["项目定制/其他项目"]},
             )
 
+        # 默认项目层截到标类根；用户显式配置的目录按原样查，不截断也不按 tier 过滤
         self.assertEqual(
             [call["folder_path"] for call in calls],
-            ["技术标/项目定制/实时表上传测试项目", "技术标/项目定制/其他项目"],
+            ["技术标/项目定制", "技术标/项目定制/其他项目"],
         )
-        # 项目定制默认目录仍按 project 层过滤；自定义参考目录不过滤 tier
         self.assertEqual([call["material_tier"] for call in calls], ["project", ""])
+
+    def test_curate_usage_scans_all_three_tiers(self) -> None:
+        """curate 口径扫标准文件/客户定制/项目定制三层：机型标准配置类字段的来源在标准文件目录下。"""
+        scopes = [
+            {"materialTier": "standard", "path": "技术标/标准文件"},
+            {"materialTier": "customer", "path": "技术标/客户定制/华能集团", "customerName": "华能集团"},
+            {"materialTier": "project", "path": "技术标/项目定制/实时表上传测试项目", "projectId": "P-SCOPE"},
+        ]
+        calls: list[dict] = []
+
+        def fake_material_files(**kwargs):
+            calls.append(kwargs)
+            return {"items": []}
+
+        with (
+            patch.object(
+                fact_table_module,
+                "build_project_material_scope",
+                lambda project: {"readableScopes": scopes},
+            ),
+            patch.object(
+                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+            ),
+        ):
+            fact_table_module.project_fact_material_index(
+                {"id": "P-SCOPE", "name": "实时表上传测试项目"},
+                {"plan": {}},
+                usage=fact_table_module.FACT_MATERIAL_USAGE_CURATE,
+            )
+
+        self.assertEqual(
+            [call["material_tier"] for call in calls], ["standard", "customer", "project"]
+        )
+        # 客户目录按别名建（「华能」≠ 规范名「华能集团」），拼全路径查不到：
+        # 路径截到标类根，客户归属交给 customer_name 走别名匹配
+        self.assertEqual(
+            [call["folder_path"] for call in calls],
+            ["技术标/标准文件", "技术标/客户定制", "技术标/项目定制"],
+        )
+        self.assertEqual([call["customer_name"] for call in calls], ["", "华能集团", ""])
+
+    def test_curate_usage_keeps_standard_tier_material_off_keyword_whitelist(self) -> None:
+        """curate 口径不按关键词筛非项目素材：机型自动消防系统不在白名单词表内，但必须保留。"""
+        material = {
+            "id": "RAW-FIRE",
+            "name": "高功率X2平台机组自动消防系统（上置）.docx",
+            "folderPath": "技术标/标准文件/EW10.0-220上置/专题/数字化智慧风场专题/智能传感系统",
+            "materialTier": "standard",
+        }
+
+        self.assertFalse(fact_table_module.material_is_fact_relevant(material))
+        self.assertTrue(
+            fact_table_module.material_is_fact_relevant(
+                material, usage=fact_table_module.FACT_MATERIAL_USAGE_CURATE
+            )
+        )
 
     def test_custom_material_paths_include_standard_tier_materials(self) -> None:
         """自定义参考目录下 tier=standard 的真实数据素材也能进索引（回归：整目录被 tier 过滤误伤）。"""
