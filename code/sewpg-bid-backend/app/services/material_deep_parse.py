@@ -29,7 +29,7 @@ import re
 import threading
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -38,6 +38,7 @@ from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile
 from app.services.material_cleaned_artifact import cleaned_artifact_is_current
+from app.services.material_fulltext_artifacts import fulltext_object_key
 from app.services.job_queue import enqueue_generation_job
 from app.services.local_job_executor import submit_local_job
 from app.services.material_cleaning import (
@@ -206,11 +207,20 @@ async def _write_deep_parse_status(
     profile: dict[str, Any] | None = None,
     source_key: str = "",
     source_size: int = 0,
-) -> None:
+    expected_source_version: int | None = None,
+    expected_source_key: str = "",
+) -> bool:
     async with async_session() as session:
-        item = await session.get(RawFile, numeric_id)
+        result = await session.execute(select(RawFile).where(RawFile.id == numeric_id).with_for_update())
+        item = result.scalar_one_or_none()
         if item is None:
-            return
+            return False
+        if expected_source_version is not None and int(getattr(item, "version", 1) or 1) != int(
+            expected_source_version
+        ):
+            return False
+        if expected_source_key and str(item.minio_key or "") != str(expected_source_key):
+            return False
         ext = dict(item.ext_fields or {})
         ext[DEEP_PARSE_STATUS_FIELD] = status
         ext[DEEP_PARSE_MESSAGE_FIELD] = message
@@ -232,6 +242,41 @@ async def _write_deep_parse_status(
                 ext[DEEP_PARSE_FAIL_COUNT_FIELD] = 1
         item.ext_fields = ext
         await session.commit()
+        return True
+
+
+async def _fulltext_reference_state(
+    numeric_id: int,
+    *,
+    source_version: int,
+    source_key: str,
+    bucket: str,
+    fulltext_key: str,
+) -> Literal["stale", "current_source_changed", "current_unreferenced", "referenced", "unknown"]:
+    """识别全文引用状态；只有 stale 产物可安全删除。"""
+
+    try:
+        async with async_session() as session:
+            item = await session.get(RawFile, numeric_id)
+    except Exception as exc:  # pragma: no cover - 提交结果不确定时必须保守保留对象
+        logger.warning("Failed to verify material fulltext reference for RAW-%04d: %s", numeric_id, exc)
+        return "unknown"
+    if item is None:
+        return "stale"
+    if int(getattr(item, "version", 1) or 1) != int(source_version):
+        return "stale"
+    if str(item.minio_key or "") != str(source_key):
+        return "current_source_changed"
+    envelope = dict(item.ext_fields or {}).get(DEEP_PARSE_PROFILE_FIELD)
+    if not isinstance(envelope, dict) or str(envelope.get("sourceKey") or "") != str(source_key):
+        return "current_unreferenced"
+    profile = envelope.get("profile")
+    if not isinstance(profile, dict):
+        return "current_unreferenced"
+    referenced = str(profile.get("fulltextBucket") or "") == bucket and str(
+        profile.get("fulltextKey") or ""
+    ) == fulltext_key
+    return "referenced" if referenced else "current_unreferenced"
 
 
 def _pdf_text_layers(data_bytes: bytes, max_pages: int) -> tuple[int, list[str]]:
@@ -317,10 +362,6 @@ def _excerpt_paragraphs(lines: list[str]) -> list[str]:
     return picked
 
 
-def fulltext_object_key(raw_file_id: int, source_version: int) -> str:
-    return f"parsed/RAW-{raw_file_id:04d}/v{int(source_version or 1)}/fulltext.md"
-
-
 async def _run_extract_job(
     numeric_id: int,
     *,
@@ -332,13 +373,26 @@ async def _run_extract_job(
 ) -> dict[str, Any]:
     """PDF 全文提取：文字层优先、扫描页 OCR 兜底，全文落 MinIO，画像回写。"""
 
-    await _write_deep_parse_status(numeric_id, "running", "后台全文提取中（文字层优先，扫描页 OCR 兜底）。")
+    async def write_status(status: str, message: str, **kwargs: Any) -> bool:
+        return await _write_deep_parse_status(
+            numeric_id,
+            status,
+            message,
+            expected_source_version=source_version,
+            expected_source_key=source_key,
+            **kwargs,
+        )
+
+    stale_message = "后台全文提取对应的素材已删除或换版。"
+    if not await write_status("running", "后台全文提取中（文字层优先，扫描页 OCR 兜底）。"):
+        return {"deepParseStatus": "stale", "deepParseMessage": stale_message}
+    uploaded_fulltext: tuple[str, str] | None = None
     try:
         data_bytes = await asyncio.to_thread(minio_client.get_object, source_bucket, source_key)
         total_pages, page_texts = await asyncio.to_thread(_pdf_text_layers, data_bytes, PDF_EXTRACT_MAX_PAGES)
         if not total_pages:
             message = "后台全文提取失败：PDF 无页面。"
-            await _write_deep_parse_status(numeric_id, "failed", message)
+            await write_status("failed", message)
             return {"deepParseStatus": "failed", "deepParseMessage": message}
         processed_pages = len(page_texts)
         truncated = total_pages > processed_pages
@@ -376,7 +430,7 @@ async def _run_extract_job(
 
         if not any(page_texts):
             message = "后台全文提取失败：文字层为空且 OCR 未获得任何文本（请检查 OCR 配置）。"
-            await _write_deep_parse_status(numeric_id, "failed", message)
+            await write_status("failed", message)
             return {"deepParseStatus": "failed", "deepParseMessage": message}
 
         parts = [
@@ -393,6 +447,7 @@ async def _run_extract_job(
             fulltext.encode("utf-8"),
             "text/markdown; charset=utf-8",
         )
+        uploaded_fulltext = (bucket, fulltext_key)
 
         content_lines = [line for line in fulltext.splitlines() if not line.startswith("<!--")]
         profile: dict[str, Any] = {
@@ -418,22 +473,54 @@ async def _run_extract_job(
         )
         if truncated:
             message += f"（超过页数护栏 {PDF_EXTRACT_MAX_PAGES} 页，已截断）"
-        await _write_deep_parse_status(
-            numeric_id,
+        persisted = await write_status(
             "parsed",
             message,
             profile=profile,
             source_key=source_key,
             source_size=source_size,
         )
+        if not persisted:
+            return {"deepParseStatus": "stale", "deepParseMessage": stale_message}
+        uploaded_fulltext = None
         return {"deepParseStatus": "parsed", "deepParseMessage": message}
     except PeripheralError:
         raise
     except Exception as exc:  # noqa: BLE001 - 任务失败要显式写状态，不能静默
         logger.exception("extract job failed for RAW-%04d", numeric_id)
         message = f"后台全文提取失败：{exc}"
-        await _write_deep_parse_status(numeric_id, "failed", message)
+        await write_status("failed", message)
         return {"deepParseStatus": "failed", "deepParseMessage": message}
+    finally:
+        if uploaded_fulltext is not None:
+            cleanup_bucket, cleanup_key = uploaded_fulltext
+            reference_state = await asyncio.shield(
+                _fulltext_reference_state(
+                    numeric_id,
+                    source_version=source_version,
+                    source_key=source_key,
+                    bucket=cleanup_bucket,
+                    fulltext_key=cleanup_key,
+                )
+            )
+            if reference_state == "stale":
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(minio_client.remove_object, cleanup_bucket, cleanup_key)
+                    )
+                except Exception as cleanup_exc:  # pragma: no cover - cleanup failure must remain visible
+                    logger.warning(
+                        "Failed to remove uncommitted material fulltext object %s/%s: %s",
+                        cleanup_bucket,
+                        cleanup_key,
+                        cleanup_exc,
+                    )
+            elif reference_state in {"current_source_changed", "current_unreferenced"}:
+                logger.warning(
+                    "Preserve unreferenced material fulltext object %s/%s because another current parse may own it",
+                    cleanup_bucket,
+                    cleanup_key,
+                )
 
 
 async def pdf_fulltext_for_raw_file(file_id: str) -> dict[str, Any]:
