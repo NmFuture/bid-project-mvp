@@ -6,7 +6,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from fastapi import HTTPException, Request
@@ -24,7 +24,7 @@ from app.services.bid_outline_state import (
 )
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService
-from app.services.job_queue import enqueue_generation_job, is_generation_locked
+from app.services.job_queue import EnqueueResult, enqueue_generation_job, is_generation_locked
 from app.services.job_timing import current_locked_job_id, record_phase
 from app.services.local_job_executor import submit_local_job
 from app.services.onlyoffice_documents import build_editor_session_key
@@ -116,6 +116,41 @@ def _any_project_for_update(project_id: str) -> dict[str, Any]:
 
 def _directory_state(project_id: str) -> dict[str, Any]:
     return directory_state_with_rule_evidence(_any_project(project_id))
+
+
+def _directory_state_with_active_lock(
+    project_id: str,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    if state.get("status") == "running" or not is_generation_locked(
+        "directory_generation",
+        project_id,
+    ):
+        return state
+    payload = copy.deepcopy(state)
+    payload.update(
+        {
+            "status": "running",
+            "percentage": 2,
+            "summary": "目录生成任务正在启动，请稍候。",
+            "startedAt": "",
+            "generatedAt": "",
+            "output": None,
+            "opencodeOutput": {
+                "status": "idle",
+                "sessionId": "",
+                "providerId": "",
+                "modelId": "",
+                "receivedAt": "",
+                "parts": [],
+            },
+            "decisionProgress": {},
+            "ruleEvidence": {},
+            "events": [],
+            "tasks": _directory_tasks("running", "pending", "pending"),
+        }
+    )
+    return payload
 
 
 # 目录 state 的写入是「加载 → 改 → 回写」，接 postgres 时加载还会走一次库往返。
@@ -338,12 +373,24 @@ def _run_directory_generation_job(project_id: str, data: dict[str, Any]) -> None
         )
 
 
-def _schedule_directory_generation_job(project_id: str, data: dict[str, Any]) -> None:
-    queue_result = enqueue_generation_job("directory_generation", project_id, data)
+def _schedule_directory_generation_job(
+    project_id: str,
+    data: dict[str, Any],
+    *,
+    on_lock_acquired: Callable[[], None],
+) -> EnqueueResult:
+    queue_result = enqueue_generation_job(
+        "directory_generation",
+        project_id,
+        data,
+        on_lock_acquired=on_lock_acquired,
+    )
     if queue_result.queued or queue_result.locked:
-        return
+        return queue_result
 
+    on_lock_acquired()
     submit_local_job(_run_directory_generation_job, project_id, data)
+    return queue_result
 
 
 def _add_callback_token(url: str) -> str:
@@ -522,7 +569,10 @@ class BidDirectoryService:
         return payload
 
     async def generation_status(self, project_id: str) -> dict[str, Any]:
-        return self.directory_state(project_id)
+        return _directory_state_with_active_lock(
+            project_id,
+            self.directory_state(project_id),
+        )
 
     async def generation_stream(self, project_id: str, request: Request) -> StreamingResponse:
         self.directory_state(project_id)
@@ -535,7 +585,10 @@ class BidDirectoryService:
                 if await request.is_disconnected():
                     break
 
-                payload = self.directory_state(project_id)
+                payload = _directory_state_with_active_lock(
+                    project_id,
+                    self.directory_state(project_id),
+                )
                 serialized = json.dumps(payload, ensure_ascii=False)
                 if serialized != last_payload:
                     yield f"data: {serialized}\n\n"
@@ -560,21 +613,46 @@ class BidDirectoryService:
         )
 
     async def run_generation(self, project_id: str, data: dict[str, Any] | None = None) -> JSONResponse:
-        current = self.directory_state(project_id)
-        if current.get("status") == "running" or is_generation_locked("directory_generation", project_id):
+        current = _directory_state_with_active_lock(
+            project_id,
+            self.directory_state(project_id),
+        )
+        if current.get("status") == "running":
             return JSONResponse(
                 status_code=202,
                 content={**current, "message": "目录生成任务正在执行中，请稍候。"},
             )
 
+        payload: dict[str, Any] | None = None
+
+        def initialize_state() -> None:
+            nonlocal payload
+            if payload is None:
+                payload = self.start_directory_generation(project_id)
+
         try:
-            payload = self.start_directory_generation(project_id)
+            queue_result = _schedule_directory_generation_job(
+                project_id,
+                data or {},
+                on_lock_acquired=initialize_state,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        _schedule_directory_generation_job(project_id, data or {})
+        if queue_result.locked:
+            current = _directory_state_with_active_lock(
+                project_id,
+                self.directory_state(project_id),
+            )
+            return JSONResponse(
+                status_code=202,
+                content={**current, "message": "目录生成任务正在执行中，请稍候。"},
+            )
+
+        if payload is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=502, detail="目录生成任务初始化失败。")
         return JSONResponse(
             status_code=202,
             content={**payload, "message": "已开始生成目录，请稍候。"},

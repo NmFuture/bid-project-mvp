@@ -697,6 +697,8 @@ def _run_parallel_outline_chapters(
                     "附表并行预判物化失败，将改用串行附表会话：%s",
                     exc,
                 )
+    except SystemExit as exc:
+        raise RuntimeError(str(exc)) from exc
     except Exception:
         raise
     else:

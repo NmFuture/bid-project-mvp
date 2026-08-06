@@ -1307,6 +1307,61 @@ class DirectoryGenerationTests(unittest.TestCase):
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
         runner.decision_workflow.materialize_appendix_predecisions.assert_called_once()
 
+    def test_parallel_outline_chapter_merge_converts_system_exit_to_runtime_error(self) -> None:
+        self.parallel_outline_patcher.stop()
+        from app.services.outline_generation import _run_parallel_outline_chapters
+
+        root = Path(self.temp_dir.name) / "parallel-system-exit"
+        root.mkdir(parents=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text(json.dumps({"workDir": str(root)}), encoding="utf-8")
+        chapter_root = root / "chapters"
+        chapter_dir = chapter_root / "TPL-0001"
+        chapter_dir.mkdir(parents=True)
+        chapter_manifest_path = chapter_dir / "s2_input.json"
+        chapter_manifest_path.write_text(
+            json.dumps({"workDir": str(chapter_dir)}),
+            encoding="utf-8",
+        )
+        chapters = [{"chapter_id": "TPL-0001", "number": "1", "title": "Chapter"}]
+        runner = MagicMock()
+        runner.review_workflow.decision_appendix_items.return_value = []
+        runner.decision_workflow.chapter_decision_progress.return_value = {"complete": True}
+        runner.decision_workflow.merge_chapter_decisions.side_effect = SystemExit(
+            "chapter decisions are incomplete"
+        )
+
+        with (
+            patch(
+                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                return_value=(
+                    chapters,
+                    {"TPL-0001": chapter_manifest_path},
+                    chapter_root,
+                    {},
+                ),
+            ),
+            patch(
+                "app.services.outline_generation._load_technical_outline_runner",
+                return_value=runner,
+            ),
+            patch(
+                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                return_value={},
+            ),
+            patch(
+                "app.services.outline_generation._outline_chapter_base_urls",
+                return_value=["http://opencode:4096"],
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.run_outline_decision_session.return_value = {
+                "sessionId": "ses-chapter",
+                "opencodeOutput": {},
+            }
+            with self.assertRaisesRegex(RuntimeError, "chapter decisions are incomplete"):
+                _run_parallel_outline_chapters(manifest_path, {})
+
     def test_parallel_decision_aggregator_keeps_chapter_and_appendix_counts_together(self) -> None:
         from app.services.outline_generation import _ChapterDecisionAggregator
 
@@ -2509,9 +2564,19 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("evidencePath", payload["opencodeOutput"])
 
     def test_run_directory_generation_returns_running_state_immediately(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
         project_id = self._prepare_project_with_parse_result()
 
-        with patch("app.services.bid_directory_flow._schedule_directory_generation_job"):
+        def enqueue_winner(*args, **kwargs):
+            del args
+            kwargs["on_lock_acquired"]()
+            return EnqueueResult(queued=True, job_id="job-winner")
+
+        with patch(
+            "app.services.bid_directory_flow._schedule_directory_generation_job",
+            side_effect=enqueue_winner,
+        ):
             response = self.client.post(
                 f"/api/technical/projects/{project_id}/directory-generation/run",
                 json={"outlineStrategy": "strict"},
@@ -2522,6 +2587,90 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["tasks"][0]["status"], "running")
         self.assertEqual(payload["tasks"][1]["status"], "pending")
+
+    def test_locked_directory_request_does_not_reset_winner_progress(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
+        project_id = self._prepare_project_with_parse_result()
+        stale_state = self._directory_state_for_tests(project_id)
+        enqueue_count = 0
+
+        def enqueue_once_then_lock(*args, **kwargs):
+            nonlocal enqueue_count
+            del args
+            enqueue_count += 1
+            initialize = kwargs.get("on_lock_acquired")
+            if enqueue_count == 1:
+                if initialize:
+                    initialize()
+                return EnqueueResult(queued=True, job_id="job-winner")
+            return EnqueueResult(queued=False, locked=True)
+
+        with (
+            patch(
+                "app.services.bid_directory_flow.BidDirectoryService.directory_state",
+                return_value=stale_state,
+            ),
+            patch(
+                "app.services.bid_directory_flow.enqueue_generation_job",
+                side_effect=enqueue_once_then_lock,
+            ),
+            patch("app.services.bid_directory_flow.submit_local_job"),
+        ):
+            first = self.client.post(
+                f"/api/technical/projects/{project_id}/directory-generation/run",
+                json={"outlineStrategy": "strict"},
+            )
+            self.assertEqual(first.status_code, 202)
+            from app.services.bid_directory_flow import _handle_directory_progress
+
+            _handle_directory_progress(
+                project_id,
+                "decision_progress",
+                {"phase": "chapters", "decided": 120, "total": 240},
+            )
+            winner_state = self._directory_state_for_tests(project_id)
+            self.assertEqual(winner_state["percentage"], 42)
+
+            second = self.client.post(
+                f"/api/technical/projects/{project_id}/directory-generation/run",
+                json={"outlineStrategy": "strict"},
+            )
+
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(enqueue_count, 2)
+        self.assertEqual(self._directory_state_for_tests(project_id)["percentage"], 42)
+
+    def test_locked_directory_request_masks_stale_terminal_state(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
+        project_id = self._prepare_project_with_parse_result()
+        project = store.require_project_for_update(project_id)
+        stale_state = complete_directory_generation_state(project, {})
+        store.persist_project_state(project)
+
+        with (
+            patch(
+                "app.services.bid_directory_flow.is_generation_locked",
+                return_value=True,
+                create=True,
+            ),
+            patch(
+                "app.services.bid_directory_flow._schedule_directory_generation_job",
+                return_value=EnqueueResult(queued=False, locked=True),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/technical/projects/{project_id}/directory-generation/run",
+                json={"outlineStrategy": "strict"},
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(stale_state["status"], "completed")
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["percentage"], 2)
+        self.assertEqual(payload["tasks"][0]["status"], "running")
 
     def test_generate_outline_fails_when_template_is_missing(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
