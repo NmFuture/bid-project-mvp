@@ -7,6 +7,7 @@ XLSX 后台转 Word（仅技术标闸口 allowConvert 触发）、超大 docx �
 
 from __future__ import annotations
 
+import asyncio
 import io
 import unittest
 from types import SimpleNamespace
@@ -582,6 +583,25 @@ TEXT_PAGE = "CGC Type Certification Certificate for converter EW-CNVDL1146250 is
 
 
 class DeepParseMaterialFileTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_write_rejects_replaced_source(self) -> None:
+        item = _raw_file("检测报告.pdf")
+        item.version = 2
+        before = dict(item.ext_fields)
+        with patch(
+            "app.services.material_deep_parse.async_session",
+            return_value=_DeepParseSession(item),
+        ):
+            persisted = await material_deep_parse._write_deep_parse_status(
+                1,
+                "parsed",
+                "old job",
+                expected_source_version=1,
+                expected_source_key="raw/1/file",
+            )
+
+        self.assertFalse(persisted)
+        self.assertEqual(item.ext_fields, before)
+
     async def test_oversize_docx_writes_profile(self) -> None:
         item = _raw_file("方案.docx", size=OVER_LIMIT)
         docx_bytes = _make_docx_bytes()
@@ -719,6 +739,128 @@ class DeepParseMaterialFileTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<!-- 第 1 页 -->", fulltext)
         self.assertIn("EW-CNVDL1146250", fulltext)
         self.assertEqual(item.ext_fields["deepParseFailCount"], 0)
+
+    async def test_pdf_extract_discards_fulltext_when_source_changes_before_finalize(self) -> None:
+        item = _raw_file("检测报告.pdf")
+        pdf_bytes = _make_pdf_bytes([TEXT_PAGE])
+
+        async def write_status(_numeric_id: int, status: str, _message: str, **_kwargs: object) -> bool:
+            if status == "running":
+                return True
+            item.version = 2
+            item.minio_key = "raw/1/replaced.pdf"
+            return False
+
+        with (
+            patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
+            patch.object(material_deep_parse, "_write_deep_parse_status", new=write_status),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
+        ):
+            minio_mock.get_object.return_value = pdf_bytes
+            result = await deep_parse_material_file("RAW-0001")
+
+        self.assertEqual(result["deepParseStatus"], "stale")
+        minio_mock.put_object.assert_called_once()
+        minio_mock.remove_object.assert_called_once_with(
+            "bid-materials",
+            "parsed/RAW-0001/v1/fulltext.md",
+        )
+
+    async def test_pdf_extract_preserves_fulltext_when_source_key_changes_without_new_version(self) -> None:
+        item = _raw_file("检测报告.pdf")
+        pdf_bytes = _make_pdf_bytes([TEXT_PAGE])
+
+        async def write_status(_numeric_id: int, status: str, _message: str, **_kwargs: object) -> bool:
+            if status == "running":
+                return True
+            item.minio_key = "raw/1/moved.pdf"
+            return False
+
+        with (
+            patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
+            patch.object(material_deep_parse, "_write_deep_parse_status", new=write_status),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
+        ):
+            minio_mock.get_object.return_value = pdf_bytes
+            result = await deep_parse_material_file("RAW-0001")
+
+        self.assertEqual(result["deepParseStatus"], "stale")
+        minio_mock.put_object.assert_called_once()
+        minio_mock.remove_object.assert_not_called()
+
+    async def test_pdf_extract_preserves_current_fulltext_when_finalize_raises(self) -> None:
+        item = _raw_file("检测报告.pdf")
+        pdf_bytes = _make_pdf_bytes([TEXT_PAGE])
+        write_status = AsyncMock(
+            side_effect=[
+                True,
+                RuntimeError("database unavailable"),
+                RuntimeError("database unavailable"),
+            ]
+        )
+        with (
+            patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
+            patch.object(material_deep_parse, "_write_deep_parse_status", new=write_status),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
+            self.assertRaisesRegex(RuntimeError, "database unavailable"),
+        ):
+            minio_mock.get_object.return_value = pdf_bytes
+            await deep_parse_material_file("RAW-0001")
+
+        minio_mock.put_object.assert_called_once()
+        minio_mock.remove_object.assert_not_called()
+        self.assertEqual(write_status.await_count, 3)
+
+    async def test_pdf_extract_preserves_current_fulltext_when_finalize_is_cancelled(self) -> None:
+        item = _raw_file("检测报告.pdf")
+        pdf_bytes = _make_pdf_bytes([TEXT_PAGE])
+        write_status = AsyncMock(side_effect=[True, asyncio.CancelledError()])
+        with (
+            patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
+            patch.object(material_deep_parse, "_write_deep_parse_status", new=write_status),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            minio_mock.get_object.return_value = pdf_bytes
+            await deep_parse_material_file("RAW-0001")
+
+        minio_mock.put_object.assert_called_once()
+        minio_mock.remove_object.assert_not_called()
+        self.assertEqual(write_status.await_count, 2)
+
+    async def test_pdf_extract_keeps_fulltext_when_finalize_commit_result_is_uncertain(self) -> None:
+        item = _raw_file("检测报告.pdf")
+        pdf_bytes = _make_pdf_bytes([TEXT_PAGE])
+        statuses: list[str] = []
+
+        async def write_status(_numeric_id: int, status: str, _message: str, **_kwargs: object) -> bool:
+            statuses.append(status)
+            if status == "running":
+                return True
+            if status == "parsed":
+                item.ext_fields = {
+                    "deepParseProfile": {
+                        "sourceKey": "raw/1/file",
+                        "profile": {
+                            "fulltextBucket": "bid-materials",
+                            "fulltextKey": "parsed/RAW-0001/v1/fulltext.md",
+                        },
+                    }
+                }
+            raise RuntimeError("database response lost")
+
+        with (
+            patch("app.services.material_deep_parse.async_session", return_value=_DeepParseSession(item)),
+            patch.object(material_deep_parse, "_write_deep_parse_status", new=write_status),
+            patch("app.services.material_deep_parse.minio_client") as minio_mock,
+            self.assertRaisesRegex(RuntimeError, "database response lost"),
+        ):
+            minio_mock.get_object.return_value = pdf_bytes
+            await deep_parse_material_file("RAW-0001")
+
+        minio_mock.put_object.assert_called_once()
+        minio_mock.remove_object.assert_not_called()
+        self.assertEqual(statuses, ["running", "parsed", "failed"])
 
     async def test_pdf_scanned_pages_fall_back_to_ocr(self) -> None:
         item = _raw_file("扫描证书.pdf")

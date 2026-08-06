@@ -9,6 +9,7 @@ from typing import Any
 from app.core.config import settings
 from app.core.redis import redis_is_available
 from app.services.job_queue import (
+    MATERIAL_QUEUE_KEY,
     QUEUE_KEY,
     claim_s1_workflow_lock,
     clear_job_inflight,
@@ -130,6 +131,7 @@ def _run_job(job: dict[str, Any]) -> bool:
     lock_job = workflow_parent or job
     deferred = False
     workflow_terminal = False
+    post_release_wiki_bid_type = ""
 
     mark_job_status(job, "running")
     mark_job_inflight(job)
@@ -229,18 +231,13 @@ def _run_job(job: dict[str, Any]) -> bool:
             except Exception as auto_exc:
                 logger.warning("素材流水线自动衔接失败（深度解析钩子）：%s", auto_exc)
         elif job_type == "material_wiki_generation":
-            from app.services.material_wiki_auto import on_material_wiki_job_finished
             from app.services.material_wiki_jobs import execute_material_wiki_generation
 
             final_state = execute_material_wiki_generation(
                 data,
                 progress_callback=lambda progress: mark_job_progress(job, progress),
             )
-            try:
-                # 素材流水线自动衔接：消费补跑标记，收录 Wiki 运行期间到达的新批次。
-                on_material_wiki_job_finished()
-            except Exception as auto_exc:
-                logger.warning("素材流水线自动衔接失败（Wiki 钩子）：%s", auto_exc)
+            post_release_wiki_bid_type = str(data.get("bidType") or "")
         elif job_type == "fact_curate":
             from app.services.technical_fact_curate_job import run_fact_curate_job
 
@@ -364,6 +361,14 @@ def _run_job(job: dict[str, Any]) -> bool:
             release_generation_lock(job)
             if job_type == "s1_parse":
                 release_s1_workflow_lock(job)
+    if post_release_wiki_bid_type:
+        try:
+            # 旧任务先完整收口并释放 owner 锁，补跑才能拿到独立的新锁。
+            from app.services.material_wiki_auto import on_material_wiki_job_finished
+
+            on_material_wiki_job_finished(post_release_wiki_bid_type)
+        except Exception as auto_exc:
+            logger.warning("素材流水线自动衔接失败（Wiki 钩子）：%s", auto_exc)
     return True
 
 
@@ -416,6 +421,13 @@ def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> Non
 
             job = dequeue_generation_job(queue_key=queue_key)
             if not job:
+                if queue_key == MATERIAL_QUEUE_KEY:
+                    try:
+                        from app.services.material_wiki_auto import retry_pending_technical_wiki_auto_refresh
+
+                        retry_pending_technical_wiki_auto_refresh(claim_retry=True)
+                    except Exception as auto_exc:
+                        logger.warning("素材流水线自动衔接失败（Wiki 补跑恢复）：%s", auto_exc)
                 continue
 
             try:

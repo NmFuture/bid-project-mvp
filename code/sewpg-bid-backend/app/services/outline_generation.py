@@ -566,6 +566,7 @@ def generate_outline_for_project_with_progress(
         summary=summary,
         opencode_output=opencode_output,
         rule_evidence=toc_result.get("ruleEvidence") if isinstance(toc_result.get("ruleEvidence"), dict) else {},
+        invalidate_technical_downstream=bool((data or {}).get("regenerateOutline")),
     )
     persist_workspace_project_state(project_for_update)
     return payload

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import uuid4
 
 from app.core.config import settings
 from app.core.redis import RedisError, get_redis_client
@@ -30,6 +31,8 @@ MATERIAL_CLEANING_JOB_TYPE = "material_cleaning"
 MATERIAL_DEEP_PARSE_JOB_TYPE = "material_deep_parse"
 _AUTO_REFRESH_PENDING_KEY = "bid:wiki:auto-refresh-pending:technical"
 _PENDING_TTL_SEC = 24 * 3600
+_PENDING_RETRY_CLAIM_KEY = "bid:wiki:auto-refresh-pending-retry:technical"
+_PENDING_RETRY_CLAIM_TTL_SEC = 30
 _DEEP_PARSE_CLAIM_PREFIX = "bid:wiki:auto-refresh-deep-parse:"
 _DEEP_PARSE_CLAIM_TTL_SEC = 6 * 3600
 _CLEANING_BATCH_TOTAL_KEY = "bid:pipeline:cleaning-batch-total"
@@ -40,24 +43,65 @@ def auto_refresh_enabled() -> bool:
     return bool(settings.material_wiki_auto_refresh)
 
 
-def _set_pending() -> None:
+_ACK_PENDING_SCRIPT = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then "
+    "return redis.call('del', KEYS[1]) end return 0"
+)
+
+
+def _set_pending() -> str:
     client = get_redis_client()
     if client is None:
-        return
+        return ""
+    token = uuid4().hex
     try:
-        client.set(_AUTO_REFRESH_PENDING_KEY, "1", ex=_PENDING_TTL_SEC)
+        client.set(_AUTO_REFRESH_PENDING_KEY, token, ex=_PENDING_TTL_SEC)
+        return token
     except RedisError as exc:
         logger.warning("素材流水线：写入 Wiki 补跑标记失败：%s", exc)
+        return ""
 
 
-def _consume_pending() -> bool:
+def _pending_token() -> str:
+    client = get_redis_client()
+    if client is None:
+        return ""
+    try:
+        return str(client.get(_AUTO_REFRESH_PENDING_KEY) or "")
+    except RedisError as exc:
+        logger.warning("素材流水线：读取 Wiki 补跑标记失败：%s", exc)
+        return ""
+
+
+def _ack_pending(token: str) -> bool:
+    """仅确认已成功入队时读到的补跑版本，不删除并发到达的新变更。"""
+    if not token:
+        return False
     client = get_redis_client()
     if client is None:
         return False
     try:
-        return bool(client.delete(_AUTO_REFRESH_PENDING_KEY))
+        return bool(client.eval(_ACK_PENDING_SCRIPT, 1, _AUTO_REFRESH_PENDING_KEY, token))
     except RedisError as exc:
-        logger.warning("素材流水线：读取 Wiki 补跑标记失败：%s", exc)
+        logger.warning("素材流水线：确认 Wiki 补跑标记失败：%s", exc)
+        return False
+
+
+def _claim_pending_retry() -> bool:
+    client = get_redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(
+            client.set(
+                _PENDING_RETRY_CLAIM_KEY,
+                uuid4().hex,
+                ex=_PENDING_RETRY_CLAIM_TTL_SEC,
+                nx=True,
+            )
+        )
+    except RedisError as exc:
+        logger.warning("素材流水线：申请 Wiki 补跑重试租约失败：%s", exc)
         return False
 
 
@@ -142,10 +186,7 @@ def _has_other_active_cleaning_jobs(exclude_job_id: str = "") -> bool:
     return _has_other_active_jobs(MATERIAL_CLEANING_JOB_TYPE, exclude_job_id)
 
 
-def request_technical_wiki_auto_refresh(reason: str = "") -> dict[str, Any] | None:
-    """触发一次技术标 Wiki 增量构建；Wiki 正在运行时落补跑标记。"""
-    if not auto_refresh_enabled():
-        return None
+def _enqueue_technical_wiki_refresh(reason: str, pending_token: str) -> dict[str, Any] | None:
     from app.services.material_wiki_jobs import enqueue_material_wiki_generation
     from app.services.peripheral import PeripheralError
 
@@ -153,18 +194,36 @@ def request_technical_wiki_auto_refresh(reason: str = "") -> dict[str, Any] | No
         result = enqueue_material_wiki_generation(TECHNICAL_BID_TYPE, mode="refresh")
     except PeripheralError as exc:
         if int(getattr(exc, "status_code", 0) or 0) == 409:
-            _set_pending()
-            logger.info("素材流水线：Wiki 任务运行中，已登记补跑（%s）", reason)
+            logger.info("素材流水线：Wiki 任务运行中，保留补跑（%s）", reason)
         else:
             logger.warning("素材流水线：自动触发 Wiki 失败（%s）：%s", reason, exc)
         return None
     if result.get("reused"):
-        # 复用的是已在运行/排队的任务，可能已错过本批新文件：登记补跑。
-        _set_pending()
-        logger.info("素材流水线：复用运行中的 Wiki 任务并登记补跑（%s）", reason)
+        logger.info("素材流水线：复用运行中的 Wiki 任务并保留补跑（%s）", reason)
     else:
+        _ack_pending(pending_token)
         logger.info("素材流水线：已自动触发技术标 Wiki 增量构建（%s）→ %s", reason, result.get("jobId"))
     return result
+
+
+def request_technical_wiki_auto_refresh(reason: str = "") -> dict[str, Any] | None:
+    """登记变更后触发技术标 Wiki；只有新任务成功入队才确认本次变更。"""
+    if not auto_refresh_enabled():
+        return None
+    return _enqueue_technical_wiki_refresh(reason, _set_pending())
+
+
+def retry_pending_technical_wiki_auto_refresh(*, claim_retry: bool = False) -> bool:
+    """重试未确认的技术标 Wiki 补跑；失败或复用时始终保留标记。"""
+    if not auto_refresh_enabled():
+        return False
+    token = _pending_token()
+    if not token or _has_other_active_cleaning_jobs():
+        return False
+    if claim_retry and not _claim_pending_retry():
+        return False
+    result = _enqueue_technical_wiki_refresh("补跑：Wiki 运行期间到达的新批次", token)
+    return bool(result and not result.get("reused"))
 
 
 def on_material_cleaning_job_finished(current_job_id: str = "") -> None:
@@ -178,16 +237,11 @@ def on_material_cleaning_job_finished(current_job_id: str = "") -> None:
     request_technical_wiki_auto_refresh("清洗批次收尾")
 
 
-def on_material_wiki_job_finished() -> None:
-    """Wiki 任务结束钩子：消费补跑标记，把运行期间到达的新批次补进 Wiki。"""
-    if not auto_refresh_enabled():
+def on_material_wiki_job_finished(bid_type: str) -> None:
+    """技术标 Wiki 任务释放锁后的钩子：把运行期间到达的新批次补进 Wiki。"""
+    if str(bid_type or "") != TECHNICAL_BID_TYPE:
         return
-    if not _consume_pending():
-        return
-    if _has_other_active_cleaning_jobs():
-        # 新批次还在清洗，收尾钩子稍后会触发；标记已消费无需恢复。
-        return
-    request_technical_wiki_auto_refresh("补跑：Wiki 运行期间到达的新批次")
+    retry_pending_technical_wiki_auto_refresh()
 
 
 def on_material_deep_parse_job_finished(file_id: str, current_job_id: str = "") -> None:
