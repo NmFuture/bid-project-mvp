@@ -12,6 +12,104 @@ import {
   normalizeDecisionProgress,
   summarizeDirectoryProgress,
 } from './technicalDirectoryProgress.js'
+import * as directoryProgress from './technicalDirectoryProgress.js'
+
+test('builds regeneration confirmation copy for overwrite risks', () => {
+  assert.equal(typeof directoryProgress.buildDirectoryRegenerationPrompt, 'function')
+  assert.match(
+    directoryProgress.buildDirectoryRegenerationPrompt({ dirty: true, hasDownstreamResults: true }),
+    /丢弃未保存修改/,
+  )
+  assert.match(
+    directoryProgress.buildDirectoryRegenerationPrompt({ dirty: true, hasDownstreamResults: true }),
+    /素材匹配和正文结果将失效/,
+  )
+  assert.match(
+    directoryProgress.buildDirectoryRegenerationPrompt(),
+    /覆盖当前目录审核稿/,
+  )
+})
+
+test('keeps first generation and failed retry on template page but moves completed regeneration away', () => {
+  assert.equal(typeof directoryProgress.shouldShowTemplateDirectoryGenerationButton, 'function')
+  assert.equal(directoryProgress.shouldShowTemplateDirectoryGenerationButton({ status: 'idle' }), true)
+  assert.equal(directoryProgress.shouldShowTemplateDirectoryGenerationButton({ status: 'failed' }), true)
+  assert.equal(directoryProgress.shouldShowTemplateDirectoryGenerationButton({ status: 'completed' }), false)
+
+  const templateSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(templateSource, /'重新生成目录'/)
+  assert.match(templateSource, /'重试生成目录'/)
+  assert.match(outlineSource, /technicalOutlineAPI\.regenerate/)
+  assert.match(outlineSource, /重新生成目录/)
+  assert.match(outlineSource, /DirectoryGenerationProgressModal/)
+})
+
+test('starts a new directory progress epoch after a previous terminal result', () => {
+  assert.equal(typeof directoryProgress.beginDirectoryProgressEpoch, 'function')
+
+  const incoming = { status: 'running', percentage: 5, generatedAt: '' }
+  assert.deepEqual(
+    directoryProgress.beginDirectoryProgressEpoch(
+      {
+        previous: { status: 'completed', percentage: 100, generatedAt: '2026-08-01T00:00:00Z' },
+        incoming,
+      },
+    ),
+    incoming,
+  )
+  assert.deepEqual(
+    directoryProgress.beginDirectoryProgressEpoch(
+      {
+        previous: { status: 'failed', percentage: 70, generatedAt: '2026-08-01T00:00:00Z' },
+        incoming,
+      },
+    ),
+    incoming,
+  )
+})
+
+test('reloads outline when completed directory status is newer than the first outline snapshot', async () => {
+  assert.equal(typeof directoryProgress.loadConsistentOutlineReviewSnapshot, 'function')
+
+  const calls = []
+  let outlineReadCount = 0
+  const snapshot = await directoryProgress.loadConsistentOutlineReviewSnapshot({
+    loadDirectoryState: async () => {
+      calls.push('status')
+      return { status: 'completed', generatedAt: '2026-08-05T10:00:00Z' }
+    },
+    loadOutline: async () => {
+      calls.push('outline')
+      outlineReadCount += 1
+      return outlineReadCount === 1
+        ? { generatedAt: '2026-08-01T10:00:00Z', nodes: [{ id: 'OLD' }] }
+        : { generatedAt: '2026-08-05T10:00:00Z', nodes: [{ id: 'NEW' }] }
+    },
+    loadProject: async () => {
+      calls.push('project')
+      return { currentStage: 2 }
+    },
+  })
+
+  assert.deepEqual(calls, ['status', 'outline', 'project', 'outline'])
+  assert.equal(snapshot.outlinePayload.nodes[0].id, 'NEW')
+  assert.equal(snapshot.generationPayload.status, 'completed')
+  assert.equal(snapshot.projectPayload.currentStage, 2)
+})
+
+test('loads regenerated outline before publishing terminal directory state', () => {
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+  const pollStart = outlineSource.indexOf('const pollDirectoryStatus = async () => {')
+  const pollEnd = outlineSource.indexOf('timer = window.setTimeout(pollDirectoryStatus, 1000)', pollStart)
+  const pollSource = outlineSource.slice(pollStart, pollEnd)
+
+  assert.ok(pollStart >= 0 && pollEnd > pollStart)
+  assert.ok(
+    pollSource.indexOf("if (payload?.status === 'completed')")
+      < pollSource.indexOf('setDirectoryState((previous)'),
+  )
+})
 
 const runningTasks = [
   { id: 'task-1', label: '准备目录输入', status: 'done' },

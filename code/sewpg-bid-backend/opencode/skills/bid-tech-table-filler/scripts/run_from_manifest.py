@@ -50,8 +50,10 @@ NON_VALUE_HEADERS = ("编号", "序号", "备注", "说明", "计量单位", "�
 REQUIREMENT_VALUE_HEADERS = ("招标人要求值", "招标要求值", "技术要求值", "要求值", "招标人要求", "招标要求")
 BIDDER_RESPONSE_HEADERS = ("投标人响应值", "投标响应值", "响应值", "投标响应", "投标值")
 GENERIC_FACT_LIMIT_PER_FILE = 500
+TENDER_FACT_LIMIT_PER_FILE = 5000
 AUTO_SOURCE_SCORE_THRESHOLD = 26.0
 AUTO_SOURCE_MAX = 12
+TENDER_SOURCE_ROUTE = "项目招标文件全文"
 
 
 C1_CONCEPTS = {
@@ -268,6 +270,8 @@ class Source:
     selection_score: float = 0.0
     selection_reasons: tuple[str, ...] = ()
     ocr_text_path: Path | None = None  # PDF 素材的 OCR 文本 sidecar（后端生成）
+    text_path: Path | None = None
+    document_nav_path: Path | None = None
 
 
 @dataclass
@@ -616,6 +620,7 @@ def add_fact(
     source_name = source.name if isinstance(source, Source) else str(source)
     source_kind = source.kind if isinstance(source, Source) else "manifest"
     source_priority = source.priority if isinstance(source, Source) else 95
+    source_route = source.route if isinstance(source, Source) else ""
     fact_concepts = [concept] if concept else concepts_for(f"{label} {value_text}")
     facts.append(
         {
@@ -626,6 +631,7 @@ def add_fact(
             "source": source_name,
             "sourceKind": source_kind,
             "sourcePriority": source_priority,
+            "sourceRoute": source_route,
             "row": row,
             "sheet": sheet,
             "concepts": fact_concepts,
@@ -1188,11 +1194,13 @@ def add_source_from_material(
     selection_reasons: Iterable[str] | None = None,
 ) -> None:
     path = material_path(material, manifest_dir)
-    if path is None or path.suffix.lower() not in {".docx", ".xlsx", ".xlsm", ".pdf"}:
+    if path is None or path.suffix.lower() not in {".docx", ".xlsx", ".xlsm", ".pdf", ".txt", ".md"}:
         return
     name = material_label(material) or path.name
     suffix = path.suffix.lower()
     ocr_text_path: Path | None = None
+    text_path = first_existing_path((material.get("textPath"),), manifest_dir)
+    document_nav_path = first_existing_path((material.get("documentNavPath"),), manifest_dir)
     if suffix == ".pdf":
         for candidate in (Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None, path.with_suffix(".ocr.txt")):
             if candidate is not None and candidate.exists() and candidate.is_file():
@@ -1202,13 +1210,23 @@ def add_source_from_material(
         Source(
             name=name,
             path=path,
-            kind="xlsx" if suffix in {".xlsx", ".xlsm"} else ("pdf" if suffix == ".pdf" else "docx"),
+            kind=(
+                "xlsx"
+                if suffix in {".xlsx", ".xlsm"}
+                else "pdf"
+                if suffix == ".pdf"
+                else "text"
+                if suffix in {".txt", ".md"}
+                else "docx"
+            ),
             priority=priority,
             route=route,
             material_id=clean(material.get("id") or material.get("materialId")),
             selection_score=round(selection_score, 3),
             selection_reasons=tuple(clean(reason) for reason in selection_reasons or [] if clean(reason)),
             ocr_text_path=ocr_text_path,
+            text_path=text_path,
+            document_nav_path=document_nav_path,
         )
     )
 
@@ -1231,6 +1249,17 @@ def select_sources(
         "candidates": [],
         "selected": [],
     }
+
+    for document in object_items(manifest.get("tenderDocuments")):
+        add_source_from_material(
+            sources,
+            document,
+            manifest_dir,
+            priority=98,
+            route=TENDER_SOURCE_ROUTE,
+            selection_score=98,
+            selection_reasons=["附表填写规则要求读取项目招标文件全文"],
+        )
 
     for material in object_items(manifest.get("referenceMaterials")) + object_items(manifest.get("selectedReferenceMaterials")):
         material = enrich_material_with_known_path(material, manifest)
@@ -1347,6 +1376,9 @@ def select_sources(
             has_matching_pdf = any(pdf_intents(source) & spec_intents for source in selected)
             narrowed = []
             for source in selected:
+                if source.route == TENDER_SOURCE_ROUTE:
+                    narrowed.append(source)
+                    continue
                 source_intents = pdf_intents(source)
                 if source_intents and not (source_intents & spec_intents):
                     continue  # 证书意图与附表不符（如设计认证表里的部件证书）
@@ -1749,7 +1781,7 @@ def extract_doc_facts(source: Source) -> list[dict[str, Any]]:
     return facts
 
 
-def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
+def extract_doc_generic_facts(source: Source, *, limit: int = GENERIC_FACT_LIMIT_PER_FILE) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     try:
         doc = Document(str(source.path))
@@ -1770,6 +1802,8 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                 confidence=0.58,
                 notes="通用段落键值抽取",
             )
+            if len(facts) >= limit:
+                return facts
     for table_idx, table in enumerate(doc.tables, start=1):
         for row_idx, row in enumerate(table.rows, start=1):
             values = [clean(cell.text) for cell in row.cells]
@@ -1799,7 +1833,7 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                 row_fact_count += 1
                 if row_fact_count >= 2:
                     break
-            if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+            if len(facts) >= limit:
                 return facts
     return facts
 
@@ -1853,6 +1887,166 @@ def pdf_ocr_text(source: Source) -> str:
         except Exception:
             continue
     return ""
+
+
+def _append_tender_text_facts(
+    facts: list[dict[str, Any]],
+    source: Source,
+    text: str,
+    *,
+    location_prefix: str,
+) -> None:
+    for line_index, raw_line in enumerate(text.splitlines(), start=1):
+        if len(facts) >= TENDER_FACT_LIMIT_PER_FILE:
+            return
+        line = clean(raw_line)
+        if not line:
+            continue
+        if line.startswith("|") or line.count("|") >= 2:
+            cells = [clean(cell) for cell in line.split("|")]
+            nonempty = [cell for cell in cells if cell and set(cell) - {"-", ":", " "}]
+            for label, value in zip(nonempty, nonempty[1:]):
+                if looks_like_header_or_empty(label, value):
+                    continue
+                add_fact(
+                    facts,
+                    label=label,
+                    value=value,
+                    source=source,
+                    row=line_index,
+                    sheet=location_prefix,
+                    confidence=0.84,
+                    notes="招标文件全文表格键值",
+                )
+                break
+            continue
+        match = re.match(r"^([^:：|]{2,60})[:：]\s*(.{1,180})$", line)
+        if match and not looks_like_header_or_empty(match.group(1), match.group(2)):
+            add_fact(
+                facts,
+                label=match.group(1),
+                value=match.group(2),
+                source=source,
+                row=line_index,
+                sheet=location_prefix,
+                confidence=0.8,
+                notes="招标文件全文键值",
+            )
+
+
+def _append_tender_nav_table_facts(
+    facts: list[dict[str, Any]],
+    source: Source,
+    table: dict[str, Any],
+) -> None:
+    rows = [
+        [clean(cell) for cell in row]
+        for row in (table.get("rows") if isinstance(table.get("rows"), list) else [])
+        if isinstance(row, list)
+    ]
+    if not rows:
+        return
+    header_index = next(
+        (
+            index
+            for index, row in enumerate(rows[:4])
+            if any(token in " ".join(row) for token in ("参数", "项目", "名称", "条款", "招标", "要求", "单位"))
+        ),
+        0,
+    )
+    headers = rows[header_index]
+    field_col = next(
+        (
+            index
+            for index, value in enumerate(headers)
+            if any(token in value for token in ("参数名称", "项目名称", "主要项目", "指标名称", "条款", "项目", "名称"))
+            and "响应" not in value
+        ),
+        -1,
+    )
+    value_col = next(
+        (
+            index
+            for index, value in enumerate(headers)
+            if any(token in value for token in ("招标人要求值", "招标要求值", "技术要求值", "要求值", "招标人要求", "招标要求"))
+            and "响应" not in value
+        ),
+        -1,
+    )
+    unit_col = next((index for index, value in enumerate(headers) if value in {"单位", "计量单位"}), -1)
+    location = f"P{table.get('pageNo') or '?'}:{table.get('id') or 'table'}"
+    if field_col >= 0 and value_col >= 0:
+        for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+            if max(field_col, value_col) >= len(row):
+                continue
+            label = clean(row[field_col])
+            value = clean(row[value_col])
+            if not label or not value or looks_like_header_or_empty(label, value):
+                continue
+            unit = clean(row[unit_col]) if unit_col >= 0 and unit_col < len(row) else ""
+            add_fact(
+                facts,
+                label=label,
+                value=value,
+                unit=unit,
+                source=source,
+                row=row_index,
+                sheet=location,
+                confidence=0.92,
+                notes="招标文件全文结构化表格",
+            )
+        return
+    for row_index, row in enumerate(rows, start=1):
+        nonempty = [cell for cell in row if cell]
+        for label, value in zip(nonempty, nonempty[1:]):
+            if looks_like_header_or_empty(label, value):
+                continue
+            add_fact(
+                facts,
+                label=label,
+                value=value,
+                source=source,
+                row=row_index,
+                sheet=location,
+                confidence=0.82,
+                notes="招标文件全文结构化表格键值",
+            )
+            break
+
+
+def extract_tender_document_facts(source: Source) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    if source.kind == "docx":
+        facts.extend(extract_doc_generic_facts(source, limit=TENDER_FACT_LIMIT_PER_FILE))
+    if source.document_nav_path and source.document_nav_path.is_file():
+        try:
+            nav = json.loads(source.document_nav_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            nav = {}
+        for table in object_items(nav.get("tables")):
+            _append_tender_nav_table_facts(facts, source, table)
+        nav_text = "\n".join(
+            str(block.get("text") or "")
+            for block in object_items(nav.get("blocks"))
+            if str(block.get("text") or "").strip()
+        )
+        _append_tender_text_facts(facts, source, nav_text, location_prefix="DocumentNav")
+    text_path = source.text_path or source.ocr_text_path or (source.path if source.kind == "text" else None)
+    if text_path and text_path.is_file():
+        try:
+            text = text_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        _append_tender_text_facts(facts, source, text, location_prefix=text_path.name)
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for fact in facts:
+        key = (clean(fact.get("label")), clean(fact.get("value")), clean(fact.get("unit")))
+        if not all(key[:2]) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(fact)
+    return deduped[:TENDER_FACT_LIMIT_PER_FILE]
 
 
 def cert_value_clean(value: str) -> str:
@@ -2338,6 +2532,8 @@ def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
 def project_specific_source_allowed(candidate: dict[str, Any]) -> bool:
     if candidate["source"] in {"projectTurbineModel", "parseFields", "projectFactTable", "derived"}:
         return True
+    if candidate.get("sourceRoute") == TENDER_SOURCE_ROUTE:
+        return True
     return candidate.get("sourceKind") in {"xlsx", "docx"} and int(candidate.get("sourcePriority") or 0) >= 64
 
 
@@ -2391,6 +2587,7 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
                     "source": fact["source"],
                     "sourceKind": fact["sourceKind"],
                     "sourcePriority": fact.get("sourcePriority", 0),
+                    "sourceRoute": fact.get("sourceRoute", ""),
                     "row": fact["row"],
                     "sheet": fact["sheet"],
                     "score": score(field, fact, scenario),
@@ -3397,261 +3594,6 @@ def apply_large_component_transport_table_fill(output_file: Path, sources: list[
     return generated_table_decisions(rows, evidence_source, label="大部件运输参数", reason="从机型参数表运输尺寸/重量和物流方案起运地生成大部件情况表。", action_hint="large_component_table")
 
 
-def fallback_source(sources: list[Source], *tokens: str) -> Source | None:
-    return source_with_tokens(sources, *tokens) or (sources[0] if sources else None)
-
-
-def apply_standard_appendix_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec) -> list[dict[str, Any]]:
-    title = spec.title
-    source: Source | None = None
-    rows: list[list[str]] = []
-    label = "标准专题表"
-    reason = "从材料库专题和招标附表固定结构生成整表。"
-    if "附表B.5" in title or "培训内容" in title:
-        source = fallback_source(sources, "项目技术支持及服务")
-        rows = [["培训内容", "计划人/日数", "地点（国内/国外）", "备注"]]
-        factory_items = ["风电基础知识", "投标机组风机理论知识", "安全培训(含紧急逃生培训)", "投标风机总装工艺培训", "总装车间实践"]
-        site_items = [
-            "风力发电机组整体结构",
-            "运行维护手册",
-            "机组安装手册",
-            "机组调试手册",
-            "传动系统的结构和工作原理",
-            "偏航系统",
-            "变桨系统",
-            "液压系统",
-            "润滑系统",
-            "电控系统",
-            "就地控制系统的操作及维护",
-            "中央监控系统的操作及维护",
-            "远程监控系统的操作及维护",
-            "备品备件管理",
-            "传动系统维护实践",
-            "偏航系统维护实践",
-            "变桨系统维护实践",
-            "液压、刹车系统维护实践",
-            "液压系统调整、刹车片更换调整",
-            "电气控制系统操作实践",
-            "风机常规维护实践",
-            "风机安装指导",
-            "风机调试及维护",
-            "分包商所开展的各类培训",
-        ]
-        rows.extend([[item, "不少于6人", "工厂培训", ""] for item in factory_items])
-        rows.extend([[item, "不少于10人", "项目现场", ""] for item in site_items])
-        label = "技术培训计划"
-        reason = "从项目技术支持及服务专题的工厂培训、现场培训、运行维护培训口径生成培训内容和计划表。"
-    elif "附表C.5" in title or "变流器技术参数" in title:
-        source = fallback_source(sources, "变流器专题")
-        rows = [
-            ["编号", "项目", "项目", "技术参数与规格", "计量单位", "备注"],
-            ["1", "机组额定功率", "机组额定功率", "10000", "", ""],
-            ["2", "网侧额定容量", "网侧额定容量", "1276", "kVA", ""],
-            ["3", "机侧额定容量", "机侧额定容量", "3670", "kVA", ""],
-            ["4", "机侧频率范围", "机侧频率范围", "0~20", "", ""],
-            ["5", "网侧额定频率", "网侧额定频率", "50", "Hz", ""],
-            ["6", "网侧额定电压", "网侧额定电压", "1140", "V", ""],
-            ["7", "机侧电压范围", "机侧电压范围", "0~1354", "", ""],
-            ["8", "网侧额定电流", "网侧额定电流", "646", "", ""],
-            ["9", "机侧额定电流", "机侧额定电流", "1858", "", ""],
-            ["12", "工作温度范围", "工作温度范围", "‘-30～+50", "℃", ""],
-            ["13", "工作相对湿度", "工作相对湿度", "≤95", "%", ""],
-            ["14", "电网条件", "1140±10%", "V", "", ""],
-            ["14", "电网条件", "50±5%", "Hz", "Hz", ""],
-            ["15", "海拔高度范围", "海拔高度范围", "≤3000", "m", ""],
-            ["16", "外壳防护等级", "外壳防护等级", "IP23", "", ""],
-            ["17", "腐蚀环境", "腐蚀环境", "C3", "", ""],
-            ["18", "变流器冷却方式", "变流器冷却方式", "空冷", "", ""],
-            ["19", "变频器放置位置", "变频器放置位置", "机舱内", "", ""],
-        ]
-        label = "变流器技术参数"
-        reason = "从变流器专题的1140V三电平、风冷、机舱内布置等口径生成变流器技术参数表。"
-    elif "附表C.7" in title or "计算机监控系统" in title:
-        source = fallback_source(sources, "控制系统专题")
-        rows = [
-            ["编号", "项目", "技术参数和规格", "计量单位", "备注"],
-            ["1", "就地监控系统硬件配置", "PLC、IO模块、继电器、断路器、接触器、电源模块，等；", "", ""],
-            ["2", "机舱内控制柜数量、名称、功能", "机舱控制电气柜：1个；机舱控制柜；机舱各个子系统及轮毂的配电、监测、保护、控制。", "", ""],
-            ["3", "塔架内控制柜数量、名称、功能", "塔底主控电气柜：1个；集成在变流器柜内；塔底主控制系统的配电、监测、保护、控制。", "", ""],
-            ["4", "机舱与塔架底部通信方式", "光纤通讯", "", ""],
-            ["5", "控制柜防护等级", "IP54", "", ""],
-            ["6", "风电机组与中央监控系统通信光缆规格", "塔底-机舱： 6芯多模光纤 62.5um\n远程控制系统光缆规格：风机外光缆规格由设计院决定。\n环形连接：至少16芯铠装单模光纤（1310nm) 9/125um", "", ""],
-            ["7", "主控UPS型式", "UPS", "", ""],
-            ["8", "主控UPS容量", "满足断电后2小时", "", ""],
-        ]
-        label = "计算机监控系统技术特性"
-        reason = "从控制系统专题和机型主控系统口径生成计算机监控系统技术特性表。"
-    elif "附表C.8" in title or "升降机" in title:
-        source = fallback_source(sources, "升降机")
-        rows = [
-            ["编号", "项目", "技术参数和规格", "备注"],
-            ["1", "导向形式", "爬梯导向", "齿轮齿条或爬梯/钢丝绳导向等"],
-            ["2", "运载能力", "≥350kg", ""],
-            ["3", "供电方式", "滑触线供电", "电缆供电或滑触线供电等"],
-            ["4", "运行速度", "18m/min", ""],
-        ]
-        label = "升降机技术参数"
-        reason = "从升降机专题和机型维护起重/升降配置口径生成升降机参数表。"
-    elif "附表D.7" in title or "性能及考核承诺" in title:
-        source = fallback_source(sources, "发电量担保")
-        rows = [
-            ["项目", "保证值", "授权人签名", "日期"],
-            ["功率曲线保证值", "97%", "", "2026-01-23"],
-            ["功率曲线计算方法和考核方法", "接受本招标文件条款", "", "2026-01-23"],
-            ["风电机组设备年平均可利用率保证值", "单机95%，全场98%", "", "2026-01-23"],
-            ["风电机组设备年平均可利用率计算方法和考核方法", "接受本招标文件条款", "", "2026-01-23"],
-            ["风电场年上网电量及年等效满负荷小时数的保证值", "210315#（E 119.229433°  N 43.166208°）测风塔125m高度年平均风速为 7.2m/s 的条件下，125m轮毂高度下，承诺全场年等效满负荷小时数保证值不小于2836小时，承诺全场年等效满负荷小时数考核值不小于2912小时", "", "2026-01-23"],
-            ["风电场年上网电量及年等效满负荷小时数计算方法和考核方法", "接受本招标文件条款", "", "2026-01-23"],
-            ["招标文件所有附件", "接受附件文件条款内容", "", "2026-01-23"],
-        ]
-        label = "性能保证承诺"
-        reason = "从发电量担保和性能保证材料生成性能及考核承诺保证表。"
-    elif "附表D.8" in title or "MTBF" in title or "MTTR" in title:
-        source = fallback_source(sources, "运行")
-        rows = [
-            ["项目", "保证值", "授权人签名", "日期"],
-            ["风电机组设备平均无故障间隔时间（MTBF）", "1400", "", "2026-01-23"],
-            ["风电机组设备平均故障检修时间（MTTR）", "24", "", "2026-01-23"],
-            ["备注：计算方法参考通用部分条款。提供可供查证的华能项目或其他项目名称.", "备注：计算方法参考通用部分条款。提供可供查证的华能项目或其他项目名称.", "备注：计算方法参考通用部分条款。提供可供查证的华能项目或其他项目名称.", "备注：计算方法参考通用部分条款。提供可供查证的华能项目或其他项目名称."],
-        ]
-        label = "MTBF MTTR 承诺"
-        reason = "从设备运行维护和性能承诺口径生成 MTBF/MTTR 表。"
-    elif "附表H.1" in title or "工程进度" in title:
-        source = fallback_source(sources, "安装与调试")
-        rows = [
-            ["序号", "项目", "时间"],
-            ["1", "设计技术联络会", "响应招标文件，合同生效后 15 天内"],
-            ["2", "塔筒制造图纸", "响应招标文件，具体细节在合同谈判时敲定"],
-            ["3", "风力发电机组基础施工图纸", "响应招标文件，具体细节在合同谈判时敲定"],
-            ["4", "机组出厂（或现场组装）", "合同生效日起 120 天（需已支付预付款）"],
-            ["5", "现场安装、调试", "机组到场后，安装 3 天/台；调试 2 天/台"],
-            ["6", "预验收", "全部风电机组通过 240 小时试运行"],
-            ["注1：投标人基于标书的内容，提出详细的工程进度（以合同生效开始算起）。"] * 3,
-        ]
-        label = "工程进度"
-        reason = "从安装调试方案和产品交付口径生成工程进度表。"
-    elif "附表H.4" in title or "专用工具交货进度" in title:
-        source = fallback_source(sources, "报价文件")
-        rows = [
-            ["序号", "设备/部件名称型号", "发运地点", "数量", "交货时间"],
-            ["1", "运行、维护专用工具及仪器", "按项目进行调配", "2套", "响应招标文件"],
-            ["2", "安装、调试专用仪器及工具", "按项目进行调配", "7套", "响应招标文件"],
-        ]
-        label = "专用工具交货进度"
-        reason = "从专用工具报价清单和交货响应口径生成专用工具交货进度表。"
-    elif "附表G.2.3" in title:
-        source = fallback_source(sources, "载荷安全性评估报告")
-        rows = [
-            ["坐标系", "/", "Mx", "My", "Mxy", "Mz", "Fx", "Fy", "Fxy", "Fz"],
-            ["Blade root", "比值", "0.82", "0.90", "0.93", "0.61", "0.93", "1.09", "0.99", "1.09"],
-            ["Yaw bearing", "比值", "0.86", "0.80", "0.99", "0.95", "1.03", "1.19", "1.03", "1.05"],
-            ["Tower Bottom", "比值", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化"],
-            ["比值最大值", "比值最大值", "0.86", "0.90", "0.99", "0.95", "1.03", "1.19", "1.03", "1.09"],
-            ["备注：场址载荷超过认证载荷时，投标阶段应提供详细说明及解决方案；附在本表后面。"] * 10,
-        ]
-        label = "极限载荷对比"
-        reason = "从载荷安全性评估报告极限载荷计算分析生成 G.2.3 场址极限载荷对比表。"
-    elif "附表G.2.4" in title:
-        source = fallback_source(sources, "载荷安全性评估报告")
-        rows = [
-            ["坐标系", "/", "Mx", "My", "Mz", "Fx", "Fy", "Fz"],
-            ["Blade root", "比值", "0.98", "0.90", "0.99", "0.91", "1.06", "1.07"],
-            ["Rotating hub", "比值", "0.97", "0.86", "0.85", "0.86", "1.05", "1.05"],
-            ["Stationary hub", "比值", "0.97", "0.98", "0.94", "0.86", "0.86", "1.11"],
-            ["Yaw bearing", "比值", "0.95", "0.99", "0.94", "0.85", "0.71", "1.09"],
-            ["Tower Bottom", "比值", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化", "塔架定制化"],
-            ["比值最大值", "比值最大值", "0.98", "0.99", "0.99", "0.91", "1.06", "1.11"],
-            ["备注：场址载荷超过认证载荷时，投标阶段应提供详细说明及解决方案；附在本表后面。"] * 8,
-        ]
-        label = "疲劳载荷对比"
-        reason = "从载荷安全性评估报告疲劳载荷计算分析生成 G.2.4 场址疲劳载荷对比表。"
-    elif "附表G.3.2" in title:
-        source = fallback_source(sources, "塔架与基础工程量")
-        rows = [["序号", "塔筒筒节编号", "高度", "抗屈服系数"], ["最低安全余量位置", "22", "39.205m", "1.231"], ["最高安全余量位置", "59", "121.71m", "4.545"]]
-        label = "塔筒极限强度安全余量"
-        reason = "从塔筒场址设计安全性口径生成塔筒极限强度安全余量表。"
-    elif "附表G.3.3" in title:
-        source = fallback_source(sources, "塔架与基础工程量")
-        rows = [["序号", "塔筒筒节编号", "高度", "屈曲因子"], ["最低安全余量位置", "23", "42.005m", "1.117"], ["最高安全余量位置", "59", "121.71m", "4.278"]]
-        label = "塔筒屈曲稳定性安全余量"
-        reason = "从塔筒场址设计安全性口径生成塔筒屈曲稳定性安全余量表。"
-    elif "附表G.3.4" in title:
-        source = fallback_source(sources, "塔架与基础工程量")
-        rows = [["序号", "塔筒筒节编号", "高度", "损伤因子D"], ["最低安全余量位置", "33", "64.58m", "0.93"], ["最高安全余量位置", "58", "121.41", "0.126"]]
-        label = "塔筒疲劳强度安全余量"
-        reason = "从塔筒场址设计安全性口径生成塔筒疲劳强度安全余量表。"
-    elif any(token in title for token in ("附表G.4.1", "附表G.4.2", "附表G.4.3", "附表G.4.4")):
-        source = fallback_source(sources, "叶片场址校核报告")
-        header = ["序号", "载荷方向", "招标人对安全因子要求", "投标叶片认证载荷下的最小安全余量", "投标叶片在招标项目场址载荷下的最小安全余量", "投标叶片在招标项目场址载荷下，最小安全余量对应的叶片尺寸位置", "备注"]
-        if "附表G.4.1" in title:
-            body = [["1", "摆振方向", "不低于1.0", "1.20", "1.05", "10m", "填写安全因子具体数据"], ["2", "挥舞方向", "不低于1.0", "1.07", "1.08", "88m", "填写安全因子具体数据"]]
-        elif "附表G.4.2" in title:
-            body = [["1", "摆振方向", "不低于1.0", "2.33", "1.94", "6m", "填写安全因子具体数据"], ["2", "挥舞方向", "不低于1.0", "1.24", "1.27", "57m", "填写安全因子具体数据"]]
-        elif "附表G.4.3" in title:
-            body = [["1", "摆振方向", "不低于1.0", "1.43", "1.24", "73m", "填写安全因子具体数据"], ["2", "挥舞方向", "不低于1.0", "1.20", "1.24", "80m", "填写安全因子具体数据"]]
-        else:
-            header[1] = "评估项"
-            body = [["1", "螺栓疲劳强度", "不低于1.0", "1.07", "1.09", "-", ""], ["2", "螺套粘接极限强度", "不低于1.0", "1.12", "1.14", "-", ""]]
-        rows = [header, *body]
-        label = "叶片场址设计安全性"
-        reason = "从叶片场址校核报告生成叶片场址设计安全性明细表。"
-    elif "附表G.5.1" in title:
-        source = fallback_source(sources, "变桨轴承场址校核报告")
-        rows = [
-            ["", "Mx", "My", "Mxy", "Mz", "Fx", "Fy", "Fxy", "Fz", "Safety factor"],
-            ["Mx（Max）", "98%", "259%", "113%", "420%", "344%", "139%", "159%", "309%", "1.10"],
-            ["Mx（Min）", "101%", "1421%", "101%", "169%", "196%", "121%", "122%", "96%", "1.10"],
-            ["My（Max）", "102%", "90%", "90%", "554%", "106%", "81%", "104%", "179%", "1.35"],
-            ["My（Min）", "134%", "117%", "118%", "443%", "87%", "135%", "110%", "219%", "1.10"],
-            ["Mxy（Max）", "120%", "87%", "94%", "8295%", "92%", "137%", "107%", "188%", "1.35"],
-            ["Mxy（Min）", "77%", "341%", "143%", "169%", "387%", "746%", "678%", "38%", "1.35"],
-            ["Mz（Max）", "102%", "727%", "102%", "116%", "1002%", "104%", "105%", "58%", "1.10"],
-            ["Mz（Min）", "212%", "1%", "149%", "134%", "12%", "348%", "168%", "19%", "1.10"],
-            ["Fx（Max）", "32%", "106%", "92%", "179%", "94%", "11%", "73%", "55%", "1.35"],
-            ["Fx（Min）", "161%", "123%", "124%", "1099%", "104%", "16949%", "116%", "603%", "1.10"],
-            ["Fy（Max）", "103%", "154%", "103%", "166%", "123%", "110%", "110%", "105%", "1.10"],
-            ["Fy（Min）", "111%", "57%", "83%", "110%", "61%", "106%", "86%", "144%", "1.35"],
-            ["Fxy（Max）", "97%", "103%", "101%", "200%", "92%", "97%", "94%", "115%", "1.35"],
-            ["Fxy（Min）", "544%", "269%", "502%", "102748%", "278%", "248%", "275%", "77%", "1.35"],
-            ["Fz（Max）", "96%", "21%", "61%", "108%", "69%", "115%", "75%", "115%", "1.35"],
-            ["Fz（Min）", "45%", "40%", "45%", "316%", "2233%", "62%", "62%", "108%", "1.35"],
-        ]
-        label = "变桨轴承极限载荷安全系数"
-        reason = "从变桨轴承场址校核报告载荷对比和设计校核口径生成 G.5.1 极限载荷对比表。"
-    elif "附表G.5.2" in title:
-        source = fallback_source(sources, "变桨轴承场址校核报告")
-        rows = [["m值", "Mx（kNm）", "My（kNm）", "Mz（kNm）", "Fx（kN）", "Fy（kN）", "Fz（kN）"], ["10", "92%", "86%", "/", "174%", "119%", "40%"]]
-        label = "变桨轴承等效疲劳载荷"
-        reason = "从变桨轴承场址校核报告疲劳载荷对比口径生成 G.5.2 等效疲劳载荷表。"
-    elif "附表G.5.3" in title:
-        source = fallback_source(sources, "变桨轴承场址校核报告")
-        rows = [
-            ["项目名称", "项目名称", "设计许用值", "投标机组设计载荷下计算值", "备注"],
-            ["轴承滚道静承载能力", "轴承滚道静承载能力", "1.1", "1.33", "满足"],
-            ["油沟位置处极限应力/安全系数", "内圈滚道", "1470MPa", "652.8MPa", "满足"],
-            ["油沟位置处极限应力/安全系数", "外圈滚道", "1470MPa", "493.5MPa ", "满足"],
-            ["环向应力", "内圈螺栓孔", "620MPa", "355.7MPa", "满足"],
-            ["环向应力", "外圈螺栓孔", "620MPa", "234.9MPa", "满足"],
-            ["累计损伤安全系数", "内圈油沟", "1", "7.61E-3", "满足"],
-            ["累计损伤安全系数", "外圈油沟", "1", "4.12E-3", "满足"],
-            ["累计损伤安全系数", "内圈螺栓孔", "1", "1.55E-2", "满足"],
-            ["累计损伤安全系数", "外圈螺栓孔", "1", "4.58E-2", "满足"],
-            ["轴承套圈刚度校核", "密封槽处内外圈最大径向相对位移量", "2.5mm", "1.12", "满足"],
-            ["轴承套圈刚度校核", "密封槽处内外圈最大轴向相对位移量", "2.0mm", "0.85", "满足"],
-            ["变桨轴承修正额定寿命", "变桨轴承修正额定寿命", "≥305020", "679500", "满足"],
-            ["齿静强度校核", "计算齿根静弯曲强度的安全系数", "1.2", "2.688", "满足"],
-            ["齿静强度校核", "计算齿面接触强度的安全系数", "1.0", "1.002", "满足"],
-            ["齿疲劳强度校核", "计算齿根弯曲疲劳的安全系数", "1.25", "1.711", "满足"],
-            ["齿疲劳强度校核", "计算齿面接触疲劳的安全系数", "1.1", "1.111", "满足"],
-        ]
-        label = "变桨轴承校核结果"
-        reason = "从变桨轴承场址校核报告设计载荷下校核结果表生成 G.5.3。"
-    if not rows:
-        return []
-    replace_first_table(output_file, rows)
-    return generated_table_decisions(rows, source, label=label, reason=reason, action_hint="standard_appendix")
-
-
 def wind_key(value: float) -> float:
     return round(float(value), 3)
 
@@ -4266,7 +4208,9 @@ def collect_facts(sources: list[Source], project: dict[str, Any], manifest: dict
     facts.extend(extract_project_facts(project))
     for source in sources:
         try:
-            if source.kind == "xlsx":
+            if source.route == TENDER_SOURCE_ROUTE:
+                facts.extend(extract_tender_document_facts(source))
+            elif source.kind == "xlsx":
                 source_meta, param_facts = extract_param_facts(source, project)
                 meta[source.name] = source_meta
                 facts.extend(param_facts)
@@ -4426,15 +4370,6 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
             "partial": 0,
             "manual": 0,
             "total": len(large_component_decisions),
-        }
-    standard_appendix_decisions = apply_standard_appendix_table_fill(output_file, sources, spec)
-    if standard_appendix_decisions:
-        mapping["decisions"] = standard_appendix_decisions
-        mapping["summary"] = {
-            "fill": len(standard_appendix_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(standard_appendix_decisions),
         }
     load_wind_decisions = apply_load_wind_parameter_table_fill(output_file, sources)
     if load_wind_decisions:

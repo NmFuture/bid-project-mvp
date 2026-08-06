@@ -6,6 +6,7 @@ const internalDirectoryTextPattern = /futurecode|opencode|S2|Skill|session|流�
 const CREEP_PERCENT_PER_SECOND = 0.05
 const CREEP_MAX_PERCENT = 6
 const RUNNING_DISPLAY_CAP = 96
+const EXPECTED_DIRECTORY_DURATION_SECONDS = 15 * 60
 
 const directorySteps = [
   { id: 'task-1', label: '准备生成资料' },
@@ -26,6 +27,39 @@ const parseTime = (value) => {
 
 export const isDirectoryProgressRunning = (progress) => runningStatuses.has(normalizeStatus(progress?.status))
 export const isDirectoryProgressFailed = (progress) => failedStatuses.has(normalizeStatus(progress?.status))
+
+export const buildDirectoryRegenerationPrompt = ({ dirty = false, hasDownstreamResults = false } = {}) => {
+  const warnings = ['重新生成将覆盖当前目录审核稿。']
+  if (dirty) warnings.push('重新生成将丢弃未保存修改。')
+  if (hasDownstreamResults) warnings.push('已有素材匹配和正文结果将失效，需重新确认目录并生成。')
+  return `${warnings.join('\n')}\n确认继续吗？`
+}
+
+export const shouldShowTemplateDirectoryGenerationButton = (progress = {}) =>
+  normalizeStatus(progress?.status) !== 'completed'
+
+export const beginDirectoryProgressEpoch = ({ incoming = null } = {}) => incoming
+
+export const loadConsistentOutlineReviewSnapshot = async ({
+  loadDirectoryState,
+  loadOutline,
+  loadProject,
+}) => {
+  const generationPayload = await loadDirectoryState()
+  let [outlinePayload, projectPayload] = await Promise.all([loadOutline(), loadProject()])
+  const generationCompletedAt = String(generationPayload?.generatedAt || '').trim()
+  const outlineGeneratedAt = String(outlinePayload?.generatedAt || '').trim()
+
+  if (
+    normalizeStatus(generationPayload?.status) === 'completed'
+    && generationCompletedAt
+    && generationCompletedAt !== outlineGeneratedAt
+  ) {
+    outlinePayload = await loadOutline()
+  }
+
+  return { outlinePayload, generationPayload, projectPayload }
+}
 
 const directoryStartMs = (progress = {}) => {
   const startedAt = parseTime(progress?.startedAt)
@@ -109,6 +143,25 @@ export const directoryDisplayPercentage = (progress = {}, nowMs = Date.now()) =>
   const creepSeconds = anchorMs === null ? 0 : Math.max(0, (finiteNumber(nowMs) - anchorMs) / 1000)
   const creep = Math.min(CREEP_MAX_PERCENT, creepSeconds * CREEP_PERCENT_PER_SECOND)
   return Math.min(base + creep, Math.max(base, RUNNING_DISPLAY_CAP))
+}
+
+export const estimateDirectoryDisplayPercentage = ({
+  status = 'idle',
+  elapsedSeconds = 0,
+  fallbackPercentage = 0,
+} = {}) => {
+  const normalizedStatus = normalizeStatus(status)
+  if (normalizedStatus === 'completed') return 100
+  if (failedStatuses.has(normalizedStatus)) return clampPercentage(fallbackPercentage)
+  if (!runningStatuses.has(normalizedStatus)) return clampPercentage(fallbackPercentage)
+
+  const elapsed = Math.max(0, finiteNumber(elapsedSeconds))
+  if (elapsed <= EXPECTED_DIRECTORY_DURATION_SECONDS) {
+    return 5 + 90 * (elapsed / EXPECTED_DIRECTORY_DURATION_SECONDS)
+  }
+
+  const overtime = elapsed - EXPECTED_DIRECTORY_DURATION_SECONDS
+  return 95 + 4 * (1 - Math.exp(-overtime / (10 * 60)))
 }
 
 const derivedStepStatuses = (status, percentage) => {

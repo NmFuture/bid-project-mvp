@@ -5,7 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.services.bid_type import BUSINESS_BID_TYPE
+from app.services.bid_fill_state import default_fill_state
+from app.services.bid_project_state import (
+    default_document_state,
+    default_review_document_state,
+    default_technical_gap_state,
+)
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.bid_runtime_state import (
     build_directory_event,
     build_directory_opencode_output,
@@ -171,6 +177,7 @@ def save_generated_outline_state(
     summary: str,
     opencode_output: dict[str, Any] | None = None,
     rule_evidence: dict[str, Any] | None = None,
+    invalidate_technical_downstream: bool = False,
 ) -> dict[str, Any]:
     current_state = copy.deepcopy(project.get("directory_state") or {})
     current_events = list(copy.deepcopy(current_state.get("events") or []))
@@ -216,6 +223,14 @@ def save_generated_outline_state(
         "summary": {"totalNodeCount": count_outline_nodes(nodes)},
         "nodes": copy.deepcopy(nodes),
     }
+    if invalidate_technical_downstream and str(project.get("bidType") or "").strip() == TECHNICAL_BID_TYPE:
+        project_id = str(project.get("id") or "")
+        project_name = str(project.get("name") or "")
+        project["currentStage"] = 2
+        project["gap_state"] = default_technical_gap_state()
+        project["fill_state"] = default_fill_state(project)
+        project["document_state"] = default_document_state(project_id, project_name)
+        project["review_document_state"] = default_review_document_state(project_id, project_name)
     project["updatedAt"] = generated_at
     return copy.deepcopy(payload)
 

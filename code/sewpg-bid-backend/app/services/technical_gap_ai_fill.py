@@ -175,6 +175,62 @@ def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[
     return dict(appendix_tasks[0]) if appendix_tasks else {}
 
 
+def _project_tender_documents_for_fill(
+    project: dict[str, Any],
+    appendix_task: dict[str, Any],
+) -> list[dict[str, Any]]:
+    routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
+    if not routing.get("useTenderParseFields"):
+        return []
+    # 完整文档记录（含 sourcePath/textPath）由解析链路写入 project.parse_storage.documents；
+    # project.parse_result 里只有摘要（sourceFiles），旧数据可能带 documents，均作兜底。
+    parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+    documents = parse_storage.get("documents")
+    if not isinstance(documents, list):
+        parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+        documents = parse_result.get("documents")
+        if not isinstance(documents, list):
+            documents = parse_result.get("sourceFiles")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for document in _object_items(documents):
+        if document.get("status") == "failed":
+            continue
+        source_path = Path(str(document.get("sourcePath") or ""))
+        text_path = Path(str(document.get("textPath") or ""))
+        supported_source = source_path.suffix.lower() in {".docx", ".pdf", ".xlsx", ".xlsm", ".txt", ".md"}
+        readable_source = (
+            source_path
+            if supported_source and source_path.is_file()
+            else text_path
+            if text_path.is_file()
+            else None
+        )
+        if readable_source is None:
+            continue
+        document_id = str(document.get("id") or "").strip()
+        key = document_id or str(readable_source.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        nav_path = Path(str(document.get("documentNavPath") or ""))
+        result.append(
+            {
+                "id": document_id or f"TENDER-{len(result) + 1}",
+                "name": str(document.get("name") or document.get("fileName") or source_path.name or readable_source.name),
+                "sourcePath": str(readable_source),
+                "originalSourcePath": str(source_path) if source_path.is_file() else "",
+                "textPath": str(text_path) if text_path.is_file() else "",
+                "ocrTextPath": str(text_path) if text_path.is_file() else "",
+                "documentNavPath": str(nav_path) if nav_path.is_file() else "",
+                "pageCount": document.get("pageCount") or 0,
+                "sourceType": "project_tender_document",
+                "parsedTextFallback": readable_source == text_path and readable_source != source_path,
+            }
+        )
+    return result
+
+
 def _selected_reference_material_ids(
     item: dict[str, Any],
     appendix_task: dict[str, Any],
@@ -901,6 +957,7 @@ def _build_ai_fill_artifacts(
     reference_materials: list[dict[str, Any]],
     recommended_materials: list[dict[str, Any]],
     parse_fields: list[dict[str, Any]],
+    tender_documents: list[dict[str, Any]],
     manifest_path: Path,
     s7_ready: bool,
     browser_base_url: str = "",
@@ -940,6 +997,14 @@ def _build_ai_fill_artifacts(
                 "referenceMaterials": reference_materials,
                 "recommendedMaterials": recommended_materials,
                 "parseFields": parse_fields,
+                "tenderDocuments": [
+                    {
+                        "id": str(document.get("id") or ""),
+                        "name": str(document.get("name") or ""),
+                        "sourceType": str(document.get("sourceType") or "project_tender_document"),
+                    }
+                    for document in tender_documents
+                ],
                 "manifestPath": str(manifest_path),
                 "batchReportPath": str(batch_report_path) if batch_count > 1 else "",
                 "batchTargetIndex": index if batch_count > 1 else 0,
@@ -991,6 +1056,7 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
             or [_material_key(material) for material in reference_materials]
         ),
         "referenceMaterials": reference_materials,
+        "tenderDocuments": _object_items(artifact.get("tenderDocuments")),
         "manifestPath": artifact.get("manifestPath"),
         "batchReportPath": artifact.get("batchReportPath") or "",
         "batchTargetIndex": artifact.get("batchTargetIndex") or 0,
@@ -1002,6 +1068,7 @@ def _compact_resolved_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "confirmedAt": str(artifact.get("confirmedAt") or ""),
         "confirmedBy": str(artifact.get("confirmedBy") or ""),
         "referenceMaterialCount": len(artifact.get("referenceMaterials") or []),
+        "tenderDocumentCount": len(artifact.get("tenderDocuments") or []),
         "recommendedMaterialCount": len(artifact.get("recommendedMaterials") or []),
     }
 
@@ -1083,6 +1150,10 @@ def run_technical_ai_fill_for_gap(
         reference_materials,
     )
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
+    tender_documents = _project_tender_documents_for_fill(project, appendix_task)
+    source_routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
+    if source_routing.get("useTenderParseFields") and not tender_documents:
+        raise RuntimeError("附表填写规则要求读取招标文件，但项目当前没有可读取的原始文件或全文解析结果，请重新解析招标文件。")
     work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
     work_dir.mkdir(parents=True, exist_ok=True)
     shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
@@ -1140,6 +1211,7 @@ def run_technical_ai_fill_for_gap(
             "rowCount": appendix_task.get("rowCount") or 0,
             "sourceRouting": appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {},
             "availableParseFields": parse_fields,
+            "tenderDocuments": tender_documents,
         },
         "blankSource": blank_source,
         "referenceMaterialIds": selected_reference_ids,
@@ -1149,6 +1221,7 @@ def run_technical_ai_fill_for_gap(
         "recommendedMaterials": recommended_materials,
         "parseFieldIds": _string_items(data.get("parseFieldIds")),
         "parseFields": parse_fields,
+        "tenderDocuments": tender_documents,
         "constraints": str(data.get("constraints") or ""),
         "operator": str(data.get("operator") or "当前用户"),
         "outputFile": str(output_file),
@@ -1192,6 +1265,7 @@ def run_technical_ai_fill_for_gap(
         reference_materials=reference_materials,
         recommended_materials=recommended_materials,
         parse_fields=parse_fields,
+        tender_documents=tender_documents,
         manifest_path=manifest_path,
         s7_ready=quality_report["status"] == "passed",
         browser_base_url=browser_base_url,

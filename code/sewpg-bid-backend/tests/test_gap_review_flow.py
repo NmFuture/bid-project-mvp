@@ -564,6 +564,135 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(confirmed["artifact"]["qualityGate"], "human_confirmed")
         self.assertEqual(confirmed["artifact"]["confirmedBy"], "复核用户")
 
+    def test_gap_ai_fill_confirm_scopes_human_confirmed_until_all_fill_tasks_done(self) -> None:
+        """R10-B07-02：多 fillTask 目录项只复核一个任务，不得把整项置为 human_confirmed。"""
+        project_id = self._create_project_with_confirmed_directory_json()
+        project = store._require(project_id)
+        table_template = technical_workspace_dir(project_id) / "table-template.docx"
+        doc = Document()
+        doc.add_paragraph("机组参数：[保证值，待填写]")
+        doc.save(table_template)
+        table_template_2 = technical_workspace_dir(project_id) / "table-template-2.docx"
+        doc = Document()
+        doc.add_paragraph("塔筒参数：[保证值，待填写]")
+        doc.save(table_template_2)
+        project["gap_state"] = {
+            "recognitionStatus": "completed",
+            "recognizedAt": now_iso(),
+            "submittedForReview": False,
+            "reviewConfirmed": False,
+            "reviewedAt": "",
+            "items": [],
+            "submissions": [],
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "projectId": project_id,
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "GAP-TABLE",
+                        "number": "附表A.1",
+                        "title": "投标关键数据一览表",
+                        "status": "needs_input",
+                        "decision": "fill_required",
+                        "usage": "appendix_fill",
+                        "matchedMaterials": [],
+                        "candidateMaterials": [],
+                        "appendixTasks": [],
+                        "fillTasks": [
+                            {
+                                "id": "FILL-TABLE",
+                                "skill": "bid-tech-table-filler",
+                                "status": "pending",
+                                "blankSource": {
+                                    "id": "APP-TABLE",
+                                    "docxPath": str(table_template),
+                                    "placeholderLabels": ["保证值"],
+                                },
+                            },
+                            {
+                                "id": "FILL-TABLE-2",
+                                "skill": "bid-tech-table-filler",
+                                "status": "pending",
+                                "blankSource": {
+                                    "id": "APP-TABLE-2",
+                                    "docxPath": str(table_template_2),
+                                    "placeholderLabels": ["保证值"],
+                                },
+                            },
+                        ],
+                        "resolvedArtifacts": [],
+                    },
+                ],
+            },
+            "planFile": "",
+            "integrity": {},
+        }
+        store._persist_project(project)
+        self._confirm_project_fact_table(project_id, {"保证值": "满足招标要求"})
+
+        def fake_run_table_filler(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            output_file = Path(manifest["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            doc = Document()
+            doc.add_paragraph("性能保证：满足招标要求")
+            doc.save(output_file)
+            return {
+                "schema_version": "bid-tech-table-fill-v1",
+                "outputFile": str(output_file),
+                "unfilledFields": [],
+                "evidenceRefs": [{"field": "保证值"}],
+                "fillReport": {"filledFieldCount": 1, "unfilledFieldCount": 0},
+            }
+
+        with patch(
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
+            side_effect=fake_run_table_filler,
+        ):
+            first_fill = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/ai-fill",
+                json={"fillTaskId": "FILL-TABLE", "operator": "测试用户"},
+            )
+            self.assertEqual(first_fill.status_code, 200, first_fill.text)
+            first_artifact_id = first_fill.json()["artifact"]["id"]
+            first_confirm = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/artifacts/{first_artifact_id}/confirm",
+                json={"operator": "复核用户"},
+            )
+            self.assertEqual(first_confirm.status_code, 200, first_confirm.text)
+
+        first_item = first_confirm.json()["item"]
+        # 只复核第一个任务：整项不收口 human_confirmed，决策仍是 fill_required。
+        self.assertNotEqual(str(first_item.get("qualityStatus") or ""), "human_confirmed")
+        self.assertEqual(first_item["decision"], "fill_required")
+        self.assertEqual(first_item["status"], "needs_input")
+        tasks_by_id = {task["id"]: task for task in first_item["fillTasks"]}
+        self.assertEqual(tasks_by_id["FILL-TABLE"]["status"], "completed")
+        self.assertEqual(tasks_by_id["FILL-TABLE-2"]["status"], "pending")
+
+        with patch(
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
+            side_effect=fake_run_table_filler,
+        ):
+            second_fill = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/ai-fill",
+                json={"fillTaskId": "FILL-TABLE-2", "operator": "测试用户"},
+            )
+            self.assertEqual(second_fill.status_code, 200, second_fill.text)
+            second_artifact_id = second_fill.json()["artifact"]["id"]
+            second_confirm = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/artifacts/{second_artifact_id}/confirm",
+                json={"operator": "复核用户"},
+            )
+            self.assertEqual(second_confirm.status_code, 200, second_confirm.text)
+
+        second_item = second_confirm.json()["item"]
+        # 全部任务完成且各自产物均复核通过后，整项才允许收口为已就绪。
+        self.assertEqual(second_item["qualityStatus"], "human_confirmed")
+        self.assertEqual(second_item["decision"], "ready")
+        self.assertEqual(second_item["status"], "resolved")
+
     def test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         project = store._require(project_id)
@@ -571,6 +700,26 @@ class GapReviewFlowTests(unittest.TestCase):
             {"id": "FIELD-POWER", "label": "单机容量", "value": "10MW", "sourceFile": "招标文件.docx"},
             {"id": "FIELD-ROTOR", "label": "叶轮直径", "value": "220m", "sourceFile": "招标文件.docx"},
         ]
+        tender_path = settings.uploads_dir / project_id / "完整招标文件.docx"
+        tender_path.parent.mkdir(parents=True, exist_ok=True)
+        tender_doc = Document()
+        tender_doc.add_paragraph("完整招标文件")
+        tender_doc.save(tender_path)
+        tender_text_path = tender_path.with_suffix(".txt")
+        tender_text_path.write_text("完整招标文件解析全文", encoding="utf-8")
+        # 生产链路把完整文档记录（含 sourcePath/textPath）写入 parse_storage.documents，
+        # parse_result 里只有摘要；这里按真实结构注入，不再手工塞 parse_result.documents。
+        parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        parse_storage["documents"] = [
+            {
+                "id": "TEN-1",
+                "name": tender_path.name,
+                "sourcePath": str(tender_path),
+                "textPath": str(tender_text_path),
+                "status": "completed",
+            }
+        ]
+        project["parse_storage"] = parse_storage
         store._persist_project(project)
         detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
@@ -595,10 +744,10 @@ class GapReviewFlowTests(unittest.TestCase):
             "tableTitle": "性能保证附表",
             "projectSources": [],
             "standardSources": ["性能保证基准素材"],
-            "otherSources": [],
+            "otherSources": ["响应招标文件填写"],
             "matchedMaterials": [{"id": "RAW-0001", "name": "性能保证基准素材.docx"}],
             "manualRequired": False,
-            "useTenderParseFields": False,
+            "useTenderParseFields": True,
         }
         project = store._require(project_id)
         project["gap_state"]["plan"] = gap_plan
@@ -643,12 +792,16 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(manifest["appendixTask"]["sourceRouting"]["standardSources"], ["性能保证基准素材"])
         self.assertEqual(manifest["recommendedMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(manifest["referenceMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(manifest["tenderDocuments"][0]["id"], "TEN-1")
+        self.assertEqual(manifest["tenderDocuments"][0]["sourcePath"], str(tender_path))
+        self.assertEqual(manifest["tenderDocuments"][0]["textPath"], str(tender_text_path))
         self.assertEqual([item["id"] for item in manifest["materialIndex"]], ["RAW-0001"])
         self.assertEqual(manifest["parseFields"][0]["id"], "FIELD-POWER")
         self.assertEqual(manifest["blankSource"]["id"], "APP-PERF")
         artifact = response.json()["artifact"]
         self.assertEqual(artifact["fillReport"]["filledFieldCount"], 2)
         self.assertEqual(artifact["referenceMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(artifact["tenderDocuments"], [{"id": "TEN-1", "name": tender_path.name, "sourceType": "project_tender_document"}])
 
     def test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()

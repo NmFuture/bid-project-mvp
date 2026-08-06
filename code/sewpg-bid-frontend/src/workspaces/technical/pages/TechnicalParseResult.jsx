@@ -15,6 +15,7 @@ import {
   isDirectoryProgressFailed,
   isDirectoryProgressRunning,
   mergeMonotonicDirectoryProgress,
+  shouldShowTemplateDirectoryGenerationButton,
   summarizeDirectoryProgress,
 } from '../technicalDirectoryProgress'
 import { subscribeDirectoryProgress } from '../technicalDirectoryProgressStream'
@@ -145,6 +146,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const isDirectoryRunning = isDirectoryProgressRunning(directoryState)
   const isDirectoryCompleted = directoryStatus === 'completed'
   const isDirectoryFailed = isDirectoryProgressFailed(directoryState)
+  const showDirectoryGenerationButton = shouldShowTemplateDirectoryGenerationButton(directoryState || {})
   const directoryProgressSummary = summarizeDirectoryProgress(directoryState || {})
   const directoryProgressBadgeClass = directoryProgressSummary.tone === 'danger'
     ? 'bg-error-container text-error'
@@ -513,18 +515,20 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           </div>
 
           <div className="flex h-[34px] justify-center">
-            <Button
-              onClick={handleGenerateDirectory}
-              disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
-              size="stage"
-              variant="primary"
-            >
-              {generatingDirectory || isDirectoryRunning
-                ? '生成中...'
-                : isDirectoryCompleted || isDirectoryFailed
-                  ? '重新生成目录'
-                : '生成目录'}
-            </Button>
+            {showDirectoryGenerationButton ? (
+              <Button
+                onClick={handleGenerateDirectory}
+                disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
+                size="stage"
+                variant="primary"
+              >
+                {generatingDirectory || isDirectoryRunning
+                  ? '生成中...'
+                  : isDirectoryFailed
+                    ? '重试生成目录'
+                    : '生成目录'}
+              </Button>
+            ) : null}
           </div>
 
           </div>

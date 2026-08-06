@@ -51,6 +51,7 @@ from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
     refresh_technical_gap_plan_artifact_urls,
     summarize_technical_gap_plan,
+    technical_gap_artifact_is_s7_ready,
 )
 from app.services.technical_fact_curator import run_fact_curator_for_project
 from app.services.technical_fact_material_classes import build_fact_material_check
@@ -391,7 +392,22 @@ class TechnicalGapService:
                 artifact["confirmedAt"] = confirmed_at
                 artifact["confirmedBy"] = confirmed_by
 
-            plan_item["qualityStatus"] = "human_confirmed"
+            # 审核归属具体 fillTask（R10-B07-02）：目录项级 qualityStatus 只在全部填写任务
+            # 完成、且所有 AI 填写产物均已放行后才收口为 human_confirmed；否则保留填写阶段
+            # 的质检状态，避免前端把仍有待填/待审任务的目录项整体误判为「已就绪」。
+            pending_fill_tasks = [
+                task
+                for task in (plan_item.get("fillTasks") or [])
+                if isinstance(task, dict) and str(task.get("status") or "pending") != "completed"
+            ]
+            unready_ai_artifacts = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("source") or "") == "ai_fill"
+                and not technical_gap_artifact_is_s7_ready(artifact)
+            ]
+            if not pending_fill_tasks and not unready_ai_artifacts:
+                plan_item["qualityStatus"] = "human_confirmed"
             plan_item.setdefault("reviewNotes", []).append(
                 f"人工确认 AI 填写产物可用于合并：{len(batch_artifacts)} 份"
             )
@@ -718,7 +734,9 @@ class TechnicalGapService:
             or ""
         )
         stats = apply_appendix_source_matrix_to_plan(plan, matrix, customer_name=customer_name, materials=materials)
-        if stats.get("routedItems"):
+        # 新增路由或清除旧路由都算改动：第二版规则零命中时 routedItems 为 0，
+        # 但旧矩阵路由已被清除，不持久化会让旧路由在重新读取时复活（R10-B09-03）。
+        if stats.get("routedItems") or stats.get("clearedItems") or stats.get("clearedTasks"):
             project["updatedAt"] = now_iso()
             persist_technical_gap_project(project)
         return stats
