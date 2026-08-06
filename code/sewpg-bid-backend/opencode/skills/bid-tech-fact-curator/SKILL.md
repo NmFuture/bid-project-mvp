@@ -11,13 +11,14 @@ allowed-tools: [Bash, Glob, Grep]
 - `projectFactTable.fields`：事实表全量字段（含 specKey/specSeq/sourceKind/status/label/value/unit/needsConfirmation）。
 - `targets`：后端已分好桶的 fieldKey 清单——`fill`（unextracted 的招标/素材/证书类字段，模板/平台/自动生成类除外）、`fix`（extracted）、`confirmAdvice`（needsConfirmation）。
 - `tenderSources`：招标文件解析产物路径（combined 全文、结构化结果、S1 manifest）。
-- `materials`：相关素材的本地可读路径（含 `materialClass` 类别、`homeProject` 归属项目、`crossProject` 是否跨项目）。
+- `materials`：相关素材清单（含 `materialClass` 类别、`homeProject` 归属项目、`crossProject` 是否跨项目）。带 `path` 的已落地可直接读；没有 `path` 的读取前先按 `materialFetch` 现取。
+- `materialFetch`：素材按需拉取入口（`url` 里的 `{materialId}` 换成素材 id 后 POST，响应的 `path` 即本地可读路径）。
 - `briefFile`：脚本产出的证据简报（每字段候选原文片段 + 机械脏数据标记）。
 - `outputFile`：你必须写入的逐字段建议文件。
 
 ## 铁律
 
-1. **只处理 manifest 给定的字段和文件。** 禁止全库搜索，禁止读取 manifest 之外的素材，禁止编造事实。
+1. **只处理 manifest 给定的字段和文件。** 禁止全库搜索，禁止编造事实。可读素材范围就是 `materials` 清单：清单外的素材一律不取，按 `materialFetch` 拉取时同样只能拉清单内的 id。
 2. **fieldKey 原样 echo。** suggestions 的 `fieldKey` 必须逐字照抄 brief/manifest 中该字段的 `fieldKey`/`key`（包括 `spec-090` 这类骨架键、含大小写与括号的原始写法），禁止自行改写、归一化、翻译或换成别名。
 2. **找不到值就明说。** 某字段在招标文件和素材中都找不到取值时，`suggestedValue` 留空、`evidence` 写清查找过的位置和结论；后端会保持 unextracted 并在 notes 记录原因。绝不硬填。
 3. **每个建议都要带证据。** `evidence` 必须含来源文件名与原文片段（页码/段落位置能给出就给出），让人工能一眼复核。
@@ -38,7 +39,11 @@ Agent 负责理解任务与做判断，脚本负责机械准备工作：
 
 1. 调用一次 Bash 执行 `factcurate <manifest>`（timeout ≥ 1800000ms），生成 `briefFile` 证据简报。
 2. 阅读 brief：每个目标字段的候选原文片段、机械脏数据标记（serial-text / range / unit）。
-3. 对 brief 不足以定论的字段，回读 tenderSources / materials 原文核实取值与上下文。
+3. 对 brief 不足以定论的字段，回读 tenderSources / materials 原文核实取值与上下文。`materials` 条目没有 `path` 时先拉取再读（只拉真正要读的，不要遍历整份清单）：
+
+   ```bash
+   curl -sS -X POST "<materialFetch.url 里 {materialId} 换成该素材 id>" | python3 -c "import json,sys;print(json.load(sys.stdin)['path'])"
+   ```
 4. 把逐字段建议写入 `outputFile`（JSON，契约见下）。
 5. 只返回小型 JSON：`{"schema":"bid-tech-fact-curate-v1","suggestionsPath":"<outputFile>","counts":{"fill":n,"fix":n,"confirmAdvice":n}}`，不要解释文字，不要 Markdown 代码块。
 
@@ -102,7 +107,8 @@ Agent 负责理解任务与做判断，脚本负责机械准备工作：
     "confirmAdvice": ["needsConfirmation=true 的 fieldKey"]
   },
   "tenderSources": [{"kind": "combinedText | structured | parseManifest", "path": "本地可读路径"}],
-  "materials": [{"id": "RAW-xxx", "name": "素材名", "path": "本地可读路径", "folderPath": "", "materialTier": "", "materialClass": "素材类别", "homeProject": "归属项目名，可空", "crossProject": false}],
+  "materials": [{"id": "RAW-xxx", "name": "素材名", "path": "本地可读路径，未落地时无此键", "folderPath": "", "materialTier": "", "materialClass": "素材类别", "homeProject": "归属项目名，可空", "crossProject": false}],
+  "materialFetch": {"method": "POST", "url": "…/gaps/facts/materials/{materialId}/fetch", "responseField": "path"},
   "briefFile": "脚本写出的证据简报路径",
   "outputFile": "你要写出的逐字段建议路径"
 }

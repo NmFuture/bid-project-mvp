@@ -444,8 +444,11 @@ const FactMaintenanceModal = ({
   specsImported,
   specsFileName,
   materialPaths,
+  materialScopes,
   curateReport,
   curating,
+  curatePhase,
+  curateMessage,
   updatingScope,
   onClose,
   onConfirm,
@@ -466,6 +469,16 @@ const FactMaintenanceModal = ({
   const ignoredSuggestions = Array.isArray(curateReport?.ignored) ? curateReport.ignored : []
   if (!open) return null
   const status = factTable?.status || 'empty'
+
+  // 默认素材范围：后端给出的三层（标准文件/客户定制/项目定制），与 AI 匹配填充的扫描口径一致。
+  // 摘要只显示层名，完整路径与自定义参考目录放 title，避免长路径撑破工具条。
+  const scopeList = Array.isArray(materialScopes) ? materialScopes.filter(Boolean) : []
+  const scopeNames = scopeList.map((scope) => materialTierLabels[scope.tier] || String(scope.tier || '')).filter(Boolean)
+  const scopeSummary = scopeNames.length ? scopeNames.join(' · ') : '项目素材'
+  const scopeTitle = [
+    ...scopeList.map((scope) => `${materialTierLabels[scope.tier] || scope.tier}：${scope.path || ''}`),
+    ...(materialPaths || []).map((path) => `参考目录：${path}`),
+  ].join('\n')
 
   // 统计口径：全部从本地 fields（factFields state）实时推导，与列表同一数据源，
   // 新增字段、本地改状态后立即反映，不再依赖后端 summary 快照
@@ -596,12 +609,11 @@ const FactMaintenanceModal = ({
                 type="button"
                 onClick={onCurate}
                 disabled={busy || !fields.length}
-                title="AI 匹配项目素材并填充字段值，结果置为待人工确认（耗时较长）"
-                icon="auto_fix_high"
+                title="先按最新素材范围刷新事实表，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）"
                 size="md"
                 variant="success"
               >
-                {curating ? '匹配填充中...' : 'AI 匹配填充'}
+                {curating ? (curatePhase || '刷新填充中...') : '刷新并 AI 填充'}
               </Button>
               <Button type="button" onClick={onAddField} disabled={busy} icon="add" size="md" variant="secondary">
                 新增字段
@@ -667,6 +679,15 @@ const FactMaintenanceModal = ({
           </div>
         </div>
 
+        {curating ? (
+          <div className="flex items-center gap-2 border-b border-surface-container-high bg-tertiary-fixed/40 px-5 py-2.5 text-xs text-on-surface">
+            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-tertiary" />
+            <span className="font-semibold">{curatePhase || '刷新填充中'}</span>
+            <span className="min-w-0 truncate text-on-surface-variant">{curateMessage || ''}</span>
+            <span className="ml-auto shrink-0 text-on-surface-variant">任务在后台执行，可关闭本窗口</span>
+          </div>
+        ) : null}
+
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-container-high bg-surface-container-lowest px-5 py-2.5 text-xs text-on-surface-variant">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -682,8 +703,9 @@ const FactMaintenanceModal = ({
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <span className="material-symbols-outlined shrink-0 text-[16px] text-outline">folder_open</span>
-              <span className="truncate">
-                项目素材{materialPaths?.length ? ` + ${materialPaths.length} 个参考目录` : ''}
+              <span className="max-w-[22rem] truncate" title={scopeTitle}>
+                {scopeSummary}
+                {materialPaths?.length ? ` + ${materialPaths.length} 个参考目录` : ''}
               </span>
             </span>
             <Button
@@ -703,7 +725,7 @@ const FactMaintenanceModal = ({
           <div className="border-b border-surface-container-high bg-surface-container-lowest px-5 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-on-surface-variant">
-                从素材目录树勾选参考目录（「项目定制/本项目」始终参与，无需勾选）
+                从素材目录树勾选额外参考目录（默认三层范围始终参与，无需勾选）
               </p>
               <div className="flex items-center gap-2">
                 <button
@@ -1218,6 +1240,12 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
   const [sourceMatrixMeta, setSourceMatrixMeta] = useState({ imported: false, fileName: '' })
   const [factMaterialPaths, setFactMaterialPaths] = useState([])
+  // 默认生效的素材范围（标准文件/客户定制/项目定制三层），由后端按项目身份给出
+  const [factMaterialScopes, setFactMaterialScopes] = useState([])
+  // AI 匹配填充任务状态：执行在后台 worker，弹窗关闭/页面刷新都不影响，靠轮询恢复
+  const [factCurateState, setFactCurateState] = useState(null)
+  const factCurateNotifiedRef = useRef('')
+  const factCurateRunning = ['queued', 'running'].includes(String(factCurateState?.status || ''))
   const fillRuleInputRef = useRef(null)
   const sourceMatrixInputRef = useRef(null)
 
@@ -1243,6 +1271,14 @@ export default function TechnicalGapRecognition({ showToast }) {
         fileName: String(factsPayload?.specsFileName || ''),
       })
       setFactMaterialPaths(Array.isArray(factsPayload?.materialPaths) ? factsPayload.materialPaths : [])
+      setFactMaterialScopes(Array.isArray(factsPayload?.materialScopes) ? factsPayload.materialScopes : [])
+      // 页面刷新/重新进入时恢复任务状态：后台还在跑就继续轮询，跑完了直接看到结果
+      try {
+        const curateStatus = await technicalGapsAPI.curateFactsStatus(id)
+        setFactCurateState(curateStatus?.factCurateState || null)
+      } catch {
+        setFactCurateState(null)
+      }
       const matrixMeta = factsPayload?.appendixSourceMatrix
       setSourceMatrixMeta({
         imported: Boolean(matrixMeta?.path),
@@ -1706,9 +1742,15 @@ export default function TechnicalGapRecognition({ showToast }) {
       if (key === 'status') {
         return { ...field, status: value }
       }
+      // 人改过的格子打 manualEdit 标记：重建时只有人工值跨轮保留，
+      // AI 与规则抽的值一律重来，没有标记就会被当成 AI 值冲掉
+      const sourceRefs = key === 'value' && !asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualEdit')
+        ? [{ type: 'manualEdit', title: '人工修改', field: field.label || '' }, ...asObjectArray(field.sourceRefs)]
+        : field.sourceRefs
       return {
         ...field,
         [key]: value,
+        sourceRefs,
         status: String(key === 'value' ? value : field.value || '').trim()
           ? (field.status === 'confirmed' ? 'confirmed' : 'extracted')
           : 'unextracted',
@@ -1757,7 +1799,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(payload)
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
-      showToast?.('项目事实表已保存，可以开始 AI 填写')
+      showToast?.('项目事实表已保存并定稿，正文填写将使用这一版')
       return payload
     } catch (e) {
       showToast?.(e?.message || '项目事实表保存失败', 'error')
@@ -2032,6 +2074,39 @@ export default function TechnicalGapRecognition({ showToast }) {
     return () => window.clearInterval(timer)
   }, [generationRunning, loadGenerationStatus])
 
+  // AI 匹配填充轮询：任务在后台 worker 执行，这里只负责取进度；终态时把结果一次性落到界面。
+  // 完成通知按 jobId+finishedAt 去重，避免收尾那一拍重复弹 toast。
+  useEffect(() => {
+    if (!factCurateRunning) return undefined
+    const timer = window.setInterval(async () => {
+      try {
+        const payload = await technicalGapsAPI.curateFactsStatus(id)
+        const state = payload?.factCurateState || null
+        setFactCurateState(state)
+        const status = String(state?.status || '')
+        if (status !== 'succeeded' && status !== 'failed') return
+        const notifyKey = `${state?.jobId || ''}:${state?.finishedAt || ''}`
+        if (factCurateNotifiedRef.current === notifyKey) return
+        factCurateNotifiedRef.current = notifyKey
+        if (payload?.projectFactTable?.schemaVersion) {
+          setFactTable(payload.projectFactTable)
+          setFactFields(asObjectArray(payload.projectFactTable.fields))
+          setData((current) =>
+            current ? { ...current, projectFactTable: payload.projectFactTable } : current,
+          )
+        }
+        setFactCurateReport(payload?.curateReport || null)
+        showToast?.(
+          payload?.message || (status === 'succeeded' ? '匹配填充完成' : '匹配填充失败'),
+          status === 'succeeded' ? undefined : 'error',
+        )
+      } catch {
+        // 轮询失败不打断任务，下个周期继续取
+      }
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [factCurateRunning, id, showToast])
+
   const runTechnicalAssembly = async () => {
     if (busyAction) return
     if (!hasTechnicalGapPlan) {
@@ -2097,8 +2172,20 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactFields(asObjectArray(table?.fields))
       setFactCurateReport(null)
       setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，并已自动更新`)
       setFactModalOpen(true)
+      // 重建完直接接上 AI 填充，人不用再点一次「刷新并 AI 填充」。
+      // 提交后立即返回，进度沿用 factCurateState 轮询，关页面不影响后台任务。
+      const specTotal = payload?.specTotal ?? 0
+      try {
+        const curatePayload = await technicalGapsAPI.curateFacts(id, {})
+        setFactCurateState(curatePayload?.factCurateState || null)
+        showToast?.(`事实表已解析 ${specTotal} 个字段，正在 AI 填充`)
+      } catch (curateError) {
+        showToast?.(
+          `事实表已解析 ${specTotal} 个字段，但 AI 填充未启动：${curateError?.message || '请手动点击「刷新并 AI 填充」'}`,
+          'error',
+        )
+      }
     } catch (e) {
       showToast?.(
         specsUploaded
@@ -2139,7 +2226,8 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
-  // AI 匹配填充：后端事实表维护 Skill 按素材给字段补值/修正/口径建议，结果落为待人工确认
+  // 刷新并 AI 填充：保存当前编辑 → 按最新素材范围刷新事实表 → 事实表维护 Skill 按素材
+  // 给字段补值/修正/口径建议，结果落为待人工确认
   const handleCurateFacts = async () => {
     if (busyAction) return
     const hasUnnamedManualValue = factFields.some((field) => {
@@ -2161,15 +2249,17 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(savedTable)
       setFactFields(asObjectArray(savedTable?.fields))
       setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
+      // 先按最新素材范围刷新事实表（重跑规则抽取，并把无值的终态字段复位为未提取），
+      // 再交给 AI 补抽——否则上一轮标成「缺少来源」的字段不会进 AI 的工作清单。
+      const rebuiltTable = await technicalGapsAPI.buildFacts(id)
+      setFactTable(rebuiltTable)
+      setFactFields(asObjectArray(rebuiltTable?.fields))
+      setData((current) => (current ? { ...current, projectFactTable: rebuiltTable } : current))
+      // 提交后台任务后立即返回，执行进度由轮询接管；此后关弹窗、刷新页面都不影响
       const payload = await technicalGapsAPI.curateFacts(id, {})
-      const table = payload?.projectFactTable
-      setFactCurateReport(payload?.curateReport || null)
-      if (table?.schemaVersion) {
-        setFactTable(table)
-        setFactFields(asObjectArray(table.fields))
-        setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      }
-      showToast?.(payload?.message || '匹配填充完成')
+      setFactCurateReport(null)
+      setFactCurateState(payload?.factCurateState || null)
+      showToast?.(payload?.message || '已提交 AI 匹配填充任务')
     } catch (e) {
       showToast?.(e?.message || '匹配填充失败，请稍后重试', 'error')
     } finally {
@@ -2742,8 +2832,11 @@ export default function TechnicalGapRecognition({ showToast }) {
           specsImported={factSpecsMeta.imported}
           specsFileName={factSpecsMeta.fileName}
           materialPaths={factMaterialPaths}
+          materialScopes={factMaterialScopes}
           curateReport={factCurateReport}
-          curating={busyAction === 'facts-curate'}
+          curating={busyAction === 'facts-curate' || factCurateRunning}
+          curatePhase={factCurateRunning ? String(factCurateState?.phase || '') : ''}
+          curateMessage={factCurateRunning ? String(factCurateState?.message || '') : ''}
           updatingScope={busyAction === 'facts-material-sources'}
           onClose={() => setFactModalOpen(false)}
           onConfirm={handleConfirmFactTable}
