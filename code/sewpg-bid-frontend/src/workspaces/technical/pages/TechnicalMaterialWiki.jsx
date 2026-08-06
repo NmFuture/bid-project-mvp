@@ -287,7 +287,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
   const selectedNodeId = selectedNode?.id || ''
 
-  // 流水线进度条回调（R10-B07-04）：自动 Wiki 任务「运行 → 成功」时重新加载目录树。
+  // 流水线进度条回调（R10-B07-04）：页面打开后发现新的 Wiki 成功任务时重新加载目录树。
   // 按 jobId 去重只刷新一次；本页手动触发的任务由上面的 bootstrapStatus 轮询负责刷新，
   // 这里跳过避免重复请求。带上当前选中节点刷新：展开位置由 collapsedMap 本地保留，
   // 选中状态随 nodeId 保留；节点已被任务删掉时后端回退到首个可见节点。
