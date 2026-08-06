@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
+from app.services import technical_gap_service
 from app.services.store import store
 from app.services.technical_appendix_source_matrix import (
     appendix_rule_code_score,
@@ -287,6 +288,10 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
             response = self._upload_matrix(project_id, second, filename="第二版.xlsx")
 
         self.assertEqual(response.status_code, 200, response.text)
+        applied = response.json()["applied"]
+        self.assertEqual(applied["routedItems"], 1)
+        self.assertEqual(applied["clearedItems"], 1)
+        self.assertEqual(applied["clearedTasks"], 1)
         plan = store._require(project_id)["gap_state"]["plan"]
         removed_item, new_item = plan["items"]
         removed_task = removed_item["appendixTasks"][0]
@@ -299,6 +304,62 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
         self.assertEqual(new_task["sourceRouting"]["ruleId"], "Sheet!R2")
         self.assertEqual([item["id"] for item in new_task["recommendedMaterials"]], ["RAW-0002"])
         self.assertEqual([item["id"] for item in new_item["sourceRoutedMaterials"]], ["RAW-0002"])
+
+    def test_reupload_zero_match_still_persists_cleared_plan(self) -> None:
+        """第二版规则零命中：只清旧路由、不新增（routedItems=0）也必须落库（R10-B09-03）。
+
+        内存后端共享对象引用，读回 plan 无法区分是否持久化，故用 persist 探针：
+        第二次上传应至少落库 2 次（绑定 1 次 + 清除旧路由后的计划 1 次），
+        缺修复时只有绑定那 1 次。
+        """
+        project_id = self._create_project()
+        self._seed_completed_plan(project_id)
+        materials = [
+            {
+                "id": "RAW-0001",
+                "name": "W10 机型参数表.xlsx",
+                "folderPath": "技术标/标准文件/机型参数表",
+                "materialTier": "standard",
+            },
+        ]
+        first = _build_matrix_xlsx(
+            Path(self.temp_dir.name) / "第一版.xlsx",
+            [["华能", "附表C.2 风轮系统技术参数", "", "机型参数表", ""]],
+        )
+        # 第二版规则有效（Z.1 不在计划中），整版零命中当前附表任务
+        second = _build_matrix_xlsx(
+            Path(self.temp_dir.name) / "第二版.xlsx",
+            [["华能", "附表Z.1 计划外附表", "", "机型参数表", ""]],
+        )
+
+        real_persist = technical_gap_service.persist_technical_gap_project
+        with patch(
+            "app.services.technical_gap_planner._allowed_technical_material_index",
+            return_value=materials,
+        ):
+            first_response = self._upload_matrix(project_id, first, filename="第一版.xlsx")
+            first_response.raise_for_status()
+            self.assertEqual(first_response.json()["applied"]["routedItems"], 1)
+            with patch.object(
+                technical_gap_service,
+                "persist_technical_gap_project",
+                wraps=real_persist,
+            ) as persist_spy:
+                response = self._upload_matrix(project_id, second, filename="第二版.xlsx")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        applied = response.json()["applied"]
+        self.assertEqual(applied["routedItems"], 0)
+        self.assertEqual(applied["clearedItems"], 1)
+        self.assertEqual(applied["clearedTasks"], 1)
+        self.assertGreaterEqual(persist_spy.call_count, 2)
+        plan = store._require(project_id)["gap_state"]["plan"]
+        cleared_item = plan["items"][0]
+        cleared_task = cleared_item["appendixTasks"][0]
+        self.assertNotIn("sourceRouting", cleared_task)
+        self.assertEqual(cleared_task["recommendedMaterials"], [])
+        self.assertNotIn("sourceRouting", cleared_item)
+        self.assertNotIn("sourceRoutedMaterials", cleared_item)
 
     def test_upload_without_plan_returns_empty_applied(self) -> None:
         project_id = self._create_project()
@@ -363,7 +424,15 @@ class ApplyMatrixToPlanTests(unittest.TestCase):
         plan = self._plan()
         self.assertEqual(
             apply_appendix_source_matrix_to_plan(plan, {"rows": []}, customer_name="华能", materials=[]),
-            {"routedItems": 0, "matchedTasks": 0, "manualRequired": 0, "tenderFields": 0, "missingSource": 0},
+            {
+                "routedItems": 0,
+                "matchedTasks": 0,
+                "manualRequired": 0,
+                "tenderFields": 0,
+                "missingSource": 0,
+                "clearedItems": 0,
+                "clearedTasks": 0,
+            },
         )
         self.assertNotIn("sourceRouting", plan["items"][0]["appendixTasks"][0])
 
