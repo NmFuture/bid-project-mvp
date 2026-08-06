@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -119,6 +120,20 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(client.base_url, settings.opencode_base_url.rstrip("/"))
         self.assertEqual(client.provider_id, settings.opencode_provider_id)
         self.assertEqual(client.model_id, settings.opencode_model_id)
+
+    def test_sync_model_config_load_waits_for_database_by_default(self) -> None:
+        async def slow_config_load(_kind: str) -> dict:
+            await asyncio.sleep(0.02)
+            return _db_llm_config(modelId="database-model")
+
+        with patch.object(
+            system_settings_service,
+            "get_model_secret_config",
+            new=slow_config_load,
+        ):
+            config = system_settings_service.get_opencode_model_config_sync()
+
+        self.assertEqual(config["modelId"], "database-model")
 
     def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
         client = OpencodeClient()

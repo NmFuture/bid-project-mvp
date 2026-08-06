@@ -10,9 +10,11 @@ import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, workspaceRoute } from '../../../utils/workspace'
 import {
+  formatParseDuration,
   isParseProgressFailed,
   isUploadAndRunTimeout,
   mergeMonotonicParseProgress,
+  parseElapsedSeconds,
   pollParseProgressOnce,
   recoverUploadAndRunTimeout,
   shouldPollParseProgress,
@@ -571,6 +573,7 @@ export default function TechnicalTenderReview({ showToast }) {
   const [uploading, setUploading] = useState(false)
   const [parseStopRequested, setParseStopRequested] = useState(false)
   const [parseProgress, setParseProgress] = useState(null)
+  const [parseProgressClock, setParseProgressClock] = useState(() => Date.now())
   const [deciding, setDeciding] = useState('')
   const [creatingReview, setCreatingReview] = useState(false)
   const [showProjectInfoModal, setShowProjectInfoModal] = useState(false)
@@ -728,12 +731,19 @@ export default function TechnicalTenderReview({ showToast }) {
   const parseProgressStatus = parseProgress?.status
   const parseProgressPercentage = parseProgress?.percentage
   const parseResultStatus = parseData?.status
+  const isParseRunning = ['running', 'processing', 'queued'].includes(String(parseProgressStatus || '').toLowerCase())
   const parseIsStoppable = shouldPollParseProgress({
     uploading,
     stopped: parseStopRequested,
     progress: { status: parseProgressStatus, percentage: parseProgressPercentage },
     result: { status: parseResultStatus },
   })
+
+  useEffect(() => {
+    if (!isParseRunning) return undefined
+    const timer = window.setInterval(() => setParseProgressClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [isParseRunning])
 
   const handleStopParse = useCallback(async () => {
     const targetProjectId = activeParseProjectIdRef.current || selectedProjectId
@@ -1247,9 +1257,7 @@ export default function TechnicalTenderReview({ showToast }) {
       : parseProgress
     const progressSummary = summarizeParseProgress(progress)
     const status = progressSummary.status
-    const summary = progressSummary.summary === '尚未触发招标文件解析。'
-      ? '正在上传并解析技术招标文件，请稍候。'
-      : (progressSummary.summary || '正在上传并解析技术招标文件，请稍候。')
+    const summary = progressSummary.summary || '正在上传并解析技术招标文件，请稍候。'
     const badgeClass = progressSummary.tone === 'danger'
       ? 'bg-error-container text-error'
       : progressSummary.tone === 'warning'
@@ -1264,44 +1272,41 @@ export default function TechnicalTenderReview({ showToast }) {
       : progressSummary.tone === 'warning'
         ? 'bg-tertiary'
         : 'bg-primary'
-    // 后台解析辅助行：仅展示真实进度字段（已耗时、current/total）与固定提示语
-    const startedMs = Date.parse(progress?.startedAt || '')
-    // eslint-disable-next-line react-hooks/purity -- 已耗时随轮询触发的重渲染每秒刷新，无需额外定时器
-    const nowMs = Date.now()
-    const elapsedSeconds = Number.isFinite(startedMs)
-      ? Math.max(0, Math.floor((nowMs - startedMs) / 1000))
-      : null
-    const backgroundHintParts = []
-    const progressFileNames = Array.isArray(progress?.fileNames) ? progress.fileNames.filter(Boolean) : []
-    if (progressFileNames.length) {
-      const filesLabel = progressFileNames.length > 2
-        ? `${progressFileNames[0]} 等 ${progressFileNames.length} 个文件`
-        : progressFileNames.join('、')
-      backgroundHintParts.push(`解析文件：${filesLabel}`)
-    }
-    if (elapsedSeconds != null) {
-      backgroundHintParts.push(`已耗时 ${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`)
-    }
-    if (Number(progress?.current || 0) > 0 && Number(progress?.total || 0) > 0) {
-      backgroundHintParts.push(`进度 ${Number(progress.current)}/${Number(progress.total)}`)
-    }
-    backgroundHintParts.push('解析在后台进行，可随时离开本页')
-    const showBackgroundHint = ['queued', 'running', 'processing'].includes(status)
+    const elapsedDurationText = formatParseDuration(parseElapsedSeconds(progress, parseProgressClock))
+    const elapsedLineText = elapsedDurationText
+      ? `${status === 'completed' ? '总耗时' : '已运行'} ${elapsedDurationText}`
+      : ''
 
     return (
       <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-on-surface">{progressSummary.title || '解析进度'}</p>
-            <p className="mt-1 text-xs text-outline">{summary}</p>
-            {showBackgroundHint ? (
-              <p className="mt-1 text-xs text-outline">{backgroundHintParts.join(' · ')}</p>
-            ) : null}
-            {progressSummary.detail ? (
-              <p className="mt-1 text-xs font-medium text-on-surface-variant">{progressSummary.detail}</p>
-            ) : null}
+          <div className="flex min-w-0 items-start gap-3">
+            <span className={[
+              'material-symbols-outlined mt-0.5 text-[20px]',
+              progressSummary.tone === 'danger'
+                ? 'text-error'
+                : status === 'completed'
+                  ? 'text-secondary'
+                  : isStoppedParseStatus(status)
+                    ? 'text-outline'
+                    : 'animate-spin-slow text-primary',
+            ].join(' ')}>
+              {progressSummary.tone === 'danger'
+                ? 'error'
+                : status === 'completed'
+                  ? 'check_circle'
+                  : isStoppedParseStatus(status)
+                    ? 'stop_circle'
+                    : 'progress_activity'}
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold tabular-nums text-on-surface">{summary}</p>
+              {elapsedLineText ? (
+                <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedLineText}</p>
+              ) : null}
+            </div>
           </div>
-          <span className={['shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold', badgeClass].join(' ')}
+          <span className={['shrink-0 self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums', badgeClass].join(' ')}
           >
             {progressSummary.statusText} · {progressSummary.percentage}%
           </span>

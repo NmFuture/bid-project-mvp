@@ -492,6 +492,18 @@ def _opencode_progress_from_payload(payload: dict[str, Any]) -> tuple[int, int, 
     parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
     part_count = len(parts)
     trace_status = str(payload.get("status") or "").lower()
+    # 分片并发时单个会话的进度不代表整体：任一分片完成都会把 status 置为 completed，
+    # 直接采用会让进度条在其余分片仍在跑时跳到 100%。编排层给出聚合百分比时以它为准。
+    if payload.get("shardProgress") is not None:
+        try:
+            shard_percent = max(0, min(99, int(payload.get("shardProgress") or 0)))
+        except (TypeError, ValueError):
+            shard_percent = 0
+        return (
+            _technical_phase_progress("word", "structured", shard_percent),
+            shard_percent,
+            int(payload.get("completedShards") or 0),
+        )
     try:
         heartbeat_index = max(0, int(payload.get("heartbeatIndex") or 0))
     except (TypeError, ValueError):

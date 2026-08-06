@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -435,6 +436,90 @@ class ParsePipelineTests(unittest.TestCase):
             )
 
         self.assertEqual(heartbeats, [])
+
+    def test_technical_appendix_extraction_runs_concurrently_with_structured_parse(self) -> None:
+        """附表提取与 opencode 会话之间没有依赖，必须并行。
+
+        串行时这段本地耗时（真实项目实测 105 秒）会白白排在会话前面；
+        两个事件互等，只有真正并行才能同时满足，串行会在这里等超时。
+        """
+        project_id = self.create_project()
+        tender_path = settings.uploads_dir / project_id / "tender.docx"
+        tender_path.parent.mkdir(parents=True, exist_ok=True)
+        tender_path.write_bytes(
+            build_docx_blocks_bytes(
+                "附表A.1 投标机型总方案信息表",
+                [["序号", "项目", "投标响应"], ["1", "机型总方案", ""]],
+            )
+        )
+
+        skill_started = threading.Event()
+        appendix_started = threading.Event()
+        observed: dict[str, bool] = {}
+
+        def fake_extract_docx_appendices(*args, **kwargs):
+            appendix_started.set()
+            observed["skillStartedWhileExtracting"] = skill_started.wait(timeout=10)
+            return []
+
+        def fake_run_parse_skill(_manifest_path, *, local_result, profile, progress_callback=None, cancel_check=None):
+            skill_started.set()
+            observed["appendixRunningWhenSkillStarted"] = appendix_started.wait(timeout=10)
+            return local_result, ""
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing._extract_docx_appendices",
+            side_effect=fake_extract_docx_appendices,
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=fake_run_parse_skill,
+        ):
+            parsing_service.parse_tender_documents(
+                project_id,
+                [
+                    {
+                        "id": "DOC-1",
+                        "name": "tender.docx",
+                        "path": str(tender_path),
+                        "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
+                bid_type="技术标",
+            )
+
+        self.assertTrue(observed.get("skillStartedWhileExtracting"), "结构化解析必须在附表提取完成前就已启动")
+        self.assertTrue(observed.get("appendixRunningWhenSkillStarted"), "附表提取必须在结构化解析启动时已在跑")
+
+    def test_technical_appendix_failure_is_not_swallowed_by_a_successful_skill_run(self) -> None:
+        """附表分支在后台线程里失败时必须显式抛出，不能因为会话成功就当整体成功。"""
+        project_id = self.create_project()
+        tender_path = settings.uploads_dir / project_id / "tender-fail.docx"
+        tender_path.parent.mkdir(parents=True, exist_ok=True)
+        tender_path.write_bytes(build_docx_blocks_bytes("附表A.1 投标机型总方案信息表"))
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("附表提取炸了")
+
+        with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+            "app.services.parsing._extract_docx_appendices",
+            side_effect=boom,
+        ), patch(
+            "app.services.parsing._run_parse_skill",
+            side_effect=lambda _p, *, local_result, **kwargs: (local_result, ""),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "附表提取炸了"):
+                parsing_service.parse_tender_documents(
+                    project_id,
+                    [
+                        {
+                            "id": "DOC-1",
+                            "name": "tender-fail.docx",
+                            "path": str(tender_path),
+                            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        }
+                    ],
+                    bid_type="技术标",
+                )
 
     def create_project(self) -> str:
         response = self.client.post(
@@ -1951,6 +2036,9 @@ class ParsePipelineTests(unittest.TestCase):
             }
 
             with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+                "app.services.parsing._run_technical_sharded_parse_skill",
+                side_effect=RuntimeError("unit-test sharded parse failed"),
+            ), patch(
                 "app.services.parsing.OpencodeClient.generate_tender_parse_with_trace",
                 side_effect=error,
             ):
@@ -2053,39 +2141,12 @@ class ParsePipelineTests(unittest.TestCase):
 
     def test_upload_and_parse_image_uses_visual_recognition_without_manual_ocr_flow(self) -> None:
         project_id = self.create_project()
+        recognized_text = "项目名称：图片型招标文件\n招标编号：IMG-2026-001\n投标截止日期：2026年8月20日"
 
-        fake_response = {
-            "choices": [
-                {
-                    "message": {
-                        "content": "项目名称：图片型招标文件\n招标编号：IMG-2026-001\n投标截止日期：2026年8月20日"
-                    }
-                }
-            ]
-        }
-
-        async def fake_post(*_args, **_kwargs):
-            class Response:
-                status_code = 200
-
-                @staticmethod
-                def json():
-                    return fake_response
-
-            return Response()
-
-        with patch("app.services.system_settings.system_settings_service.get_model_secret_config") as config, patch(
-            "httpx.AsyncClient.post",
-            side_effect=fake_post,
+        with patch(
+            "app.services.parsing.ocr_service.recognize_text_for_parse",
+            new=AsyncMock(return_value=(recognized_text, {"pageCount": 1})),
         ):
-            config.return_value = {
-                "enabled": True,
-                "baseUrl": "https://ocr.example.com/v1",
-                "apiKey": "ocr-secret-key",
-                "model": "deepseek-ai/DeepSeek-OCR",
-                "timeoutMs": 60000,
-                "maxTokens": 2048,
-            }
             response = self.client.post(
                 self.parse_results_url(project_id, "/upload-and-run"),
                 files=[
