@@ -153,9 +153,18 @@ def execute_material_wiki_generation(
 
         result = asyncio.run(generate_business_wiki(**kwargs))
     else:
+        from app.services.technical_material_index import rebuild_technical_material_index
         from app.services.technical_wiki_generation import generate_technical_wiki
 
-        result = asyncio.run(generate_technical_wiki(**kwargs, on_progress=progress_callback))
+        async def _run_technical() -> dict[str, Any]:
+            # 生成仍严格以落盘索引为唯一凭证；这里先把凭证刷新到 DB 最新状态——
+            # 手动流程靠素材页浏览时顺带重建索引，自动链路（上传→清洗→Wiki）没有
+            # 页面环节，不刷新会把新上传文件漏在 Wiki 之外（2026-08-04 冒烟实测）。
+            # rebuild 是 best-effort：失败落日志并沿用现有落盘索引，不阻断生成。
+            await rebuild_technical_material_index()
+            return await generate_technical_wiki(**kwargs, on_progress=progress_callback)
+
+        result = asyncio.run(_run_technical())
     generation = result.get("generation") if isinstance(result.get("generation"), dict) else {}
     return {
         "status": "success",

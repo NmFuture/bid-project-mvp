@@ -95,6 +95,7 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "headerCleaned": bool(report["headerCleaned"]),
         "placeholderCount": int(report["placeholderCount"]),
         "orientation": report["orientation"],
+        "fontFamilies": clean_result["fontFamilies"],
         "riskCount": len(report["formatRisks"]),
         "warnings": report["warnings"],
     }
@@ -196,6 +197,7 @@ def clean_docx(
         "orientation": orientation_result,
         "tocInserted": toc_inserted,
         "tocPresent": toc_present_before or toc_inserted,
+        "fontFamilies": _style_font_families(style_spec),
     }
 
 
@@ -273,6 +275,24 @@ def _load_style_spec(path: Path) -> dict[str, Any]:
         raise ValueError("styleSpecPath must be a JSON object")
     data.setdefault("heading", {})
     return data
+
+
+def _style_font_families(style_spec: dict[str, Any]) -> list[str]:
+    families: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key in {"zh_font", "en_font"} and isinstance(nested, str) and nested not in families:
+                    families.append(nested)
+                else:
+                    collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+
+    collect(style_spec)
+    return families
 
 
 def load_outline(path: str | Path) -> dict[str, Any]:

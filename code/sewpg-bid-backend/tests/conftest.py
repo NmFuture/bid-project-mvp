@@ -1,9 +1,78 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 
 os.environ.setdefault("APP_STORE_BACKEND", "memory")
+
+# 未打桩的解析链路会调真实 opencode（默认 127.0.0.1:4096）。本机跑着开发环境时，
+# 测试会真的建一个 agent 会话并一直等它跑完，表现为整个用例挂死。
+# 默认指向一个空闲端口让调用快速失败；确需连真实服务的场景显式设置该变量即可。
+os.environ.setdefault("OPENCODE_BASE_URL", "http://127.0.0.1:4099")
+
+
+def _isolate_test_database_url() -> str:
+    """强制把测试的 DATABASE_URL 指向独立的 *_test 库。
+
+    `APP_STORE_BACKEND=memory` 只隔离了项目状态，素材目录（raw_folders/raw_files）
+    始终写真实 Postgres。直连开发库时，测试项目会拿到与真实项目相同的 PRJ-xxxx ID，
+    把素材目录建到真实项目名下，测试结束也不会回收。
+    """
+
+    url = (
+        os.getenv("DATABASE_URL")
+        or "postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform"
+    )
+    parts = urlsplit(url)
+    name = parts.path.lstrip("/")
+    if name and not name.endswith("_test"):
+        url = urlunsplit(parts._replace(path=f"/{name}_test"))
+    os.environ["DATABASE_URL"] = url
+    return url
+
+
+TEST_DATABASE_URL = _isolate_test_database_url()
+
+
+def _ensure_test_database() -> None:
+    """按 initdb/01-init.sql 建出测试库。
+
+    必须在 conftest 导入阶段完成：部分测试模块在收集阶段就连库，
+    放进 fixture 会晚于收集，导致 "database does not exist" 的集体报错。
+    """
+
+    try:
+        import psycopg
+    except ModuleNotFoundError:
+        return
+
+    parts = urlsplit(TEST_DATABASE_URL)
+    db_name = parts.path.lstrip("/")
+    if not db_name.endswith("_test"):
+        raise RuntimeError(f"拒绝在非 *_test 库上建表：{db_name}")
+
+    admin_dsn = urlunsplit(parts._replace(scheme="postgresql", path="/postgres"))
+    try:
+        with psycopg.connect(admin_dsn, autocommit=True, connect_timeout=10) as conn:
+            if conn.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
+            ).fetchone():
+                return
+            conn.execute(f'CREATE DATABASE "{db_name}"')
+    except psycopg.OperationalError as exc:  # Postgres 不可用时留给真正用到库的用例报错
+        print(f"[conftest] 跳过测试库准备，无法连接 Postgres：{exc}")
+        return
+
+    init_sql = Path(__file__).resolve().parents[2] / "initdb" / "01-init.sql"
+    with psycopg.connect(
+        urlunsplit(parts._replace(scheme="postgresql")), autocommit=True
+    ) as conn:
+        conn.execute(init_sql.read_text(encoding="utf-8"))
+
+
+_ensure_test_database()
 
 import pytest
 

@@ -183,3 +183,82 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `"doc/\351\234\200\346\261\202\346\242\263\347\220\206.md"`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-04 11:46:05 post-commit cfe7e78
+
+提交摘要：feat(技术标缺口): S3 页面树状改造与八标签体系
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/api/routes/technical.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_actions.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_service.py`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-gap-planner/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-gap-planner/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_technical_gap_covered_child_candidates.py`
+- `code/sewpg-bid-backend/tests/test_technical_gap_title_only.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/components/ui/Badge.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.test.mjs`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-04 17:49:45 post-commit 2163119
+
+提交摘要：feat(技术标缺口): 标签体系 v6 与右侧面板交互修正
+
+变更文件：
+
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.test.mjs`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-04 18:08:36 post-commit ad29286
+
+提交摘要：fix(技术标缺口): 树层级改 level 栈、定案模板可见、结构章标注仅留标题
+
+变更文件：
+
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.test.mjs`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-04 18:36:35 post-commit 9b7710e
+
+提交摘要：feat(技术标缺口): 识别直跑纯脚本、展示分诚实化
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/services/technical_gap_planner.py`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-gap-planner/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_onlyoffice_document.py`
+- `code/sewpg-bid-backend/tests/test_technical_gap_display_scores.py`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-04 18:49:24 post-commit 1f8c4eb
+
+提交摘要：fix(技术标缺口): 整章模板已选区去重
+
+变更文件：
+
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-05 01:57:07 post-commit 9caca7b
+
+提交摘要：docs(协作规则): 补充本机 Dev 测试环境重置 Skill 用法
+
+变更文件：
+
+- `AGENTS.md`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

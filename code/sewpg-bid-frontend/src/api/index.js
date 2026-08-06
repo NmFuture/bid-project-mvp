@@ -553,6 +553,8 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
   setParentCoverage: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/parent-coverage`, { method: 'POST', body: data }),
+  setTitleOnly: (projectId, gid, data) =>
+    request(`/technical/projects/${projectId}/gaps/${gid}/title-only`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
@@ -560,6 +562,8 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
   uploadFactSpecs: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
+  uploadAppendixSourceMatrix: (projectId, data) =>
+    request(`/technical/projects/${projectId}/appendix-source-matrix`, { method: 'POST', body: data }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
   curateFacts: (projectId, data) =>
@@ -617,6 +621,8 @@ export const technicalDocumentAPI = {
     request(`/technical/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
   forceSave: (projectId) =>
     request(`/technical/projects/${projectId}/document/force-save`, { method: 'POST' }),
+  technicalChat: (projectId, data) =>
+    request(`/technical/projects/${projectId}/document/technical-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
   technicalFormat: (projectId, data) =>
     request(`/technical/projects/${projectId}/document/technical-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
   final: (projectId) => request(`/technical/projects/${projectId}/final-document`),
@@ -625,6 +631,7 @@ export const technicalDocumentAPI = {
 
 export const technicalMaterialsAPI = {
   identityOptions: () => request('/technical/materials/identity-options'),
+  pipelineProgress: () => request('/technical/materials/pipeline-progress'),
   turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
   index: () => request('/technical/materials/index'),
   setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),

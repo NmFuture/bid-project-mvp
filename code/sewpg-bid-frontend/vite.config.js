@@ -17,9 +17,16 @@ export default defineConfig(({ mode }) => {
     },
     '/ds': {
       target: onlyofficeTarget,
-      changeOrigin: true,
+      // 保留浏览器 Host/端口，供 Document Server 生成可回访的 /cache 绝对地址。
+      changeOrigin: false,
       ws: true,
       rewrite: onlyofficeKeepPrefix ? undefined : (path) => path.replace(/^\/ds/, ''),
+    },
+    // OnlyOffice 将转换后的编辑资源放在 /cache/files 下；开发态必须与生产 Nginx 一样转发，
+    // 否则 Vite 会把该地址回退到 SPA，编辑器最终显示“下载失败”。
+    '/cache': {
+      target: onlyofficeTarget,
+      changeOrigin: false,
     },
   }
 

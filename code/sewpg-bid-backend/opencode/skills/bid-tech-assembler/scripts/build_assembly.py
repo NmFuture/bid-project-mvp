@@ -637,6 +637,13 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
     if not isinstance(items, list):
         return plan
 
+    title_only_parent_ids = {
+        str(item.get("id") or "").strip()
+        for item in items
+        if isinstance(item, dict)
+        and item.get("titleOnly") is True
+        and str(item.get("id") or "").strip()
+    }
     by_number: dict[str, dict] = {}
     by_numbered_title: dict[str, dict] = {}
     for item in items:
@@ -665,12 +672,27 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
                 entry["status"] = STATUS_UNMATCHED
                 entry["note"] = "gap plan 未选择素材"
             continue
-        entry["coverage_role"] = str(
+        coverage_role = str(
             gap_item.get("coverageRole") or gap_item.get("coverage_role") or ""
         ).strip()
-        entry["covered_by_parent"] = str(
+        covered_by_parent = str(
             gap_item.get("coveredByParent") or gap_item.get("covered_by_parent") or ""
         ).strip()
+        title_only = gap_item.get("titleOnly") is True
+        if title_only:
+            coverage_role = ""
+            covered_by_parent = ""
+        elif covered_by_parent in title_only_parent_ids:
+            covered_by_parent = ""
+            if coverage_role == "covered_by_parent":
+                coverage_role = ""
+        entry["coverage_role"] = coverage_role
+        entry["covered_by_parent"] = covered_by_parent
+        if title_only:
+            entry["status"] = STATUS_STRUCTURAL
+            entry["note"] = "来自缺口识别与处理计划：本级仅保留标题"
+            entry["gap_plan_item_id"] = str(gap_item.get("id") or "")
+            continue
         paths = _gap_plan_paths(gap_item)
         if not paths and _gap_plan_item_is_structural(gap_item):
             entry["paths"] = []

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { technicalMaterialsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
+import MaterialPipelineProgress from '../components/MaterialPipelineProgress'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { projectRoute, workspaceRoute } from '../../../utils/workspace'
+import { sortFilesByName, sortNodesByName } from '../../../utils/materialSort'
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
@@ -1101,7 +1103,9 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       const normalizedTree = ensureMaterialRootNodes(
         normalizeTreeNodes(treeResponse?.tree || treeResponse?.items || treeResponse?.nodes || [])
       )
-      const visibleTree = normalizedTree.filter((node) => normalizePath(node.path) === activeBidType)
+      const visibleTree = sortNodesByName(
+        normalizedTree.filter((node) => normalizePath(node.path) === activeBidType)
+      )
       setTree(visibleTree)
       const validPaths = new Set(flattenTreePaths(visibleTree))
       // 读 ref 而非 state：避免把 selectedFolderPath 放进依赖数组，否则「选中目录」会触发整库重载，
@@ -1136,7 +1140,11 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         page: 1,
         pageSize: filePageSize,
       })
-      setFilesPayload(payload || { items: [], total: 0, page: 1, pageSize: filePageSize })
+      setFilesPayload(
+        payload
+          ? { ...payload, items: sortFilesByName(payload.items) }
+          : { items: [], total: 0, page: 1, pageSize: filePageSize }
+      )
       setParseStatus(null)
     } catch (e) {
       setError(safeMessage(e, '原始材料库加载失败，请稍后重试。'))
@@ -1998,6 +2006,8 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         subtitle={error || ''}
         basePath={materialsBasePath}
       />
+
+      <MaterialPipelineProgress />
 
       {linkedProjectId && (
         <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">

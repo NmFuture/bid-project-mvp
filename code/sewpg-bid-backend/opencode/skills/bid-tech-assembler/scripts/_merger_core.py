@@ -747,7 +747,7 @@ class DocxMerger:
         if section_title:
             heading = self.master_doc.add_heading(section_title, level=2)
             for run in heading.runs:
-                run.font.name = '黑体'
+                run.font.name = '等线 Light'
                 run.font.size = Pt(14)
                 run.font.bold = True
                 run.font.color.rgb = RGBColor(0, 0, 0)
@@ -757,7 +757,7 @@ class DocxMerger:
                 if rFonts is None:
                     rFonts = run._element.makeelement(_qn('w:rFonts'), {})
                     rPr.insert(0, rFonts)
-                rFonts.set(_qn('w:eastAsia'), '黑体')
+                rFonts.set(_qn('w:eastAsia'), '等线 Light')
 
         source_elements = self._iter_insertable_children(sub_doc.element.body)
         rId_map = self._copy_relationships(

@@ -202,24 +202,45 @@ def _run_job(job: dict[str, Any]) -> bool:
             final_state = project_state.get("fill_state") if isinstance(project_state.get("fill_state"), dict) else {}
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
+            from app.services.material_wiki_auto import on_material_cleaning_job_finished
 
             result = clean_material_file_sync(str(data.get("fileId") or project_id), data)
             final_state = _material_cleaning_final_state(result)
+            try:
+                # 素材流水线自动衔接：本任务是清洗队列最后一个时，触发 Wiki 增量构建。
+                on_material_cleaning_job_finished(current_job_id=str(job.get("id") or ""))
+            except Exception as auto_exc:
+                logger.warning("素材流水线自动衔接失败（清洗钩子）：%s", auto_exc)
         elif job_type == "material_deep_parse":
             from app.services.material_deep_parse import deep_parse_material_file_sync
+            from app.services.material_wiki_auto import on_material_deep_parse_job_finished
 
             result = deep_parse_material_file_sync(project_id, data)
             final_state = {
                 "status": "failed" if result.get("deepParseStatus") == "failed" else "success",
                 "summary": result.get("deepParseMessage") or "",
             }
+            try:
+                # 素材流水线自动衔接：解析产物就绪后补跑 Wiki，把兜底卡片升级为正式预览。
+                on_material_deep_parse_job_finished(
+                    str(data.get("fileId") or project_id),
+                    current_job_id=str(job.get("id") or ""),
+                )
+            except Exception as auto_exc:
+                logger.warning("素材流水线自动衔接失败（深度解析钩子）：%s", auto_exc)
         elif job_type == "material_wiki_generation":
+            from app.services.material_wiki_auto import on_material_wiki_job_finished
             from app.services.material_wiki_jobs import execute_material_wiki_generation
 
             final_state = execute_material_wiki_generation(
                 data,
                 progress_callback=lambda progress: mark_job_progress(job, progress),
             )
+            try:
+                # 素材流水线自动衔接：消费补跑标记，收录 Wiki 运行期间到达的新批次。
+                on_material_wiki_job_finished()
+            except Exception as auto_exc:
+                logger.warning("素材流水线自动衔接失败（Wiki 钩子）：%s", auto_exc)
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type

@@ -113,6 +113,7 @@ class OpencodeClient:
         prompt_text: str,
         *,
         timeout: httpx.Timeout | None = None,
+        tools: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "model": {
@@ -126,6 +127,8 @@ class OpencodeClient:
                 }
             ],
         }
+        if tools is not None:
+            payload["tools"] = dict(tools)
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
             with self._request_slots:
@@ -149,10 +152,20 @@ class OpencodeClient:
         except httpx.HTTPError as exc:
             raise RuntimeError(f"futurecode 生成失败：{self._short_http_error(exc)}") from exc
 
-    def send_text_prompt(self, title: str, prompt_text: str) -> dict[str, Any]:
+    def send_text_prompt(
+        self,
+        title: str,
+        prompt_text: str,
+        *,
+        tools: dict[str, bool] | None = None,
+    ) -> dict[str, Any]:
         session = self.create_session(title)
         session_id = str(session.get("id") or "")
-        response = self.send_prompt(session_id, prompt_text)
+        response = (
+            self.send_prompt(session_id, prompt_text)
+            if tools is None
+            else self.send_prompt(session_id, prompt_text, tools=tools)
+        )
         info = response.get("info") if isinstance(response.get("info"), dict) else {}
         if info.get("error"):
             raise RuntimeError(self._format_response_error(info["error"]))

@@ -27,8 +27,23 @@ from app.services.material_wiki_scope import normalize_wiki_bid_type
 from app.services.peripheral import PeripheralError
 
 
+PROGRESS_TICK_STEP = 25
+
 EnsureRuntimeTables = Callable[[Any], Awaitable[None]]
 WikiListLoader = Callable[[str, str], Awaitable[dict[str, Any]]]
+
+
+def count_wiki_node_specs(specs: list[dict[str, Any]]) -> int:
+    """递归统计蓝图节点数，作为导入进度的分母。"""
+    total = 0
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        total += 1
+        total += count_wiki_node_specs([
+            child for child in (spec.get("children") or []) if isinstance(child, dict)
+        ])
+    return total
 
 
 async def import_generated_wiki_blueprint_operation(
@@ -40,7 +55,21 @@ async def import_generated_wiki_blueprint_operation(
     bid_type: str,
     ensure_runtime_tables: EnsureRuntimeTables,
     wiki_list: WikiListLoader,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    # on_progress 可选：只有技术标自动流水线传入用于进度条，商务标不传行为不变。
+    # 每 PROGRESS_TICK_STEP 个节点回报一次，避免上千节点时把队列状态写爆。
+    total_node_specs = count_wiki_node_specs(nodes)
+    imported_node_count = 0
+
+    def tick_node_progress() -> None:
+        nonlocal imported_node_count
+        imported_node_count += 1
+        if on_progress is None:
+            return
+        if imported_node_count % PROGRESS_TICK_STEP == 0 or imported_node_count >= total_node_specs:
+            on_progress({"done": min(imported_node_count, total_node_specs), "total": total_node_specs})
+
     async with async_session() as session:
         await ensure_runtime_tables(session)
         normalized_bid_type = normalize_wiki_bid_type(bid_type)
@@ -124,6 +153,7 @@ async def import_generated_wiki_blueprint_operation(
             *,
             default_tier: str = "standard",
             sort_order: int = 0,
+            counted: bool = True,
         ) -> WikiNode:
             title = wiki_import_node_title(spec)
             path = f"{parent.path if parent else ''}/{title}".lstrip("/")
@@ -145,6 +175,8 @@ async def import_generated_wiki_blueprint_operation(
             )
             session.add(doc)
             await session.flush()
+            if counted:
+                tick_node_progress()
             for index, child in enumerate(spec.get("children") or []):
                 if isinstance(child, dict):
                     await create_node(child, node, default_tier=default_tier, sort_order=index)
@@ -172,6 +204,7 @@ async def import_generated_wiki_blueprint_operation(
                             int(duplicate_node.id),
                             title,
                         )
+                tick_node_progress()
                 node.path = f"{parent.path}/{title}".lstrip("/")
                 node.bid_types = wiki_import_node_bid_types(spec, list(node.bid_types or []))
                 node.sort_order = sort_order
@@ -237,7 +270,7 @@ async def import_generated_wiki_blueprint_operation(
             for root in existing_roots:
                 await purge_wiki_root(root)
             await purge_orphaned_platform_sections()
-            root_node = await create_node(root_spec, None)
+            root_node = await create_node(root_spec, None, counted=False)
             message = generated_wiki_import_message(normalized_root_title, "replaced")
         elif existing_roots:
             root_node = existing_roots[0]
@@ -275,7 +308,7 @@ async def import_generated_wiki_blueprint_operation(
             else:
                 message = generated_wiki_import_message(normalized_root_title, "kept")
         else:
-            root_node = await create_node(root_spec, None)
+            root_node = await create_node(root_spec, None, counted=False)
             message = generated_wiki_import_message(normalized_root_title, "created")
 
         root_node_id = int(root_node.id)

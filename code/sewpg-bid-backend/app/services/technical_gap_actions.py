@@ -215,6 +215,10 @@ def register_technical_manual_gap_upload(
     item["resolvedSource"] = artifacts[0]["fileName"]
     item["latestUploadAt"] = created_at
     item["latestSubmissionId"] = artifacts[0]["id"]
+    # 选定即定案（产品裁决 2026-08-04）：人工上传本身就是人工决策，不再要求二次点「确认」。
+    item["humanConfirmed"] = True
+    item["humanConfirmedAt"] = created_at
+    item["humanConfirmedBy"] = str(data.get("operator") or "当前用户")
     plan["updatedAt"] = created_at
     plan["summary"] = summarize_technical_gap_plan(plan)
     gap_state["plan"] = plan
@@ -358,6 +362,10 @@ def register_technical_existing_gap_material(
     item["resolvedAt"] = created_at
     item["resolvedSource"] = artifacts[0]["fileName"]
     item.setdefault("reviewNotes", []).append(f"人工选择已有素材：{len(artifacts)} 份")
+    # 选定即定案（产品裁决 2026-08-04）：人工亲手选素材本身就是人工决策，不再要求二次点「确认」。
+    item["humanConfirmed"] = True
+    item["humanConfirmedAt"] = created_at
+    item["humanConfirmedBy"] = str(data.get("operator") or "当前用户")
     plan["updatedAt"] = created_at
     plan["summary"] = summarize_technical_gap_plan(plan)
     gap_state["plan"] = plan

@@ -9,8 +9,16 @@ from typing import Any
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 
+from app.core.config import settings
 from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
+from app.services.technical_appendix_source_matrix import (
+    apply_appendix_source_matrix_to_plan,
+    load_appendix_source_matrix_for_project,
+    parse_appendix_source_matrix,
+)
+from app.services.turbine_models import project_turbine_model
 from app.services.technical_gap_fact_table import (
     FACT_STATUS_CONFIRMED,
     FACT_STATUS_MISSING_SOURCE,
@@ -63,6 +71,27 @@ from app.services.url_utils import onlyoffice_backend_base_url
 
 
 PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
+
+
+def appendix_source_matrix_meta(project: dict[str, Any]) -> dict[str, Any]:
+    """项目级附表来源矩阵元数据：无绑定时返回空 dict，前端据此切换按钮空态/已上传态。"""
+    raw = project.get("technicalAppendixSourceMatrix")
+    if not isinstance(raw, dict):
+        raw = {}
+    path = str(
+        raw.get("path")
+        or project.get("technicalAppendixSourceMatrixPath")
+        or project.get("appendixSourceMatrixPath")
+        or ""
+    ).strip()
+    if not path:
+        return {}
+    return {
+        "path": path,
+        "fileName": str(raw.get("fileName") or ""),
+        "rowCount": int(raw.get("rowCount") or 0),
+        "uploadedAt": str(raw.get("uploadedAt") or ""),
+    }
 
 # 逐字段确认的终态集合：全部字段进入终态后表级 status 自动升 confirmed
 PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
@@ -456,6 +485,43 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap not found")
 
+    def set_title_only(
+        self,
+        project_id: str,
+        gap_id: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # 目录节点「忽略」（S3 树状改造 2026-08-04）：本级仅保留标题骨架，不再匹配素材，
+        # 内容下放子级各自匹配；可取消。只落 titleOnly 标记，冻结/释放由前端按树派生。
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别。")
+            plan_item = find_technical_gap_plan_item(gap_state, gap_id)
+            if plan_item is None:
+                raise KeyError(gap_id)
+            payload = data or {}
+            enabled = payload.get("enabled", True) is not False
+            operator = str(payload.get("operator") or "当前用户")
+            timestamp = now_iso()
+            plan_item["titleOnly"] = enabled
+            plan_item["titleOnlyAt"] = timestamp if enabled else ""
+            plan_item["titleOnlyBy"] = operator if enabled else ""
+            plan_item.setdefault("reviewNotes", []).append(
+                f"人工忽略本级（仅保留标题）：{operator}" if enabled else f"取消忽略本级：{operator}"
+            )
+            self._refresh_gap_integrity(project, gap_state)
+            gap_state["items"] = legacy_technical_gap_items_from_plan(gap_state.get("plan") or {})
+            persist_technical_gap_project(project)
+            return {
+                "message": "本级已忽略，仅保留标题，子级将各自匹配素材。" if enabled else "已取消忽略本级。",
+                "item": copy.deepcopy(plan_item),
+                "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+            }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap not found")
+
     async def select_material(
         self,
         project_id: str,
@@ -549,6 +615,8 @@ class TechnicalGapService:
         # 用户自定义的参考资料目录（素材库虚拟路径），事实表匹配时并入扫描
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
         payload["materialPaths"] = [str(path) for path in custom_paths if str(path or "").strip()]
+        # 附表来源矩阵绑定状态：前端「附表填写规则」按钮的空态/已上传态
+        payload["appendixSourceMatrix"] = appendix_source_matrix_meta(project)
         return payload
 
     async def save_fact_material_sources(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -575,6 +643,85 @@ class TechnicalGapService:
         project["updatedAt"] = now_iso()
         persist_technical_gap_project(project)
         return {"paths": paths}
+
+    async def upload_appendix_source_matrix(
+        self, project_id: str, filename: str, content: bytes
+    ) -> dict[str, Any]:
+        """项目级附表来源矩阵上传（《填写文件来源》Excel：客户 × 附表 → 项目定制/标准文件/其他来源）。
+
+        绑定到 project["technicalAppendixSourceMatrix"]，resolve_appendix_source_matrix_path
+        以该路径为最高优先级，下次缺口识别时经 manifest 传给 gap-planner 定 sourceRouting。
+        """
+        if not filename.lower().endswith((".xlsx", ".xlsm")):
+            raise HTTPException(status_code=400, detail="附表填写规则必须是 .xlsx 文件。")
+        if not content:
+            raise HTTPException(status_code=400, detail="上传文件为空。")
+        tmp_upload: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
+                handle.write(content)
+                tmp_upload = Path(handle.name)
+            matrix = parse_appendix_source_matrix(tmp_upload)
+        finally:
+            if tmp_upload is not None:
+                tmp_upload.unlink(missing_ok=True)
+        rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
+        if not rows:
+            raise HTTPException(
+                status_code=400,
+                detail="未解析到有效规则行，请检查表头（客户/表格/项目定制/标准文件/其他）。",
+            )
+
+        project = require_technical_gap_project_for_update(project_id)
+        target_dir = settings.documents_dir / project_id / "technical-workspace"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / "appendix-source-matrix.xlsx"
+        target_path.write_bytes(content)
+        uploaded_at = now_iso()
+        project["technicalAppendixSourceMatrix"] = {
+            "path": str(target_path),
+            "fileName": filename,
+            "rowCount": len(rows),
+            "uploadedAt": uploaded_at,
+        }
+        project["updatedAt"] = uploaded_at
+        persist_technical_gap_project(project)
+        applied = await self._apply_appendix_source_matrix_to_plan(project)
+        return {
+            "fileName": filename,
+            "rowCount": len(rows),
+            "uploadedAt": uploaded_at,
+            "applied": applied,
+        }
+
+    async def _apply_appendix_source_matrix_to_plan(self, project: dict[str, Any]) -> dict[str, int]:
+        """上传/重传矩阵后，把规则直接应用到已生成的 gap plan（不重跑整个缺口识别）。
+
+        交互顺序是「先素材匹配、后传规则」，因此识别完成的 plan 需要在原地补上
+        sourceRouting 与规则推荐素材；尚无 plan 时返回空 dict，规则留待识别时生效。
+        """
+        gap_state = ensure_technical_gap_state(project)
+        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+        if gap_state.get("recognitionStatus") != "completed" or not plan.get("items"):
+            return {}
+        from app.services.technical_gap_planner import _allowed_technical_material_index
+
+        matrix = load_appendix_source_matrix_for_project(project)
+        material_scope = build_project_material_scope(project)
+        turbine_model = project_turbine_model(project)
+        # 素材索引构建内部经 run_awaitable_sync 桥接，与 build_facts 同模式放工作线程
+        materials = await asyncio.to_thread(_allowed_technical_material_index, material_scope, turbine_model, gap_state)
+        customer_name = str(
+            project.get("customerName")
+            or (project.get("identity") or {}).get("customerName")
+            or (project.get("identity") or {}).get("owner")
+            or ""
+        )
+        stats = apply_appendix_source_matrix_to_plan(plan, matrix, customer_name=customer_name, materials=materials)
+        if stats.get("routedItems"):
+            project["updatedAt"] = now_iso()
+            persist_technical_gap_project(project)
+        return stats
 
     async def upload_fact_specs(
         self, project_id: str, filename: str, content: bytes, operator: str = "当前用户"

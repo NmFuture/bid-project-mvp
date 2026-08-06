@@ -194,6 +194,40 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(http_client.post.call_count, 1)
         sleep.assert_not_called()
 
+    def test_send_prompt_includes_explicit_tool_overrides(self) -> None:
+        client = OpencodeClient(
+            base_url="http://opencode:4096",
+            provider_id="provider-test",
+            model_id="model-test",
+        )
+        response = MagicMock()
+        response.text = '{"parts": []}'
+        response.json.return_value = {"parts": []}
+        http_client = self._http_client_with_post_side_effect(response)
+        tool_overrides = {"bash": False, "read": False, "write": False}
+
+        with patch("app.services.opencode_client.httpx.Client", return_value=http_client):
+            client.send_prompt("session-safe", "只返回文字", tools=tool_overrides)
+
+        payload = http_client.post.call_args.kwargs["json"]
+        self.assertEqual(payload["tools"], tool_overrides)
+
+    def test_send_text_prompt_omits_tool_overrides_by_default(self) -> None:
+        client = OpencodeClient()
+
+        with patch.object(
+            client,
+            "create_session",
+            return_value={"id": "session-default-tools"},
+        ), patch.object(
+            client,
+            "send_prompt",
+            return_value={"parts": [{"type": "text", "text": "普通回复"}]},
+        ) as send_prompt:
+            client.send_text_prompt("普通任务", "继续执行")
+
+        send_prompt.assert_called_once_with("session-default-tools", "继续执行")
+
     def test_extract_outline_json_repairs_invalid_json_once(self) -> None:
         client = OpencodeClient()
         response = {
@@ -1985,11 +2019,18 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
+        # 停滞路径会调 abort_session 发真实 HTTP 请求，httpx 内部也会读 time.monotonic，
+        # 固定长度的 side_effect 会被多消耗一次而抛 StopIteration，这里给出可重复的尾值。
+        monotonic_values = iter([0.0, 0.0])
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values, 121.0)
+
         with (
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
             patch("app.services.opencode_client.settings.opencode_timeout_sec", 1),
-            patch("app.services.opencode_client.time.monotonic", side_effect=[0.0, 0.0, 121.0]),
+            patch("app.services.opencode_client.time.monotonic", side_effect=fake_monotonic),
         ):
             with self.assertRaises(RuntimeError) as context:
                 client._send_prompt_with_session_polling(

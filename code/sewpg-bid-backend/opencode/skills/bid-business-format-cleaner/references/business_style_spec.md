@@ -2,6 +2,8 @@
 
 本规范用于 `bid-business-format-cleaner`。清洗对象是一份已经成稿的商务标 `.docx`，目录定位来自 S2 审核后的 `outline.json`。本 skill 不接入 bid-project-mvp 后端，不修改技术标流程或代码。
 
+DOCX XML 保留等线、等线 Light、宋体和 Times New Roman 等正式字体名；OnlyOffice 运行时通过 fontconfig 映射到开源字体，不改写交付文件的字体语义。
+
 ## 输入与输出
 
 - 输入文件：`manifest.inputFile` 指向待清洗商务标 `.docx`。

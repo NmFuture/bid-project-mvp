@@ -57,6 +57,7 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         "headerCleaned": bool(report["headerCleaned"]),
         "insertedPageBreaks": int((clean_result.get("pagination") or {}).get("insertedPageBreaks", 0)),
         "removedBlankPageBreaks": int((clean_result.get("pagination") or {}).get("removedBlankPageBreaks", 0)),
+        "fontFamilies": clean_result["fontFamilies"],
         "riskCount": len(report["formatRisks"]),
     }
     result = {

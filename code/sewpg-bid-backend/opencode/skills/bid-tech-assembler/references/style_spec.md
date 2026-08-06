@@ -1,5 +1,7 @@
 # 投标文件格式要求（华能为例 - WPS）
 
+DOCX XML 保留等线、等线 Light、宋体和 Times New Roman 等正式字体名；OnlyOffice 运行时通过 fontconfig 映射到开源字体，不改写交付文件的字体语义。
+
 ---
 
 ## 一、页面整体格式
