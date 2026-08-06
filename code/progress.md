@@ -314,3 +314,14 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.test.mjs`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 03:37:11 post-commit ae5a50d
+
+提交摘要：fix(技术标): 一键填写提交不再清空页面数据，入口收进「待填写」标签
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

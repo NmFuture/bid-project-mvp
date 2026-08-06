@@ -180,3 +180,40 @@ class RunBodyFillJobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnrichFactTableTests(unittest.TestCase):
+    """历史事实表补清单第 2/3 列：老项目不重建也能走精确定位链路。"""
+
+    def setUp(self) -> None:
+        from app.services import technical_gap_ai_fill as module
+
+        self.module = module
+        self.specs = [
+            {"key": "投标机型", "placeholder": "[投标机型，待填写]", "targetFile": "客户定制/华能/待填写-x.docx"},
+        ]
+        patch = mock.patch.object(module, "resolve_project_specs", side_effect=lambda gap_state: (self.specs, {}))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_missing_columns_are_filled_from_current_specs(self) -> None:
+        table = {"fields": [{"label": "投标机型", "specKey": "投标机型", "value": "EW10.0-220"}]}
+        enriched = self.module.enrich_fact_table_with_spec_columns(table, {})
+
+        self.assertEqual(enriched["fields"][0]["placeholder"], "[投标机型，待填写]")
+        self.assertTrue(self.module.fact_table_drives_placeholders(enriched))
+        # 原表不被就地改写，取值也一个都没动
+        self.assertNotIn("placeholder", table["fields"][0])
+        self.assertEqual(enriched["fields"][0]["value"], "EW10.0-220")
+
+    def test_existing_columns_are_left_alone(self) -> None:
+        table = {"fields": [{"specKey": "投标机型", "placeholder": "[机型，待填写]", "targetFile": "别的.docx"}]}
+        enriched = self.module.enrich_fact_table_with_spec_columns(table, {})
+
+        self.assertEqual(enriched["fields"][0]["placeholder"], "[机型，待填写]")
+
+    def test_unknown_spec_key_is_skipped(self) -> None:
+        table = {"fields": [{"specKey": "清单里没有的字段", "value": "x"}]}
+        enriched = self.module.enrich_fact_table_with_spec_columns(table, {})
+
+        self.assertFalse(self.module.fact_table_drives_placeholders(enriched))
