@@ -2179,6 +2179,11 @@ export default function TechnicalGapRecognition({ showToast }) {
       // 「待复核模板」，由人点「复核通过」定案；这里只弹出结果预览方便当场检查。
       const artifactId = String(payload?.artifact?.id || '').trim()
       if (artifactId) {
+        // 填完这条就从「待填写」转入「待审核」。当前筛选容不下它时要跟着切过去并保持选中，
+        // 否则它被挤出列表、选中项顺延到别的目录项，弹出的就不是刚填这条的对比了。
+        const filledId = String(payload?.item?.id || selected?.id || '').trim()
+        if (tagFilter && tagFilter !== 'template_review') setTagFilter('template_review')
+        if (filledId) setSelectedId(filledId)
         setPreviewChoiceKey(`artifact:${artifactId}`)
         setPreviewOpen(true)
       }
@@ -2295,14 +2300,18 @@ export default function TechnicalGapRecognition({ showToast }) {
     if (busyAction || bodyFillRunning) return
     if (!factConfirmed && !(await ensureFactTableReady())) return
     const gapIds = tagFilter ? filteredItems.map((item) => String(item?.id || '')).filter(Boolean) : []
-    const payload = await runAction(
-      'body-fill',
-      () => technicalGapsAPI.bodyFill(id, { gapIds, operator: '当前用户' }),
-      (result) => `已提交 ${result?.total || 0} 条正文填写，可离开页面`,
-    )
-    if (payload) {
+    // 不走 runAction：提交接口只返回任务状态（没有 gapPlan），而 runAction 会把返回值
+    // 直接灌进页面 data，整页会被替换成一个只有 bodyFillState 的对象，退回空状态页。
+    setBusyAction('body-fill')
+    try {
+      const payload = await technicalGapsAPI.bodyFill(id, { gapIds, operator: '当前用户' })
       bodyFillNotifiedRef.current = ''
       setBodyFillState(payload?.bodyFillState || null)
+      showToast?.(`已提交 ${payload?.total || 0} 条正文填写，可离开页面`)
+    } catch (e) {
+      showToast?.(e?.message || '提交失败，请稍后重试', 'error')
+    } finally {
+      setBusyAction('')
     }
   }
 
@@ -2627,24 +2636,28 @@ export default function TechnicalGapRecognition({ showToast }) {
                 {bodyFillState?.message || ''}
               </span>
             )}
-            <Button
-              type="button"
-              onClick={handleBodyFillAll}
-              disabled={Boolean(busyAction) || bodyFillRunning || !bodyFillCounts.pending}
-              title={
-                bodyFillRunning
-                  ? '正文填写任务执行中'
-                  : tagFilter
-                    ? `只填当前筛选出的 ${filteredItems.length} 个目录项`
-                    : '填写全部待填写正文，产物统一进入待审核'
-              }
-              size="sm"
-              variant="primary"
-            >
-              {bodyFillRunning
-                ? `填写中 ${bodyFillDone}/${bodyFillTotal}`
-                : `一键填写${bodyFillCounts.pending ? `（${bodyFillCounts.pending}）` : ''}`}
-            </Button>
+            {/* 一键入口只在点开「待填写」后出现：作用域天然限定，与「待审核」下的批量复核对称。
+                任务执行中在任何筛选下都要能看到进度，所以运行态按钮不受此限制。 */}
+            {tagFilter === 'template_ready' || bodyFillRunning ? (
+              <Button
+                type="button"
+                onClick={handleBodyFillAll}
+                disabled={Boolean(busyAction) || bodyFillRunning || !bodyFillCounts.pending}
+                title={
+                  bodyFillRunning
+                    ? '正文填写任务执行中'
+                    : `填写当前筛选出的 ${filteredItems.length} 个目录项，产物统一进入待审核`
+                }
+                size="sm"
+                variant="primary"
+              >
+                {bodyFillRunning
+                  ? `填写中 ${bodyFillDone}/${bodyFillTotal}`
+                  : `一键填写${bodyFillCounts.pending ? `（${bodyFillCounts.pending}）` : ''}`}
+              </Button>
+            ) : (
+              <span className="shrink-0 text-[11px] text-outline">点开「待填写」标签发起一键填写</span>
+            )}
           </div>
         </div>
       ) : null}

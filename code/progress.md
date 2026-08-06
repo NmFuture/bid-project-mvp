@@ -291,3 +291,26 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-backend/tests/test_technical_word_fill_discipline.py`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 03:20:56 post-commit 418deb6
+
+提交摘要：feat(技术标): 正文一键填写改后台任务，砍掉 opencode 与 OCR 两层空转
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/api/routes/technical.py`
+- `code/sewpg-bid-backend/app/services/job_queue.py`
+- `code/sewpg-bid-backend/app/services/technical_body_fill_job.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_ai_fill.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_service.py`
+- `code/sewpg-bid-backend/app/workers/redis_worker.py`
+- `code/sewpg-bid-backend/tests/test_gap_event_loop_safety.py`
+- `code/sewpg-bid-backend/tests/test_gap_review_flow.py`
+- `code/sewpg-bid-backend/tests/test_technical_body_fill_job.py`
+- `code/sewpg-bid-frontend/src/api/index.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/TechnicalGapRecognition.jsx`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.js`
+- `code/sewpg-bid-frontend/src/workspaces/technical/pages/technicalGapRecognitionHelpers.test.mjs`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
