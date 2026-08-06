@@ -16,6 +16,7 @@ from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
+    FILL_QUALITY_ACCEPTED_STATUSES,
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
@@ -1056,7 +1057,7 @@ def _build_ai_fill_artifacts(
         artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
         title = str(target_report.get("title") or item_title or output_file.stem)
         quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
-        artifact_s7_ready = s7_ready and quality_report["status"] == "passed"
+        artifact_s7_ready = s7_ready and quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES
         artifacts.append(
             {
                 "id": artifact_id,
@@ -1351,7 +1352,7 @@ def run_technical_ai_fill_for_gap(
         parse_fields=parse_fields,
         tender_documents=tender_documents,
         manifest_path=manifest_path,
-        s7_ready=quality_report["status"] == "passed",
+        s7_ready=quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES,
         browser_base_url=browser_base_url,
         onlyoffice_base_url=onlyoffice_base_url,
     )
@@ -1361,7 +1362,7 @@ def run_technical_ai_fill_for_gap(
     task["outputArtifactId"] = artifact["id"]
     task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
     task["completedAt"] = created_at
-    item["status"] = "resolved" if quality_report["status"] == "passed" else "needs_input"
+    item["status"] = "resolved" if quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES else "needs_input"
     item["qualityStatus"] = quality_report["status"]
     item["qualityReport"] = quality_report
     item["resolvedArtifacts"] = _replace_resolved_artifacts(
@@ -1376,7 +1377,7 @@ def run_technical_ai_fill_for_gap(
     unfilled_count = len(result.get("unfilledFields") or [])
     if unfilled_count:
         item["reviewNotes"].append(f"AI 填写仍有未填字段：{unfilled_count} 项")
-    if quality_report["status"] != "passed":
+    if quality_report["status"] not in FILL_QUALITY_ACCEPTED_STATUSES:
         item["reviewNotes"].append("AI 填写质量验收未达标，请人工复核或补充事实表后重填。")
 
     plan["updatedAt"] = created_at

@@ -773,7 +773,9 @@ def _resolved_artifact_is_s7_ready(artifact: dict) -> bool:
     if str(artifact.get("qualityGate") or "") == "human_confirmed":
         return True
     quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
-    return str(quality_report.get("status") or "") == "passed"
+    # 本脚本可独立运行，不引 app.services；取值与 technical_gap_domain
+    # .FILL_QUALITY_ACCEPTED_STATUSES 保持一致。
+    return str(quality_report.get("status") or "") in {"passed", "no_fill_required"}
 
 
 def _gap_plan_pending_note(item: dict) -> str:
