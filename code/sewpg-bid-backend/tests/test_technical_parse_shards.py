@@ -313,6 +313,117 @@ class ShardProgressAggregatorTests(unittest.TestCase):
         agg.on_stream("a", {"parts": []})
         self.assertGreaterEqual(events[-1]["shardProgress"], high)
 
+    def test_no_item_counts_reported_without_manifest(self) -> None:
+        """没有提交文件可读时不能编造条款数，前端会回退成非量化文案。"""
+        agg, events = self._aggregator()
+        agg.on_finished("a")
+        self.assertNotIn("completedItems", events[-1])
+        self.assertNotIn("totalItems", events[-1])
+
+
+class ShardItemCountTests(unittest.TestCase):
+    """进度条第一行的条款计数：口径必须是提交文件里的真实行数，不是会话数或估算。"""
+
+    def _aggregator(self, counts: list[int]):
+        from app.services.parsing import _ShardProgressAggregator
+
+        events: list[dict] = []
+        pending = list(counts)
+        agg = _ShardProgressAggregator(
+            ["a", "b"],
+            lambda _e, payload: events.append(payload),
+            skill_manifest_path=Path("s1_parse_manifest.json"),
+            item_counter=lambda _path: pending.pop(0) if pending else 0,
+            item_count_ttl_sec=0.0,
+        )
+        return agg, events
+
+    def test_total_item_count_is_checklist_rows_plus_basic_fields(self) -> None:
+        from app.services.parsing import _technical_total_item_count
+
+        self.assertEqual(_technical_total_item_count(), 58 + 6)
+
+    def test_reports_submitted_item_counts(self) -> None:
+        agg, events = self._aggregator([6, 15])
+        agg.on_finished("a")
+        self.assertEqual(events[-1]["completedItems"], 6)
+        self.assertEqual(events[-1]["totalItems"], 64)
+        agg.on_finished("b")
+        self.assertEqual(events[-1]["completedItems"], 15)
+
+    def test_item_count_never_moves_backwards(self) -> None:
+        """提交文件读取失败会返回 0，条款数不能因此从 15 掉回 0。"""
+        agg, events = self._aggregator([15, 0])
+        agg.on_finished("a")
+        self.assertEqual(events[-1]["completedItems"], 15)
+        agg.on_finished("b")
+        self.assertEqual(events[-1]["completedItems"], 15)
+
+
+class SubmittedItemCountTests(unittest.TestCase):
+    """真实提交文件 → 条款计数。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.manifest_path = self.root / "s1_parse_manifest.json"
+        self.manifest_path.write_text(
+            json.dumps(
+                {
+                    "projectId": "PRJ-ITEM-COUNT",
+                    "bidType": "技术标",
+                    "parseProfile": "technical",
+                    "structuredResultPath": str(self.root / "s1_structured_result.json"),
+                    "documents": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.manifest = load_manifest(self.manifest_path)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _rows_for(self, shard_key: str) -> list[dict[str, object]]:
+        return [
+            {
+                "rowNo": int(row["rowNo"]),
+                "status": "missing",
+                "conclusion": f"{shard_key} 结论 {row['rowNo']}",
+                "evidenceSummary": "",
+                "evidenceIds": [],
+            }
+            for row in checklist_for_shard(shard_key)
+        ]
+
+    def test_counts_checklist_rows_and_project_basic_fields(self) -> None:
+        from app.services.parsing import _technical_submitted_item_count
+
+        self.assertEqual(_technical_submitted_item_count(self.manifest_path), 0)
+
+        first = shard_keys()[0]
+        submit(self.manifest_path, self.manifest, "technicalInterpretation", self._rows_for(first), shard=first)
+        expected_rows = len(checklist_for_shard(first))
+        self.assertEqual(_technical_submitted_item_count(self.manifest_path), expected_rows)
+
+        submit(
+            self.manifest_path,
+            self.manifest,
+            "projectBasics",
+            [
+                {"key": "projectName", "value": "示例项目", "status": "found"},
+                {"fieldKey": "tenderer", "value": "示例招标人", "status": "found"},
+                {"key": "notAField", "value": "忽略", "status": "found"},
+            ],
+        )
+        self.assertEqual(_technical_submitted_item_count(self.manifest_path), expected_rows + 2)
+
+    def test_missing_submission_file_counts_zero_instead_of_raising(self) -> None:
+        from app.services.parsing import _technical_submitted_item_count
+
+        self.assertEqual(_technical_submitted_item_count(self.root / "missing_manifest.json"), 0)
+
 
 class ShardedOrchestrationTests(unittest.TestCase):
     """端到端验证后端编排：prepare(一次) → 并发分片 submit → finalize。"""

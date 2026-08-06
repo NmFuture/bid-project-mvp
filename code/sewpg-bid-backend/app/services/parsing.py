@@ -6355,6 +6355,51 @@ def _run_s1parse_cli(command: str, skill_manifest_path: Path, *extra: str) -> di
 _S1_SHARD_REQUEST_SLOTS = threading.BoundedSemaphore(max(1, settings.s1_parse_shard_concurrency))
 
 
+# 进度条第一行展示的条款数每次都要读提交文件，读盘节流到这个间隔，
+# 避免 7 个分片的流式片段各触发一次 JSON 解析。
+_SHARD_ITEM_COUNT_TTL_SEC = 3.0
+
+
+def _technical_total_item_count() -> int:
+    """进度条的条款总数：技术解读清单行数 + 项目基础信息字段数。"""
+    from agentic.checklist import load_checklist  # noqa: PLC0415
+    from agentic.delivery_contract import FRONTEND_PROJECT_BASIC_FIELDS  # noqa: PLC0415
+
+    return len(load_checklist()) + len(FRONTEND_PROJECT_BASIC_FIELDS)
+
+
+def _technical_submitted_item_count(skill_manifest_path: Path) -> int:
+    """已落盘的条款数：提交文件里的清单行数 + 已提交的基础信息字段数。
+
+    口径与 _technical_submission_state 一致，只认真正 submit 过的内容，
+    不用会话百分比反推——反推出来的数字用户无法核对。
+    """
+    from agentic.delivery_contract import FRONTEND_PROJECT_BASIC_FIELDS  # noqa: PLC0415
+    from agentic.paths import load_manifest as load_skill_manifest  # noqa: PLC0415
+    from agentic.submission_store import load as load_submissions  # noqa: PLC0415
+
+    try:
+        manifest = load_skill_manifest(skill_manifest_path)
+        payload = load_submissions(skill_manifest_path, manifest)
+    except (OSError, ValueError, RuntimeError):
+        return 0
+    targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+    interpretation = targets.get("technicalInterpretation")
+    row_nos = {
+        int(row["rowNo"])
+        for row in (interpretation if isinstance(interpretation, list) else [])
+        if isinstance(row, dict) and str(row.get("rowNo") or "").isdigit()
+    }
+    project_basics = targets.get("projectBasics")
+    submitted_fields = {
+        str(row.get("key") or row.get("fieldKey") or "").strip()
+        for row in (project_basics if isinstance(project_basics, list) else [])
+        if isinstance(row, dict)
+    }
+    expected_fields = {key for key, _label in FRONTEND_PROJECT_BASIC_FIELDS}
+    return len(row_nos) + len(submitted_fields & expected_fields)
+
+
 class _ShardProgressAggregator:
     """把 N 个并发会话的进度合成一条整体进度。
 
@@ -6366,11 +6411,46 @@ class _ShardProgressAggregator:
         self,
         task_keys: list[str],
         progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
+        *,
+        skill_manifest_path: Path | None = None,
+        item_counter: Callable[[Path], int] | None = None,
+        item_count_ttl_sec: float = _SHARD_ITEM_COUNT_TTL_SEC,
     ) -> None:
         self._total = max(1, len(task_keys))
         self._callback = progress_callback
         self._percent: dict[str, int] = {key: 0 for key in task_keys}
         self._lock = threading.Lock()
+        self._skill_manifest_path = skill_manifest_path
+        self._item_counter = item_counter or _technical_submitted_item_count
+        self._item_count_ttl_sec = max(0.0, float(item_count_ttl_sec))
+        # 条款总数只服务于进度条文案，取不到时退回 0（前端回退成非量化文案），
+        # 不能让展示层的问题打断整条解析链路。
+        self._total_items = 0
+        if skill_manifest_path is not None:
+            try:
+                self._total_items = _technical_total_item_count()
+            except (ImportError, OSError, ValueError, RuntimeError):
+                logger.warning("无法读取技术标条款总数，进度条将回退为非量化文案。", exc_info=True)
+        self._completed_items = 0
+        self._items_read_at: float | None = None
+
+    def _refresh_item_counts(self) -> None:
+        """在锁内刷新已提交条款数，读盘按 TTL 节流，并保证只增不减。
+
+        读取失败时计数器返回 0，直接采用会让第一行从 20/64 掉回 0/64。
+        """
+        if self._total_items <= 0 or self._skill_manifest_path is None:
+            return
+        if self._completed_items >= self._total_items:
+            return
+        now = time.monotonic()
+        if self._items_read_at is not None and now - self._items_read_at < self._item_count_ttl_sec:
+            return
+        self._items_read_at = now
+        self._completed_items = max(
+            self._completed_items,
+            min(self._total_items, max(0, int(self._item_counter(self._skill_manifest_path)))),
+        )
 
     def _emit(self, key: str, percent: int, details: dict[str, Any] | None) -> None:
         if self._callback is None:
@@ -6379,6 +6459,9 @@ class _ShardProgressAggregator:
             self._percent[key] = max(self._percent.get(key, 0), max(0, min(100, percent)))
             overall = int(sum(self._percent.values()) / self._total)
             completed = sum(1 for value in self._percent.values() if value >= 100)
+            self._refresh_item_counts()
+            completed_items = self._completed_items
+            total_items = self._total_items
         payload = {
             **(details or {}),
             "status": "running",
@@ -6387,6 +6470,9 @@ class _ShardProgressAggregator:
             "completedShards": completed,
             "totalShards": self._total,
         }
+        if total_items > 0:
+            payload["completedItems"] = completed_items
+            payload["totalItems"] = total_items
         self._callback("opencode_delta", payload)
 
     def on_stream(self, key: str, details: dict[str, Any]) -> None:
@@ -6540,7 +6626,11 @@ def _run_technical_sharded_parse_skill(
     )
 
     def run_wave(pending: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        aggregator = _ShardProgressAggregator([str(task["key"]) for task in pending], progress_callback)
+        aggregator = _ShardProgressAggregator(
+            [str(task["key"]) for task in pending],
+            progress_callback,
+            skill_manifest_path=skill_manifest_path,
+        )
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="s1-shard") as pool:
             futures = [
                 pool.submit(
