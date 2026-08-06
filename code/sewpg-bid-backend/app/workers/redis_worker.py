@@ -222,9 +222,11 @@ def _run_job(job: dict[str, Any]) -> bool:
             }
             try:
                 # 素材流水线自动衔接：解析产物就绪后补跑 Wiki，把兜底卡片升级为正式预览。
+                # sourceVersion 是入队时快照的素材版本，供完成钩子按 文件+版本 去重补跑。
                 on_material_deep_parse_job_finished(
                     str(data.get("fileId") or project_id),
                     current_job_id=str(job.get("id") or ""),
+                    source_version=data.get("sourceVersion"),
                 )
             except Exception as auto_exc:
                 logger.warning("素材流水线自动衔接失败（深度解析钩子）：%s", auto_exc)

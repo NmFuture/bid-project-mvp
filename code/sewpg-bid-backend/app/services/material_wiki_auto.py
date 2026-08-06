@@ -61,22 +61,26 @@ def _consume_pending() -> bool:
         return False
 
 
-def _claim_deep_parse_refresh(file_id: str) -> bool:
-    """深度解析补跑的循环刹车：同一素材 6 小时内只因深度解析补跑一次 Wiki。
+def _claim_deep_parse_refresh(file_id: str, source_version: Any = None) -> bool:
+    """深度解析补跑的循环刹车：同一素材同一版本 6 小时内只因深度解析补跑一次 Wiki。
 
     正常路径补跑一次即可把兜底卡片升级为正式预览；若某素材的解析产物始终满足不了
     预览条件，refresh 会再次排队深度解析，没有这道闸就是 refresh↔解析 无限转圈。
+    键里带上入队时快照的素材版本：覆盖上传换版后，旧版本的 claim 不再拦截新版本
+    解析完成后的补跑；版本未知（历史任务）时退化为仅按 file_id 去重。
     """
     value = str(file_id or "").strip()
     if not value:
         return False
+    version = str(source_version or "").strip()
+    key = f"{_DEEP_PARSE_CLAIM_PREFIX}{value}:v{version}" if version else f"{_DEEP_PARSE_CLAIM_PREFIX}{value}"
     client = get_redis_client()
     if client is None:
         return True
     try:
         return bool(
             client.set(
-                f"{_DEEP_PARSE_CLAIM_PREFIX}{value}",
+                key,
                 "1",
                 ex=_DEEP_PARSE_CLAIM_TTL_SEC,
                 nx=True,
@@ -190,13 +194,17 @@ def on_material_wiki_job_finished() -> None:
     request_technical_wiki_auto_refresh("补跑：Wiki 运行期间到达的新批次")
 
 
-def on_material_deep_parse_job_finished(file_id: str, current_job_id: str = "") -> None:
+def on_material_deep_parse_job_finished(
+    file_id: str, current_job_id: str = "", source_version: Any = None
+) -> None:
     """深度解析完成钩子：产物就绪后补跑一轮 Wiki，把兜底卡片升级为正式预览。
 
     超大 docx / PDF / XLSX 的预览依赖后台深度解析，而深度解析几乎必然晚于本轮
     Wiki 的预览阶段完成——卡片只能先落「已排队后台深度解析」的本地 TLDR 并标
     retryable，等下一轮刷新升级。手动流程靠人再点一次刷新兜住，自动链路必须自己
     补这一跳，否则卡片永远停在兜底文案（2026-08-05 实测 RAW-2297）。
+    source_version 是入队时快照的素材版本，claim 按 文件+版本 去重：
+    覆盖上传换版后新版本的解析完成必须能触发新一轮补跑。
     """
     if not auto_refresh_enabled():
         return
@@ -205,7 +213,7 @@ def on_material_deep_parse_job_finished(file_id: str, current_job_id: str = "") 
     if _has_other_active_cleaning_jobs():
         # 新批次还在清洗，清洗收尾钩子稍后会触发，无需重复。
         return
-    if not _claim_deep_parse_refresh(file_id):
+    if not _claim_deep_parse_refresh(file_id, source_version):
         return
     request_technical_wiki_auto_refresh("深度解析产物就绪")
 

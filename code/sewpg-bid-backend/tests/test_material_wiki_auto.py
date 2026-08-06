@@ -180,6 +180,39 @@ class MaterialWikiAutoTests(unittest.TestCase):
         # 循环刹车：同一素材只补跑一次，避免 refresh↔深度解析 无限转圈。
         enqueue.assert_called_once()
 
+    def test_deep_parse_refresh_claimed_per_file_version(self) -> None:
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                side_effect=self._queues([{"id": "JOB-SELF"}], []),
+            ),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                return_value={"jobId": "WIKI-8", "status": "queued", "reused": False},
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_deep_parse_job_finished(
+                "RAW-2297", current_job_id="JOB-SELF", source_version=1
+            )
+            material_wiki_auto.on_material_deep_parse_job_finished(
+                "RAW-2297", current_job_id="JOB-SELF", source_version=1
+            )
+            # 循环刹车仍生效：同一素材同一版本的重复回调只补跑一次。
+            enqueue.assert_called_once()
+            # 覆盖上传换版后必须获得新 claim，触发新一轮补跑（R10-B03-03）。
+            material_wiki_auto.on_material_deep_parse_job_finished(
+                "RAW-2297", current_job_id="JOB-SELF", source_version=2
+            )
+            self.assertEqual(enqueue.call_count, 2)
+        self.assertIn(
+            f"{material_wiki_auto._DEEP_PARSE_CLAIM_PREFIX}RAW-2297:v1",
+            self.fake_redis.store,
+        )
+        self.assertIn(
+            f"{material_wiki_auto._DEEP_PARSE_CLAIM_PREFIX}RAW-2297:v2",
+            self.fake_redis.store,
+        )
+
     def test_cleaning_batch_total_accumulates_and_resets(self) -> None:
         with patch("app.services.material_wiki_jobs.enqueue_material_wiki_generation"):
             material_wiki_auto.on_material_upload_completed(clean_job_count=3)

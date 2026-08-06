@@ -49,6 +49,7 @@ def _raw_file(name: str, *, size: int = 1024, ext_fields: dict | None = None) ->
     return SimpleNamespace(
         id=1,
         name=name,
+        version=1,
         size_bytes=size,
         minio_bucket="bid-materials",
         minio_key="raw/1/file",
@@ -260,7 +261,7 @@ class BuildPreviewPlansDeepParseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["status"], "fallback")
         self.assertTrue(payload["retryable"])
         self.assertIn("后台全文提取", payload["skipReason"])
-        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True})
+        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True, "sourceVersion": 1})
 
     async def test_oversize_docx_pending_keeps_deep_parse_message(self) -> None:
         raw = _raw_file("方案.docx")
@@ -290,7 +291,7 @@ class BuildPreviewPlansDeepParseTests(unittest.IsolatedAsyncioTestCase):
         payload = plans[0]["payload"]
         self.assertTrue(payload["retryable"])
         self.assertIn("后台深度解析", payload["skipReason"])
-        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True})
+        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True, "sourceVersion": 1})
 
     async def test_pdf_extract_failures_over_limit_turn_terminal(self) -> None:
         raw = _raw_file(
@@ -405,7 +406,7 @@ class BuildPreviewPlansDeepParseTests(unittest.IsolatedAsyncioTestCase):
         payload = plans[0]["payload"]
         self.assertTrue(payload["retryable"])
         self.assertIn("后台全文提取", payload["skipReason"])
-        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True})
+        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True, "sourceVersion": 1})
 
     async def test_non_pending_skip_stays_terminal(self) -> None:
         raw = _raw_file("现场照片.png")
@@ -447,7 +448,7 @@ class BusinessProfileGateTests(unittest.TestCase):
 
         self.assertTrue(profile["deepParsePending"])
         self.assertIn("后台深度解析", profile["parseError"])
-        enqueue_mock.assert_called_once_with("RAW-0001")
+        enqueue_mock.assert_called_once_with("RAW-0001", {"sourceVersion": 1})
 
     def test_xlsx_does_not_enqueue_background_convert(self) -> None:
         with patch("app.services.business_wiki_generation.enqueue_deep_parse_job") as enqueue_mock:

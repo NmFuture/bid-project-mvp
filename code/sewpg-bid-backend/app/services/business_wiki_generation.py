@@ -650,7 +650,12 @@ def _profile_raw_file(item: RawFile) -> dict[str, Any]:
         elif parse_size > MAX_SYNC_DOCX_BYTES:
             size_mb = parse_size / 1024 / 1024
             if deep_parse_status_allows_enqueue(ext_fields):
-                enqueue_deep_parse_job(str(profile["id"]))
+                # sourceVersion 快照随任务透传：完成钩子按 文件+版本 去重补跑，
+                # 覆盖上传换版后旧版本的 claim 不拦截新版本（沿用清洗链约定）。
+                enqueue_deep_parse_job(
+                    str(profile["id"]),
+                    {"sourceVersion": int(getattr(item, "version", 1) or 1)},
+                )
             profile["parseError"] = (
                 f"文件 {size_mb:.1f}MB，超过同步解析上限 30MB；"
                 "已排队后台深度解析，完成后自动补充 Heading 和正文摘录。"
