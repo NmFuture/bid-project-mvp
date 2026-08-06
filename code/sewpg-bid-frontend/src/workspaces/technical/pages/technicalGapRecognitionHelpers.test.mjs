@@ -12,6 +12,27 @@ import {
 
 import * as technicalHelpers from './technicalGapRecognitionHelpers.js'
 
+test('附表来源规则上传提示区分新增、清除和延后生效', () => {
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({
+      rowCount: 3,
+      applied: { routedItems: 2, clearedItems: 1, clearedTasks: 1 },
+    }),
+    '已解析 3 条附表来源规则，已应用到 2 个目录项的附表任务，并已清除 1 个目录项、1 个附表任务的旧规则关联',
+  )
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({
+      rowCount: 1,
+      applied: { routedItems: 0, clearedItems: 1, clearedTasks: 2 },
+    }),
+    '已解析 1 条附表来源规则，未新增匹配，已清除 1 个目录项、2 个附表任务的旧规则关联',
+  )
+  assert.equal(
+    technicalHelpers.technicalAppendixSourceMatrixUploadMessage({ rowCount: 4, applied: {} }),
+    '已解析 4 条附表来源规则，将在下次缺口识别时生效',
+  )
+})
+
 test('生成完成提示展示 warning 数量且格式清洗失败时明确回退', () => {
   const presentation = technicalHelpers.technicalGenerationPresentation({
     status: 'completed',
