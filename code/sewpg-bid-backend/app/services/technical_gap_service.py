@@ -43,6 +43,7 @@ from app.services.technical_gap_actions import (
     run_technical_ai_fill_for_gap,
 )
 from app.services.technical_gap_domain import (
+    FILL_QUALITY_ACCEPTED_STATUSES,
     aggregate_technical_gap_fill_quality,
     build_technical_gap_detection_payload,
     check_technical_gap_integrity,
@@ -1098,8 +1099,15 @@ class TechnicalGapService:
                 "summary": {
                     "total": len(results) + len(errors),
                     "passed": sum(1 for result in results if result.get("qualityReport", {}).get("status") == "passed"),
+                    "noFillRequired": sum(
+                        1
+                        for result in results
+                        if result.get("qualityReport", {}).get("status") == "no_fill_required"
+                    ),
                     "needsReview": sum(
-                        1 for result in results if result.get("qualityReport", {}).get("status") != "passed"
+                        1
+                        for result in results
+                        if result.get("qualityReport", {}).get("status") not in FILL_QUALITY_ACCEPTED_STATUSES
                     ),
                     "failed": len(errors),
                 },

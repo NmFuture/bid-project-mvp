@@ -939,7 +939,10 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         "correctnessRate": 0.85,
         "completenessRate": 0.85,
     }
-    status = "passed" if (
+    # 空白模板本身没有待填单元格（招标原文已写满，或整列留空即不限制）时，
+    # 填 0 格是正确终态，不是缺口。按覆盖率会误判 needs_review 并混进缺口统计。
+    no_fill_required = bool(report.get("noFillRequired")) and output_exists and filled_count == 0
+    status = "no_fill_required" if no_fill_required else "passed" if (
         coverage_rate >= thresholds["coverageRate"]
         and correctness_rate >= thresholds["correctnessRate"]
         and completeness_rate >= thresholds["completenessRate"]
@@ -948,9 +951,12 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         and failed_target_count == 0
         and output_exists
     ) else "needs_review"
+    source_coverage = report.get("sourceCoverage") if isinstance(report.get("sourceCoverage"), dict) else None
     return {
         "schemaVersion": "bid-fill-quality-report-v1",
         "status": status,
+        "noFillRequired": no_fill_required,
+        "sourceCoverage": source_coverage,
         "coverageRate": round(coverage_rate, 4),
         "correctnessRate": round(correctness_rate, 4),
         "completenessRate": round(completeness_rate, 4),

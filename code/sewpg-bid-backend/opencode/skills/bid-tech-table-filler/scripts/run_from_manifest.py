@@ -290,6 +290,9 @@ class AppendixSpec:
     unit_col: int | None
     remark_col: int | None
     own_tables: int = 1  # 属于本附表的表数（S1 越界表之前），多表附表续表填写用
+    # 清单型附表的待填列（如供货清单的品牌/型号/原产地/数量）。非空即表示本附表
+    # 按「行标签 + 多待填列」处理，而不是参数表的「一列字段名 + 一列响应值」。
+    list_fill_cols: tuple[int, ...] = ()
 
 
 def now_iso() -> str:
@@ -2329,6 +2332,66 @@ def extract_manifest_parse_facts(manifest: dict[str, Any]) -> list[dict[str, Any
     return facts
 
 
+def column_nonempty_rate(table: Any, col: int, header_row: int) -> float:
+    """列在数据行里的实值率（判表型用，只看表自身结构）。"""
+    rows = table.rows[header_row + 1 :]
+    if not rows:
+        return 0.0
+    nonempty = sum(1 for row in rows if col < len(row.cells) and clean(row.cells[col].text))
+    return nonempty / len(rows)
+
+
+def row_is_header_like(cells: list[str]) -> bool:
+    """候选表头行判据：不能把数据行当表头。
+
+    参数表首个数据行常是「1 | 机型总体参数 | 投标机型 | | |」——若当成表头，
+    右侧空列会被数成多个待填列，参数表会被误判为清单型（实测 C.1/C.6 命中）。
+    """
+    if not cells:
+        return False
+    nonempty = [cell for cell in cells if cell]
+    if len(nonempty) / len(cells) < 0.6:
+        return False
+    return not any(cell.isdigit() for cell in nonempty)
+
+
+def detect_list_table_layout(table: Any) -> tuple[int, int, tuple[int, ...]] | None:
+    """清单型表布局检测：返回 (header_row, label_col, 待填列)。
+
+    清单型（供货范围清单、品牌表、工具清单）的结构是「左侧行标签 + 右侧多列
+    待填」，与参数表的「一列字段名 + 一列响应值」不同。二者共用
+    choose_response_value_col/choose_field_col 会系统性选错列：表头里的「规格」
+    「内容」命中响应列词表，「名称」又让待填列进了字段列候选，最终字段列指向
+    空列，逐行取到的 field 为空被整体丢弃（金标反评 B.1.1 43 行 0 字段）。
+
+    判据全部来自表自身结构：表头行里存在实值率高的行标签列，且其右侧有 ≥2 个
+    非备注列大面积待填。返回 None 表示不是清单型，交回参数表路径。
+    """
+    for header_row, row in enumerate(table.rows[:3]):
+        cells = [clean(cell.text) for cell in row.cells]
+        if len(cells) < 4 or not row_is_header_like(cells):
+            continue
+        label_candidates = [
+            col
+            for col, cell in enumerate(cells)
+            if cell
+            and not any(token in cell for token in NON_VALUE_HEADERS)
+            and column_nonempty_rate(table, col, header_row) >= 0.8
+        ]
+        if not label_candidates:
+            continue
+        label_col = label_candidates[0]
+        fill_cols = tuple(
+            col
+            for col in range(label_col + 1, len(cells))
+            if not any(token in cells[col] for token in NON_VALUE_HEADERS)
+            and column_nonempty_rate(table, col, header_row) <= 0.2
+        )
+        if len(fill_cols) >= 2:
+            return header_row, label_col, fill_cols
+    return None
+
+
 def detect_table_layout(table: Any) -> tuple[int, int, int, int | None, int | None] | None:
     """单表列布局检测（续表用）：返回 (header_row, field_col, value_col, unit_col, remark_col)。"""
     for header_row, row in enumerate(table.rows[:4]):
@@ -2341,6 +2404,101 @@ def detect_table_layout(table: Any) -> tuple[int, int, int, int | None, int | No
         field_col = choose_field_col(cells, value_col)
         return header_row, field_col, value_col, unit_col, remark_col
     return None
+
+
+LIST_COLUMN_AXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("brand", ("品牌", "制造商", "生产厂家", "厂家", "供应商")),
+    ("model", ("型号", "规格")),
+    ("origin", ("产地", "原产地")),
+    ("quantity", ("数量", "台数", "套数")),
+    ("unit", ("单位", "计量单位")),
+    ("period", ("周期", "工期", "时间", "年限")),
+)
+
+
+def list_column_axis(label: str) -> str:
+    """清单型列的语义轴。
+
+    清单表一行多列（品牌/型号/原产地/数量），事实只带行标签时会被同一个值灌满
+    整行（金标反评 B.1.1「齿轮箱 数量 = 上海电气」）。轴用于把事实约束到对应列。
+    """
+    text = clean(label)
+    for axis, tokens in LIST_COLUMN_AXES:
+        if any(token in text for token in tokens):
+            return axis
+    return ""
+
+
+def list_value_fits_axis(axis: str, fact: dict[str, Any]) -> bool:
+    """事实标签未表明语义轴时，能否填进该列。
+
+    只有品牌轴接收无轴事实：短名单一类来源给出的就是"部件→品牌"，标签里没有
+    列维度信息。型号/原产地/数量/单位都要求事实自己表明轴，否则同一个品牌值会
+    被抄进这些列（金标反评 B.1.1「齿轮箱 型号和规格 = 上海电气」）。
+    """
+    value = clean(fact.get("value"))
+    if not value:
+        return False
+    if axis != "brand":
+        return False
+    return not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value)
+
+
+def _extract_list_fields_from_table(
+    spec: AppendixSpec,
+    table: Any,
+    *,
+    table_index: int,
+    header_row: int,
+    label_col: int,
+    fill_cols: tuple[int, ...],
+    remark_col: int | None,
+) -> list[dict[str, Any]]:
+    """清单型表字段抽取：每个「行标签 × 待填列」是一个字段。
+
+    字段名取「行标签 + 列表头」（如「主控系统 品牌或制造商名称」），使概念匹配
+    能同时用上行与列两个维度；写回坐标由 valueCol 逐字段带出（fill_doc 按
+    (表,行,列) 去重，同一行可落多格）。
+    """
+    header_cells = [clean(cell.text) for cell in table.rows[header_row].cells]
+    fields: list[dict[str, Any]] = []
+    for idx, row in enumerate(table.rows[header_row + 1 :], start=header_row + 1):
+        cells = [clean(cell.text) for cell in row.cells]
+        if label_col >= len(cells):
+            continue
+        # 行标签可能跨列合并（货物名称占两列），取该行最靠右的非空标签更具体
+        label = ""
+        for col in range(label_col, min(len(cells), fill_cols[0])):
+            if cells[col]:
+                label = cells[col]
+        if not label:
+            continue
+        remark = cells[remark_col] if remark_col is not None and remark_col < len(cells) else ""
+        for col in fill_cols:
+            if col >= len(cells) or not cell_needs_fill(cells[col]):
+                continue
+            column_label = header_cells[col] if col < len(header_cells) else ""
+            field_name = f"{label} {column_label}".strip()
+            fields.append(
+                {
+                    "id": f"{spec.prefix}-T{table_index}R{idx:02d}C{col:02d}",
+                    "rowIndex": idx,
+                    "tableIndex": table_index,
+                    "valueCol": col,
+                    "unitCol": None,
+                    "group": label,
+                    "field": field_name,
+                    "unit": "",
+                    "remark": remark,
+                    "requirementValue": "",
+                    "concepts": concepts_for(f"{label} {column_label} {remark}"),
+                    "generic": True,
+                    "listColumnLabel": column_label,
+                    "listRowLabel": label,
+                    "listColumnAxis": list_column_axis(column_label),
+                }
+            )
+    return fields
 
 
 def _extract_fields_from_table(
@@ -2439,10 +2597,70 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
                 remark_col=remark_col,
             )
         )
+    if fields:
+        return fields
+    # 参数表路径一个字段都取不到时，再按清单型（行标签 + 多待填列）重试。
+    # 放在兜底位置而不是前置分流：已能正常出字段的附表行为完全不变，只有原本
+    # 0 字段（金标反评 B.1.1 43 行全丢）的清单表才走这条路。
+    return extract_list_target_fields(spec, doc)
+
+
+def table_is_curve_matrix(table: Any, header_row: int) -> bool:
+    """曲线矩阵表判据（与 _extract_fields_from_table 内一致）。
+
+    曲线表由 apply_curve_appendix_table_fill / apply_curve_matrix_fill 整表重建，
+    设计上就该在字段抽取阶段返回 0 字段，清单兜底不能把它们拉回逐格路径。
+    """
+    curve_role_cols = [
+        idx
+        for idx in range(len(table.rows[0].cells) if table.rows else 0)
+        if matrix_role(table_header_text(table, min(header_row + 1, len(table.rows) - 1), idx))
+    ]
+    numeric_row_count = sum(1 for row in table.rows[header_row + 1 :] if row_numeric_key(row) is not None)
+    return bool(curve_role_cols) and numeric_row_count >= 3
+
+
+def extract_list_target_fields(spec: AppendixSpec, doc: Any) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for table_index, table in enumerate(doc.tables[: spec.own_tables]):
+        layout = detect_list_table_layout(table)
+        if layout is None:
+            continue
+        header_row, label_col, fill_cols = layout
+        if table_is_curve_matrix(table, header_row):
+            continue
+        header_cells = [clean(cell.text) for cell in table.rows[header_row].cells]
+        remark_col = next(
+            (idx for idx, cell in enumerate(header_cells) if "备注" in cell or "说明" in cell),
+            None,
+        )
+        fields.extend(
+            _extract_list_fields_from_table(
+                spec,
+                table,
+                table_index=table_index,
+                header_row=header_row,
+                label_col=label_col,
+                fill_cols=fill_cols,
+                remark_col=remark_col,
+            )
+        )
     return fields
 
 
 def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
+    # 清单型字段（行标签 × 列）必须轴对齐：事实只带行标签（「齿轮箱=上海电气」）时，
+    # 若不按列的语义轴约束，同一个品牌值会被灌进型号/原产地/数量各列
+    # （金标反评 B.1.1「齿轮箱 数量 = 上海电气」）。
+    axis = clean(field.get("listColumnAxis"))
+    if field.get("listColumnLabel"):
+        if not axis:
+            return 0.0
+        fact_axis = list_column_axis(f"{fact['label']} {fact.get('sheet') or ''}")
+        if fact_axis and fact_axis != axis:
+            return 0.0
+        if not fact_axis and not list_value_fits_axis(axis, fact):
+            return 0.0
     # 扫风面积（总值）不能拿"单位千瓦扫风面积"顶上——量纲差四个数量级（金标反评 C.1）。
     # 必须放在 generic 早退之前：词面高度相似，generic 路径会给出 0.79 的假高分。
     if "扫风面积" in field["field"] and "单位千瓦" not in field["field"] and "每千瓦" not in field["field"]:
@@ -2827,19 +3045,21 @@ def fill_doc(spec: AppendixSpec, mapping: dict[str, Any], output_file: Path) -> 
         doc.save(str(output_file))
         return
     # 每条决策自带 tableIndex/valueCol（续表字段），缺省回落主表 spec 列。
-    by_cell: dict[tuple[int, int], dict[str, Any]] = {}
+    # 去重键必须含列：清单型附表一行要填多列（品牌/型号/原产地/数量），
+    # 只按 (表, 行) 去重会让同行决策互相覆盖，最终只落最后一格。
+    by_cell: dict[tuple[int, int, int], dict[str, Any]] = {}
     for decision in mapping["decisions"]:
         table_idx = decision.get("tableIndex")
         table_idx = spec.table_index if table_idx is None else int(table_idx)
-        by_cell[(table_idx, decision["rowIndex"])] = decision
-    for (table_idx, row_idx), decision in by_cell.items():
+        value_col = decision.get("valueCol")
+        value_col = spec.value_col if value_col is None else int(value_col)
+        by_cell[(table_idx, decision["rowIndex"], value_col)] = decision
+    for (table_idx, row_idx, value_col), decision in by_cell.items():
         if table_idx < 0 or table_idx >= len(doc.tables):
             continue
         table = doc.tables[table_idx]
         if row_idx >= len(table.rows):
             continue
-        value_col = decision.get("valueCol")
-        value_col = spec.value_col if value_col is None else int(value_col)
         unit_col = decision.get("unitCol")
         if unit_col is None and table_idx == spec.table_index:
             unit_col = spec.unit_col
@@ -4354,6 +4574,93 @@ def target_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return entries
 
 
+def appendix_pending_cell_count(spec: AppendixSpec) -> int:
+    """空白表自身边界内非备注列的待填单元格数（表结构口径，与取数无关）。"""
+    if spec.table_index < 0:
+        return 0
+    try:
+        doc = Document(str(spec.source))
+    except Exception:
+        return 0
+    pending = 0
+    for table in doc.tables[: spec.own_tables]:
+        if not table.rows:
+            continue
+        header_cells = [clean(cell.text) for cell in table.rows[0].cells]
+        for row in table.rows[1:]:
+            for col, cell in enumerate(row.cells):
+                header = header_cells[col] if col < len(header_cells) else ""
+                if any(token in header for token in NON_VALUE_HEADERS):
+                    continue
+                if cell_needs_fill(cell.text):
+                    pending += 1
+    return pending
+
+
+def build_source_coverage(
+    spec: AppendixSpec,
+    fields: list[dict[str, Any]],
+    mapping: dict[str, Any],
+    manifest: dict[str, Any],
+    sources: list[Source],
+) -> dict[str, Any]:
+    """规则指定来源对本附表目标的覆盖情况。
+
+    附表填不满可能是取数失败，也可能是业务矩阵指定的来源本身覆盖不到目标行
+    （实测 B.1.1：矩阵只写"短名单"，短名单仅覆盖 43 行中的 13 行且只有品牌列）。
+    两者的处理方式完全不同——前者改代码，后者要业务补矩阵来源。把覆盖情况显式
+    写进报告，业务据此判断规则是否需要补充，而不是笼统看到 needs_review。
+    """
+    appendix_task = manifest.get("appendixTask") if isinstance(manifest.get("appendixTask"), dict) else {}
+    routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
+    rule_sources: list[str] = []
+    for key in ("projectSources", "standardSources", "otherSources"):
+        rule_sources.extend(clean(item) for item in routing.get(key) or [] if clean(item))
+
+    filled_ids = {
+        clean(decision.get("targetFieldId"))
+        for decision in mapping.get("decisions") or []
+        if decision.get("action") in {"fill", "partial"}
+    }
+    # 行覆盖按清单型的行标签统计；参数表没有行标签维度时退化为字段口径
+    rows_total: set[str] = set()
+    rows_covered: set[str] = set()
+    for field in fields:
+        row_label = clean(field.get("listRowLabel")) or clean(field.get("field"))
+        if not row_label:
+            continue
+        rows_total.add(row_label)
+        if clean(field.get("id")) in filled_ids:
+            rows_covered.add(row_label)
+    uncovered_axes = sorted(
+        {
+            clean(field.get("listColumnLabel"))
+            for field in fields
+            if field.get("listColumnLabel") and clean(field.get("id")) not in filled_ids
+        }
+    )
+    return {
+        "ruleSources": rule_sources,
+        "matchedSourceNames": [source.name for source in sources],
+        "pendingCellCount": appendix_pending_cell_count(spec),
+        "targetFieldCount": len(fields),
+        "targetRowCount": len(rows_total),
+        "coveredRowCount": len(rows_covered),
+        "uncoveredColumns": uncovered_axes[:12],
+        "ruleSourceSufficient": bool(rows_total) and len(rows_covered) == len(rows_total),
+    }
+
+
+def appendix_has_no_fill_target(spec: AppendixSpec) -> bool:
+    """本附表在自身边界内没有任何待填单元格。
+
+    甲方模板里有一类附表，招标原文已把内容写满（如机型配置品牌表1），走完流程后
+    填 0 格，按覆盖率会被判 needs_review，混进缺口统计成为假缺口。
+    判据只看空白表自身结构，不看取数结果。
+    """
+    return appendix_pending_cell_count(spec) == 0
+
+
 def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_index: int | None = None) -> dict[str, Any]:
     source_docx = blank_docx_path(manifest, manifest_path)
     spec = detect_appendix_spec(source_docx, manifest)
@@ -4512,6 +4819,9 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
             }
         )
 
+    no_fill_required = not mapping["decisions"] and appendix_has_no_fill_target(spec)
+    source_coverage = build_source_coverage(spec, fields, mapping, manifest, sources)
+
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "outputFile": str(output_file),
@@ -4535,6 +4845,8 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
             "preservedOriginalStructure": True,
             "manualMarker": "[待人工补充：字段名]",
             "manualHighlight": "FFF2CC",
+            "noFillRequired": no_fill_required,
+            "sourceCoverage": source_coverage,
         },
         "filledAt": now_iso(),
     }

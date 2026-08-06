@@ -24,6 +24,7 @@ from app.services.onlyoffice_documents import document_path
 from app.services.bid_runtime_state import now_iso
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
 from app.services.technical_gap_domain import (
+    FILL_QUALITY_ACCEPTED_STATUSES,
     technical_gap_artifact_is_s7_ready,
     technical_outline_number_and_title,
 )
@@ -379,7 +380,7 @@ def _with_recovered_ai_fill_artifacts(project_id: str, plan: dict[str, Any]) -> 
             report = _load_ai_fill_report(output_file)
             title = str(report.get("title") or item.get("title") or output_file.stem)
             quality_report = report.get("qualityReport") if isinstance(report.get("qualityReport"), dict) else {}
-            s7_ready = bool(report.get("s7Ready")) or quality_report.get("status") == "passed"
+            s7_ready = bool(report.get("s7Ready")) or quality_report.get("status") in FILL_QUALITY_ACCEPTED_STATUSES
             artifacts.append(
                 {
                     "id": f"RECOVERED-{gap_dir.name}-{index:03d}",
