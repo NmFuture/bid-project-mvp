@@ -944,12 +944,24 @@ def _stage_selected_gap_plan_materials(
 
     plan = json.loads(gap_plan_path.read_text(encoding="utf-8"))
     items = plan.get("items") if isinstance(plan, dict) else []
+    title_only_parent_ids = {
+        str(item.get("id") or "").strip()
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict)
+        if item.get("titleOnly") is True and str(item.get("id") or "").strip()
+    }
     staged_materials: list[dict[str, Any]] = []
     try:
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("coverageRole") or item.get("coverage_role") or "").strip() == "covered_by_parent":
+            if item.get("titleOnly") is True:
+                continue
+            coverage_role = str(item.get("coverageRole") or item.get("coverage_role") or "").strip()
+            covered_by_parent = str(
+                item.get("coveredByParent") or item.get("covered_by_parent") or ""
+            ).strip()
+            if coverage_role == "covered_by_parent" and covered_by_parent not in title_only_parent_ids:
                 continue
 
             resolved_artifacts = item.get("resolvedArtifacts") or []

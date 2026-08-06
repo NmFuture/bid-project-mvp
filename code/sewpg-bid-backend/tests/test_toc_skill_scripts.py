@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import importlib.util
@@ -7575,6 +7575,101 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(d_task["recommendedMaterials"][0]["id"], "RAW-POWER")
             self.assertIn("project 来源规定命中", d_task["recommendedMaterials"][0]["matchReason"])
 
+    def test_bid_gap_planner_parent_rule_covers_sub_numbered_appendix(self) -> None:
+        """规则只写父级编号（附表F.2）时应覆盖子编号附表（F.2.1/F.2.2）。"""
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            output_path = root / "gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "附表F.2.1", "title": "附表F.2.1 投标机组设计认证", "level": 2},
+                            {"number": "附表G.2.1", "title": "附表G.2.1 场址载荷仿真关键计算方法", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            blank = root / "附表F.2.1 投标机组设计认证.docx"
+            Document().save(blank)
+            other_blank = root / "附表G.2.1 场址载荷仿真关键计算方法.docx"
+            Document().save(other_blank)
+            parse_path.write_text(
+                json.dumps(
+                    {
+                        "structured": {
+                            "appendices": [
+                                {"id": "APPX-F21", "title": "附表F.2.1 投标机组设计认证", "docxPath": str(blank)},
+                                {
+                                    "id": "APPX-G21",
+                                    "title": "附表G.2.1 场址载荷仿真关键计算方法",
+                                    "docxPath": str(other_blank),
+                                },
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-HN",
+                        "projectName": "华能项目",
+                        "bidType": "技术标",
+                        "customerName": "华能",
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "materialScope": {"paths": ["技术标/标准文件", "技术标/项目定制"]},
+                        "appendixSourceMatrix": {
+                            "rows": [
+                                {
+                                    "id": "Sheet1!R33",
+                                    "customer": "华能",
+                                    "tableTitle": "附表F.2 投标机型整机认证",
+                                    "projectSources": [],
+                                    "standardSources": ["认证证书"],
+                                    "otherSources": [],
+                                }
+                            ]
+                        },
+                        "materialIndex": [
+                            {
+                                "id": "RAW-CERT",
+                                "name": "EW10.0-220上置型式认证证书.pdf",
+                                "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书",
+                                "materialTier": "standard",
+                            }
+                        ],
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = gap_runner.build_gap_plan(json_load(manifest_path))
+
+            f_item = result["items"][0]
+            f_task = f_item["appendixTasks"][0]
+            self.assertEqual(f_task["sourceRouting"]["source"], "appendix_source_matrix")
+            self.assertEqual(f_task["sourceRouting"]["ruleId"], "Sheet1!R33")
+            self.assertEqual(f_task["sourceRouting"]["standardSources"], ["认证证书"])
+            self.assertEqual(f_task["recommendedMaterials"][0]["id"], "RAW-CERT")
+            # 前缀不同的子编号（G.2.1）不应被 F.2 规则覆盖
+            g_task = result["items"][1]["appendixTasks"][0]
+            self.assertNotEqual(
+                (g_task.get("sourceRouting") or {}).get("source"), "appendix_source_matrix"
+            )
+
     def test_bid_table_filler_fills_same_shape_response_table_from_reference_docx(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
 
@@ -8076,6 +8171,42 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual([cell.text for cell in rows[1].cells], ["一、备品备件部分"] * 8)
             self.assertEqual([cell.text for cell in rows[2].cells], ["1", "变桨限位开关_FD 2031_S1", "EW10.0-220-125", "EA", "12", "\\", "\\", "\\"])
             self.assertEqual(result["unfilledFields"], [])
+
+    def test_bid_table_filler_replace_first_table_preserves_table_props(self) -> None:
+        """整表替换必须保留目标表的样式引用与显式边框，否则渲染成无框线文本。"""
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blank = Path(tmp) / "附表D.7 性能及考核承诺保证表.docx"
+            doc = Document()
+            table = doc.add_table(rows=2, cols=4)
+            tbl_pr = table._tbl.tblPr
+            style_el = tbl_pr.find(qn("w:tblStyle"))
+            if style_el is None:
+                style_el = OxmlElement("w:tblStyle")
+                tbl_pr.insert(0, style_el)
+            style_el.set(qn("w:val"), "89")
+            borders = OxmlElement("w:tblBorders")
+            for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+                el = OxmlElement(f"w:{edge}")
+                el.set(qn("w:val"), "single")
+                el.set(qn("w:sz"), "4")
+                borders.append(el)
+            tbl_pr.append(borders)
+            for index, text in enumerate(["项目", "保证值", "授权人签名", "日期"]):
+                table.cell(0, index).text = text
+            doc.save(blank)
+
+            table_filler.replace_first_table(
+                blank,
+                [["项目", "保证值", "授权人签名", "日期"], ["功率曲线保证值", "97%", "", "2026-01-23"]],
+            )
+
+            filled = Document(str(blank))
+            new_tbl_pr = filled.tables[0]._tbl.tblPr
+            self.assertEqual(new_tbl_pr.find(qn("w:tblStyle")).get(qn("w:val")), "89")
+            self.assertIsNotNone(new_tbl_pr.find(qn("w:tblBorders")))
+            self.assertEqual(filled.tables[0].rows[1].cells[1].text, "97%")
 
     def test_bid_table_filler_batch_output_names_include_appendix_id_to_avoid_collisions(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
