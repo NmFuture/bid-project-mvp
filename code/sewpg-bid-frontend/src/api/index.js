@@ -601,6 +601,16 @@ export const technicalGapsAPI = {
       timeoutMs: 30 * 60 * 1000,
       retryCount: 0,
     }),
+  // 正文一键填写：提交后台任务，立即返回；执行进度经 bodyFillStatus 轮询
+  bodyFill: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/body-fill`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 60 * 1000,
+      retryCount: 0,
+    }),
+  bodyFillStatus: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/body-fill`),
   submissions: (projectId) => request(`/technical/projects/${projectId}/materials/submissions`),
   submitMaterial: (projectId, data) =>
     request(`/technical/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),

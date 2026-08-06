@@ -523,6 +523,20 @@ def ai_fill_all_technical_gap_materials(
     return technical_gap_service.ai_fill_all(project_id, request, data)
 
 
+@router.post("/api/technical/projects/{project_id}/gaps/body-fill")
+def body_fill_technical_gaps(
+    project_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return technical_gap_service.body_fill_all(project_id, request, data)
+
+
+@router.get("/api/technical/projects/{project_id}/gaps/body-fill")
+async def get_technical_body_fill_status(project_id: str) -> dict[str, Any]:
+    return technical_gap_service.body_fill_status(project_id)
+
+
 @router.get("/api/technical/projects/{project_id}/materials/submissions")
 async def list_technical_gap_submissions(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.submissions(project_id)

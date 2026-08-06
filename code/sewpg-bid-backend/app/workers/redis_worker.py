@@ -248,6 +248,10 @@ def _run_job(job: dict[str, Any]) -> bool:
             from app.services.technical_fact_curate_job import run_fact_curate_job
 
             final_state = run_fact_curate_job(project_id, data)
+        elif job_type == "technical_body_fill":
+            from app.services.technical_body_fill_job import run_body_fill_job
+
+            final_state = run_body_fill_job(project_id, data)
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type

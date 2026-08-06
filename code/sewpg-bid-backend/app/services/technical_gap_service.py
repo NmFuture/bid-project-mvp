@@ -64,6 +64,14 @@ from app.services.technical_fact_curate_job import (
     fact_curate_state,
     schedule_fact_curate_job,
 )
+from app.services.technical_body_fill_job import (
+    body_fill_locked,
+    body_fill_running,
+    body_fill_stale,
+    body_fill_state,
+    collect_body_fill_targets,
+    schedule_body_fill_job,
+)
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
 from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_spec_version
@@ -1123,6 +1131,51 @@ class TechnicalGapService:
             return copy.deepcopy(result)
         except Exception as exc:
             _raise_gap_error(exc, "Gap not found")
+
+    def body_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """正文一键填写：提交后台任务后立即返回，进度走 bodyFillState 轮询。"""
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别。")
+            if repair_technical_gap_state_fill_task_skills(gap_state):
+                project["updatedAt"] = now_iso()
+                persist_technical_gap_project(project)
+            self._require_confirmed_project_fact_table(gap_state)
+            # 僵尸状态（worker 被重启/杀掉，状态停在 running 但队列锁已释放）不挡新任务，
+            # 否则前端永远显示「填写中」，只能改库才能恢复
+            if body_fill_running(gap_state) and not body_fill_stale(gap_state, project_id):
+                raise PeripheralError(409, "正文填写任务正在执行，请等待完成后再提交。", "BODY_FILL_RUNNING")
+            payload = dict(data or {})
+            targets = collect_body_fill_targets(gap_state, payload)
+            if not targets:
+                raise ValueError("当前范围内没有待填写的正文任务。")
+            payload["expectedTotal"] = len(targets)
+            payload.update(
+                {
+                    "browserBaseUrl": self._url_scope(request)["browser_base_url"],
+                    "onlyofficeBaseUrl": self._url_scope(request)["onlyoffice_base_url"],
+                }
+            )
+            state = schedule_body_fill_job(project_id, payload)
+            return {"bodyFillState": state, "total": len(targets)}
+        except Exception as exc:
+            _raise_gap_error(exc, "项目不存在")
+            raise
+
+    def body_fill_status(self, project_id: str) -> dict[str, Any]:
+        project = self.ensure_project(project_id)
+        gap_state = ensure_technical_gap_state(project)
+        state = body_fill_state(gap_state)
+        if body_fill_stale(gap_state, project_id):
+            state["status"] = "failed"
+            state["message"] = "任务执行中断（服务重启或进程退出），请重新发起一键填写。"
+        return {
+            "bodyFillState": state,
+            "pendingTotal": len(collect_body_fill_targets(gap_state, {})),
+            "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+        }
 
     def ai_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
