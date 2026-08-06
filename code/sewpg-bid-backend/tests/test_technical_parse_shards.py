@@ -566,6 +566,43 @@ class ShardedOrchestrationTests(unittest.TestCase):
         rows = submissions["targets"]["technicalInterpretation"]
         self.assertEqual({int(r["rowNo"]) for r in rows}, {int(i["rowNo"]) for i in load_checklist()})
 
+    def test_finalize_validation_failure_raises_instead_of_returning_success(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        fake_cls, _seen = self._fake_client_class()
+        original_cli = parsing._run_s1parse_cli
+
+        def failed_finalize(command: str, manifest_path: Path, *args: str) -> dict:
+            if command != "finalize":
+                return original_cli(command, manifest_path, *args)
+            failed_result = {
+                "items": [],
+                "structured": {
+                    "workflow": {
+                        "stage": "failed",
+                        "missingTargets": ["technicalInterpretation:1"],
+                        "validationErrors": ["技术清单缺少第 1 行"],
+                    }
+                },
+            }
+            self.output_path.write_text(json.dumps(failed_result, ensure_ascii=False), encoding="utf-8")
+            return {"outputFile": str(self.output_path)}
+
+        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+            parsing,
+            "_run_s1parse_cli",
+            side_effect=failed_finalize,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "finalize 校验失败.*技术清单缺少第 1 行"):
+                parsing._run_technical_sharded_parse_skill(
+                    self.manifest_path,
+                    local_result={"items": [], "structured": {}},
+                    profile=TECHNICAL_PARSE_PROFILE,
+                )
+
     def test_model_config_is_loaded_once_and_shared_by_all_sessions(self) -> None:
         from unittest.mock import patch
 

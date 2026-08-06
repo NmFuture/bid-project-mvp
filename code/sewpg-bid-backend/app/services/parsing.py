@@ -6685,6 +6685,16 @@ def _run_technical_sharded_parse_skill(
     structured = resolved.get("structured") if isinstance(resolved.get("structured"), dict) else {}
     if isinstance(structured, dict):
         workflow = copy.deepcopy(structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {})
+        workflow_stage = str(workflow.get("stage") or "").strip()
+        if workflow_stage != "finalized":
+            failure_details = workflow.get("validationErrors") or workflow.get("missingTargets") or []
+            if isinstance(failure_details, list):
+                failure_message = "；".join(str(item) for item in failure_details if str(item).strip())
+            else:
+                failure_message = str(failure_details).strip()
+            if not failure_message:
+                failure_message = f"workflow.stage={workflow_stage or 'missing'}"
+            raise RuntimeError(f"S1 技术标分片 finalize 校验失败：{failure_message}")
         workflow["mode"] = "opencode-agentic-navigation-sharded"
         workflow["shardConcurrency"] = max_workers
         workflow["shardResults"] = copy.deepcopy(results)
