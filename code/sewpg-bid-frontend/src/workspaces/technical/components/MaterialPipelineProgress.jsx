@@ -1,76 +1,171 @@
 import { useEffect, useRef, useState } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
+import {
+  appendDismissedKey,
+  firstUndismissedStageFailure,
+  loadDismissedKeys,
+} from './materialPipelineFailures'
 import { createWikiJobSuccessTracker } from './wikiJobSuccessTracker'
 
 const POLL_MS = 5000
+// 轮询连续失败达到阈值才提示「进度查询失败」：单次网络抖动不打扰页面。
+const POLL_FAILURE_ALERT_THRESHOLD = 3
+const TECHNICAL_BID_TYPE = '技术标'
+const DISMISSED_KEYS_STORAGE_KEY = 'sewpg:technical-material-pipeline:dismissed'
 
-const pipelineRunning = (payload) => (
-  Number(payload?.cleaning?.active || 0) > 0
-  || Number(payload?.deepParse?.active || 0) > 0
-  || payload?.wiki?.status === 'running'
-)
+const loadSessionDismissedKeys = () => {
+  if (typeof window === 'undefined') return []
+  try {
+    return loadDismissedKeys(window.sessionStorage.getItem(DISMISSED_KEYS_STORAGE_KEY))
+  } catch {
+    return []
+  }
+}
 
 // 素材流水线进度条（产品需求 2026-08-04）：上传 → 自动清洗 → 自动 Wiki 增量的统一进度，
 // 挂在原始素材页与 Wiki 页顶部。任务全在后端执行，这里只轮询展示——切页、刷新浏览器
-// 都不影响任务；空闲时整条不渲染，保持页面整洁。失败提示仅在本次会话观察到运行后展示，可关闭。
-// 超大文件的预览要等后台深度解析，收尾必须如实：队列已空但仍有待补全时不装作全部完成。
+// 都不影响任务；空闲时整条不渲染，保持页面整洁。
+// 失败/取消提示以后端记忆的「各阶段最近终态」为准（R10-B07-05），不要求本次会话曾看到
+// 运行中：快速失败、失败后才进页面、清洗/深度解析失败都能持续展示，直到用户关闭、
+// 重试成功或新任务终态覆盖。超大文件的预览要等后台深度解析，收尾必须如实：
+// 队列已空但仍有待补全时不装作全部完成。
 // onWikiJobSuccess：页面打开后观察到新的 Wiki 成功任务时回调一次（按 jobId 去重），
 // 包括在轮询间隔内快速完成或补跑切换 jobId 的任务，供 Wiki 页面重新加载目录树。
 export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
   const [snapshot, setSnapshot] = useState(null)
-  const [dismissedJobId, setDismissedJobId] = useState('')
-  const [sawRunning, setSawRunning] = useState(false)
+  const [dismissedKeys, setDismissedKeys] = useState(loadSessionDismissedKeys)
+  const [pollFailures, setPollFailures] = useState(0)
+  const [pollAlertDismissed, setPollAlertDismissed] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState('')
   // 跨轮询记住已完成任务的通知状态；回调经 ref 取最新值，轮询 effect 不随渲染重建。
   const [trackWikiJobSuccess] = useState(createWikiJobSuccessTracker)
   const onWikiJobSuccessRef = useRef(onWikiJobSuccess)
+
   useEffect(() => {
     onWikiJobSuccessRef.current = onWikiJobSuccess
   })
 
   useEffect(() => {
+    try {
+      window.sessionStorage.setItem(DISMISSED_KEYS_STORAGE_KEY, JSON.stringify(dismissedKeys))
+    } catch {
+      // sessionStorage 被禁用或配额用尽时仅退化为当前组件内关闭。
+    }
+  }, [dismissedKeys])
+
+  useEffect(() => {
     let cancelled = false
+    let timer = null
     const poll = async () => {
       try {
         const payload = await technicalMaterialsAPI.pipelineProgress()
         if (cancelled) return
         setSnapshot(payload)
-        if (pipelineRunning(payload)) setSawRunning(true)
+        // 查询恢复后清零并重新武装提示：之后再次连续失败会重新提醒。
+        setPollFailures(0)
+        setPollAlertDismissed(false)
         const succeededJobId = trackWikiJobSuccess(payload?.wiki)
         if (succeededJobId) onWikiJobSuccessRef.current?.(succeededJobId)
       } catch {
-        // 轮询失败保持上次快照，不打扰页面。
+        // 单次轮询失败保持上次快照；连续失败由阈值提示接管，不再静默。
+        if (!cancelled) setPollFailures((count) => count + 1)
+      } finally {
+        // 上一次请求完成后再计时，避免慢网络下 setInterval 叠加请求并乱序覆盖快照。
+        if (!cancelled) timer = window.setTimeout(poll, POLL_MS)
       }
     }
     poll()
-    const timer = window.setInterval(poll, POLL_MS)
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      if (timer !== null) window.clearTimeout(timer)
     }
   }, [trackWikiJobSuccess])
+
+  // 与 Wiki 页「刷新并重试」同一入口：refresh 会重试待重试预览，并补排深度解析。
+  const handleRetry = async () => {
+    setRetrying(true)
+    setRetryError('')
+    try {
+      await technicalMaterialsAPI.wiki.bootstrap({ mode: 'refresh', bidType: TECHNICAL_BID_TYPE })
+      // 后端已接受补跑后立即进入进度态，不让旧失败在下一次轮询前继续假装可重试。
+      setSnapshot((current) => ({
+        ...(current || {}),
+        wiki: { ...(current?.wiki || {}), status: 'running' },
+      }))
+    } catch (error) {
+      setRetryError(error?.payload?.detail || error?.message || '重试启动失败，请稍后重试。')
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  const dismiss = (key) => {
+    setDismissedKeys((keys) => appendDismissedKey(keys, key))
+  }
 
   const cleaningRemaining = Number(snapshot?.cleaning?.active || 0)
   const deepParseRemaining = Number(snapshot?.deepParse?.active || 0)
   const pendingPreview = Number(snapshot?.pendingPreview || 0)
   const wiki = snapshot?.wiki || {}
   const wikiRunning = wiki.status === 'running'
-  const wikiFailed = wiki.status === 'failed'
+
+  // 进度接口连续不可用：显式提示，不再静默保持旧快照或空白（R10-B07-05）。
+  if (pollFailures >= POLL_FAILURE_ALERT_THRESHOLD && !pollAlertDismissed) {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-md border border-error/30 bg-error/5 px-4 py-2.5 text-[13px]">
+        <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-error">sync_problem</span>
+        <span className="min-w-0 flex-1 truncate text-on-surface">
+          素材流水线进度查询失败，正在自动重试；也可刷新页面重连。
+        </span>
+        <button
+          type="button"
+          onClick={() => setPollAlertDismissed(true)}
+          aria-label="关闭查询失败提示"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface"
+        >
+          <span aria-hidden="true" className="material-symbols-outlined text-[15px]">close</span>
+        </button>
+      </div>
+    )
+  }
 
   if (!snapshot) return null
 
-  // 失败横幅：本次会话看到过流水线运行、且未被关闭时展示。
+  // 空闲收尾：任一阶段最近终态是失败/取消时持续展示，直到用户关闭、重试成功或被新终态覆盖。
   if (!cleaningRemaining && !deepParseRemaining && !wikiRunning) {
-    if (wikiFailed && sawRunning && dismissedJobId !== String(wiki.jobId || 'failed')) {
+    const failure = firstUndismissedStageFailure(snapshot, dismissedKeys, TECHNICAL_BID_TYPE)
+    if (failure) {
+      const statusText = failure.status === 'cancelled' ? '已取消' : '失败'
       return (
         <div role="alert" className="flex items-center gap-3 rounded-md border border-error/30 bg-error/5 px-4 py-2.5 text-[13px]">
           <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-error">error</span>
-          <span className="min-w-0 flex-1 truncate text-on-surface" title={wiki.message || ''}>
-            Wiki 增量构建失败{wiki.message ? `：${wiki.message}` : ''}——可在 Wiki 页点「刷新并重试」
+          <span className="min-w-0 flex-1 truncate text-on-surface" title={failure.message || ''}>
+            {`${failure.stageLabel}${statusText}${failure.message ? `：${failure.message}` : ''}`}
+            {failure.jobId ? `（任务编号：${failure.jobId}）` : ''}
+            {!failure.retryable && failure.status === 'failed' ? '——可在素材库重新上传该文件后自动重新处理' : ''}
+            {retryError ? `；${retryError}` : ''}
           </span>
+          {failure.retryable ? (
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={retrying}
+              className="inline-flex shrink-0 items-center gap-1 rounded border border-error/30 px-2 py-0.5 text-xs text-error hover:bg-error/10 disabled:opacity-50"
+            >
+              <span aria-hidden="true" className={`material-symbols-outlined text-[14px] ${retrying ? 'animate-spin' : ''}`}>
+                refresh
+              </span>
+              {retrying ? '重试启动中…' : '重试'}
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={() => setDismissedJobId(String(wiki.jobId || 'failed'))}
-            aria-label="关闭失败提示"
+            onClick={() => {
+              dismiss(failure.dismissKey)
+              setRetryError('')
+            }}
+            aria-label="关闭任务提示"
             className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface"
           >
             <span aria-hidden="true" className="material-symbols-outlined text-[15px]">close</span>
@@ -79,7 +174,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
       )
     }
     // 收尾如实：队列已空但仍有预览停在兜底态时说清还差几个，不装作全部完成。
-    if (pendingPreview > 0 && dismissedJobId !== `pending:${pendingPreview}`) {
+    if (pendingPreview > 0 && !dismissedKeys.includes(`pending:${pendingPreview}`)) {
       return (
         <div role="status" className="flex items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-4 py-2.5 text-[13px]">
           <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-outline">pending</span>
@@ -88,7 +183,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
           </span>
           <button
             type="button"
-            onClick={() => setDismissedJobId(`pending:${pendingPreview}`)}
+            onClick={() => dismiss(`pending:${pendingPreview}`)}
             aria-label="关闭待补全提示"
             className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-container-high hover:text-on-surface"
           >

@@ -685,14 +685,14 @@ export const technicalMaterialsAPI = {
     parseStatus: (projectId) => request(`/technical/projects/${projectId}/materials/parse-status`),
   },
   wiki: {
-    list: (params = {}) => {
+    list: (params = {}, options = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`)
+      return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`, options)
     },
     bootstrap: (data = {}) =>
       request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, retryCount: 0 }),
-    bootstrapStatus: (jobId) =>
-      request(`/technical/materials/wiki/jobs/${encodeURIComponent(jobId)}`),
+    bootstrapStatus: (jobId, options = {}) =>
+      request(`/technical/materials/wiki/jobs/${encodeURIComponent(jobId)}`, options),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {

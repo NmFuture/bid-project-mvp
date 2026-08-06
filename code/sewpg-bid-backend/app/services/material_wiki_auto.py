@@ -336,11 +336,14 @@ async def _pending_preview_count() -> int:
 
 async def technical_pipeline_progress() -> dict[str, Any]:
     """素材流水线进度聚合：清洗队列剩余 + 最新 Wiki 任务阶段进度，供前端进度条轮询。"""
-    from app.services.job_queue import find_active_jobs_of_type
+    from app.services.job_queue import (
+        find_active_jobs_of_type,
+        latest_terminal_job_of_type,
+    )
     from app.services.material_wiki_jobs import latest_material_wiki_job_status
     from app.services.peripheral import PeripheralError
 
-    def _queue_snapshot(job_type: str) -> dict[str, int]:
+    def _queue_snapshot(job_type: str) -> dict[str, Any]:
         try:
             jobs = find_active_jobs_of_type(job_type)
         except Exception as exc:
@@ -351,6 +354,8 @@ async def technical_pipeline_progress() -> dict[str, Any]:
         return {
             "active": len(jobs),
             "processing": sum(1 for job in jobs if str(job.get("status") or "") == "processing"),
+            # 最近终态记忆：失败/取消的任务离开 active 集合后，前端仍能持续展示原因。
+            "lastTerminal": latest_terminal_job_of_type(job_type, TECHNICAL_BID_TYPE),
         }
 
     cleaning = _queue_snapshot(MATERIAL_CLEANING_JOB_TYPE)
