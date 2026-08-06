@@ -166,12 +166,36 @@ test('格式应用响应缺 document 时按本次请求推进本地格式状态'
 test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持不变', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+  const progressSource = await readFile(new URL('../components/TechnicalGenerationProgressModal.jsx', import.meta.url), 'utf8')
 
-  assert.match(gapSource, /warningCount/)
+  assert.match(progressSource, /warningCount/)
   assert.match(gapSource, /disabled=\{Boolean\(busyAction\) \|\| !generationCompleted\}/)
   assert.match(editorSource, /technicalDocumentAPI\.technicalFormat\(id, payload\)/)
   assert.match(editorSource, /download=\{finalData\?\.fileName \|\| data\?\.fileName \|\| defaultWordFileName\}/)
   assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
+})
+
+test('重新生成正文只在共创导出页展示，并位于 Word、PDF 下载控件之后', async () => {
+  const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+  const wordIndex = editorSource.indexOf('下载Word')
+  const pdfIndex = editorSource.indexOf('下载PDF')
+  const regenerateIndex = editorSource.indexOf("'重新生成正文'")
+
+  assert.doesNotMatch(gapSource, /重新生成正文/)
+  assert.ok(wordIndex >= 0)
+  assert.ok(pdfIndex > wordIndex)
+  assert.ok(regenerateIndex > pdfIndex)
+})
+
+test('共创导出页二次确认后沿用正文生成接口并刷新最新文档', async () => {
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(editorSource, /确认重新生成正文？/)
+  assert.match(editorSource, /尚未保存的共创修改可能丢失/)
+  assert.match(editorSource, /const payload = await technicalGenerateAPI\.run\(id\)/)
+  assert.match(editorSource, /loadDocument\(\{ silent: true \}\)/)
+  assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })
 
 test('事实表清单和素材范围变更后自动重建，不保留手动刷新入口', async () => {
