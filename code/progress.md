@@ -262,3 +262,20 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `AGENTS.md`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 02:11:48 post-commit 7b18e0d
+
+提交摘要：feat(技术标): 正文填写按事实表清单定位字段，不再靠字面相似度猜
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/data/technical_fact_field_specs.json`
+- `code/sewpg-bid-backend/app/services/technical_fact_spec_import.py`
+- `code/sewpg-bid-backend/app/services/technical_gap_fact_table.py`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-word-placeholder-filler/SKILL.md`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_fact_spec_upload.py`
+- `code/sewpg-bid-backend/tests/test_technical_fact_field_specs.py`
+- `code/sewpg-bid-backend/tests/test_technical_word_fill_discipline.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

@@ -367,7 +367,7 @@ def normalize_project_fact_field(
         "updatedBy": operator,
     }
     # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）
-    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
@@ -436,6 +436,9 @@ def reconcile_fact_fields_with_specs(
             field["reviewLabel"] = str(spec.get("reviewLabel") or "")
             field["needsConfirmation"] = bool(spec.get("needsConfirmation"))
             field["sourceKind"] = str(spec.get("sourceKind") or "")
+            # 正文填写按「待填写文件 + 占位符原文」定位字段，两列随字段下发到 manifest
+            field["placeholder"] = str(spec.get("placeholder") or "")
+            field["targetFile"] = str(spec.get("targetFile") or "")
             if spec.get("needsConfirmation") and str(field.get("status") or "") == FACT_STATUS_EXTRACTED:
                 field["status"] = FACT_STATUS_PENDING_CONFIRMATION
             continue
@@ -466,6 +469,8 @@ def reconcile_fact_fields_with_specs(
             "needsConfirmation": bool(spec.get("needsConfirmation")),
             "sourceKind": str(spec.get("sourceKind") or ""),
             "sourceHint": str(spec.get("referenceFile") or ""),
+            "placeholder": str(spec.get("placeholder") or ""),
+            "targetFile": str(spec.get("targetFile") or ""),
         }
         # 上一轮的人工结果随重建保留；AI 与规则抽取的值一律不继承，本轮重新取
         previous = next(
@@ -685,7 +690,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             is_confirmed = str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
             has_value = bool(str(existing.get("value") or "").strip())
             field = copy.deepcopy(existing)
-            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
+            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
                 field.pop(meta_key, None)
             field["label"] = label_text
             field["key"] = key

@@ -9,6 +9,7 @@ scripts/import_technical_fact_specs.py CLI 共用本模块。
 清单列（Sheet1，首行表头）：
     序号 / 待填写文件 / 原占位符位置 / 实际要填写的字段 / 必要说明 / 复核 / 来源文件
 
+按表头名定位列，不依赖列序；缺可选列（序号/必要说明/复核）不报错。
 兼容历史表头：第 2 列“来源文件”、第 7 列“引用文件”。历史命名中的
 “来源文件”实际表示待填写目标文件，导入后仍保留 sourceFile 兼容字段。
 
@@ -27,10 +28,13 @@ import openpyxl
 EXPECTED_HEADER = ["序号", "待填写文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "来源文件"]
 LEGACY_HEADER = ["序号", "来源文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "引用文件"]
 
-HEADER_LAYOUTS = {
-    tuple(EXPECTED_HEADER): {"target_file": 1, "reference_file": 6},
-    tuple(LEGACY_HEADER): {"target_file": 1, "reference_file": 6},
-}
+# 必需列（缺失即报错）：列键 → 表头名，供报错文案使用。
+REQUIRED_COLUMNS = (
+    ("target_file", "待填写文件"),
+    ("placeholder", "原占位符位置"),
+    ("label", "实际要填写的字段"),
+    ("reference_file", "来源文件"),
+)
 
 # 引用文件 → 来源类别
 SOURCE_KIND_RULES = [
@@ -76,6 +80,43 @@ def cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+def resolve_columns(header: list[str]) -> dict[str, int | None]:
+    """表头名 → 列号。可选列缺失返回 None，必需列缺失抛 FactSpecImportError。"""
+    index: dict[str, int] = {}
+    for position, name in enumerate(header):
+        if name and name not in index:
+            index[name] = position
+    columns: dict[str, int | None] = {
+        "seq": index.get("序号"),
+        "placeholder": index.get("原占位符位置"),
+        "label": index.get("实际要填写的字段"),
+        "note": index.get("必要说明"),
+        "review": index.get("复核"),
+    }
+    # 「来源文件」在两种表头里指代不同：新表头有独立的「待填写文件」列，
+    # 「来源文件」是取数来源；历史表头没有「待填写文件」，第 2 列的
+    # 「来源文件」才是待填写目标，取数来源叫「引用文件」。
+    if "待填写文件" in index:
+        columns["target_file"] = index["待填写文件"]
+        columns["reference_file"] = index.get("来源文件")
+    else:
+        columns["target_file"] = index.get("来源文件")
+        columns["reference_file"] = index.get("引用文件")
+    missing = [name for key, name in REQUIRED_COLUMNS if columns.get(key) is None]
+    if missing:
+        raise FactSpecImportError(
+            f"清单缺少必需列 {missing}；期望表头 {EXPECTED_HEADER}"
+            f"（兼容历史表头 {LEGACY_HEADER}），实际 {header}"
+        )
+    return columns
+
+
+def cell_at(row: tuple[Any, ...], position: int | None) -> str:
+    if position is None or position >= len(row):
+        return ""
+    return cell_text(row[position])
+
+
 def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -> list[dict[str, Any]]:
     """解析清单 xlsx 为 spec list；给定 output_path 时同时写 JSON 文件。
 
@@ -91,36 +132,36 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
     if not rows:
         raise FactSpecImportError(f"清单为空: {path.name}")
     header = [cell_text(c) for c in rows[0]]
-    header_key = tuple(header[: len(EXPECTED_HEADER)])
-    layout = HEADER_LAYOUTS.get(header_key)
-    if layout is None:
-        raise FactSpecImportError(
-            f"表头不符，期望 {EXPECTED_HEADER}（兼容历史表头 {LEGACY_HEADER}），实际 {header}"
-        )
+    columns = resolve_columns(header)
 
     specs: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows[1:], start=2):
-        label = cell_text(row[3])
+        label = cell_at(row, columns["label"])
         if not label:
             continue
-        note = cell_text(row[4])
-        target_file = cell_text(row[layout["target_file"]])
-        reference_file = cell_text(row[layout["reference_file"]])
+        note = cell_at(row, columns["note"])
+        target_file = cell_at(row, columns["target_file"])
+        reference_file = cell_at(row, columns["reference_file"])
         source_kind = classify_source(reference_file)
-        try:
-            seq = int(row[0])
-        except (TypeError, ValueError) as exc:
-            raise FactSpecImportError(f"第 {row_index} 行序号无效：{row[0]!r}") from exc
+        # 无序号列时用行号顶上：序号只用于排序与定位，不参与取值。
+        if columns["seq"] is None:
+            seq = row_index - 1
+        else:
+            raw_seq = row[columns["seq"]] if columns["seq"] < len(row) else None
+            try:
+                seq = int(raw_seq)
+            except (TypeError, ValueError) as exc:
+                raise FactSpecImportError(f"第 {row_index} 行序号无效：{raw_seq!r}") from exc
         specs.append(
             {
                 "seq": seq,
                 "key": normalize_key(label),
                 "label": label,
-                "reviewLabel": cell_text(row[5]),
+                "reviewLabel": cell_at(row, columns["review"]),
                 "targetFile": target_file,
                 # 兼容既有 spec/产物字段；其语义一直是待填写目标文件，不是取数来源。
                 "sourceFile": target_file,
-                "placeholder": cell_text(row[2]),
+                "placeholder": cell_at(row, columns["placeholder"]),
                 "note": note,
                 "needsConfirmation": "需确认" in note,
                 "referenceFile": reference_file,

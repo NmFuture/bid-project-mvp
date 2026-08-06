@@ -47,13 +47,73 @@ def clean(value: Any) -> str:
     return re.sub(r"\s+", " ", text.replace("\n", " / ")).strip()
 
 
+# 归一化剥离的标点：字符类里的 `]` 必须转义，否则字符类在 `\\]` 处提前闭合，
+# 整个表达式退化成「一个标点后面必须紧跟字面 `【】]`」而几乎永不匹配——
+# 修复前 norm() 实际不剥离任何标点，全半角括号差异会让占位符与字段名对不上。
+NORM_PUNCT_RE = re.compile(r"[\s（）()、/\\:：；;，,。\-_—×*\[\]【】]+")
+
+
 def norm(value: Any) -> str:
-    return re.sub(r"[\s（）()、/\\:：；;，,。\-_—×*\\[\\]【】]+", "", clean(value).lower())
+    return NORM_PUNCT_RE.sub("", clean(value).lower())
 
 
 def placeholderish(value: Any) -> bool:
     text = clean(value)
     return any(marker in text for marker in ("待填写", "待补充", "待确认", "待人工补充", "[", "【"))
+
+
+def placeholder_key(raw: Any) -> str:
+    """占位符归一化键：清单列与 Word 正文共用同一套解析，消除括号/全半角/分隔符差异。
+
+    清单里写 `[安全等级，待填写]`、Word 里写 `【安全等级, 待填写】`，归一化后都是
+    `安全等级`。
+    """
+    text = clean(raw)
+    if not text:
+        return ""
+    match = PLACEHOLDER_RE.search(text)
+    body = match.group(2) if match else text
+    return norm(placeholder_label(body))
+
+
+def file_key(value: Any) -> str:
+    """待填写文件归一化键：只取文件名去扩展名。
+
+    清单第 2 列带素材库路径（`华能/待填写-塔筒设计方案专题报告.docx`），实际 blankSource
+    可能来自别处；18 个待填写文件的文件名无重名，按文件名匹配即可跨客户/项目复用清单。
+    """
+    text = clean(value).replace("\\", "/").split("/")[-1]
+    return norm(re.sub(r"\.(docx|doc)$", "", text, flags=re.IGNORECASE))
+
+
+def split_field_enumeration(value: Any) -> list[str]:
+    """按顿号/逗号拆字段枚举，但括号内的分隔符不算。
+
+    字段名自带括号逗号很常见（`折减系数（考核值，%）`），无条件按逗号拆会把单个字段名
+    切碎；`[机型认证湍流强度，机型认证10分钟平均极限风速（m/s），待填写]` 这种真正的
+    多字段枚举又确实用逗号分隔，只认顿号会漏。屏蔽括号内容后再定位分隔符位置。
+    """
+    text = clean(value)
+    if not text:
+        return []
+    masked = re.sub(r"[（(][^）)]*[）)]", lambda match: "\x01" * len(match.group(0)), text)
+    parts: list[str] = []
+    start = 0
+    for position, char in enumerate(masked):
+        if char in "、,，":
+            parts.append(text[start:position])
+            start = position + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def split_spec_cell(value: Any) -> list[str]:
+    """清单单元格拆多值：分号（全/半角）与换行都算分隔符。
+
+    不走 clean()——它会把换行压成 " / "，而换行正是清单里一格多文件的分隔符。
+    """
+    text = str(value or "").replace("　", " ").replace("\xa0", " ")
+    return [part.strip() for part in re.split(r"[；;\n]+", text) if part.strip()]
 
 
 def compact_number(value: Any) -> str:
@@ -255,6 +315,7 @@ def project_fact_table_facts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         if status not in {"confirmed", "candidate"}:
             continue
         confidence = 0.97 if status == "confirmed" else 0.84
+        before = len(facts)
         add_fact(
             facts,
             label=field.get("label"),
@@ -264,6 +325,11 @@ def project_fact_table_facts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
             location=status,
             fact_type="confirmed_project_fact" if status == "confirmed" else "candidate_project_fact",
         )
+        if len(facts) > before:
+            # 清单第 2/3 列随字段下发：正文按「待填写文件 + 占位符原文」定位，不靠字面相似度猜
+            facts[-1]["specPlaceholders"] = [key for key in map(placeholder_key, split_spec_cell(field.get("placeholder"))) if key]
+            facts[-1]["specTargets"] = [key for key in map(file_key, split_spec_cell(field.get("targetFile"))) if key]
+            facts[-1]["reviewLabel"] = clean(field.get("reviewLabel"))
     return facts
 
 
@@ -603,6 +669,179 @@ def choose_fact(
 
     selected = next((item for item in candidates if usable(item)), None)
     return selected, candidates[:5]
+
+
+# ---------- 清单驱动定位：待填写文件 → 占位符 → 候选内上下文消歧 ----------
+#
+# 事实表清单的第 2/3 列本身就是一张「字段 → 填进哪个 Word → 占位符长什么样」的路由表，
+# 不需要靠字面相似度反猜字段。清单当前一个占位符可对多个字段（`[技术方案，待填写]`
+# 在塔筒专题里对应 58 个），业务侧后续会把占位符逐步拆细；拆得越细，走确定性路径的
+# 比例越高，下面的上下文消歧自然越少触发，无需改代码。
+
+CONTEXT_MATCH_MIN = 0.62  # 候选内消歧：字段名被上下文覆盖的最低比例
+CONTEXT_MATCH_MARGIN = 0.12  # 冠亚军差距不足说明分不开，宁空勿错
+
+
+class SpecIndex:
+    """清单定位索引。
+
+    两张表：
+    - `by_label`：字段名（含复核列别名）→ 字段。素材库里的占位符大多已经拆细成字段名
+      本身（`[单台机组功率曲线保证率（%），待填写]`），这条是零歧义的确定性路径。
+    - `by_placeholder`：清单第 3 列 → 候选字段。清单粒度粗于素材时靠它收敛候选，
+      再交给上下文消歧。
+    """
+
+    def __init__(
+        self,
+        facts: list[dict[str, Any]],
+        blank_keys: Iterable[str],
+        known_placeholders: Iterable[str],
+    ) -> None:
+        self.blank_keys = {key for key in blank_keys if key}
+        self.known_placeholders = {key for key in known_placeholders if key}
+        self.by_placeholder: dict[str, list[dict[str, Any]]] = {}
+        for fact in facts:
+            for key in fact.get("specPlaceholders") or []:
+                self.by_placeholder.setdefault(key, []).append(fact)
+        # 只认带清单元数据的事实表字段。派生事实（招标方/项目名称等）与无清单信息的
+        # 历史 manifest 字段不得进这张表：它们的 label 可能恰好等于泛占位符文字
+        #（如「投标方案」），会劫持整份文档里该占位符的所有位置。
+        spec_facts = [fact for fact in facts if fact.get("specPlaceholders") or fact.get("specTargets")]
+        # 一个占位符可能同时是多个字段的名字或别名：清单里「年等效满负荷小时数（保证值，h）」
+        # 被 4 个字段（年等效满发小时数／等效上网小时数／有效小时数…）共用。存成候选列表
+        # 而不是首个命中，值不一致时交给上下文消歧，不能静默取 seq 最小的那个。
+        self.by_label: dict[str, list[dict[str, Any]]] = {}
+        for name_key in ("label", "reviewLabel"):
+            for fact in spec_facts:
+                key = norm(fact.get(name_key))
+                if not key:
+                    continue
+                bucket = self.by_label.setdefault(key, [])
+                if fact not in bucket:
+                    bucket.append(fact)
+        self.enabled = bool(self.known_placeholders or self.by_label)
+
+    def knows(self, placeholder_label_text: str) -> bool:
+        return norm(placeholder_label_text) in self.known_placeholders
+
+    def by_field_name(self, placeholder_label_text: str) -> list[dict[str, Any]]:
+        return self.by_label.get(norm(placeholder_label_text)) or []
+
+    def candidates(self, placeholder_label_text: str) -> tuple[list[dict[str, Any]], bool]:
+        entries = self.by_placeholder.get(norm(placeholder_label_text)) or []
+        if not entries:
+            return [], False
+        # 软过滤：清单指定了当前文件的候选优先；一条都没指定时不做排除——清单文件名与
+        # 实际待填写文件对不上（改名/换客户）时硬过滤会让整份文件静默一个字段都填不进。
+        scoped = [fact for fact in entries if self.blank_keys & set(fact.get("specTargets") or [])]
+        return (scoped or entries), bool(scoped)
+
+
+def build_spec_index(manifest: dict[str, Any], facts: list[dict[str, Any]], blank_keys: Iterable[str]) -> SpecIndex:
+    table = manifest.get("projectFactTable") if isinstance(manifest.get("projectFactTable"), dict) else {}
+    known: list[str] = []
+    for field in object_items(table.get("fields")):
+        known.extend(key for key in map(placeholder_key, split_spec_cell(field.get("placeholder"))) if key)
+    return SpecIndex(facts, blank_keys, known)
+
+
+def context_fragments(context: str) -> list[str]:
+    """上下文切片：表格上下文由 " / " 连接（表格坐标 / 行标签 / 列头 / 单元格文本），
+    段落上下文是整句，都按同一套切分后归一化。"""
+    return [fragment for fragment in (norm(part) for part in str(context or "").split(" / ")) if fragment]
+
+
+def context_coverage(label: Any, fragments: list[str]) -> float:
+    """字段名与上下文片段的双向包含度。
+
+    两种形态都要认：
+    - 表格：字段名「第1段（底）塔节底部直径（m）」被拆成行标签「第1段（底）」+
+      列头「底部直径（m）」，片段是字段名的组成部分，按覆盖字符数累计；
+    - 段落：字段名整体出现在句子里，反向包含，直接给满分。
+
+    刻意不用 SequenceMatcher 模糊比：「底部直径」和「顶部直径」模糊分只差 0.09，
+    分不开同一张表里的相邻列；完整包含是二值判据，同场景差距拉到 0.45。
+    """
+    target = norm(label)
+    if not target or not fragments:
+        return 0.0
+    # 按字符位置累计而不是按片段长度求和：表头列名会同时出现在 header 段和近邻列段，
+    # 重复计数会把所有含该列名的候选一起顶到 1.0，同列相邻字段就再也分不开。
+    covered: set[int] = set()
+    for fragment in fragments:
+        if len(fragment) < 2:
+            continue
+        if target in fragment:
+            return 1.0
+        start = target.find(fragment)
+        while start >= 0:
+            covered.update(range(start, start + len(fragment)))
+            start = target.find(fragment, start + 1)
+    return len(covered) / len(target)
+
+
+def disambiguate_by_context(
+    candidates: list[dict[str, Any]],
+    context: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """候选内消歧：同一占位符下候选的占位符文字完全相同，只能靠文档上下文区分。"""
+    fragments = context_fragments(context)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for fact in candidates:
+        score = max(
+            context_coverage(fact.get("label"), fragments),
+            context_coverage(fact.get("reviewLabel"), fragments),
+        )
+        scored.append((score, fact))
+    scored.sort(key=lambda item: -item[0])
+    alternatives = [fact for _, fact in scored[:4]]
+    if not scored or scored[0][0] < CONTEXT_MATCH_MIN:
+        return None, alternatives
+    if len(scored) > 1 and scored[0][0] - scored[1][0] < CONTEXT_MATCH_MARGIN:
+        return None, alternatives
+    picked = dict(scored[0][1])
+    picked["score"] = round(scored[0][0], 3)
+    return picked, [fact for _, fact in scored[1:4]]
+
+
+def spec_locate(
+    spec_index: SpecIndex | None,
+    placeholder: dict[str, Any],
+    context: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
+    """按清单定位字段，返回 (选中事实, 备选, 状态)。
+
+    状态：field_name=占位符文字就是字段名，直接命中；unique=清单第 3 列唯一对应一个
+    字段；disambiguated=候选内经上下文选定；ambiguous=候选内分不开；
+    no_value=清单有该占位符但字段没值；not_in_spec=清单里根本没有这个占位符；
+    skipped=清单未下发，走旧模糊链路。
+    """
+    if spec_index is None or not spec_index.enabled:
+        return None, [], "skipped"
+    label = placeholder["label"]
+    named = spec_index.by_field_name(label)
+    if len(named) == 1 or (named and len({norm(fact.get("value")) for fact in named}) == 1):
+        # 多个同义字段指向同一个占位符时，取值一致就没有歧义（同一个数据的不同叫法）
+        picked = dict(named[0])
+        picked["score"] = 0.99
+        return picked, [], "field_name"
+    if named:
+        picked, alternatives = disambiguate_by_context(named, context)
+        if picked:
+            return picked, alternatives, "disambiguated"
+        return None, alternatives or named[:4], "ambiguous"
+    if not spec_index.knows(label):
+        return None, [], "not_in_spec"
+    candidates, _ = spec_index.candidates(label)
+    if not candidates:
+        return None, [], "no_value"
+    if len(candidates) == 1:
+        picked = dict(candidates[0])
+        picked["score"] = 0.99
+        return picked, [], "unique"
+    picked, alternatives = disambiguate_by_context(candidates, context)
+    return picked, alternatives, "disambiguated" if picked else "ambiguous"
 
 
 # 宁空勿错哨兵：上下文规则明确该槽位属于某个事实、但事实缺失时返回它，
@@ -947,6 +1186,7 @@ def replace_text(
     facts: list[dict[str, Any]],
     context: str,
     used_material_facts: dict[tuple[str, str], str] | None = None,
+    spec_index: SpecIndex | None = None,
 ) -> tuple[str, list[dict[str, Any]], list[str], bool]:
     decisions: list[dict[str, Any]] = []
     unfilled: list[str] = []
@@ -959,17 +1199,21 @@ def replace_text(
     for occurrence, placeholder in enumerate(placeholders):
         parts.append(text[last : placeholder["start"]])
         placeholder["rawText"] = text
-        selected = context_fact(placeholder["label"], context, placeholder, occurrence, facts)
-        alternatives: list[dict[str, Any]] = []
-        if selected is MANUAL_SENTINEL:
-            selected = None  # 宁空勿错：规则已认领该槽位但事实缺失，禁止模糊兜底
-        elif selected is None:
-            selected, alternatives = choose_fact(placeholder["label"], context, facts, used_material_facts)
-        if selected and numeric_slot(text, placeholder, placeholder["label"]) and not value_fits_numeric_slot(selected.get("value")):
-            # 类型守卫：数字槽位拒绝非数字/超长混合值（金标反评：QT350-22AL 参数串
-            # 覆盖 97%/2836h 等承诺数字）。
-            alternatives = ([selected] + alternatives)[:4]
-            selected = None
+        selected, alternatives, spec_status = spec_locate(spec_index, placeholder, context)
+        if spec_status == "skipped":
+            # 清单未下发（历史 manifest）：退回上下文规则 + 全库模糊匹配的旧链路
+            selected = context_fact(placeholder["label"], context, placeholder, occurrence, facts)
+            alternatives = []
+            if selected is MANUAL_SENTINEL:
+                selected = None  # 宁空勿错：规则已认领该槽位但事实缺失，禁止模糊兜底
+            elif selected is None:
+                selected, alternatives = choose_fact(placeholder["label"], context, facts, used_material_facts)
+            if selected and numeric_slot(text, placeholder, placeholder["label"]) and not value_fits_numeric_slot(selected.get("value")):
+                # 类型守卫：数字槽位拒绝非数字/超长混合值（金标反评：QT350-22AL 参数串
+                # 覆盖 97%/2836h 等承诺数字）。类型守卫只保护模糊链路；清单定位是人工
+                # 指定的字段，取值不合预期属于清单或事实表的问题，应如实填入并暴露。
+                alternatives = ([selected] + alternatives)[:4]
+                selected = None
         if selected:
             value = clean(selected["value"])
             if used_material_facts is not None and str(selected.get("sourceKind") or "") in {"docx", "xlsx"}:
@@ -982,7 +1226,8 @@ def replace_text(
                     "value": value,
                     "confidence": selected["score"],
                     "evidence": selected,
-                    "alternatives": alternatives[1:4],
+                    "alternatives": alternatives[1:4] if spec_status == "skipped" else alternatives[:3],
+                    "specStatus": spec_status,
                 }
             )
         else:
@@ -998,6 +1243,8 @@ def replace_text(
                     "confidence": 0,
                     "evidence": None,
                     "alternatives": alternatives[:4],
+                    "specStatus": spec_status,
+                    "candidateLabels": [clean(item.get("label")) for item in alternatives[:6]],
                 }
             )
         parts.append(value)
@@ -1007,7 +1254,12 @@ def replace_text(
     return result, decisions, unfilled, highlighted
 
 
-def fill_docx(source_path: Path, output_file: Path, facts: list[dict[str, Any]]) -> dict[str, Any]:
+def fill_docx(
+    source_path: Path,
+    output_file: Path,
+    facts: list[dict[str, Any]],
+    spec_index: SpecIndex | None = None,
+) -> dict[str, Any]:
     doc = Document(str(source_path))
     decisions: list[dict[str, Any]] = []
     unfilled: list[str] = []
@@ -1019,7 +1271,9 @@ def fill_docx(source_path: Path, output_file: Path, facts: list[dict[str, Any]])
         if not find_placeholders(text):
             continue
         context = clean(text)
-        replaced, local_decisions, local_unfilled, highlight = replace_text(text, facts, context, used_material_facts)
+        replaced, local_decisions, local_unfilled, highlight = replace_text(
+            text, facts, context, used_material_facts, spec_index
+        )
         set_paragraph_text(paragraph, replaced, highlight=highlight)
         for decision in local_decisions:
             decision["location"] = f"P{idx}"
@@ -1043,9 +1297,17 @@ def fill_docx(source_path: Path, output_file: Path, facts: list[dict[str, Any]])
                     for prev_idx in range(max(0, row_idx - 4), row_idx - 1)
                     if col_idx - 1 < len(table.rows[prev_idx].cells) and clean(table.rows[prev_idx].cells[col_idx - 1].text)
                 )
+                # 表头始终单列一段：列头只在首行，近邻窗口越过 4 行后就丢了，
+                # 分段参数表从第 5 行起会拿不到「底部直径」这类列名而无法消歧。
+                header_cells = table.rows[0].cells if table.rows else []
+                header_context = clean(header_cells[col_idx - 1].text) if col_idx - 1 < len(header_cells) else ""
                 table_marker = f"T{table_idx}R{row_idx}C{col_idx}"
-                context = " / ".join(part for part in (table_marker, row_context, column_context, clean(text)) if part)
-                replaced, local_decisions, local_unfilled, highlight = replace_text(text, facts, context, used_material_facts)
+                context = " / ".join(
+                    part for part in (table_marker, row_context, header_context, column_context, clean(text)) if part
+                )
+                replaced, local_decisions, local_unfilled, highlight = replace_text(
+                    text, facts, context, used_material_facts, spec_index
+                )
                 cell.text = ""
                 set_paragraph_text(cell.paragraphs[0], replaced, highlight=highlight)
                 if highlight:
@@ -1080,12 +1342,128 @@ def write_reports(output_file: Path, result: dict[str, Any]) -> tuple[Path, Path
     ]
     for source in report.get("referenceSources") or []:
         lines.append(f"- {source['name']}（{source['route']}）")
+    if report.get("specDriven"):
+        lines.extend(
+            [
+                "",
+                "## 清单定位",
+                "",
+                f"- 占位符即字段名，直接命中：{report.get('specFieldNameHitCount', 0)}",
+                f"- 清单占位符列唯一命中：{report.get('specLocatedUniqueCount', 0)}",
+                f"- 候选内上下文消歧：{report.get('specDisambiguatedCount', 0)}",
+                f"- 候选内分不开（待拆细占位符）：{report.get('specAmbiguousCount', 0)}",
+                f"- 清单外占位符（清单漏字段）：{report.get('specNotInSpecCount', 0)}",
+                f"- 复合占位符（一格多字段，需产品决策）：{report.get('specCompositeCount', 0)}",
+                f"- 清单有占位符但事实表没值：{report.get('specNoValueCount', 0)}",
+            ]
+        )
+        diagnostics = (
+            ("待拆细的歧义占位符", "ambiguousPlaceholders", ("location", "placeholder", "candidateCount")),
+            ("复合占位符（一格多字段）", "compositePlaceholders", ("location", "placeholder", "fields")),
+            ("清单外占位符", "placeholdersNotInSpec", ("location", "placeholder", "label")),
+            ("事实表缺值字段", "fieldsWithoutValue", ("location", "placeholder", "label")),
+            ("清单指定本文件但文档未出现的字段", "fieldsNotFoundInDoc", ("label", "placeholder")),
+        )
+        for heading, key, columns in diagnostics:
+            rows = report.get(key) or []
+            if not rows:
+                continue
+            lines.extend(
+                [
+                    "",
+                    f"### {heading}（{len(rows)}）",
+                    "",
+                    "| " + " | ".join(columns) + " |",
+                    "|" + "---|" * len(columns),
+                ]
+            )
+            for row in rows:
+                lines.append("| " + " | ".join(str(row.get(column, "")) for column in columns) + " |")
     lines.extend(["", "## 占位符明细", "", "| 位置 | 占位符 | 动作 | 值 | 置信度 |", "|---|---|---|---|---:|"])
     for item in result.get("filledFieldDetails") or []:
         action = "填写" if item["action"] == "fill" else "待人工"
         lines.append(f"| {item['location']} | {item['placeholder']} | {action} | {item['value']} | {item['confidence']} |")
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return json_path, md_path
+
+
+def composite_field_names(spec_index: SpecIndex | None, placeholder_label_text: str) -> list[str]:
+    """复合占位符识别：`[投标机型、台数，待填写]` 这类一格要填多个字段值的写法。
+
+    这类占位符不自动填：一格填几个值、用什么分隔是产品决策，先如实标黄并列入诊断。
+    """
+    if spec_index is None:
+        return []
+    parts = split_field_enumeration(placeholder_label_text)
+    if len(parts) < 2:
+        return []
+    return [clean(spec_index.by_field_name(part)[0].get("label")) for part in parts if spec_index.by_field_name(part)]
+
+
+def build_spec_diagnostics(
+    manifest: dict[str, Any],
+    blank_keys: set[str],
+    decisions: list[dict[str, Any]],
+    spec_index: SpecIndex | None = None,
+) -> dict[str, Any]:
+    """清单定位诊断：把没填上的原因拆成可执行的三类，供业务侧按量排优先级拉齐清单。
+
+    - ambiguousPlaceholders：占位符在本文件对应多个字段且上下文分不开 → 该拆细占位符
+    - placeholdersNotInSpec：文档里有、清单第 3 列没有 → 清单漏字段
+    - fieldsWithoutValue：清单有该占位符但事实表没值 → 该补事实表
+    - fieldsNotFoundInDoc：清单说要填进本文件、文档里却没有该占位符 → 文件填错或占位符改过
+    """
+    seen_keys = {norm(item.get("label")) for item in decisions}
+    ambiguous: list[dict[str, Any]] = []
+    not_in_spec: list[dict[str, Any]] = []
+    composite: list[dict[str, Any]] = []
+    no_value: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for item in decisions:
+        status = str(item.get("specStatus") or "")
+        counts[status] = counts.get(status, 0) + 1
+        entry = {
+            "location": str(item.get("location") or ""),
+            "placeholder": str(item.get("placeholder") or ""),
+            "label": str(item.get("label") or ""),
+        }
+        if status == "ambiguous":
+            candidates = item.get("candidateLabels") or []
+            ambiguous.append({**entry, "candidateCount": len(candidates), "candidates": candidates})
+        elif status == "not_in_spec":
+            fields = composite_field_names(spec_index, entry["label"])
+            if fields:
+                composite.append({**entry, "fields": fields})
+            else:
+                not_in_spec.append(entry)
+        elif status == "no_value":
+            no_value.append(entry)
+
+    table = manifest.get("projectFactTable") if isinstance(manifest.get("projectFactTable"), dict) else {}
+    not_found: list[dict[str, Any]] = []
+    for field in object_items(table.get("fields")):
+        targets = {key for key in map(file_key, split_spec_cell(field.get("targetFile"))) if key}
+        if not targets or not (blank_keys & targets):
+            continue
+        keys = {key for key in map(placeholder_key, split_spec_cell(field.get("placeholder"))) if key}
+        if keys and not (keys & seen_keys):
+            not_found.append({"label": clean(field.get("label")), "placeholder": clean(field.get("placeholder"))})
+
+    return {
+        "specFieldNameHitCount": counts.get("field_name", 0),
+        "specLocatedUniqueCount": counts.get("unique", 0),
+        "specDisambiguatedCount": counts.get("disambiguated", 0),
+        "specAmbiguousCount": counts.get("ambiguous", 0),
+        "specNotInSpecCount": counts.get("not_in_spec", 0),
+        "specCompositeCount": len(composite),
+        "specNoValueCount": counts.get("no_value", 0),
+        "specSkippedCount": counts.get("skipped", 0),
+        "ambiguousPlaceholders": ambiguous[:50],
+        "compositePlaceholders": composite[:50],
+        "placeholdersNotInSpec": not_in_spec[:50],
+        "fieldsWithoutValue": no_value[:50],
+        "fieldsNotFoundInDoc": not_found[:50],
+    }
 
 
 def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -1096,7 +1474,9 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
     output_file = output_path(manifest, manifest_path, source_path)
     sources = select_sources(manifest, manifest_path)
     facts = collect_facts(manifest, sources)
-    filled = fill_docx(source_path, output_file, facts)
+    blank_keys = {file_key(source_path.name), file_key(blank_source.get("title")), file_key(blank_source.get("fileName"))}
+    spec_index = build_spec_index(manifest, facts, blank_keys)
+    filled = fill_docx(source_path, output_file, facts, spec_index)
     decisions = filled["decisions"]
     filled_locations = {str(item.get("location")) for item in decisions if item.get("action") == "fill" and item.get("location")}
     semantic_validation = validate_key_data_tables(output_file, facts, filled_locations)
@@ -1146,7 +1526,9 @@ def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
             "preservedOriginalStructure": True,
             "manualMarker": "[待人工补充：字段名]",
             "manualHighlight": MANUAL_FILL,
+            "specDriven": spec_index.enabled,
             **semantic_validation,
+            **build_spec_diagnostics(manifest, {key for key in blank_keys if key}, decisions, spec_index),
         },
         "filledAt": now_iso(),
     }

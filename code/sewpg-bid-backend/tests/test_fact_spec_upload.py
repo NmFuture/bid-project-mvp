@@ -197,3 +197,54 @@ def test_import_specs_rejects_bad_seq(tmp_path) -> None:
 
     with pytest.raises(FactSpecImportError, match="序号无效"):
         import_specs(bad_path)
+
+
+def _write_sheet(path: Path, header: list[str], rows: list[list]) -> Path:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(header)
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+    return path
+
+
+def test_import_specs_accepts_missing_optional_columns(tmp_path) -> None:
+    # 序号/必要说明/复核都是可选列：缺了不报错，序号退化成行号
+    path = _write_sheet(
+        tmp_path / "精简表头.xlsx",
+        ["待填写文件", "原占位符位置", "实际要填写的字段", "来源文件"],
+        [["华能/待填写-塔筒.docx", "[技术方案，待填写]", "塔筒段数", "项目定制-塔架"]],
+    )
+    spec = import_specs(path)[0]
+
+    assert spec["seq"] == 1
+    assert spec["note"] == "" and spec["needsConfirmation"] is False
+    assert spec["reviewLabel"] == ""
+    assert spec["targetFile"] == "华能/待填写-塔筒.docx"
+    assert spec["placeholder"] == "[技术方案，待填写]"
+
+
+def test_import_specs_locates_columns_by_name_not_position(tmp_path) -> None:
+    path = _write_sheet(
+        tmp_path / "乱序表头.xlsx",
+        ["实际要填写的字段", "来源文件", "待填写文件", "原占位符位置"],
+        [["塔筒段数", "项目定制-塔架", "华能/待填写-塔筒.docx", "[技术方案，待填写]"]],
+    )
+    spec = import_specs(path)[0]
+
+    assert spec["label"] == "塔筒段数"
+    assert spec["targetFile"] == "华能/待填写-塔筒.docx"
+    assert spec["referenceFile"] == "项目定制-塔架"
+    assert spec["sourceKind"] == "material"
+
+
+def test_import_specs_rejects_missing_required_column(tmp_path) -> None:
+    path = _write_sheet(
+        tmp_path / "缺占位符列.xlsx",
+        ["序号", "待填写文件", "实际要填写的字段", "来源文件"],
+        [[1, "华能/待填写-塔筒.docx", "塔筒段数", "项目定制-塔架"]],
+    )
+
+    with pytest.raises(FactSpecImportError, match="原占位符位置"):
+        import_specs(path)
