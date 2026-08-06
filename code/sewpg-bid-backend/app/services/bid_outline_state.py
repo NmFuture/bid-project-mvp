@@ -28,10 +28,12 @@ from app.services.project_stage_flow import apply_confirmed_outline_stage
 def complete_directory_generation_state(project: dict[str, Any], data: dict[str, Any] | None = None) -> dict[str, Any]:
     generated_at = now_iso()
     nodes = default_outline_nodes(str(project.get("name") or ""))
+    previous_state = project.get("directory_state") if isinstance(project.get("directory_state"), dict) else {}
     payload = {
         "status": "completed",
         "percentage": 100,
         "summary": "目录生成完成。",
+        "startedAt": str(previous_state.get("startedAt") or ""),
         "generatedAt": generated_at,
         "output": {
             "fileName": f"{project['name']}_目录.docx",
@@ -64,8 +66,9 @@ def complete_directory_generation_state(project: dict[str, Any], data: dict[str,
 def start_directory_generation_state(project: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "status": "running",
-        "percentage": 5,
+        "percentage": 2,
         "summary": "已开始生成目录，正在准备招标文件与投标模板候选。",
+        "startedAt": now_iso(),
         "generatedAt": "",
         "output": None,
         "opencodeOutput": build_directory_opencode_output(),
@@ -98,10 +101,17 @@ def update_directory_generation_state(
     event_level: str = "info",
     event_step: str = "general",
     opencode_output: dict[str, Any] | None = None,
+    decision_progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = copy.deepcopy(project.get("directory_state") or recover_directory_state(project))
     if percentage is not None:
-        current["percentage"] = max(0, min(100, int(percentage)))
+        clamped = max(0, min(100, int(percentage)))
+        # 运行中的进度只增不减：并行章节回调乱序到达时保持单调
+        if status in (None, "running", "processing", "queued"):
+            clamped = max(clamped, int(current.get("percentage") or 0))
+        current["percentage"] = clamped
+    if decision_progress is not None:
+        current["decisionProgress"] = copy.deepcopy(decision_progress)
     if summary is not None:
         current["summary"] = summary
     if tasks is not None:
@@ -188,6 +198,7 @@ def save_generated_outline_state(
         "status": "completed",
         "percentage": 100,
         "summary": summary,
+        "startedAt": str(current_state.get("startedAt") or ""),
         "generatedAt": generated_at,
         "output": {
             "fileName": f"{project['name']}_目录.docx",

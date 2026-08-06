@@ -1043,22 +1043,37 @@ class DirectoryGenerationTests(unittest.TestCase):
                         )
                     ],
                 )
-            return ["ses-chapter-1"]
+            return {
+                "chapterSessionIds": ["ses-chapter-1"],
+                "appendixPredecided": True,
+                "appendixResult": {
+                    "sessionId": "ses-appendix-1",
+                    "opencodeOutput": {"sessionId": "ses-appendix-1"},
+                },
+            }
 
         with patch(
             "app.services.outline_generation._run_parallel_outline_chapters",
             side_effect=fake_parallel_chapters,
         ), patch(
+            "app.services.outline_generation._run_outline_appendix_session",
+        ) as mock_appendix, patch(
             "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
         ) as mock_generate:
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
         # 快路径：不再启动串行 LLM 收口会话（含全局复核），由后端直跑受控收口
         mock_generate.assert_not_called()
+        mock_appendix.assert_not_called()
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["output"]["chapterCount"], 2)
-        self.assertEqual(payload["opencodeOutput"]["sessionIds"], ["ses-chapter-1"])
+        self.assertEqual(
+            payload["opencodeOutput"]["sessionIds"],
+            ["ses-chapter-1", "ses-appendix-1"],
+        )
         self.assertEqual(payload["opencodeOutput"]["chapterSessionCount"], 1)
+        self.assertEqual(payload["opencodeOutput"]["parallelAppendixSessionCount"], 1)
+        self.assertEqual(payload["opencodeOutput"]["parallelDecisionWorkers"], 2)
 
     def test_technical_outline_chapter_prompt_explains_sparse_chapter_mode(self) -> None:
         from app.services.outline_generation import _build_outline_chapter_prompt
@@ -1190,7 +1205,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ],
             )
 
-    def test_parallel_outline_chapters_use_one_model_config_and_six_workers(self) -> None:
+    def test_parallel_outline_chapters_include_appendix_as_seventh_worker(self) -> None:
         self.parallel_outline_patcher.stop()
         from app.services.outline_generation import (
             _TECH_OUTLINE_REQUEST_SLOTS,
@@ -1231,6 +1246,22 @@ class DirectoryGenerationTests(unittest.TestCase):
         runner.decision_workflow.chapter_decision_progress.return_value = {
             "complete": True
         }
+        runner.review_workflow.decision_appendix_items.return_value = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "附表A.1",
+                "title": "技术参数表",
+                "raw_text": "附表A.1 技术参数表",
+                "following_table_count": 1,
+                "source_status": "present",
+            }
+        ]
+        runner.decision_workflow.appendix_decision_progress.return_value = {
+            "complete": True,
+            "decidedCount": 1,
+            "remainingCount": 0,
+        }
         worker_counts: list[int] = []
 
         def recording_executor(*, max_workers: int) -> RealThreadPoolExecutor:
@@ -1261,17 +1292,159 @@ class DirectoryGenerationTests(unittest.TestCase):
             patch("app.services.outline_generation.OpencodeClient") as client_class,
         ):
             client_class.return_value.run_outline_decision_session.side_effect = [
-                {"sessionId": f"ses-{index}"} for index in range(1, 7)
+                {"sessionId": f"ses-{index}", "opencodeOutput": {}}
+                for index in range(1, 8)
             ]
-            session_ids = _run_parallel_outline_chapters(manifest_path, {})
+            result = _run_parallel_outline_chapters(manifest_path, {})
 
         load_config.assert_called_once_with()
-        self.assertEqual(worker_counts, [6])
-        self.assertEqual(len(session_ids), 6)
-        self.assertEqual(client_class.call_count, 6)
+        self.assertEqual(worker_counts, [7])
+        self.assertEqual(len(result["chapterSessionIds"]), 6)
+        self.assertTrue(result["appendixPredecided"])
+        self.assertTrue(result["appendixResult"]["sessionId"])
+        self.assertEqual(client_class.call_count, 7)
         for call in client_class.call_args_list:
             self.assertIs(call.kwargs["model_config"], model_config)
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
+        runner.decision_workflow.materialize_appendix_predecisions.assert_called_once()
+
+    def test_parallel_outline_chapter_merge_converts_system_exit_to_runtime_error(self) -> None:
+        self.parallel_outline_patcher.stop()
+        from app.services.outline_generation import _run_parallel_outline_chapters
+
+        root = Path(self.temp_dir.name) / "parallel-system-exit"
+        root.mkdir(parents=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text(json.dumps({"workDir": str(root)}), encoding="utf-8")
+        chapter_root = root / "chapters"
+        chapter_dir = chapter_root / "TPL-0001"
+        chapter_dir.mkdir(parents=True)
+        chapter_manifest_path = chapter_dir / "s2_input.json"
+        chapter_manifest_path.write_text(
+            json.dumps({"workDir": str(chapter_dir)}),
+            encoding="utf-8",
+        )
+        chapters = [{"chapter_id": "TPL-0001", "number": "1", "title": "Chapter"}]
+        runner = MagicMock()
+        runner.review_workflow.decision_appendix_items.return_value = []
+        runner.decision_workflow.chapter_decision_progress.return_value = {"complete": True}
+        runner.decision_workflow.merge_chapter_decisions.side_effect = SystemExit(
+            "chapter decisions are incomplete"
+        )
+
+        with (
+            patch(
+                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                return_value=(
+                    chapters,
+                    {"TPL-0001": chapter_manifest_path},
+                    chapter_root,
+                    {},
+                ),
+            ),
+            patch(
+                "app.services.outline_generation._load_technical_outline_runner",
+                return_value=runner,
+            ),
+            patch(
+                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                return_value={},
+            ),
+            patch(
+                "app.services.outline_generation._outline_chapter_base_urls",
+                return_value=["http://opencode:4096"],
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.run_outline_decision_session.return_value = {
+                "sessionId": "ses-chapter",
+                "opencodeOutput": {},
+            }
+            with self.assertRaisesRegex(RuntimeError, "chapter decisions are incomplete"):
+                _run_parallel_outline_chapters(manifest_path, {})
+
+    def test_parallel_decision_aggregator_keeps_chapter_and_appendix_counts_together(self) -> None:
+        from app.services.outline_generation import _ChapterDecisionAggregator
+
+        events: list[dict] = []
+        aggregator = _ChapterDecisionAggregator(
+            [
+                {"chapter_id": "TPL-0001", "item_count": 120},
+                {"chapter_id": "TPL-0002", "item_count": 120},
+            ],
+            lambda stage, details=None: events.append({"stage": stage, **(details or {})}),
+            appendix_total=83,
+        )
+
+        aggregator.emit_initial()
+        aggregator.update_appendix(83)
+        aggregator.update("TPL-0001", 60)
+
+        self.assertEqual(events[-2]["phase"], "parallel")
+        self.assertEqual(events[-2]["chapterDecided"], 0)
+        self.assertEqual(events[-2]["appendixDecided"], 83)
+        self.assertEqual(events[-1]["chapterDecided"], 60)
+        self.assertEqual(events[-1]["appendixDecided"], 83)
+
+    def test_parallel_decision_aggregator_keeps_chapter_phase_without_appendix(self) -> None:
+        from app.services.outline_generation import _ChapterDecisionAggregator
+
+        events: list[dict] = []
+        aggregator = _ChapterDecisionAggregator(
+            [{"chapter_id": "TPL-0001", "item_count": 120}],
+            lambda stage, details=None: events.append({"stage": stage, **(details or {})}),
+        )
+
+        aggregator.emit_initial()
+        aggregator.update("TPL-0001", 60)
+
+        self.assertEqual(events[-1]["phase"], "chapters")
+        self.assertEqual(events[-1]["decided"], 60)
+        self.assertEqual(events[-1]["total"], 120)
+        self.assertNotIn("appendixTotal", events[-1])
+
+    def test_parallel_decision_aggregator_emits_snapshots_in_generation_order(self) -> None:
+        import threading
+
+        from app.services.outline_generation import _ChapterDecisionAggregator
+
+        events: list[int] = []
+        first_callback_started = threading.Event()
+        release_first_callback = threading.Event()
+        second_update_finished = threading.Event()
+
+        def callback(stage: str, details: dict | None = None) -> None:
+            del stage
+            decided = int((details or {}).get("decided") or 0)
+            if decided == 60:
+                first_callback_started.set()
+                release_first_callback.wait(timeout=2)
+            events.append(decided)
+
+        aggregator = _ChapterDecisionAggregator(
+            [{"chapter_id": "TPL-0001", "item_count": 120}],
+            callback,
+        )
+        aggregator.emit_initial()
+
+        first_thread = threading.Thread(target=aggregator.update, args=("TPL-0001", 60))
+        second_thread = threading.Thread(
+            target=lambda: (
+                aggregator.update("TPL-0001", 120),
+                second_update_finished.set(),
+            )
+        )
+        first_thread.start()
+        self.assertTrue(first_callback_started.wait(timeout=1))
+        second_thread.start()
+        second_update_finished.wait(timeout=0.2)
+        release_first_callback.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertEqual(events, [0, 60, 120])
 
     def test_technical_outline_handoff_stops_when_a_session_makes_no_decision_progress(self) -> None:
         from app.services.outline_generation import (
@@ -1313,6 +1486,110 @@ class DirectoryGenerationTests(unittest.TestCase):
                     manifest_path,
                     previous_decided_count=12,
                 )
+
+    def test_technical_outline_serial_fallback_emits_finalizing_result(self) -> None:
+        from app.services.outline_generation import (
+            _ChapterParallelUnsupported,
+            _run_outline_skill,
+        )
+
+        events: list[tuple[str, dict]] = []
+
+        def fake_generate(*args, **kwargs) -> dict:
+            del args
+            session_ready = kwargs["session_ready_callback"]
+            session_ready({"sessionPhase": "decision_handoff"})
+            session_ready({"sessionPhase": "finalize"})
+            kwargs["stream_callback"](
+                {"status": "received", "parts": [{"type": "text", "text": "finalizing"}]}
+            )
+            return {}
+
+        with (
+            patch(
+                "app.services.outline_generation._capture_trusted_technical_outline_input",
+                return_value={"templateStructure": {}},
+            ),
+            patch(
+                "app.services.outline_generation._run_parallel_outline_chapters",
+                side_effect=_ChapterParallelUnsupported,
+            ),
+            patch(
+                "app.services.outline_generation._load_outline_result",
+                return_value={"nodes": []},
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
+            _run_outline_skill(
+                Path("C:/workspace/s2_input.json"),
+                bid_type="技术标",
+                progress_callback=lambda stage, details=None: events.append(
+                    (stage, details or {})
+                ),
+            )
+
+        self.assertEqual(
+            [stage for stage, _ in events],
+            [
+                "outline_session_ready",
+                "outline_session_ready",
+                "finalizing_result",
+                "outline_delta",
+            ],
+        )
+        self.assertTrue(events[-1][1]["suppressStage"])
+
+    def test_parallel_llm_finalize_suppresses_late_stage_callbacks(self) -> None:
+        from app.services.outline_generation import _run_outline_skill
+
+        events: list[tuple[str, dict]] = []
+
+        def fake_generate(*args, **kwargs) -> dict:
+            del args
+            kwargs["session_ready_callback"]({"sessionPhase": "full"})
+            kwargs["stream_callback"](
+                {"status": "received", "parts": [{"type": "text", "text": "finalizing"}]}
+            )
+            return {}
+
+        with (
+            patch(
+                "app.services.outline_generation._capture_trusted_technical_outline_input",
+                return_value={"templateStructure": {}},
+            ),
+            patch(
+                "app.services.outline_generation._run_parallel_outline_chapters",
+                return_value={
+                    "chapterSessionIds": ["ses-chapter"],
+                    "appendixPredecided": True,
+                },
+            ),
+            patch(
+                "app.services.outline_generation._load_outline_result",
+                return_value={"nodes": []},
+            ),
+            patch(
+                "app.services.outline_generation.settings.tech_outline_llm_finalize",
+                True,
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
+            _run_outline_skill(
+                Path("C:/workspace/s2_input.json"),
+                bid_type="技术标",
+                progress_callback=lambda stage, details=None: events.append(
+                    (stage, details or {})
+                ),
+            )
+
+        self.assertEqual(
+            [stage for stage, _ in events],
+            ["finalizing_result", "outline_session_ready", "outline_delta"],
+        )
+        self.assertTrue(events[1][1]["suppressStage"])
+        self.assertTrue(events[2][1]["suppressStage"])
 
     def test_technical_outline_loader_does_not_trust_agent_modified_manifest_gate(self) -> None:
         from app.services.outline_generation import _load_outline_result
@@ -2288,9 +2565,19 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("evidencePath", payload["opencodeOutput"])
 
     def test_run_directory_generation_returns_running_state_immediately(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
         project_id = self._prepare_project_with_parse_result()
 
-        with patch("app.services.bid_directory_flow._schedule_directory_generation_job"):
+        def enqueue_winner(*args, **kwargs):
+            del args
+            kwargs["on_lock_acquired"]()
+            return EnqueueResult(queued=True, job_id="job-winner")
+
+        with patch(
+            "app.services.bid_directory_flow._schedule_directory_generation_job",
+            side_effect=enqueue_winner,
+        ):
             response = self.client.post(
                 f"/api/technical/projects/{project_id}/directory-generation/run",
                 json={"outlineStrategy": "strict"},
@@ -2302,7 +2589,93 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(payload["tasks"][0]["status"], "running")
         self.assertEqual(payload["tasks"][1]["status"], "pending")
 
+    def test_locked_directory_request_does_not_reset_winner_progress(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
+        project_id = self._prepare_project_with_parse_result()
+        stale_state = self._directory_state_for_tests(project_id)
+        enqueue_count = 0
+
+        def enqueue_once_then_lock(*args, **kwargs):
+            nonlocal enqueue_count
+            del args
+            enqueue_count += 1
+            initialize = kwargs.get("on_lock_acquired")
+            if enqueue_count == 1:
+                if initialize:
+                    initialize()
+                return EnqueueResult(queued=True, job_id="job-winner")
+            return EnqueueResult(queued=False, locked=True)
+
+        with (
+            patch(
+                "app.services.bid_directory_flow.BidDirectoryService.directory_state",
+                return_value=stale_state,
+            ),
+            patch(
+                "app.services.bid_directory_flow.enqueue_generation_job",
+                side_effect=enqueue_once_then_lock,
+            ),
+            patch("app.services.bid_directory_flow.submit_local_job"),
+        ):
+            first = self.client.post(
+                f"/api/technical/projects/{project_id}/directory-generation/run",
+                json={"outlineStrategy": "strict"},
+            )
+            self.assertEqual(first.status_code, 202)
+            from app.services.bid_directory_flow import _handle_directory_progress
+
+            _handle_directory_progress(
+                project_id,
+                "decision_progress",
+                {"phase": "chapters", "decided": 120, "total": 240},
+            )
+            winner_state = self._directory_state_for_tests(project_id)
+            self.assertEqual(winner_state["percentage"], 42)
+
+            second = self.client.post(
+                f"/api/technical/projects/{project_id}/directory-generation/run",
+                json={"outlineStrategy": "strict"},
+            )
+
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(enqueue_count, 2)
+        self.assertEqual(self._directory_state_for_tests(project_id)["percentage"], 42)
+
+    def test_locked_directory_request_masks_stale_terminal_state(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
+        project_id = self._prepare_project_with_parse_result()
+        project = store.require_project_for_update(project_id)
+        stale_state = complete_directory_generation_state(project, {})
+        store.persist_project_state(project)
+
+        with (
+            patch(
+                "app.services.bid_directory_flow.is_generation_locked",
+                return_value=True,
+                create=True,
+            ),
+            patch(
+                "app.services.bid_directory_flow._schedule_directory_generation_job",
+                return_value=EnqueueResult(queued=False, locked=True),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/technical/projects/{project_id}/directory-generation/run",
+                json={"outlineStrategy": "strict"},
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(stale_state["status"], "completed")
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["percentage"], 2)
+        self.assertEqual(payload["tasks"][0]["status"], "running")
+
     def test_regenerate_outline_starts_background_job_without_overwriting_current_results(self) -> None:
+        from app.services.job_queue import EnqueueResult
+
         project_id = self._prepare_project_with_parse_result()
         project = store.require_project_for_update(project_id)
         project["currentStage"] = 5
@@ -2317,7 +2690,14 @@ class DirectoryGenerationTests(unittest.TestCase):
         project["fill_state"] = {"status": "completed", "output": {"fileName": "旧正文.docx"}}
         store.persist_project_state(project)
 
-        with patch("app.services.bid_directory_flow._schedule_directory_generation_job") as schedule_job:
+        def enqueue_winner(*args, **kwargs):
+            kwargs["on_lock_acquired"]()
+            return EnqueueResult(queued=True, job_id="job-regenerate")
+
+        with patch(
+            "app.services.bid_directory_flow._schedule_directory_generation_job",
+            side_effect=enqueue_winner,
+        ) as schedule_job:
             response = self.client.post(f"/api/technical/projects/{project_id}/outline/regenerate")
 
         self.assertEqual(response.status_code, 202)
@@ -2450,11 +2830,228 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         state = self._directory_state_for_tests(project_id)
         self.assertEqual(state["status"], "running")
-        self.assertEqual(state["percentage"], 45)
+        self.assertEqual(state["percentage"], 8)
         self.assertEqual(state["opencodeOutput"]["status"], "waiting")
         self.assertEqual(state["opencodeOutput"]["sessionId"], "SESSION-1")
         self.assertEqual(state["events"][-1]["step"], "futurecode_session")
         self.assertIn("futurecode", state["events"][-1]["message"])
+
+    def test_decision_progress_drives_percentage_counts_and_monotonicity(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        started_state = self._directory_state_for_tests(project_id)
+        self.assertTrue(started_state["startedAt"])
+        self.assertEqual(started_state["percentage"], 2)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 0, "total": 240, "chaptersDone": 0, "chaptersTotal": 12},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 5)
+        self.assertEqual(state["decisionProgress"]["decided"], 0)
+        self.assertEqual(state["decisionProgress"]["total"], 240)
+        self.assertEqual(state["decisionProgress"]["chaptersTotal"], 12)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 120, "total": 240, "chaptersDone": 5, "chaptersTotal": 12},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 42)
+        self.assertEqual(state["decisionProgress"]["decided"], 120)
+        self.assertIn("120/240", state["summary"])
+
+        # 乱序到达的旧计数不能让百分比回退
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 60, "total": 240},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 42)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "appendix", "decided": 6, "total": 12},
+        )
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 83)
+        self.assertEqual(state["decisionProgress"]["phase"], "appendix")
+        self.assertIn("附表", state["summary"])
+
+    def test_parallel_decision_progress_does_not_jump_when_appendix_finishes_first(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {
+                "phase": "parallel",
+                "decided": 83,
+                "total": 323,
+                "chapterDecided": 0,
+                "chapterTotal": 240,
+                "appendixDecided": 83,
+                "appendixTotal": 83,
+            },
+        )
+        appendix_first = self._directory_state_for_tests(project_id)
+        self.assertEqual(appendix_first["percentage"], 15)
+        self.assertIn("目录条款 0/240", appendix_first["summary"])
+        self.assertIn("技术附表 83/83", appendix_first["summary"])
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {
+                "phase": "parallel",
+                "decided": 203,
+                "total": 323,
+                "chapterDecided": 120,
+                "chapterTotal": 240,
+                "appendixDecided": 83,
+                "appendixTotal": 83,
+            },
+        )
+        halfway = self._directory_state_for_tests(project_id)
+        self.assertEqual(halfway["percentage"], 52)
+
+        _handle_directory_progress(project_id, "finalizing_result", {})
+        finalizing = self._directory_state_for_tests(project_id)
+        self.assertEqual(finalizing["percentage"], 90)
+        self.assertEqual(finalizing["decisionProgress"], {})
+        self.assertEqual(finalizing["tasks"][2]["status"], "running")
+        self.assertIn("合并校验", finalizing["summary"])
+
+    def test_suppressed_finalize_callbacks_keep_finalizing_stage(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+        _handle_directory_progress(project_id, "finalizing_result", {})
+        finalizing = self._directory_state_for_tests(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "outline_session_ready",
+            {
+                "sessionId": "ses-finalize",
+                "providerId": "provider-finalize",
+                "modelId": "model-finalize",
+                "suppressStage": True,
+            },
+        )
+        session_ready = self._directory_state_for_tests(project_id)
+        self.assertEqual(session_ready["percentage"], 90)
+        self.assertEqual(session_ready["summary"], finalizing["summary"])
+        self.assertEqual(session_ready["tasks"], finalizing["tasks"])
+        self.assertEqual(session_ready["opencodeOutput"]["sessionId"], "ses-finalize")
+
+        _handle_directory_progress(
+            project_id,
+            "outline_delta",
+            {
+                "status": "received",
+                "parts": [{"type": "text", "text": "finalizing"}],
+                "suppressStage": True,
+            },
+        )
+        delta = self._directory_state_for_tests(project_id)
+        self.assertEqual(delta["percentage"], 90)
+        self.assertEqual(delta["summary"], finalizing["summary"])
+        self.assertEqual(delta["tasks"], finalizing["tasks"])
+        self.assertEqual(delta["opencodeOutput"]["parts"][-1]["text"], "finalizing")
+        self.assertNotIn("suppressStage", delta["opencodeOutput"])
+
+    def test_concurrent_progress_updates_do_not_lose_events(self) -> None:
+        """并行章节会话同时上报时，目录 state 的读改写不能互相覆盖。
+
+        实测 PRJ-0002：6 个章节会话在同一秒上报「session 已建立」，events 只落了 1 条。
+        目录 state 的写是「读快照 → 改 → 整份回写」，接 postgres 时读还要走一次库往返；
+        这里在快照与回写之间注入等待，把那段真实窗口放大成确定性交错——去掉写锁本用例必失败。
+        """
+        import threading
+
+        import app.services.bid_outline_state as outline_state
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        session_count = 6
+        original_build_event = outline_state.build_directory_event
+        arrival_lock = threading.Lock()
+        arrived_count = [0]
+        all_arrived = threading.Event()
+
+        def delayed_build_event(*args: object, **kwargs: object) -> dict:
+            # 本调用点位于「已读快照、尚未回写」之间：无锁时 6 个线程会在此集合，
+            # 各自持有同一份旧快照，随后互相覆盖，只剩最后一次写入。
+            # 有锁时写被串行化，凑不齐并发线程，各自等待很短的超时后继续。
+            with arrival_lock:
+                arrived_count[0] += 1
+                if arrived_count[0] >= session_count:
+                    all_arrived.set()
+            all_arrived.wait(timeout=0.3)
+            return original_build_event(*args, **kwargs)
+
+        errors: list[BaseException] = []
+
+        def report_session(index: int) -> None:
+            try:
+                _handle_directory_progress(
+                    project_id,
+                    "outline_session_ready",
+                    {"sessionId": f"SESSION-{index}", "providerId": "opencode", "modelId": "big-pickle"},
+                )
+            except BaseException as exc:  # pragma: no cover - 只在回归时触发
+                errors.append(exc)
+
+        with patch.object(outline_state, "build_directory_event", delayed_build_event):
+            threads = [threading.Thread(target=report_session, args=(index,)) for index in range(session_count)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+
+        self.assertEqual(errors, [])
+        state = self._directory_state_for_tests(project_id)
+        session_events = [
+            event for event in state["events"] if event.get("step") == "futurecode_session"
+        ]
+        self.assertEqual(len(session_events), session_count)
+
+    def test_chapter_stream_delta_suppresses_percentage_anchor(self) -> None:
+        from app.services.bid_directory_flow import _handle_directory_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        _handle_directory_progress(
+            project_id,
+            "decision_progress",
+            {"phase": "chapters", "decided": 30, "total": 240},
+        )
+        _handle_directory_progress(
+            project_id,
+            "outline_delta",
+            {"status": "streaming", "parts": [{"type": "text", "text": "delta"}], "suppressPercentage": True},
+        )
+
+        state = self._directory_state_for_tests(project_id)
+        self.assertEqual(state["percentage"], 14)
+        self.assertNotIn("suppressPercentage", state["opencodeOutput"])
+        self.assertIn("30/240", state["summary"])
 
     def test_background_job_updates_running_state_then_completes(self) -> None:
         from app.services.bid_directory_flow import _handle_directory_progress, _run_directory_generation_job
@@ -2469,7 +3066,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
         running_state = self._directory_state_for_tests(project_id)
         self.assertEqual(running_state["status"], "running")
-        self.assertEqual(running_state["percentage"], 30)
+        self.assertEqual(running_state["percentage"], 5)
         self.assertEqual(running_state["tasks"][1]["status"], "running")
         self.assertEqual(running_state["events"][-1]["step"], "hint_ready")
         self.assertEqual(running_state["opencodeOutput"]["status"], "idle")

@@ -9,14 +9,16 @@ import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
+  directoryDisplayPercentage,
   directoryElapsedSeconds,
-  estimateDirectoryDisplayPercentage,
+  formatDirectoryDuration,
   isDirectoryProgressFailed,
   isDirectoryProgressRunning,
   mergeMonotonicDirectoryProgress,
   shouldShowTemplateDirectoryGenerationButton,
   summarizeDirectoryProgress,
 } from '../technicalDirectoryProgress'
+import { subscribeDirectoryProgress } from '../technicalDirectoryProgressStream'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -159,15 +161,11 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       ? 'bg-secondary'
       : 'bg-primary'
   const elapsedDirectorySeconds = directoryElapsedSeconds(directoryState || {}, directoryProgressClock)
-  const runningDisplayPercentage = estimateDirectoryDisplayPercentage({
-    status: 'running',
-    elapsedSeconds: elapsedDirectorySeconds,
-  })
-  const directoryDisplayPercentage = estimateDirectoryDisplayPercentage({
-    status: directoryStatus,
-    elapsedSeconds: elapsedDirectorySeconds,
-    fallbackPercentage: isDirectoryFailed ? runningDisplayPercentage : directoryProgressSummary.percentage,
-  })
+  const displayPercentage = directoryDisplayPercentage(directoryState || {}, directoryProgressClock)
+  const elapsedDurationText = formatDirectoryDuration(elapsedDirectorySeconds)
+  const elapsedLineText = elapsedDurationText
+    ? `${isDirectoryCompleted ? '总耗时' : '已运行'} ${elapsedDurationText}`
+    : ''
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
@@ -177,27 +175,13 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
-    let cancelled = false
-    let timer = null
-
-    const pollDirectoryStatus = async () => {
-      try {
-        const payload = await technicalDirectoryAPI.status(id)
-        if (!cancelled) {
-          setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
-        }
-      } catch {
-        // 保持页面可操作，用户可手动刷新查看失败原因
-      } finally {
-        if (!cancelled) timer = window.setTimeout(pollDirectoryStatus, 1000)
-      }
-    }
-
-    timer = window.setTimeout(pollDirectoryStatus, 1000)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
+    return subscribeDirectoryProgress({
+      openStream: (handlers) => technicalDirectoryAPI.stream(id, handlers),
+      fetchStatus: () => technicalDirectoryAPI.status(id),
+      onState: (payload) => {
+        setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+      },
+    })
   }, [id, isDirectoryRunning])
 
   useEffect(() => {
@@ -500,15 +484,19 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
                       {isDirectoryFailed ? 'error' : isDirectoryCompleted ? 'check_circle' : 'progress_activity'}
                     </span>
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-on-surface">{directoryProgressSummary.title}</p>
-                      <p className="mt-1 text-xs leading-5 text-outline">{directoryProgressSummary.summary}</p>
+                      <p className="text-sm font-semibold tabular-nums text-on-surface">
+                        {directoryProgressSummary.summary}
+                      </p>
+                      {elapsedLineText ? (
+                        <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedLineText}</p>
+                      ) : null}
                     </div>
                   </div>
                   <span className={[
                     'shrink-0 self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums',
                     directoryProgressBadgeClass,
                   ].join(' ')}>
-                    {directoryProgressSummary.statusText} · {Math.floor(directoryDisplayPercentage)}%
+                    {directoryProgressSummary.statusText} · {Math.floor(displayPercentage)}%
                   </span>
                 </div>
 
@@ -519,7 +507,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
                       directoryProgressBarClass,
                       isDirectoryRunning ? 'bg-stripes' : '',
                     ].join(' ')}
-                    style={{ width: `${directoryDisplayPercentage}%` }}
+                    style={{ width: `${displayPercentage}%` }}
                   />
                 </div>
               </div>

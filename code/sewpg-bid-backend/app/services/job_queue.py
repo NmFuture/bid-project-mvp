@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.core.config import settings
@@ -186,7 +186,13 @@ def is_generation_locked(job_type: str, project_id: str) -> bool:
         return False
 
 
-def enqueue_generation_job(job_type: str, project_id: str, data: dict[str, Any]) -> EnqueueResult:
+def enqueue_generation_job(
+    job_type: str,
+    project_id: str,
+    data: dict[str, Any],
+    *,
+    on_lock_acquired: Callable[[], None] | None = None,
+) -> EnqueueResult:
     if job_type not in KNOWN_JOB_TYPES:
         raise ValueError(f"Unknown job type: {job_type}")
 
@@ -224,6 +230,16 @@ def enqueue_generation_job(job_type: str, project_id: str, data: dict[str, Any])
         )
         if not lock_acquired:
             return EnqueueResult(queued=False, locked=True)
+
+        if on_lock_acquired is not None:
+            try:
+                on_lock_acquired()
+            except BaseException:
+                try:
+                    client.eval(_DELETE_IF_OWNER_SCRIPT, 1, lock_key, job_id)
+                except RedisError:
+                    pass
+                raise
 
         payload = json.dumps(job, ensure_ascii=False, separators=(",", ":"))
         pipe = client.pipeline()
