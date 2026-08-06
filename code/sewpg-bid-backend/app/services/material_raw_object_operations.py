@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.materials import RawFile, RawFileVersion
+from app.services.material_folder_scope import require_material_bid_type
 from app.services.minio_client import minio_client
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ def remove_cleaned_object_from_ext(ext: dict[str, Any]) -> None:
 def enqueue_cleaning_job(
     file_id: int,
     *,
+    bid_type: str,
     source_version: int | None = None,
     source_bucket: str = "",
     source_key: str = "",
@@ -44,7 +46,8 @@ def enqueue_cleaning_job(
 
     raw_id = f"RAW-{file_id:04d}"
     lock_id = f"{raw_id}:v{source_version}" if source_version is not None else raw_id
-    data: dict[str, Any] = {"fileId": raw_id}
+    # 清洗任务必须携带并校验标类身份：完成钩子据此隔离技术标/商务标的后续动作。
+    data: dict[str, Any] = {"fileId": raw_id, "bidType": require_material_bid_type(bid_type, "清洗任务标类")}
     if source_version is not None:
         data.update(
             {
