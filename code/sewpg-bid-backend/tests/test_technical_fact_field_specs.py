@@ -27,14 +27,36 @@ class TestTechnicalFactFieldSpecs(unittest.TestCase):
         specs = load_specs()
         self.assertEqual(len(specs), 148)
         fillable = fillable_specs()
-        self.assertEqual(len(fillable), 128)
+        # 0722 清单来源列没有整格留空的条目，20 条「/」是来源未指定而非模板占位，同样要取值
+        self.assertEqual(len(fillable), 148)
         self.assertEqual(sum(1 for spec in specs if spec.get("needsConfirmation")), 14)
-        self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "template"), 20)
+        self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "template"), 0)
+        self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "unspecified"), 20)
         # 模板更新条目不进填值流程
         self.assertTrue(all(spec.get("valueRequired") for spec in fillable))
         # 每条 spec 都有稳定 key 与字段名
         self.assertTrue(all(spec.get("key") and spec.get("label") for spec in specs))
         self.assertEqual(len({spec["key"] for spec in specs}), 148)
+
+    def test_slash_reference_is_unspecified_not_template(self) -> None:
+        """来源列「/」= 来源未指定但仍需取值；只有整格留空才是模板占位。"""
+        from app.services.technical_fact_field_specs import normalize_spec_source_kind
+        from app.services.technical_fact_spec_import import classify_source
+
+        self.assertEqual(classify_source("/"), "unspecified")
+        self.assertEqual(classify_source(""), "template")
+        self.assertEqual(classify_source("项目定制-风资源报告"), "material")
+
+        # 历史快照里「/」被归成 template，加载时按原始 referenceFile 重算
+        migrated = normalize_spec_source_kind(
+            {"label": "主机舱-超细干粉灭火装置数量（件）", "referenceFile": "/", "sourceKind": "template", "valueRequired": False}
+        )
+        self.assertEqual(migrated["sourceKind"], "unspecified")
+        self.assertTrue(migrated["valueRequired"])
+
+        # 口径一致的 spec 原样返回，不产生多余拷贝
+        intact = {"label": "x", "referenceFile": "招标文件", "sourceKind": "tender", "valueRequired": True}
+        self.assertIs(normalize_spec_source_kind(intact), intact)
 
     def test_legacy_status_mapping(self) -> None:
         self.assertEqual(normalize_fact_status("candidate", has_value=True), FACT_STATUS_EXTRACTED)
@@ -49,11 +71,11 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
     def test_skeleton_fields_cover_all_fillable_specs(self) -> None:
         fields_by_key: dict[str, dict] = {}
         reconcile_fact_fields_with_specs(fields_by_key)
-        self.assertEqual(len(fields_by_key), 128)
+        self.assertEqual(len(fields_by_key), 148)
         statuses = {field["status"] for field in fields_by_key.values()}
         self.assertEqual(statuses, {FACT_STATUS_UNEXTRACTED})
         seqs = {field["specSeq"] for field in fields_by_key.values()}
-        self.assertEqual(len(seqs), 128)
+        self.assertEqual(len(seqs), 148)
 
     def test_matched_field_gets_spec_metadata(self) -> None:
         fields_by_key = {
@@ -70,7 +92,28 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
         self.assertEqual(field["specSeq"], 4)
         self.assertEqual(field["label"], "功率曲线保证率")
         # 其余 spec 仍为骨架
-        self.assertEqual(len(fields_by_key), 128)
+        self.assertEqual(len(fields_by_key), 148)
+
+    def test_spec_placeholder_and_target_file_reach_fields(self) -> None:
+        # 正文填写按「待填写文件 + 占位符原文」定位字段，这两列必须随字段下发
+        fields_by_key: dict[str, dict] = {}
+        reconcile_fact_fields_with_specs(fields_by_key)
+        with_placeholder = [field for field in fields_by_key.values() if field.get("placeholder")]
+        self.assertEqual(len(with_placeholder), 148)
+        self.assertTrue(all(field.get("targetFile") for field in fields_by_key.values()))
+        tower = next(field for field in fields_by_key.values() if field["label"] == "第1段（底）塔节底部直径（m）")
+        self.assertIn("待填写-塔筒设计方案专题报告.docx", tower["targetFile"])
+        self.assertEqual(tower["placeholder"], "[技术方案，待填写]")
+
+    def test_spec_metadata_survives_normalization(self) -> None:
+        fields_by_key: dict[str, dict] = {}
+        reconcile_fact_fields_with_specs(fields_by_key)
+        source = next(field for field in fields_by_key.values() if field["label"] == "场址要求安全等级")
+        normalized = normalize_project_fact_field(
+            source, index=1, confirm=False, operator="测试用户", saved_at="2026-08-06T00:00:00Z"
+        )
+        self.assertEqual(normalized["placeholder"], source["placeholder"])
+        self.assertEqual(normalized["targetFile"], source["targetFile"])
 
     def test_needs_confirmation_spec_becomes_pending(self) -> None:
         # spec 87「函件签署日期」别名「日期」，无待确认；spec 7「发电小时数/电量承诺函版本」需确认
@@ -215,8 +258,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         table = build_project_fact_table(project, gap_state)
         self.assertEqual(table["schemaVersion"], "bid-project-fact-table-v2")
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
-        self.assertEqual(len(spec_fields), 128)
-        self.assertEqual(table["summary"]["specTotal"], 128)
+        self.assertEqual(len(spec_fields), 148)
+        self.assertEqual(table["summary"]["specTotal"], 148)
         # 项目名称命中 spec 112
         name_field = next(field for field in spec_fields if field["specSeq"] == 112)
         self.assertEqual(name_field["value"], "翁牛特旗120万千瓦风电项目")
@@ -237,7 +280,7 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
             "parse_result": {},
         }
         table = build_project_fact_table(project, self._spec_gap_state())
-        self.assertEqual(len(table["fields"]), 128)
+        self.assertEqual(len(table["fields"]), 148)
         self.assertTrue(all(field.get("specSeq") for field in table["fields"]))
         # 项目名称（硬编码候选，type=project）并入 spec 112 行
         name_field = next(field for field in table["fields"] if field["specSeq"] == 112)
@@ -268,19 +311,19 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
             },
         }
         table = build_project_fact_table(project, gap_state)
-        self.assertEqual(len(table["fields"]), 129)
+        self.assertEqual(len(table["fields"]), 149)
         manual = table["fields"][-1]
         self.assertEqual(manual["label"], "业主特殊要求")
         self.assertEqual(manual["value"], "按补充协议执行")
         self.assertFalse(manual.get("specSeq"))
-        self.assertEqual(table["summary"]["specTotal"], 128)
+        self.assertEqual(table["summary"]["specTotal"], 148)
 
-    def test_build_preserves_confirmed_field_removed_from_current_specs(self) -> None:
-        """规则换版后，旧规则下已确认字段保留为清单外历史事实，不污染新规则进度。"""
-        project = {"id": "P-SPEC", "name": "规则换版项目", "parse_result": {}}
-        gap_state = {
+    @staticmethod
+    def _gap_state_with_confirmed_legacy_field(rule_id: str) -> dict:
+        return {
             "projectFactTable": {
                 "schemaVersion": "bid-project-fact-table-v2",
+                "factSpecsRef": {"source": "project", "ruleId": rule_id},
                 "fields": [
                     {
                         "id": "FACT-9002",
@@ -295,25 +338,31 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
                 ],
             }
         }
-        current_specs = [
-            {
-                "seq": 0,
-                "key": "current-field",
-                "label": "当前规则字段",
-                "valueRequired": True,
-                "sourceKind": "tender",
-            }
-        ]
 
+    _CURRENT_SPECS = [
+        {
+            "seq": 0,
+            "key": "current-field",
+            "label": "当前规则字段",
+            "valueRequired": True,
+            "sourceKind": "tender",
+        }
+    ]
+
+    def _build_with_current_specs(self, gap_state: dict) -> dict:
         with (
             patch.object(
                 fact_table_module,
                 "resolve_project_specs",
-                return_value=(current_specs, {"source": "project", "ruleId": "fsr-current"}),
+                return_value=(self._CURRENT_SPECS, {"source": "project", "ruleId": "fsr-current"}),
             ),
             patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
         ):
-            table = build_project_fact_table(project, gap_state)
+            return build_project_fact_table({"id": "P-SPEC", "name": "规则项目", "parse_result": {}}, gap_state)
+
+    def test_build_preserves_confirmed_field_on_same_rule_version(self) -> None:
+        """同一份 Excel 刷新：已人工确认但不在当前清单的字段保留为清单外历史事实。"""
+        table = self._build_with_current_specs(self._gap_state_with_confirmed_legacy_field("fsr-current"))
 
         self.assertEqual(table["summary"]["specTotal"], 1)
         current = next(field for field in table["fields"] if field["label"] == "当前规则字段")
@@ -323,6 +372,72 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertEqual(legacy["status"], FACT_STATUS_CONFIRMED)
         self.assertTrue(legacy["outOfSpec"])
         self.assertNotIn("specSeq", legacy)
+        self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
+
+    def test_build_drops_ai_values_but_keeps_human_edits_on_refresh(self) -> None:
+        """同一份 Excel 刷新：AI 填的值一律重来，人改过的格子（manualEdit）保留。
+
+        回归 PRJ-0002：AI 在缺素材时给字段凑了错值，旧逻辑「有值就继承」让错值
+        跨轮黏住，AI 自己也不再纠正。
+        """
+        gap_state = {
+            "projectFactTable": {
+                "schemaVersion": "bid-project-fact-table-v2",
+                "factSpecsRef": {"source": "project", "ruleId": "fsr-current"},
+                "fields": [
+                    {
+                        "id": "FACT-0001",
+                        "key": "ai填的字段",
+                        "label": "AI 填的字段",
+                        "value": "AI 凑的错值",
+                        "status": FACT_STATUS_PENDING_CONFIRMATION,
+                        "specSeq": 1,
+                        "specKey": "ai-field",
+                        "sourceRefs": [{"type": "factCurator", "title": "AI 匹配填充"}],
+                    },
+                    {
+                        "id": "FACT-0002",
+                        "key": "人改的字段",
+                        "label": "人改的字段",
+                        "value": "人工订正值",
+                        "status": FACT_STATUS_EXTRACTED,
+                        "specSeq": 2,
+                        "specKey": "human-field",
+                        "sourceRefs": [{"type": "manualEdit", "title": "人工修改"}],
+                    },
+                ],
+            }
+        }
+        specs = [
+            {"seq": 1, "key": "ai-field", "label": "AI 填的字段", "valueRequired": True, "sourceKind": "tender"},
+            {"seq": 2, "key": "human-field", "label": "人改的字段", "valueRequired": True, "sourceKind": "tender"},
+        ]
+        with (
+            patch.object(
+                fact_table_module,
+                "resolve_project_specs",
+                return_value=(specs, {"source": "project", "ruleId": "fsr-current"}),
+            ),
+            patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
+        ):
+            table = build_project_fact_table({"id": "P-SPEC", "name": "刷新项目", "parse_result": {}}, gap_state)
+
+        ai_field = next(field for field in table["fields"] if field["label"] == "AI 填的字段")
+        self.assertEqual(ai_field["value"], "")
+        self.assertEqual(ai_field["status"], FACT_STATUS_UNEXTRACTED)
+        human_field = next(field for field in table["fields"] if field["label"] == "人改的字段")
+        self.assertEqual(human_field["value"], "人工订正值")
+        self.assertTrue(
+            any(ref.get("type") == "manualEdit" for ref in human_field["sourceRefs"]),
+            "人工标记必须跨轮保留，否则下一轮重建会把它当 AI 值冲掉",
+        )
+
+    def test_build_drops_previous_fields_when_rule_version_changes(self) -> None:
+        """重传新 Excel（规则版本变更）视作从头来：上一版的值连人工确认的也不继承。"""
+        table = self._build_with_current_specs(self._gap_state_with_confirmed_legacy_field("fsr-previous"))
+
+        self.assertEqual(table["summary"]["specTotal"], 1)
+        self.assertNotIn("旧规则字段", [field["label"] for field in table["fields"]])
         self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
 
     def test_build_falls_back_to_global_specs_when_project_not_uploaded(self) -> None:

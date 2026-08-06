@@ -134,6 +134,33 @@ export const isStructuralItem = (item) => (
 // - 冻结/释放按目录树派生：任一「未忽略且自身有工作标签」的祖先冻结整棵子树（由父章覆盖）；
 //   「忽略」（titleOnly，父级仅保留标题）后子级释放、各自按候选派生标签，逐级递归。
 //   planner 的 coveredByParent 降级为素材继承提示，不再参与标签判定。
+// 正文填写任务的 skill 名（附表是 bid-tech-table-filler，由另一条线负责，不进正文统计）
+export const TECHNICAL_WORD_FILL_SKILL = 'bid-tech-word-placeholder-filler'
+
+// 正文填写汇总：单条填和一键填共用同一份计数，不区分本轮还是历史。
+// 待填写/已填写按「填写任务」计（一个目录项可能有多个待填写 Word），
+// 失败按「目录项」计（失败原因写在目录项上，重填入口也在那里）。
+export const technicalBodyFillCounts = (items) => {
+  const counts = { pending: 0, filled: 0, failed: 0 }
+  asObjectArray(items).forEach((item) => {
+    if (item?.titleOnly || String(item?.decision || '') !== 'fill_required') return
+    asObjectArray(item?.fillTasks).forEach((task) => {
+      if (String(task?.skill || '') !== TECHNICAL_WORD_FILL_SKILL) return
+      if (String(task?.status || 'pending') === 'completed') counts.filled += 1
+      else counts.pending += 1
+    })
+    if (item?.fillError) counts.failed += 1
+  })
+  return counts
+}
+
+// 目录项上一轮填写是否失败：失败原因由后端写在 fillError 上，成功重填后清空
+export const technicalGapFillError = (item) => {
+  const error = item?.fillError
+  if (!error || typeof error !== 'object') return ''
+  return String(error.message || '').trim()
+}
+
 export const TECHNICAL_GAP_READY_SCORE = 0.99
 export const TECHNICAL_GAP_WEAK_SCORE = 0.3
 
@@ -164,6 +191,16 @@ export const technicalGapHumanConfirmState = (item) => {
 }
 
 export const isTechnicalGapHumanConfirmed = (item) => technicalGapHumanConfirmState(item) === 'confirmed'
+
+export const currentResolvedArtifact = (artifact) => (
+  Boolean(artifact)
+  && artifact?.active !== false
+  && !artifact?.supersededAt
+)
+
+export const currentResolvedArtifacts = (selected) => (
+  asObjectArray(selected?.resolvedArtifacts).filter(currentResolvedArtifact)
+)
 
 const candidatePool = (item) => [
   ...asObjectArray(item?.matchedMaterials),
@@ -203,12 +240,13 @@ const isTemplateTrackItem = (item) => {
 }
 
 const hasAiFillArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
-  .some((artifact) => String(artifact?.source || '') === 'ai_fill')
+  .some((artifact) => currentResolvedArtifact(artifact) && String(artifact?.source || '') === 'ai_fill')
 
 // 人工产物算「成稿」必须与后端 S7 闸口同口径（s7Ready）：人工选中的「待填写-」空模板
 // s7Ready=false（R10-B07-01），只是定下要填的模板，不算成稿，不进「已就绪」。
 const hasManualArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
   .some((artifact) => ['manual_upload', 'material_library', 'manual'].includes(String(artifact?.source || ''))
+    && currentResolvedArtifact(artifact)
     && artifact?.s7Ready !== false)
 
 export const technicalGapOwnTag = (item) => {
@@ -247,7 +285,7 @@ export const technicalGapOwnTag = (item) => {
   if (
     String(item?.decision || '') === 'ready'
     && !candidatePool(item).length
-    && !asObjectArray(item?.resolvedArtifacts).length
+    && !currentResolvedArtifacts(item).length
   ) return ''
   if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
   return 'manual_supplement'
@@ -347,7 +385,7 @@ export const technicalGapParentCoverageState = (item, allItems = []) => {
       && String(entry?.parentCoverageSource || '') === 'manual',
   )
   const hasMaterial = asObjectArray(item?.matchedMaterials).length > 0
-    || asObjectArray(item?.resolvedArtifacts).length > 0
+    || currentResolvedArtifacts(item).length > 0
   return {
     descendantCount: descendants.length,
     coveredCount: manualCovered.length,
@@ -426,7 +464,7 @@ export const defaultAiFillParseFieldIds = (selected, task) => uniqueStrings([
 ])
 
 export const latestResolvedArtifact = (selected) => {
-  const artifacts = asObjectArray(selected?.resolvedArtifacts)
+  const artifacts = currentResolvedArtifacts(selected)
   return artifacts.length ? artifacts[artifacts.length - 1] : null
 }
 
@@ -501,7 +539,7 @@ export const previewChoicesForItem = (selected, allItems = []) => {
   if (!selected) return []
 
   const choices = []
-  const artifacts = asObjectArray(selected?.resolvedArtifacts).slice().reverse()
+  const artifacts = currentResolvedArtifacts(selected).slice().reverse()
   artifacts
     .filter((item) => item?.onlyoffice?.fileUrl || item?.onlyoffice?.documentServerFileUrl)
     .forEach((artifact) => {

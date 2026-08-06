@@ -123,6 +123,10 @@ FACT_MATERIAL_SOURCE_PRIORITIES = {
     "standard": 100,
 }
 
+# 人工来源标记：manualFact 是人工新增的字段行，manualEdit 是人在页面上改过的格子。
+# 重建时只有带这些标记（或人工确认/标不适用）的值跨轮保留，见 is_human_authored_fact_field。
+FACT_MANUAL_SOURCE_TYPES = {"manualFact", "manualEdit"}
+
 
 def empty_fact_summary() -> dict[str, int]:
     return {
@@ -332,7 +336,7 @@ def normalize_project_fact_field(
 ) -> dict[str, Any]:
     value = str(field.get("value") or "").strip()
     if confirm:
-        # 整表确认时保留人工标记的"不适用"，其余有值→已人工确认、无值→缺少来源
+        # 逐字段确认（PATCH 单字段）时保留人工标记的"不适用"，其余有值→已人工确认、无值→缺少来源
         incoming = normalize_fact_status(field.get("status"), has_value=bool(value))
         status = (
             incoming
@@ -363,7 +367,7 @@ def normalize_project_fact_field(
         "updatedBy": operator,
     }
     # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）
-    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
@@ -432,6 +436,9 @@ def reconcile_fact_fields_with_specs(
             field["reviewLabel"] = str(spec.get("reviewLabel") or "")
             field["needsConfirmation"] = bool(spec.get("needsConfirmation"))
             field["sourceKind"] = str(spec.get("sourceKind") or "")
+            # 正文填写按「待填写文件 + 占位符原文」定位字段，两列随字段下发到 manifest
+            field["placeholder"] = str(spec.get("placeholder") or "")
+            field["targetFile"] = str(spec.get("targetFile") or "")
             if spec.get("needsConfirmation") and str(field.get("status") or "") == FACT_STATUS_EXTRACTED:
                 field["status"] = FACT_STATUS_PENDING_CONFIRMATION
             continue
@@ -462,8 +469,10 @@ def reconcile_fact_fields_with_specs(
             "needsConfirmation": bool(spec.get("needsConfirmation")),
             "sourceKind": str(spec.get("sourceKind") or ""),
             "sourceHint": str(spec.get("referenceFile") or ""),
+            "placeholder": str(spec.get("placeholder") or ""),
+            "targetFile": str(spec.get("targetFile") or ""),
         }
-        # 上一轮的人工结果（有值或人工置过的状态）随重建保留
+        # 上一轮的人工结果随重建保留；AI 与规则抽取的值一律不继承，本轮重新取
         previous = next(
             (existing_by_key[k] for k in [key, *match_keys, f"spec-{int(spec.get('seq') or 0):03d}"] if k in existing_by_key),
             None,
@@ -471,7 +480,7 @@ def reconcile_fact_fields_with_specs(
         if previous is not None:
             prev_value = str(previous.get("value") or "").strip()
             prev_status = normalize_fact_status(previous.get("status"), has_value=bool(prev_value))
-            if prev_value or prev_status in {FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE, FACT_STATUS_PENDING_CONFIRMATION}:
+            if is_human_authored_fact_field(previous):
                 skeleton["value"] = prev_value
                 skeleton["unit"] = str(previous.get("unit") or "")
                 skeleton["status"] = prev_status
@@ -491,6 +500,20 @@ def is_manual_fact_field(field: dict[str, Any]) -> bool:
     return any(isinstance(ref, dict) and str(ref.get("type") or "") == "manualFact" for ref in refs)
 
 
+def is_human_authored_fact_field(field: dict[str, Any]) -> bool:
+    """人工产出的值：重建时只有这些跨轮保留，AI 与规则抽取的值一律重来。
+
+    覆盖四种人工动作：新增字段（manualFact）、页面上改值（manualEdit）、
+    逐字段确认（confirmed）、标记不适用（not_applicable）。
+    """
+    refs = field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else []
+    if any(
+        isinstance(ref, dict) and str(ref.get("type") or "") in FACT_MANUAL_SOURCE_TYPES for ref in refs
+    ):
+        return True
+    return str(field.get("status") or "") in {FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE}
+
+
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
     built_at = _now_iso()
     existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
@@ -502,6 +525,15 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     fields_by_key: dict[str, dict[str, Any]] = {}
     # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
     project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    # 换了新 Excel（规则版本变更）视作从头来：连人工值一起丢弃。清单换掉后字段本就
+    # 可能对不上号，继承旧值只会让上一版的结论混进新清单。同一份 Excel 刷新不受影响。
+    existing_rule_id = str(
+        (existing_table.get("factSpecsRef") or {}).get("ruleId") or ""
+        if isinstance(existing_table.get("factSpecsRef"), dict)
+        else ""
+    )
+    if existing_rule_id != str(fact_specs_meta.get("ruleId") or ""):
+        existing_by_key = {}
 
     def is_material_fact_ref(ref: dict[str, Any]) -> bool:
         return str(ref.get("type") or "") in {"materialFact", "derivedMaterialFact"}
@@ -541,7 +573,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         existing = existing_by_key.get(key)
         preserve_existing = bool(
             existing
-            and str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
+            and is_human_authored_fact_field(existing)
             and str(existing.get("value") or "").strip()
         )
         if preserve_existing:
@@ -557,10 +589,16 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 "value": value_text,
                 "unit": str(((existing or {}).get("unit") if preserve_existing else unit) or ""),
                 "required": bool((existing or {}).get("required", required)),
-                "status": FACT_STATUS_CONFIRMED if preserve_existing else (FACT_STATUS_EXTRACTED if value_text else FACT_STATUS_MISSING_SOURCE),
+                "status": normalize_fact_status((existing or {}).get("status"), has_value=True)
+                if preserve_existing
+                else (FACT_STATUS_EXTRACTED if value_text else FACT_STATUS_MISSING_SOURCE),
                 "confidence": float(((existing or {}).get("confidence") if preserve_existing else None) or (confidence if value_text else 0) or 0),
                 "sourcePriority": int((existing or {}).get("sourcePriority") if preserve_existing else (incoming_priority if value_text else 0)),
-                "sourceRefs": [],
+                # 保留旧 sourceRefs：人工标记（manualEdit/manualFact）存在这里，
+                # 清空会让下一轮重建认不出这是人工值而误当 AI 值冲掉
+                "sourceRefs": copy.deepcopy((existing or {}).get("sourceRefs"))
+                if preserve_existing and isinstance((existing or {}).get("sourceRefs"), list)
+                else [],
                 "alternatives": copy.deepcopy(
                     (existing or {}).get("alternatives")
                     if preserve_existing and isinstance((existing or {}).get("alternatives"), list)
@@ -626,10 +664,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if source_ref:
             field.setdefault("sourceRefs", []).append(source_ref)
         if preserve_existing and value_text:
-            field["status"] = FACT_STATUS_CONFIRMED
+            field["status"] = normalize_fact_status(existing.get("status"), has_value=True)
 
     def preserve_compatible_existing_fields() -> None:
-        """保留人工新增字段及旧规则下已确认的字段，避免重建时丢失人工结论。
+        """保留人工产出的字段（新增/改值/确认/不适用），避免重建时丢失人工结论。
 
         已确认字段先移除旧 spec 元数据，再参与当前规则对齐；若没有命中当前规则，
         则以 outOfSpec 标记留在表尾，且不计入当前规则版本的进度。
@@ -646,13 +684,13 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 for ref in (existing.get("sourceRefs") if isinstance(existing.get("sourceRefs"), list) else [])
                 if isinstance(ref, dict)
             ]
+            if not is_human_authored_fact_field(existing):
+                continue
             is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
             is_confirmed = str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
-            if not (is_manual or is_confirmed):
-                continue
             has_value = bool(str(existing.get("value") or "").strip())
             field = copy.deepcopy(existing)
-            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):
+            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
                 field.pop(meta_key, None)
             field["label"] = label_text
             field["key"] = key
@@ -1166,7 +1204,18 @@ def project_material_fact_fields(
     return facts
 
 
-def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, Any]) -> list[dict[str, Any]]:
+# 素材索引口径：build 供规则抽取（只认项目定制素材的格式），
+# curate 供 AI 补抽（机型标准配置类字段的来源只在标准文件目录下）
+FACT_MATERIAL_USAGE_BUILD = "build"
+FACT_MATERIAL_USAGE_CURATE = "curate"
+
+
+def project_fact_material_index(
+    project: dict[str, Any],
+    gap_state: dict[str, Any],
+    *,
+    usage: str = FACT_MATERIAL_USAGE_BUILD,
+) -> list[dict[str, Any]]:
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     materials: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1214,11 +1263,19 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
     try:
         selected_model = project_turbine_model(project)
 
-        def collect_scope_files(folder_path: str, material_tier: str) -> None:
+        def collect_scope_files(
+            folder_path: str,
+            material_tier: str,
+            *,
+            customer_name: str = "",
+            project_id: str = "",
+        ) -> None:
             payload = run_async_material_files(
                 folder_path=folder_path,
                 bid_type=TECHNICAL_BID_TYPE,
                 material_tier=material_tier,
+                customer_name=customer_name,
+                project_id=project_id,
                 turbine_model=selected_model,
                 recursive=True,
                 page=1,
@@ -1249,13 +1306,26 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
             for scope in material_scope.get("readableScopes") or []:
                 if not isinstance(scope, dict):
                     continue
-                # 事实表匹配只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
-                # 相关项目素材由用户归置到该目录下），不扫标准文件/客户定制目录
-                if str(scope.get("materialTier") or "") != "project":
+                # build 只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
+                # 相关项目素材由用户归置到该目录下）：规则抽取器只认这些素材的格式。
+                # curate 三层都扫，标准文件目录已由 turbine_model 收敛到本机型。
+                tier = str(scope.get("materialTier") or "")
+                if usage == FACT_MATERIAL_USAGE_BUILD and tier != "project":
                     continue
                 folder_path = str(scope.get("path") or "").strip()
-                if folder_path:
-                    collect_scope_files(folder_path, str(scope.get("materialTier") or ""))
+                if not folder_path:
+                    continue
+                # 素材库按客户别名建目录（如「华能」而非规范名「华能集团」），拼全路径查不到。
+                # 与 planner 同口径：客户/项目层路径截到标类根，改用 customer_name/project_id
+                # 交给 customer_matches/project_matches 做别名匹配。
+                if tier in {"customer", "project"}:
+                    folder_path = "/".join([part for part in folder_path.split("/") if part][:2])
+                collect_scope_files(
+                    folder_path,
+                    tier,
+                    customer_name=str(scope.get("customerName") or "") if tier == "customer" else "",
+                    project_id=str(scope.get("projectId") or "") if tier == "project" else "",
+                )
 
         # 用户显式选择的目录始终叠加到计划索引，并按素材 ID 去重。
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
@@ -1268,7 +1338,7 @@ def project_fact_material_index(project: dict[str, Any], gap_state: dict[str, An
                 collect_scope_files(folder_path, "")
     except Exception:
         logger.exception("项目事实素材索引查询失败，保留已收集素材继续构建")
-    return [item for item in materials if material_is_fact_relevant(item)]
+    return [item for item in materials if material_is_fact_relevant(item, usage=usage)]
 
 
 # 业主待填目标表格模板的文件名前缀（「待填写-附表X….docx」「待填写、待用印-….docx」等，
@@ -1282,11 +1352,20 @@ def material_is_fill_template(material: dict[str, Any]) -> bool:
     return name.startswith(FILL_TEMPLATE_NAME_PREFIX)
 
 
-def material_is_fact_relevant(material: dict[str, Any]) -> bool:
+def material_is_fact_relevant(
+    material: dict[str, Any],
+    *,
+    usage: str = FACT_MATERIAL_USAGE_BUILD,
+) -> bool:
     if material_is_fill_template(material):
         return False
     tier = str(material.get("materialTier") or "").strip()
     if tier == "project":
+        return True
+    # curate 的范围已由 build_project_material_scope 按机型/客户收敛，无需再按关键词猜内容：
+    # 白名单会挡掉机型标准配置类素材（如自动消防系统），而这类素材正是 Excel 未指定来源
+    # （referenceFile 为「/」）的字段的唯一取值处。
+    if usage == FACT_MATERIAL_USAGE_CURATE:
         return True
     text = " ".join(
         str(material.get(key) or "")
@@ -1301,19 +1380,24 @@ def material_is_fact_relevant(material: dict[str, Any]) -> bool:
     )
 
 
+def project_fact_material_work_dir(project: dict[str, Any]) -> Path:
+    """事实表素材物化目录：build 批量落地与 curate 按需拉取共用同一份缓存。"""
+    project_id = str(project.get("id") or "project")
+    return settings.documents_dir / project_id / "technical-workspace" / "gaps" / "fact_table_materials"
+
+
 def prepare_project_fact_materials(project: dict[str, Any], materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     path_materials = [item for item in materials if item.get("path")]
     if path_materials and len(path_materials) == len(materials) and all(
         Path(str(item.get("path") or "")).exists() for item in path_materials
     ):
         return materials
-    project_id = str(project.get("id") or "project")
-    bid_type = TECHNICAL_BID_TYPE
-    workspace_dir = "technical-workspace"
-    work_dir = settings.documents_dir / project_id / workspace_dir / "gaps" / "fact_table_materials"
+    work_dir = project_fact_material_work_dir(project)
     work_dir.mkdir(parents=True, exist_ok=True)
     try:
-        return prepare_project_fact_material_files(materials, work_dir, bid_type=bid_type, limit=120)
+        return prepare_project_fact_material_files(
+            materials, work_dir, bid_type=TECHNICAL_BID_TYPE, limit=120
+        )
     except Exception:
         return materials
 

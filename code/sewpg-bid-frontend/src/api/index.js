@@ -566,13 +566,16 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/appendix-source-matrix`, { method: 'POST', body: data }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
+  // 提交后台任务，立即返回；执行进度经 curateFactsStatus 轮询
   curateFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/curate`, {
       method: 'POST',
       body: data,
-      timeoutMs: 30 * 60 * 1000,
+      timeoutMs: 60 * 1000,
       retryCount: 0,
     }),
+  curateFactsStatus: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/facts/curate`),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>
@@ -598,6 +601,16 @@ export const technicalGapsAPI = {
       timeoutMs: 30 * 60 * 1000,
       retryCount: 0,
     }),
+  // 正文一键填写：提交后台任务，立即返回；执行进度经 bodyFillStatus 轮询
+  bodyFill: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/body-fill`, {
+      method: 'POST',
+      body: data,
+      timeoutMs: 60 * 1000,
+      retryCount: 0,
+    }),
+  bodyFillStatus: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/body-fill`),
   submissions: (projectId) => request(`/technical/projects/${projectId}/materials/submissions`),
   submitMaterial: (projectId, data) =>
     request(`/technical/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),
@@ -682,14 +695,14 @@ export const technicalMaterialsAPI = {
     parseStatus: (projectId) => request(`/technical/projects/${projectId}/materials/parse-status`),
   },
   wiki: {
-    list: (params = {}) => {
+    list: (params = {}, options = {}) => {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`)
+      return request(`/technical/materials/wiki${qs ? `?${qs}` : ''}`, options)
     },
     bootstrap: (data = {}) =>
       request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, retryCount: 0 }),
-    bootstrapStatus: (jobId) =>
-      request(`/technical/materials/wiki/jobs/${encodeURIComponent(jobId)}`),
+    bootstrapStatus: (jobId, options = {}) =>
+      request(`/technical/materials/wiki/jobs/${encodeURIComponent(jobId)}`, options),
     create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
     update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
     delete: (id, params = {}) => {

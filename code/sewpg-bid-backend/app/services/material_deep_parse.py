@@ -46,6 +46,7 @@ from app.services.material_cleaning import (
     is_cleanable_material,
     is_deep_convertible_material,
 )
+from app.services.material_folder_scope import require_material_bid_type
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx_profile
@@ -166,13 +167,17 @@ def deep_parse_status_allows_enqueue(ext_fields: dict[str, Any] | None, *, stale
 
 
 def enqueue_deep_parse_job(file_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """入队素材深度解析；Redis 不可用走本地串行线程兜底。队列锁/本地登记表去重。"""
+    """入队素材深度解析；Redis 不可用走本地串行线程兜底。队列锁/本地登记表去重。
+
+    任务必须携带并校验 bidType（技术标/商务标）：完成钩子据此决定是否衔接技术标 Wiki。
+    """
 
     value = str(file_id or "").strip()
     if not value:
         return {"queued": False, "message": "缺少素材 ID"}
     raw_id = value if value.upper().startswith("RAW-") else f"RAW-{int(value):04d}"
     payload = {"fileId": raw_id, **(data or {})}
+    payload["bidType"] = require_material_bid_type(payload.get("bidType"), "深度解析任务标类")
     try:
         result = enqueue_generation_job(DEEP_PARSE_JOB_TYPE, raw_id, payload)
     except Exception as exc:  # pragma: no cover - 队列故障不应阻断 wiki 整理

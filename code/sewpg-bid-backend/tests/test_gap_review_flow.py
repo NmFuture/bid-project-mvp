@@ -564,6 +564,184 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(confirmed["artifact"]["qualityGate"], "human_confirmed")
         self.assertEqual(confirmed["artifact"]["confirmedBy"], "复核用户")
 
+    def test_gap_ai_fill_confirm_scopes_human_confirmed_until_all_fill_tasks_done(self) -> None:
+        """R10-B07-02：多 fillTask 目录项只复核一个任务，不得把整项置为 human_confirmed。"""
+        project_id = self._create_project_with_confirmed_directory_json()
+        project = store._require(project_id)
+        table_template = technical_workspace_dir(project_id) / "table-template.docx"
+        doc = Document()
+        doc.add_paragraph("机组参数：[保证值，待填写]")
+        doc.save(table_template)
+        table_template_2 = technical_workspace_dir(project_id) / "table-template-2.docx"
+        doc = Document()
+        doc.add_paragraph("塔筒参数：[保证值，待填写]")
+        doc.save(table_template_2)
+        project["gap_state"] = {
+            "recognitionStatus": "completed",
+            "recognizedAt": now_iso(),
+            "submittedForReview": False,
+            "reviewConfirmed": False,
+            "reviewedAt": "",
+            "items": [],
+            "submissions": [],
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "projectId": project_id,
+                "status": "ready",
+                "items": [
+                    {
+                        "id": "GAP-TABLE",
+                        "number": "附表A.1",
+                        "title": "投标关键数据一览表",
+                        "status": "needs_input",
+                        "decision": "fill_required",
+                        "usage": "appendix_fill",
+                        "matchedMaterials": [],
+                        "candidateMaterials": [],
+                        "appendixTasks": [],
+                        "fillTasks": [
+                            {
+                                "id": "FILL-TABLE",
+                                "skill": "bid-tech-table-filler",
+                                "status": "pending",
+                                "blankSource": {
+                                    "id": "APP-TABLE",
+                                    "docxPath": str(table_template),
+                                    "placeholderLabels": ["保证值"],
+                                },
+                            },
+                            {
+                                "id": "FILL-TABLE-2",
+                                "skill": "bid-tech-table-filler",
+                                "status": "pending",
+                                "blankSource": {
+                                    "id": "APP-TABLE-2",
+                                    "docxPath": str(table_template_2),
+                                    "placeholderLabels": ["保证值"],
+                                },
+                            },
+                        ],
+                        "resolvedArtifacts": [],
+                    },
+                ],
+            },
+            "planFile": "",
+            "integrity": {},
+        }
+        store._persist_project(project)
+        self._confirm_project_fact_table(project_id, {"保证值": "满足招标要求"})
+
+        def fake_run_table_filler(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            output_file = Path(manifest["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            doc = Document()
+            doc.add_paragraph("性能保证：满足招标要求")
+            doc.save(output_file)
+            return {
+                "schema_version": "bid-tech-table-fill-v1",
+                "outputFile": str(output_file),
+                "unfilledFields": [],
+                "evidenceRefs": [{"field": "保证值"}],
+                "fillReport": {"filledFieldCount": 1, "unfilledFieldCount": 0},
+            }
+
+        with patch(
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
+            side_effect=fake_run_table_filler,
+        ):
+            first_fill = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/ai-fill",
+                json={"fillTaskId": "FILL-TABLE", "operator": "测试用户"},
+            )
+            self.assertEqual(first_fill.status_code, 200, first_fill.text)
+            first_artifact_id = first_fill.json()["artifact"]["id"]
+            first_confirm = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/artifacts/{first_artifact_id}/confirm",
+                json={"operator": "复核用户"},
+            )
+            self.assertEqual(first_confirm.status_code, 200, first_confirm.text)
+
+        first_item = first_confirm.json()["item"]
+        # 只复核第一个任务：整项不收口 human_confirmed，决策仍是 fill_required。
+        self.assertNotEqual(str(first_item.get("qualityStatus") or ""), "human_confirmed")
+        self.assertEqual(first_item["decision"], "fill_required")
+        self.assertEqual(first_item["status"], "needs_input")
+        tasks_by_id = {task["id"]: task for task in first_item["fillTasks"]}
+        self.assertEqual(tasks_by_id["FILL-TABLE"]["status"], "completed")
+        self.assertEqual(tasks_by_id["FILL-TABLE-2"]["status"], "pending")
+
+        with patch(
+            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
+            side_effect=fake_run_table_filler,
+        ):
+            second_fill = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/ai-fill",
+                json={"fillTaskId": "FILL-TABLE-2", "operator": "测试用户"},
+            )
+            self.assertEqual(second_fill.status_code, 200, second_fill.text)
+            second_artifact_id = second_fill.json()["artifact"]["id"]
+            second_confirm = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/GAP-TABLE/artifacts/{second_artifact_id}/confirm",
+                json={"operator": "复核用户"},
+            )
+            self.assertEqual(second_confirm.status_code, 200, second_confirm.text)
+
+        second_item = second_confirm.json()["item"]
+        # 全部任务完成且各自产物均复核通过后，整项才允许收口为已就绪。
+        self.assertEqual(second_item["qualityStatus"], "human_confirmed")
+        self.assertEqual(second_item["decision"], "ready")
+        self.assertEqual(second_item["status"], "resolved")
+
+    def test_gap_ai_fill_confirm_rejects_superseded_artifact(self) -> None:
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
+        gap_id = fill_item["id"]
+        fill_task_id = fill_item["fillTasks"][0]["id"]
+        timestamp = now_iso()
+        fill_item["fillTasks"][0]["status"] = "completed"
+        fill_item["resolvedArtifacts"] = [
+            {
+                "id": "ART-AI-OLD",
+                "source": "ai_fill",
+                "fillTaskId": fill_task_id,
+                "fileName": "旧AI填写.docx",
+                "s7Ready": False,
+                "active": False,
+                "supersededAt": timestamp,
+                "supersededBy": "测试用户",
+            },
+            {
+                "id": "ART-MAT-NEW",
+                "source": "material_library",
+                "fileName": "新选素材.docx",
+                "s7Ready": True,
+                "active": True,
+            },
+        ]
+        project = store._require(project_id)
+        project["gap_state"]["plan"] = gap_plan
+        store._persist_project(project)
+
+        confirm_response = self.client.post(
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/artifacts/ART-AI-OLD/confirm",
+            json={"operator": "复核用户"},
+        )
+
+        self.assertEqual(confirm_response.status_code, 400, confirm_response.text)
+        self.assertIn("已被新的选材或填写结果取代", confirm_response.json()["detail"])
+        updated_gap = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()["gapPlan"]
+        updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
+        old_artifact, new_artifact = updated_item["resolvedArtifacts"]
+        self.assertFalse(old_artifact["s7Ready"])
+        self.assertFalse(old_artifact["active"])
+        self.assertTrue(old_artifact["supersededAt"])
+        self.assertTrue(new_artifact["s7Ready"])
+        self.assertTrue(new_artifact["active"])
+
     def test_gap_ai_fill_manifest_carries_appendix_context_and_recommended_materials(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         project = store._require(project_id)
@@ -817,7 +995,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertTrue(model["sourceRefs"])
         # 未提取骨架计 unextracted，missingCount 只统计 missing_source
         self.assertEqual(payload["summary"]["missingCount"], 0)
-        self.assertEqual(payload["summary"]["specTotal"], 128)
+        self.assertEqual(payload["summary"]["specTotal"], 148)
 
         confirmed = self._confirm_project_fact_table(project_id, {"承诺函致函对象全称": "按招标文件要求执行"})
 
@@ -1478,7 +1656,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self._confirm_project_fact_table(project_id, {"保证值": "满足招标要求"})
         calls: list[str] = []
 
-        def fake_run_word_filler(manifest_path, progress_callback=None):
+        def fake_run_word_filler(manifest_path):
             calls.append("word")
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             output_file = Path(manifest["outputFile"])
@@ -1669,7 +1847,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
         manifests: list[dict] = []
 
-        def fake_run_word_filler(manifest_path, progress_callback=None):
+        def fake_run_word_filler(manifest_path):
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             manifests.append(manifest)
             output_file = Path(manifest["outputFile"])
@@ -1875,6 +2053,113 @@ class GapReviewFlowTests(unittest.TestCase):
         updated_item = next(item for item in updated_gap["items"] if item["id"] == gap_id)
         self.assertEqual(updated_item["resolvedArtifacts"][0]["source"], "material_library")
         self.assertEqual(updated_item["resolvedArtifacts"][0]["path"], str(prepared_docx))
+
+    def test_gap_revoke_ready_disables_artifact_and_reselect_supersedes_old_for_s7(self) -> None:
+        # R10-B07-03：撤销「已定案」要同步停用已选素材（保留审计历史），
+        # 重新选材后旧素材标记为被取代，S7 装配只使用最新有效素材。
+        from app.document_processing.technical_document.assembly import build_assembly
+
+        project_id = self._create_project_with_confirmed_directory_json()
+        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        self.assertEqual(detection_response.status_code, 200)
+        gap_plan = detection_response.json()["gapPlan"]
+        gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
+
+        material_a_docx = Path(self.temp_dir.name) / "素材A.docx"
+        doc = Document()
+        doc.add_paragraph("素材 A 内容")
+        doc.save(material_a_docx)
+        material_b_docx = Path(self.temp_dir.name) / "素材B.docx"
+        doc = Document()
+        doc.add_paragraph("素材 B 内容")
+        doc.save(material_b_docx)
+
+        def select_material(docx_path: Path, material_id: str, material_name: str):
+            async def fake_prepare(project, selected_gap_id, data):
+                self.assertEqual(selected_gap_id, gap_id)
+                return [
+                    {
+                        "materialId": material_id,
+                        "materialName": material_name,
+                        "fileName": docx_path.name,
+                        "path": str(docx_path),
+                        "folderPath": "技术标/通用素材",
+                        "materialTier": "standard",
+                        "sourceKind": "cleaned",
+                    }
+                ]
+
+            with patch(
+                "app.services.technical_gap_service.prepare_technical_existing_gap_material_files",
+                side_effect=fake_prepare,
+            ):
+                return self.client.post(
+                    f"/api/technical/projects/{project_id}/gaps/{gap_id}/select-material",
+                    json={"materials": [{"id": material_id, "name": material_name}]},
+                )
+
+        # 1. 选择素材 A：选定即定案，产物可直接进 S7。
+        response_a = select_material(material_a_docx, "RAW-A", "素材A")
+        self.assertEqual(response_a.status_code, 200, response_a.text)
+        artifact_a = response_a.json()["artifact"]
+        self.assertTrue(artifact_a["s7Ready"])
+        self.assertTrue(artifact_a["active"])
+        self.assertTrue(response_a.json()["item"]["humanConfirmed"])
+
+        # 2. 撤销「已定案」：humanConfirmed 回落，产物停用但保留在 resolvedArtifacts 里。
+        revoke_response = self.client.post(
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/confirm-ready",
+            json={"confirmed": False, "operator": "测试用户"},
+        )
+        self.assertEqual(revoke_response.status_code, 200, revoke_response.text)
+        revoked_item = revoke_response.json()["item"]
+        self.assertFalse(revoked_item["humanConfirmed"])
+        self.assertEqual(len(revoked_item["resolvedArtifacts"]), 1)
+        revoked_artifact = revoked_item["resolvedArtifacts"][0]
+        self.assertFalse(revoked_artifact["s7Ready"])
+        self.assertFalse(revoked_artifact["active"])
+        self.assertTrue(revoked_artifact["revokedAt"])
+        self.assertEqual(revoked_artifact["revokedBy"], "测试用户")
+        # 撤销后该目录项不再向 S7 提供任何路径（也不回退 matchedMaterials）。
+        self.assertEqual(build_assembly._gap_plan_paths(revoked_item), [])
+
+        # 3. 重新选择素材 B：A 标记为被取代（保留审计），B 成为唯一当前有效素材。
+        response_b = select_material(material_b_docx, "RAW-B", "素材B")
+        self.assertEqual(response_b.status_code, 200, response_b.text)
+        item_b = response_b.json()["item"]
+        self.assertTrue(item_b["humanConfirmed"])
+        self.assertEqual(len(item_b["resolvedArtifacts"]), 2)
+        old_artifact, new_artifact = item_b["resolvedArtifacts"]
+        self.assertEqual(old_artifact["id"], artifact_a["id"])
+        self.assertFalse(old_artifact["s7Ready"])
+        self.assertFalse(old_artifact["active"])
+        self.assertTrue(old_artifact["supersededAt"])
+        self.assertNotIn("revokedAt", old_artifact)
+        self.assertTrue(new_artifact["s7Ready"])
+        self.assertTrue(new_artifact["active"])
+        self.assertIn("取代此前 1 份产物", item_b["reviewNotes"][-1])
+        self.assertEqual(build_assembly._gap_plan_paths(item_b), [str(material_b_docx)])
+
+        # 4. 撤销 B 后再次确认：只恢复 B，已被取代的 A 不回流进装配。
+        second_revoke = self.client.post(
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/confirm-ready",
+            json={"confirmed": False, "operator": "测试用户"},
+        )
+        self.assertEqual(second_revoke.status_code, 200, second_revoke.text)
+        confirm_response = self.client.post(
+            f"/api/technical/projects/{project_id}/gaps/{gap_id}/confirm-ready",
+            json={"confirmed": True, "operator": "测试用户"},
+        )
+        self.assertEqual(confirm_response.status_code, 200, confirm_response.text)
+        confirmed_item = confirm_response.json()["item"]
+        restored_old, restored_new = confirmed_item["resolvedArtifacts"]
+        self.assertFalse(restored_old["s7Ready"])
+        self.assertFalse(restored_old["active"])
+        self.assertTrue(restored_old["supersededAt"])
+        self.assertTrue(restored_new["s7Ready"])
+        self.assertTrue(restored_new["active"])
+        self.assertNotIn("revokedAt", restored_new)
+        self.assertEqual(build_assembly._gap_plan_paths(confirmed_item), [str(material_b_docx)])
 
     def test_gap_detection_matches_material_from_s2_wiki_cards_when_toc_has_no_refs(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()

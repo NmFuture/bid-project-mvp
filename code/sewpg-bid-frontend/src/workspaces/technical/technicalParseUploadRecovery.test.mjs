@@ -1,9 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
+  formatParseDuration,
   isUploadAndRunTimeout,
   isParseProgressCompleted,
+  parseElapsedSeconds,
   pollParseProgressOnce,
   shouldPollParseProgress,
   recoverUploadAndRunTimeout,
@@ -196,7 +199,27 @@ test('keeps displayed technical phase progress from moving backwards within same
   assert.equal(merged.summary, incoming.summary)
 })
 
-test('summarizes structured parse phase with user-facing elapsed time', () => {
+test('keeps parsed checklist item counts from moving backwards within structured phase', () => {
+  const previous = {
+    status: 'running',
+    percentage: 82,
+    phaseKey: 'opencode',
+    opencodeOutput: { completedItems: 27, totalItems: 64 },
+  }
+  const incoming = {
+    status: 'running',
+    percentage: 80,
+    phaseKey: 'opencode',
+    opencodeOutput: { completedItems: 15, totalItems: 64 },
+  }
+
+  const merged = mergeMonotonicParseProgress(previous, incoming)
+
+  assert.equal(merged.opencodeOutput.completedItems, 27)
+  assert.equal(summarizeParseProgress(merged).summary, '已解析条款 27/64 项')
+})
+
+test('summarizes structured parse phase as parsed checklist items, not session count', () => {
   const running = summarizeParseProgress({
     status: 'running',
     percentage: 95,
@@ -206,14 +229,100 @@ test('summarizes structured parse phase with user-facing elapsed time', () => {
     summary: 'Opencode 仍在执行 S1 解析，已等待约 30 秒。',
     opencodeOutput: {
       elapsedSeconds: 261,
+      completedShards: 3,
+      totalShards: 7,
+      completedItems: 15,
+      totalItems: 64,
       parts: [{ type: 'text', text: 'internal chunk' }],
     },
   })
 
   assert.equal(running.title, '结构化解析中')
-  assert.equal(running.summary, '正在识别招标文件中的技术要求和原文依据，已执行 4 分 21 秒。')
+  assert.equal(running.summary, '已解析条款 15/64 项')
   assert.equal(running.detail, '')
-  assert.doesNotMatch(`${running.title}${running.summary}${running.detail}`, /AI|Opencode|opencode|S1|输出片段|阶段 99%/)
+  assert.doesNotMatch(`${running.title}${running.summary}${running.detail}`, /AI|Opencode|opencode|S1|输出片段|阶段 99%|任务/)
+})
+
+test('falls back to plain wording when backend has not reported item counts yet', () => {
+  const running = summarizeParseProgress({
+    status: 'running',
+    percentage: 60,
+    phaseKey: 'opencode',
+    phaseLabel: 'Opencode 结构化解析',
+    summary: 'Opencode 仍在执行 S1 解析。',
+    opencodeOutput: { completedShards: 2, totalShards: 7 },
+  })
+
+  assert.equal(running.summary, '正在识别招标文件中的技术要求和原文依据，请稍候。')
+})
+
+test('summarizes appendix phase with the real generated appendix count', () => {
+  const running = summarizeParseProgress({
+    status: 'running',
+    percentage: 40,
+    phaseKey: 'appendix',
+    phaseLabel: '提取附表中',
+    summary: '正在提取附表，已生成 3 / 12。',
+    current: 3,
+    total: 12,
+  })
+
+  assert.equal(running.summary, '已提取附表 3/12 项')
+})
+
+test('keeps appendix counts from moving backwards within the same phase', () => {
+  const previous = {
+    status: 'running', percentage: 40, phaseKey: 'appendix', current: 5, total: 12,
+  }
+  const incoming = {
+    status: 'running', percentage: 39, phaseKey: 'appendix', current: 3, total: 12,
+  }
+
+  const merged = mergeMonotonicParseProgress(previous, incoming)
+
+  assert.equal(summarizeParseProgress(merged).summary, '已提取附表 5/12 项')
+})
+
+test('keeps the backend summary while the appendix count is not available yet', () => {
+  const running = summarizeParseProgress({
+    status: 'running',
+    percentage: 35,
+    phaseKey: 'appendix',
+    phaseLabel: '提取附表中',
+    summary: '正在扫描 招标文件-技术卷.docx 的附表候选。',
+    current: 0,
+    total: 0,
+  })
+
+  assert.equal(running.summary, '正在扫描 招标文件-技术卷.docx 的附表候选。')
+})
+
+test('reports total parse elapsed time and freezes it after completion', () => {
+  const startedAt = '2026-08-06T01:00:00Z'
+
+  assert.equal(parseElapsedSeconds(
+    { status: 'running', startedAt },
+    Date.parse('2026-08-06T01:04:21Z'),
+  ), 261)
+  assert.equal(parseElapsedSeconds(
+    {
+      status: 'completed',
+      startedAt,
+      completedAt: '2026-08-06T01:05:09Z',
+    },
+    Date.parse('2026-08-06T02:00:00Z'),
+  ), 309)
+  assert.equal(formatParseDuration(261), '4 分 21 秒')
+})
+
+test('technical parse card renders only the quantified progress line and runtime line', () => {
+  const pageSource = readFileSync(new URL('./pages/TechnicalTenderReview.jsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(pageSource, /backgroundHintParts|showBackgroundHint/)
+  assert.doesNotMatch(pageSource, /progressSummary\.title/)
+  assert.equal((pageSource.match(/progressSummary\.summary/g) || []).length, 1)
+  assert.match(pageSource, /已运行/)
+  assert.match(pageSource, /总耗时/)
 })
 
 test('summarizes stale structured parse phase without internal implementation terms', () => {

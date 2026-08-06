@@ -166,12 +166,36 @@ test('格式应用响应缺 document 时按本次请求推进本地格式状态'
 test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持不变', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+  const progressSource = await readFile(new URL('../components/TechnicalGenerationProgressModal.jsx', import.meta.url), 'utf8')
 
-  assert.match(gapSource, /warningCount/)
+  assert.match(progressSource, /warningCount/)
   assert.match(gapSource, /disabled=\{Boolean\(busyAction\) \|\| !generationCompleted\}/)
   assert.match(editorSource, /technicalDocumentAPI\.technicalFormat\(id, payload\)/)
   assert.match(editorSource, /download=\{finalData\?\.fileName \|\| data\?\.fileName \|\| defaultWordFileName\}/)
   assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
+})
+
+test('重新生成正文只在共创导出页展示，并位于 Word、PDF 下载控件之后', async () => {
+  const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+  const wordIndex = editorSource.indexOf('下载Word')
+  const pdfIndex = editorSource.indexOf('下载PDF')
+  const regenerateIndex = editorSource.indexOf("'重新生成正文'")
+
+  assert.doesNotMatch(gapSource, /重新生成正文/)
+  assert.ok(wordIndex >= 0)
+  assert.ok(pdfIndex > wordIndex)
+  assert.ok(regenerateIndex > pdfIndex)
+})
+
+test('共创导出页二次确认后沿用正文生成接口并刷新最新文档', async () => {
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(editorSource, /确认重新生成正文？/)
+  assert.match(editorSource, /尚未保存的共创修改可能丢失/)
+  assert.match(editorSource, /const payload = await technicalGenerateAPI\.run\(id\)/)
+  assert.match(editorSource, /loadDocument\(\{ silent: true \}\)/)
+  assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })
 
 test('事实表清单和素材范围变更后自动重建，不保留手动刷新入口', async () => {
@@ -393,6 +417,39 @@ test('目录标签v4：AI填写完成变待复核模板，复核通过收口已�
   assert.equal(technicalGapTagOf({ ...filled, qualityStatus: 'passed' }), 'template_review')
 })
 
+test('目录标签v6：已取代产物不参与标签、预览和当前产物列表', () => {
+  const item = {
+    id: 'G1',
+    decision: 'ready',
+    status: 'resolved',
+    humanConfirmed: true,
+    resolvedArtifacts: [
+      {
+        id: 'ART-OLD',
+        source: 'ai_fill',
+        fileName: '旧AI填写.docx',
+        active: false,
+        supersededAt: '2026-08-06T00:00:00Z',
+        onlyoffice: { fileUrl: '/old.docx' },
+      },
+      {
+        id: 'ART-NEW',
+        source: 'material_library',
+        fileName: '新选素材.docx',
+        materialId: 'RAW-NEW',
+        s7Ready: true,
+        active: true,
+        onlyoffice: { fileUrl: '/new.docx' },
+      },
+    ],
+  }
+
+  assert.equal(technicalGapTagOf(item), 'material_ready')
+  assert.equal(technicalHelpers.latestResolvedArtifact(item).id, 'ART-NEW')
+  assert.deepEqual(technicalHelpers.currentResolvedArtifacts(item).map((artifact) => artifact.id), ['ART-NEW'])
+  assert.deepEqual(technicalHelpers.previewChoicesForItem(item).map((choice) => choice.artifact.id), ['ART-NEW'])
+})
+
 test('目录标签v6：选定即定案——人工选材/上传直接变已就绪（行为改动② 2026-08-04）', () => {
   // 后端 register 已在人工选材/上传时落 humanConfirmed + resolvedArtifacts。
   assert.equal(
@@ -601,4 +658,37 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
   const state = technicalHelpers.technicalGapParentCoverageState(applied[0], applied)
   assert.equal(state.applied, true)
   assert.equal(state.coveredCount, 1)
+})
+
+test('正文填写汇总只数正文任务，失败按目录项计', () => {
+  const items = [
+    {
+      id: 'G1',
+      decision: 'fill_required',
+      fillTasks: [
+        { id: 'T1', skill: 'bid-tech-word-placeholder-filler', status: 'completed' },
+        { id: 'T2', skill: 'bid-tech-word-placeholder-filler', status: 'pending' },
+        // 附表由另一条线负责，不进正文汇总
+        { id: 'T3', skill: 'bid-tech-table-filler', status: 'pending' },
+      ],
+    },
+    {
+      id: 'G2',
+      decision: 'fill_required',
+      fillTasks: [{ id: 'T4', skill: 'bid-tech-word-placeholder-filler', status: 'pending' }],
+      fillError: { message: 'MinIO 取件失败' },
+    },
+    // 仅留标题与非填写轨不计入
+    { id: 'G3', decision: 'fill_required', titleOnly: true, fillTasks: [{ id: 'T5', skill: 'bid-tech-word-placeholder-filler' }] },
+    { id: 'G4', decision: 'ready', fillTasks: [{ id: 'T6', skill: 'bid-tech-word-placeholder-filler' }] },
+  ]
+
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 2, filled: 1, failed: 1 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0 })
+})
+
+test('目录项填写失败原因用于标红与重填提示', () => {
+  assert.equal(technicalHelpers.technicalGapFillError({ fillError: { message: '素材缺失' } }), '素材缺失')
+  assert.equal(technicalHelpers.technicalGapFillError({}), '')
+  assert.equal(technicalHelpers.technicalGapFillError({ fillError: 'bad' }), '')
 })

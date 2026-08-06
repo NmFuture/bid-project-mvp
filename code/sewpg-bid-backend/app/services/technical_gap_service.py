@@ -27,7 +27,12 @@ from app.services.technical_gap_fact_table import (
     build_project_fact_table,
     empty_project_fact_table,
     normalize_project_fact_field,
+    project_fact_material_work_dir,
     summarize_project_fact_fields,
+)
+from app.services.project_fact_materials import (
+    materialize_project_fact_material,
+    project_fact_material_cached_path,
 )
 from app.services.peripheral import PeripheralError
 from app.services.bid_runtime_state import now_iso
@@ -52,8 +57,22 @@ from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
     refresh_technical_gap_plan_artifact_urls,
     summarize_technical_gap_plan,
+    technical_gap_artifact_is_s7_ready,
 )
-from app.services.technical_fact_curator import run_fact_curator_for_project
+from app.services.technical_fact_curate_job import (
+    fact_curate_locked,
+    fact_curate_running,
+    fact_curate_state,
+    schedule_fact_curate_job,
+)
+from app.services.technical_body_fill_job import (
+    body_fill_locked,
+    body_fill_running,
+    body_fill_stale,
+    body_fill_state,
+    collect_body_fill_targets,
+    schedule_body_fill_job,
+)
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
 from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_spec_version
@@ -100,6 +119,23 @@ PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
     FACT_STATUS_NOT_APPLICABLE,
     FACT_STATUS_MISSING_SOURCE,
 }
+
+
+def default_fact_material_scopes(project: dict[str, Any]) -> list[dict[str, str]]:
+    """事实表默认生效的素材范围：标准文件/客户定制/项目定制三层。
+
+    与 AI 匹配填充实际扫描的口径同源（project_fact_material_index 的 curate 分支），
+    前端据此如实展示范围，不再写死「项目素材」。
+    """
+    try:
+        scopes = build_project_material_scope(project).get("readableScopes") or []
+    except Exception:
+        return []
+    return [
+        {"tier": str(scope.get("materialTier") or ""), "path": str(scope.get("path") or "")}
+        for scope in scopes
+        if isinstance(scope, dict) and str(scope.get("path") or "").strip()
+    ]
 
 
 def _raise_gap_error(exc: Exception, not_found_detail: str) -> None:
@@ -371,12 +407,16 @@ class TechnicalGapService:
             target = next((artifact for artifact in artifacts if str(artifact.get("id") or "") == artifact_id), None)
             if target is None or str(target.get("source") or "") != "ai_fill":
                 raise KeyError(artifact_id)
+            if target.get("supersededAt") or target.get("active", True) is False:
+                raise ValueError("该 AI 填写产物已被新的选材或填写结果取代，不能再复核通过。")
 
             fill_task_id = str(target.get("fillTaskId") or "")
             batch_artifacts = [
                 artifact
                 for artifact in artifacts
                 if str(artifact.get("source") or "") == "ai_fill"
+                and not artifact.get("supersededAt")
+                and artifact.get("active", True) is not False
                 and (
                     str(artifact.get("fillTaskId") or "") == fill_task_id
                     if fill_task_id
@@ -387,12 +427,30 @@ class TechnicalGapService:
             confirmed_by = str((data or {}).get("operator") or "当前用户")
             for artifact in batch_artifacts:
                 artifact["s7Ready"] = True
+                artifact["active"] = True
+                artifact.pop("revokedAt", None)
+                artifact.pop("revokedBy", None)
                 artifact["qualityGate"] = "human_confirmed"
                 artifact["confirmed"] = True
                 artifact["confirmedAt"] = confirmed_at
                 artifact["confirmedBy"] = confirmed_by
 
-            plan_item["qualityStatus"] = "human_confirmed"
+            # 审核归属具体 fillTask（R10-B07-02）：目录项级 qualityStatus 只在全部填写任务
+            # 完成、且所有 AI 填写产物均已放行后才收口为 human_confirmed；否则保留填写阶段
+            # 的质检状态，避免前端把仍有待填/待审任务的目录项整体误判为「已就绪」。
+            pending_fill_tasks = [
+                task
+                for task in (plan_item.get("fillTasks") or [])
+                if isinstance(task, dict) and str(task.get("status") or "pending") != "completed"
+            ]
+            unready_ai_artifacts = [
+                artifact
+                for artifact in artifacts
+                if str(artifact.get("source") or "") == "ai_fill"
+                and not technical_gap_artifact_is_s7_ready(artifact)
+            ]
+            if not pending_fill_tasks and not unready_ai_artifacts:
+                plan_item["qualityStatus"] = "human_confirmed"
             plan_item.setdefault("reviewNotes", []).append(
                 f"人工确认 AI 填写产物可用于合并：{len(batch_artifacts)} 份"
             )
@@ -437,6 +495,32 @@ class TechnicalGapService:
             plan_item["humanConfirmed"] = confirmed
             plan_item["humanConfirmedAt"] = timestamp if confirmed else ""
             plan_item["humanConfirmedBy"] = operator if confirmed else ""
+            artifacts = [
+                artifact
+                for artifact in (plan_item.get("resolvedArtifacts") or [])
+                if isinstance(artifact, dict)
+            ]
+            if confirmed:
+                # 重新确认只恢复上次撤销停用的产物；已被新选材/上传取代的（supersededAt）不恢复。
+                for artifact in artifacts:
+                    if artifact.get("supersededAt") or "revokedAt" not in artifact:
+                        continue
+                    artifact.pop("revokedAt", None)
+                    artifact.pop("revokedBy", None)
+                    artifact["s7Ready"] = True
+                    artifact["active"] = True
+            else:
+                # 撤销定案必须同时停用当前产物：保留在 resolvedArtifacts 里作审计历史，
+                # 但 s7Ready/active 置否，S7 装配不再消费被撤销的素材。
+                for artifact in artifacts:
+                    if artifact.get("s7Ready", True) is False:
+                        continue
+                    artifact["s7Ready"] = False
+                    artifact["active"] = False
+                    artifact["revokedAt"] = timestamp
+                    artifact["revokedBy"] = operator
+                if str(plan_item.get("qualityStatus") or "") == "human_confirmed":
+                    plan_item["qualityStatus"] = ""
             plan_item.setdefault("reviewNotes", []).append(
                 f"人工确认已就绪：{operator}" if confirmed else f"撤销就绪确认：{operator}"
             )
@@ -616,6 +700,8 @@ class TechnicalGapService:
         # 用户自定义的参考资料目录（素材库虚拟路径），事实表匹配时并入扫描
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
         payload["materialPaths"] = [str(path) for path in custom_paths if str(path or "").strip()]
+        # 默认生效的素材范围：与 AI 匹配填充实际扫描的三层口径一致，供前端如实展示
+        payload["materialScopes"] = default_fact_material_scopes(project)
         # 附表来源矩阵绑定状态：前端「附表填写规则」按钮的空态/已上传态
         payload["appendixSourceMatrix"] = appendix_source_matrix_meta(project)
         return payload
@@ -644,6 +730,34 @@ class TechnicalGapService:
         project["updatedAt"] = now_iso()
         persist_technical_gap_project(project)
         return {"paths": paths}
+
+    async def fetch_fact_material(self, project_id: str, material_id: str) -> dict[str, Any]:
+        """按需把事实表候选素材物化到工作区，返回本地可读路径。
+
+        幂等：已落地的直接复用缓存，不重复下载。构造 curate manifest 时只给素材清单，
+        skill 判断要读哪几份后经本接口现取，避免为清单里的每份素材全量下载。
+        """
+        material_id = str(material_id or "").strip()
+        if not material_id:
+            raise HTTPException(status_code=400, detail="素材 ID 不能为空。")
+        project = require_technical_gap_project_for_update(project_id)
+        work_dir = project_fact_material_work_dir(project)
+        cache_dir = work_dir / "material_index"
+        cached = project_fact_material_cached_path(cache_dir, material_id)
+        if cached is not None:
+            return {"materialId": material_id, "path": str(cached), "cached": True}
+        work_dir.mkdir(parents=True, exist_ok=True)
+        # 下载内部经 run_awaitable_sync 桥接异步，与 build_facts 同一模式放工作线程
+        prepared = await asyncio.to_thread(
+            materialize_project_fact_material,
+            {"id": material_id},
+            work_dir,
+            bid_type=TECHNICAL_BID_TYPE,
+        )
+        path = str(prepared.get("path") or "")
+        if not path or not Path(path).is_file():
+            raise HTTPException(status_code=404, detail=f"素材 {material_id} 取不到可读文件。")
+        return {"materialId": material_id, "path": path, "cached": False}
 
     async def upload_appendix_source_matrix(
         self, project_id: str, filename: str, content: bytes
@@ -820,8 +934,11 @@ class TechnicalGapService:
             confirm = bool(payload.get("confirm") or payload.get("confirmed"))
             operator = str(payload.get("operator") or "当前用户")
             saved_at = now_iso()
+            # 整表 confirm 只把表级 status 升为 confirmed（正文填写的准入闸门），
+            # 不逐字段盖成"已人工确认"——字段级确认只由 PATCH 单字段接口产生。
+            # 否则一次保存就把 148 个字段全变成 AI 禁区，AI 自己填错的值再也纠正不了。
             fields = [
-                normalize_project_fact_field(field, index=index, confirm=confirm, operator=operator, saved_at=saved_at)
+                normalize_project_fact_field(field, index=index, confirm=False, operator=operator, saved_at=saved_at)
                 for index, field in enumerate(incoming_fields, start=1)
                 if isinstance(field, dict)
             ]
@@ -924,7 +1041,11 @@ class TechnicalGapService:
             _raise_gap_error(exc, "Gap fact field not found")
 
     async def curate_facts(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        """事实表维护 Skill（方案 B）：组 manifest → opencode curator → 建议落表为 pending_confirmation。"""
+        """提交 AI 匹配填充任务：立即返回，执行交给后台 worker，进度经 curate_status 轮询。
+
+        单轮 curate 要跑几分钟，同步返回会把连接占满整轮且关页面就丢结果；任务化后
+        弹窗关闭、页面刷新都不影响执行，状态持久化在 gap_state["factCurateState"]。
+        """
         try:
             project = require_technical_gap_project_for_update(project_id)
             gap_state = ensure_technical_gap_state(project)
@@ -934,41 +1055,34 @@ class TechnicalGapService:
             if not isinstance(table, dict) or table.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
                 table = await asyncio.to_thread(build_project_fact_table, project, gap_state)
                 gap_state["projectFactTable"] = table
-            source_table = copy.deepcopy(table)
-            source_fact_specs = copy.deepcopy(gap_state.get("factSpecs"))
-            project_snapshot = copy.deepcopy(project)
-            gap_state_snapshot = copy.deepcopy(gap_state)
-            # 同步重活（素材落地 + opencode 调用）放工作线程，与 build_facts 同一模式
-            updated_table, report = await asyncio.to_thread(
-                run_fact_curator_for_project, project_snapshot, gap_state_snapshot, data or {}
-            )
-            latest_project = require_technical_gap_project_for_update(project_id)
-            latest_gap_state = ensure_technical_gap_state(latest_project)
-            if (
-                latest_gap_state.get("projectFactTable") != source_table
-                or latest_gap_state.get("factSpecs") != source_fact_specs
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail="AI 匹配期间事实表或填表规则已被修改，本次结果未覆盖保存；请检查最新数据后重试。",
-                )
-            latest_gap_state["projectFactTable"] = updated_table
-            latest_project["updatedAt"] = now_iso()
-            persist_technical_gap_project(latest_project)
-            counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
-            message = (
-                "事实表维护完成："
-                f"补抽 {counts.get('filled', 0)} 条、修正 {counts.get('fixed', 0)} 条、"
-                f"口径建议 {counts.get('advised', 0)} 条、未找到值 {counts.get('notFound', 0)} 条、"
-                f"忽略 {counts.get('ignored', 0)} 条（已确认跳过 {counts.get('skippedConfirmed', 0)} 条）。"
-            )
-            if counts.get("ignored"):
-                message += "存在未落表建议，请检查 curateReport.ignored 的原因。"
+                project["updatedAt"] = now_iso()
+                persist_technical_gap_project(project)
+            if fact_curate_running(gap_state) or fact_curate_locked(project_id):
+                raise HTTPException(status_code=409, detail="AI 匹配填充正在进行中，请等待本轮完成。")
+            state = await asyncio.to_thread(schedule_fact_curate_job, project_id, data or {})
             return {
-                "message": message,
-                "projectFactTable": copy.deepcopy(updated_table),
-                "curateReport": copy.deepcopy(report),
+                "factCurateState": state,
+                "message": "已提交 AI 匹配填充任务，可关闭弹窗，任务在后台继续。",
             }
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap facts not found")
+
+    async def curate_status(self, project_id: str) -> dict[str, Any]:
+        """AI 匹配填充状态：终态时一并带上最新事实表与报告，前端一次拿全。"""
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            state = fact_curate_state(gap_state)
+            payload: dict[str, Any] = {"factCurateState": state}
+            if str(state.get("status") or "") in {"succeeded", "failed"}:
+                table = gap_state.get("projectFactTable")
+                if isinstance(table, dict):
+                    payload["projectFactTable"] = copy.deepcopy(table)
+                report = state.get("report")
+                if isinstance(report, dict):
+                    payload["curateReport"] = copy.deepcopy(report)
+                payload["message"] = str(state.get("message") or "")
+            return payload
         except Exception as exc:
             _raise_gap_error(exc, "Gap facts not found")
 
@@ -1018,6 +1132,51 @@ class TechnicalGapService:
             return copy.deepcopy(result)
         except Exception as exc:
             _raise_gap_error(exc, "Gap not found")
+
+    def body_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """正文一键填写：提交后台任务后立即返回，进度走 bodyFillState 轮询。"""
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            if gap_state["recognitionStatus"] != "completed":
+                raise ValueError("请先完成缺口识别。")
+            if repair_technical_gap_state_fill_task_skills(gap_state):
+                project["updatedAt"] = now_iso()
+                persist_technical_gap_project(project)
+            self._require_confirmed_project_fact_table(gap_state)
+            # 僵尸状态（worker 被重启/杀掉，状态停在 running 但队列锁已释放）不挡新任务，
+            # 否则前端永远显示「填写中」，只能改库才能恢复
+            if body_fill_running(gap_state) and not body_fill_stale(gap_state, project_id):
+                raise PeripheralError(409, "正文填写任务正在执行，请等待完成后再提交。", "BODY_FILL_RUNNING")
+            payload = dict(data or {})
+            targets = collect_body_fill_targets(gap_state, payload)
+            if not targets:
+                raise ValueError("当前范围内没有待填写的正文任务。")
+            payload["expectedTotal"] = len(targets)
+            payload.update(
+                {
+                    "browserBaseUrl": self._url_scope(request)["browser_base_url"],
+                    "onlyofficeBaseUrl": self._url_scope(request)["onlyoffice_base_url"],
+                }
+            )
+            state = schedule_body_fill_job(project_id, payload)
+            return {"bodyFillState": state, "total": len(targets)}
+        except Exception as exc:
+            _raise_gap_error(exc, "项目不存在")
+            raise
+
+    def body_fill_status(self, project_id: str) -> dict[str, Any]:
+        project = self.ensure_project(project_id)
+        gap_state = ensure_technical_gap_state(project)
+        state = body_fill_state(gap_state)
+        if body_fill_stale(gap_state, project_id):
+            state["status"] = "failed"
+            state["message"] = "任务执行中断（服务重启或进程退出），请重新发起一键填写。"
+        return {
+            "bodyFillState": state,
+            "pendingTotal": len(collect_body_fill_targets(gap_state, {})),
+            "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
+        }
 
     def ai_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
         try:

@@ -46,6 +46,36 @@ def test_queued_job_lock_uses_finite_queue_ttl() -> None:
     }
 
 
+def test_generation_initializer_runs_only_for_lock_winner() -> None:
+    winner = MagicMock()
+    winner.set.return_value = True
+    winner.pipeline.return_value.execute.return_value = []
+    initialized: list[str] = []
+
+    with patch.object(job_queue, "get_redis_client", return_value=winner):
+        queued = job_queue.enqueue_generation_job(
+            "directory_generation",
+            "project-1",
+            {},
+            on_lock_acquired=lambda: initialized.append("winner"),
+        )
+
+    loser = MagicMock()
+    loser.set.return_value = False
+    with patch.object(job_queue, "get_redis_client", return_value=loser):
+        locked = job_queue.enqueue_generation_job(
+            "directory_generation",
+            "project-1",
+            {},
+            on_lock_acquired=lambda: initialized.append("loser"),
+        )
+
+    assert queued.queued is True
+    assert locked.locked is True
+    assert initialized == ["winner"]
+    loser.pipeline.assert_not_called()
+
+
 def test_generation_jobs_are_routed_by_business_domain() -> None:
     expected_queues = {
         "s1_parse": job_queue.QUEUE_KEY,

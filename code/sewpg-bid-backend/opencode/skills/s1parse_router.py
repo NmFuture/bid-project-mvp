@@ -24,6 +24,7 @@ AGENTIC_COMMANDS = {
     "prepare",
     "overview",
     "search",
+    "checklist",
     "read",
     "table",
     "window",

@@ -1,8 +1,9 @@
 """素材流水线自动衔接（上传→清洗→Wiki 增量，产品裁决 2026-08-04）单测。"""
 from __future__ import annotations
 
+import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.core.config import settings
 from app.services import material_wiki_auto
@@ -357,6 +358,248 @@ class MaterialWikiAutoTests(unittest.TestCase):
             material_wiki_auto.on_material_deep_parse_job_finished("RAW-1", current_job_id="X")
             material_wiki_auto.on_material_tree_changed("删除素材文件")
         enqueue.assert_not_called()
+
+
+class PipelineProgressTerminalTests(unittest.TestCase):
+    """进度聚合必须带出各阶段最近终态（R10-B07-05）：失败/取消的任务离开 active 后仍可展示。"""
+
+    @staticmethod
+    def _run_progress(*, cleaning_terminal=None, deep_parse_terminal=None, active_by_type=None):
+        terminal_by_type = {
+            material_wiki_auto.MATERIAL_CLEANING_JOB_TYPE: cleaning_terminal,
+            material_wiki_auto.MATERIAL_DEEP_PARSE_JOB_TYPE: deep_parse_terminal,
+        }
+        active_by_type = active_by_type or {}
+
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                side_effect=lambda job_type: active_by_type.get(job_type, []),
+            ),
+            patch(
+                "app.services.job_queue.latest_terminal_job_of_type",
+                side_effect=lambda job_type, bid_type: terminal_by_type.get(job_type),
+            ),
+            patch(
+                "app.services.material_wiki_jobs.latest_material_wiki_job_status",
+                return_value={"status": "idle"},
+            ),
+            patch.object(
+                material_wiki_auto,
+                "_pending_preview_count",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            return asyncio.run(material_wiki_auto.technical_pipeline_progress())
+
+    def test_progress_includes_last_terminal_per_stage(self) -> None:
+        payload = self._run_progress(
+            cleaning_terminal={
+                "jobId": "clean-1",
+                "status": "failed",
+                "message": "清洗失败：未生成 Word 文件。",
+                "finishedAt": "2026-08-06T01:00:00Z",
+            },
+            deep_parse_terminal={
+                "jobId": "dp-1",
+                "status": "cancelled",
+                "message": "任务锁已失效或已被新任务替代。",
+                "finishedAt": "2026-08-06T01:05:00Z",
+            },
+        )
+        self.assertEqual(payload["cleaning"]["active"], 0)
+        self.assertEqual(payload["cleaning"]["lastTerminal"]["jobId"], "clean-1")
+        self.assertEqual(payload["cleaning"]["lastTerminal"]["status"], "failed")
+        self.assertEqual(payload["cleaning"]["lastTerminal"]["finishedAt"], "2026-08-06T01:00:00Z")
+        self.assertEqual(payload["deepParse"]["lastTerminal"]["status"], "cancelled")
+
+    def test_progress_last_terminal_defaults_to_none(self) -> None:
+        payload = self._run_progress()
+        self.assertIsNone(payload["cleaning"]["lastTerminal"])
+        self.assertIsNone(payload["deepParse"]["lastTerminal"])
+
+    def test_progress_filters_business_active_jobs_but_keeps_legacy_technical_jobs(self) -> None:
+        payload = self._run_progress(
+            active_by_type={
+                material_wiki_auto.MATERIAL_CLEANING_JOB_TYPE: [
+                    {"id": "legacy-tech", "data": {}},
+                    {"id": "business-1", "data": {"bidType": "商务标"}},
+                    {"id": "invalid-1", "data": {"bidType": "unknown"}},
+                ],
+            },
+        )
+
+        self.assertEqual(payload["cleaning"]["active"], 1)
+
+
+class MaterialWikiAutoBidTypeIsolationTests(unittest.TestCase):
+    """R10-B04-01：商务标素材清洗/深度解析不得触发或占用技术标 Wiki 链路。"""
+
+    def setUp(self) -> None:
+        self.fake_redis = _FakeRedis()
+        self.redis_patcher = patch(
+            "app.services.material_wiki_auto.get_redis_client",
+            return_value=self.fake_redis,
+        )
+        self.redis_patcher.start()
+        self.flag_patcher = patch.object(settings, "material_wiki_auto_refresh", True)
+        self.flag_patcher.start()
+
+    def tearDown(self) -> None:
+        self.flag_patcher.stop()
+        self.redis_patcher.stop()
+
+    def test_business_cleaning_finished_does_not_trigger_technical_wiki(self) -> None:
+        # 商务标清洗批次收尾：不生成技术标 Wiki 任务，也不清技术标批次分母。
+        material_wiki_auto.add_cleaning_batch_total(3)
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_cleaning_job_finished(bid_type="商务标")
+        enqueue.assert_not_called()
+        self.assertEqual(material_wiki_auto._cleaning_batch_total(), 3)
+
+    def test_business_upload_hook_does_not_create_technical_wiki_job(self) -> None:
+        # 商务标上传（含纯非清洗批次）：不登记技术标批次分母、不触发技术标 Wiki 刷新。
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_upload_completed(clean_job_count=0, bid_type="商务标")
+            material_wiki_auto.on_material_upload_completed(clean_job_count=2, bid_type="商务标")
+        enqueue.assert_not_called()
+        self.assertEqual(material_wiki_auto._cleaning_batch_total(), 0)
+
+    def test_business_deep_parse_finished_does_not_trigger_technical_wiki(self) -> None:
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]) as find_jobs,
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_deep_parse_job_finished("RAW-0009", bid_type="商务标")
+        enqueue.assert_not_called()
+        # 商务标任务在入口处即被隔离，不占用技术标队列查询。
+        find_jobs.assert_not_called()
+
+    def test_explicit_invalid_bid_type_hooks_are_ignored_and_warned(self) -> None:
+        material_wiki_auto.add_cleaning_batch_total(3)
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type") as find_jobs,
+            patch("app.services.material_wiki_jobs.enqueue_material_wiki_generation") as enqueue,
+            self.assertLogs("app.services.material_wiki_auto", level="WARNING") as logs,
+        ):
+            material_wiki_auto.on_material_cleaning_job_finished(bid_type="其他标")
+            material_wiki_auto.on_material_deep_parse_job_finished("RAW-0009", bid_type="其他标")
+            material_wiki_auto.on_material_upload_completed(clean_job_count=0, bid_type="其他标")
+        find_jobs.assert_not_called()
+        enqueue.assert_not_called()
+        self.assertEqual(material_wiki_auto._cleaning_batch_total(), 3)
+        self.assertEqual(sum("非法 bidType" in entry for entry in logs.output), 3)
+
+    def test_business_cleaning_job_does_not_block_technical_batch_finish(self) -> None:
+        # 技术标收尾只等技术标任务：商务标清洗还在跑不阻塞技术标 Wiki 刷新。
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                return_value=[{"id": "JOB-BUSINESS", "data": {"bidType": "商务标"}}],
+            ),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                return_value={"jobId": "WIKI-B1", "status": "queued", "reused": False},
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_cleaning_job_finished(
+                current_job_id="JOB-SELF", bid_type="技术标"
+            )
+        enqueue.assert_called_once()
+
+    def test_business_cleaning_job_does_not_block_technical_upload_refresh(self) -> None:
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                return_value=[{"id": "JOB-BUSINESS", "data": {"bidType": "商务标"}}],
+            ),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                return_value={"jobId": "WIKI-UPLOAD", "status": "queued", "reused": False},
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_upload_completed(clean_job_count=0, bid_type="技术标")
+        enqueue.assert_called_once()
+
+    def test_business_cleaning_job_does_not_block_technical_pending_retry(self) -> None:
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-technical"
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                return_value=[
+                    {"id": "JOB-BUSINESS", "data": {"bidType": "商务标"}},
+                    {"id": "JOB-INVALID", "data": {"bidType": "其他标"}},
+                ],
+            ),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                return_value={"jobId": "WIKI-RETRY", "status": "queued", "reused": False},
+            ) as enqueue,
+            self.assertLogs("app.services.material_wiki_auto", level="WARNING") as logs,
+        ):
+            queued = material_wiki_auto.retry_pending_technical_wiki_auto_refresh()
+        self.assertTrue(queued)
+        enqueue.assert_called_once()
+        self.assertNotIn(pending_key, self.fake_redis.store)
+        self.assertEqual(sum("非法 bidType" in entry for entry in logs.output), 1)
+
+    def test_business_deep_parse_job_does_not_block_technical_rerun(self) -> None:
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                return_value=[{"id": "JOB-BUSINESS", "data": {"bidType": "商务标"}}],
+            ),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                return_value={"jobId": "WIKI-B2", "status": "queued", "reused": False},
+            ) as enqueue,
+        ):
+            material_wiki_auto.on_material_deep_parse_job_finished(
+                "RAW-2297", current_job_id="JOB-SELF", bid_type="技术标"
+            )
+        enqueue.assert_called_once()
+
+
+class TechnicalPipelineProgressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_progress_excludes_business_jobs(self) -> None:
+        # 技术标进度口径 = 技术标任务 + 未携带 bidType 的历史任务；商务标任务不混入。
+        jobs = [
+            {"id": "JOB-TECH", "status": "processing", "data": {"bidType": "技术标"}},
+            {"id": "JOB-LEGACY"},
+            {"id": "JOB-BUSINESS", "status": "processing", "data": {"bidType": "商务标"}},
+            {"id": "JOB-INVALID", "status": "processing", "data": {"bidType": "其他标"}},
+        ]
+        with (
+            patch("app.services.material_wiki_auto.get_redis_client", return_value=_FakeRedis()),
+            patch.object(settings, "material_wiki_auto_refresh", True),
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=jobs),
+            patch(
+                "app.services.material_wiki_jobs.latest_material_wiki_job_status",
+                return_value={"status": "idle"},
+            ),
+            patch(
+                "app.services.technical_wiki_preview_generation.count_retryable_previews",
+                new=AsyncMock(return_value=0),
+            ),
+            self.assertLogs("app.services.material_wiki_auto", level="WARNING") as logs,
+        ):
+            progress = await material_wiki_auto.technical_pipeline_progress()
+        self.assertEqual(progress["cleaning"]["active"], 2)
+        self.assertEqual(progress["deepParse"]["active"], 2)
+        self.assertEqual(sum("非法 bidType" in entry for entry in logs.output), 2)
 
 
 if __name__ == "__main__":

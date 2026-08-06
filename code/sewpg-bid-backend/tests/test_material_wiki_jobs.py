@@ -83,6 +83,7 @@ def test_latest_wiki_status_maps_queued_job_to_legacy_running_contract() -> None
             return_value={
                 "status": "queued",
                 "message": "等待素材 Worker",
+                "updatedAt": "2026-08-06T01:59:00Z",
                 "progress": {"phase": "preview"},
             },
         ),
@@ -91,9 +92,71 @@ def test_latest_wiki_status_maps_queued_job_to_legacy_running_contract() -> None
 
     assert result == {
         "jobId": "wiki-job-1",
+        "bidType": TECHNICAL_BID_TYPE,
         "status": "running",
         "progress": {"phase": "preview"},
         "message": "等待素材 Worker",
+    }
+
+
+def test_latest_wiki_status_includes_finished_at_for_terminal_job() -> None:
+    """终态 Wiki 任务必须带出结束时间，供失败后进入页面的用户持续看到（R10-B07-05）。"""
+    client = MagicMock()
+    client.get.return_value = "wiki-job-9"
+    with (
+        patch.object(material_wiki_jobs, "get_redis_client", return_value=client),
+        patch.object(
+            material_wiki_jobs,
+            "material_wiki_job_status",
+            return_value={
+                "status": "failed",
+                "message": "生成超时",
+                "updatedAt": "2026-08-06T02:00:00Z",
+                "progress": {},
+            },
+        ),
+    ):
+        result = material_wiki_jobs.latest_material_wiki_job_status(TECHNICAL_BID_TYPE)
+
+    assert result["status"] == "failed"
+    assert result["error"] == "生成超时"
+    assert result["finishedAt"] == "2026-08-06T02:00:00Z"
+
+
+def test_latest_wiki_status_falls_back_to_scoped_generic_terminal_when_pointer_expired() -> None:
+    """latest pointer 先过期时，仍以收尾时重置 TTL 的 scoped generic terminal 展示失败。"""
+    client = MagicMock()
+    client.get.return_value = None
+    terminal = {
+        "jobId": "wiki-job-long",
+        "type": material_wiki_jobs.MATERIAL_WIKI_JOB_TYPE,
+        "bidType": TECHNICAL_BID_TYPE,
+        "status": "failed",
+        "message": "长任务生成超时",
+        "finishedAt": "2026-08-06T03:00:00Z",
+    }
+    with (
+        patch.object(material_wiki_jobs, "get_redis_client", return_value=client),
+        patch.object(
+            material_wiki_jobs,
+            "latest_terminal_job_of_type",
+            return_value=terminal,
+        ) as latest_terminal,
+    ):
+        result = material_wiki_jobs.latest_material_wiki_job_status(TECHNICAL_BID_TYPE)
+
+    latest_terminal.assert_called_once_with(
+        material_wiki_jobs.MATERIAL_WIKI_JOB_TYPE,
+        TECHNICAL_BID_TYPE,
+    )
+    assert result == {
+        "jobId": "wiki-job-long",
+        "bidType": TECHNICAL_BID_TYPE,
+        "status": "failed",
+        "progress": {},
+        "message": "长任务生成超时",
+        "finishedAt": "2026-08-06T03:00:00Z",
+        "error": "长任务生成超时",
     }
 
 

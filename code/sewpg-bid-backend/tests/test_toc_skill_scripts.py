@@ -1134,7 +1134,8 @@ class TocSkillScriptTests(unittest.TestCase):
         commands = (
             "prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|"
             "review-batch|decision-next|decision-batch|decision-reopen|review-corrections|"
-            "appendix-next|appendix-decision-batch|review-complete|decisions|compose|"
+            "appendix-next|appendix-decision-batch|appendix-predecision-next|"
+            "appendix-predecision-batch|review-complete|decisions|compose|"
             "validate|status|finalize"
         )
         self.assertIn(f"  {commands}) ;;", dockerfile)
@@ -3657,6 +3658,122 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertTrue(done["complete"])
         self.assertEqual(done["decidedCount"], 1)
         self.assertEqual(done["remainingCount"], 0)
+
+    def test_bid_outline_appendix_predecision_materializes_after_template_merge(self) -> None:
+        decision_workflow = load_outline_script("run_from_manifest").decision_workflow
+        structure = {
+            "schema_version": "template-structure.v1",
+            "items": [{"number": "1", "title": "Technical proposal", "level": 1}],
+        }
+        inventory = [
+            {
+                "appendix_id": "APP-0001",
+                "file_id": "TEN-1",
+                "number": "Appendix B.1",
+                "title": "Guaranteed data sheet",
+                "raw_text": "Appendix B.1 Guaranteed data sheet",
+                "following_table_count": 1,
+                "source_status": "present",
+            },
+            {
+                "appendix_id": "APP-0002",
+                "file_id": "TEN-1",
+                "number": "Appendix B.2",
+                "title": "Instructions only",
+                "raw_text": "Appendix B.2 Instructions only",
+                "following_table_count": 0,
+                "source_status": "missing",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_dir = root / "main"
+            predecision_dir = root / "appendix"
+            main_dir.mkdir()
+            predecision_dir.mkdir()
+
+            batch = decision_workflow.next_appendix_predecision_batch(
+                predecision_dir,
+                structure,
+                inventory,
+            )
+            self.assertEqual(
+                batch["submission_contract"]["include_fields"],
+                ["appendix_id", "decision", "reason"],
+            )
+            decision_workflow.submit_appendix_predecision_batch(
+                predecision_dir,
+                structure,
+                {
+                    "batch_token": batch["batch_token"],
+                    "items": [
+                        {
+                            "appendix_id": "APP-0001",
+                            "decision": "include",
+                            "reason": "Tender requires the completed data sheet.",
+                        },
+                        {
+                            "appendix_id": "APP-0002",
+                            "decision": "exclude",
+                            "reason": "No independent table is present.",
+                        },
+                    ],
+                },
+                inventory,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "模板逐项判断"):
+                decision_workflow.materialize_appendix_predecisions(
+                    main_dir,
+                    predecision_dir,
+                    structure,
+                    inventory,
+                )
+
+            template = decision_workflow.next_decision_batch(main_dir, structure)
+            decision_workflow.submit_decision_batch(
+                main_dir,
+                structure,
+                {
+                    "batch_token": template["batch_token"],
+                    "items": [
+                        {
+                            "target_id": template["items"][0]["target_id"],
+                            "decision": "retain",
+                            "reason": "Historical structure remains applicable.",
+                        }
+                    ],
+                    "additions": [],
+                },
+            )
+            result = decision_workflow.materialize_appendix_predecisions(
+                main_dir,
+                predecision_dir,
+                structure,
+                inventory,
+            )
+            state = json_load(main_dir / "outline_decision_state.json")
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["included_count"], 1)
+        self.assertEqual(result["excluded_count"], 1)
+        self.assertEqual(
+            state["appendix_decisions"]["APP-0001"]["decision"], "include"
+        )
+        self.assertEqual(
+            state["appendix_decisions"]["APP-0002"]["decision"], "exclude"
+        )
+        appendix_roots = [
+            item
+            for item in state["additions"]
+            if item.get("parent_id") is None and item.get("title") == "技术附表"
+        ]
+        self.assertEqual(len(appendix_roots), 1)
+        self.assertEqual(
+            [item["parent_id"] for item in state["additions"] if item.get("parent_id")],
+            [appendix_roots[0]["node_id"]],
+        )
 
     def test_bid_outline_appendix_batch_copies_inventory_metadata_for_include(self) -> None:
         decision_workflow = load_outline_script("run_from_manifest").decision_workflow
@@ -6899,247 +7016,43 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertIsNotNone(shd)
             self.assertEqual(shd.get(qn("w:fill")), "FFF2CC")
 
-    def test_bid_word_placeholder_filler_replaces_parse_and_project_placeholders(self) -> None:
+    def test_bid_word_placeholder_filler_fills_key_data_table_from_spec_columns(self) -> None:
+        """清单驱动端到端：占位符即字段名直接命中，关键数据表语义校验全通过。
+
+        原先这一区有 5 个用例走的是「事实表没有清单第 2/3 列 → 上下文规则 + 全库模糊
+        匹配 + 从素材抽事实」的旧链路。该链路已删除，缺清单元数据现在直接报错，对应契约
+        由 tests/test_technical_word_fill_discipline.py 的 SpecLocateTests（逐级定位）
+        与 SpeclessManifestTests（缺清单即失败）覆盖。
+        """
         word_filler = load_word_filler_script("run_from_manifest")
+
+        blank_name = "待填写-投标关键数据一览表.docx"
+
+        def _field(label: str, value: str, placeholder: str) -> dict:
+            return {
+                "label": label,
+                "value": value,
+                "status": "confirmed",
+                "placeholder": placeholder,
+                "targetFile": f"客户定制/华能/{blank_name}",
+            }
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            template = tmp_path / "待填写-投标说明函.docx"
+            template = tmp_path / blank_name
             doc = Document()
-            doc.add_paragraph("投标机型：[投标机型，待填写]")
-            doc.add_paragraph("项目要求：[招标要求，待填写]")
             table = doc.add_table(rows=1, cols=2)
             table.style = "Table Grid"
             table.cell(0, 0).text = "项目名称"
             table.cell(0, 1).text = "[项目名称，待填写]"
-            doc.save(template)
-
-            manifest_path = tmp_path / "manifest.json"
-            output = tmp_path / "filled.docx"
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
-                        "projectName": "测试风电项目",
-                        "projectTurbineModel": {"model": "EW10.0-220上置"},
-                        "blankSource": {
-                            "id": "RAW-TEMPLATE",
-                            "title": "待填写-投标说明函.docx",
-                            "docxPath": str(template),
-                            "placeholderCount": 3,
-                        },
-                        "parseFields": [
-                            {
-                                "id": "REQ-001",
-                                "label": "招标要求",
-                                "value": "满足招标文件所有技术要求",
-                                "sourceFile": "招标文件.docx",
-                            }
-                        ],
-                        "outputFile": str(output),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            result = word_filler.run_from_manifest(manifest_path)
-
-            self.assertEqual(result["schema_version"], "bid-tech-word-placeholder-fill-v1")
-            self.assertEqual(result["fillReport"]["placeholderCount"], 3)
-            self.assertEqual(result["fillReport"]["filledPlaceholderCount"], 3)
-            self.assertEqual(result["unfilledFields"], [])
-            filled_doc = Document(str(output))
-            self.assertEqual(filled_doc.paragraphs[0].text, "投标机型：EW10.0-220上置")
-            self.assertEqual(filled_doc.paragraphs[1].text, "项目要求：满足招标文件所有技术要求")
-            self.assertEqual(filled_doc.tables[0].cell(0, 1).text, "测试风电项目")
-
-    def test_bid_word_placeholder_filler_uses_project_identity_for_owner_placeholders(self) -> None:
-        word_filler = load_word_filler_script("run_from_manifest")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            template = tmp_path / "固定-风电机组自主可控推广应用的承诺.docx"
-            doc = Document()
-            doc.add_paragraph("招标方：[招标方，待填写]")
-            doc.add_paragraph("日期：[日期，待填写]")
-            doc.save(template)
-
-            manifest_path = tmp_path / "manifest.json"
-            output = tmp_path / "filled.docx"
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
-                        "projectName": "测试风电项目",
-                        "projectIdentity": {
-                            "owner": "华能集团",
-                            "customerName": "华能集团",
-                        },
-                        "blankSource": {
-                            "id": "RAW-0452",
-                            "title": "固定-风电机组自主可控推广应用的承诺.docx",
-                            "docxPath": str(template),
-                            "placeholderCount": 2,
-                        },
-                        "outputFile": str(output),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            result = word_filler.run_from_manifest(manifest_path)
-
-            self.assertEqual(result["fillReport"]["placeholderCount"], 2)
-            self.assertEqual(result["fillReport"]["filledPlaceholderCount"], 2)
-            self.assertEqual(result["unfilledFields"], [])
-            filled_text = "\n".join(paragraph.text for paragraph in Document(str(output)).paragraphs)
-            self.assertIn("招标方：华能集团", filled_text)
-            self.assertNotIn("待填写", filled_text)
-
-    def test_bid_word_placeholder_filler_uses_manufacturing_base_intro_from_materials(self) -> None:
-        word_filler = load_word_filler_script("run_from_manifest")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            template = tmp_path / "待填写-供货保障能力.docx"
-            doc = Document()
-            doc.add_paragraph("本项目主机供货制造基地-[基地名称，待填写]")
-            doc.add_paragraph("[基地介绍，待填写]生产基地情况详见5.11.1 本项目主机供货制造基地")
-            doc.add_paragraph("本项目叶片供货制造基地-[基地名称，待填写]")
-            doc.add_paragraph("[基地介绍，待填写]生产基地情况详见5.11.2 本项目叶片供货制造基地")
-            doc.save(template)
-
-            material = tmp_path / "固定-上海电气生产能力介绍.docx"
-            source_doc = Document()
-            source_doc.add_paragraph("上海电气生产能力介绍")
-            source_doc.add_paragraph(
-                "上海电气风电(张掖)叶片科技有限公司作为上海电气风电集团股份有限公司子公司成立于2021年12月24日，"
-                "公司位于高台县南华镇工业园区。公司主要生产5XMW及以上风力发电机组和叶片，配套年产能500台机组、500套叶片。"
-            )
-            source_doc.add_paragraph(
-                "上海电气高台生产基地于2023年6月投入生产运营，产品订单覆盖西北五省，目前已经累计生产5MW及上风力发电机组100台套。"
-            )
-            source_doc.save(material)
-
-            manifest_path = tmp_path / "manifest.json"
-            output = tmp_path / "filled.docx"
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
-                        "blankSource": {
-                            "id": "RAW-SUPPLY",
-                            "title": template.name,
-                            "docxPath": str(template),
-                            "placeholderCount": 4,
-                        },
-                        "referenceMaterials": [
-                            {"id": "RAW-PROD", "name": material.name, "path": str(material), "materialTier": "standard"}
-                        ],
-                        "outputFile": str(output),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            result = word_filler.run_from_manifest(manifest_path)
-
-            self.assertEqual(result["unfilledFields"], [])
-            filled_text = "\n".join(paragraph.text for paragraph in Document(str(output)).paragraphs)
-            self.assertIn("本项目主机供货制造基地-上海电气高台生产基地", filled_text)
-            self.assertIn("上海电气高台生产基地于2023年6月投入生产运营", filled_text)
-            self.assertIn("本项目叶片供货制造基地-上海电气风电（张掖）叶片科技有限公司", filled_text)
-            self.assertIn("配套年产能500台机组、500套叶片", filled_text)
-            self.assertNotIn("待人工补充", filled_text)
-
-    def test_bid_word_placeholder_filler_summarizes_wind_resource_report_from_project_facts(self) -> None:
-        word_filler = load_word_filler_script("run_from_manifest")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            template = tmp_path / "风资源评估与机位排布方案.docx"
-            doc = Document()
-            doc.add_paragraph("风资源概况：[风资源报告，待填写]")
-            doc.save(template)
-
-            manifest_path = tmp_path / "manifest.json"
-            output = tmp_path / "filled.docx"
-            manifest_path.write_text(
-                json.dumps(
-                    {
-                        "schemaVersion": "bid-tech-word-placeholder-fill-v1",
-                        "blankSource": {
-                            "id": "RAW-WIND",
-                            "title": "风资源评估与机位排布方案.docx",
-                            "docxPath": str(template),
-                            "placeholderCount": 1,
-                        },
-                        "projectFactTable": {
-                            "status": "confirmed",
-                            "fields": [
-                                {"label": "轮毂高度", "value": "125", "unit": "m"},
-                                {"label": "年平均风速", "value": "7.22", "unit": "m/s"},
-                                {"label": "空气密度", "value": "1.16", "unit": "kg/m3"},
-                                {"label": "湍流强度", "value": "0.1"},
-                                {"label": "风剪切", "value": "0.1"},
-                                {"label": "极端风速", "value": "53.51", "unit": "m/s"},
-                                {"label": "安全等级", "value": "IEC S"},
-                            ],
-                        },
-                        "outputFile": str(output),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            result = word_filler.run_from_manifest(manifest_path)
-
-            self.assertEqual(result["fillReport"]["filledPlaceholderCount"], 1)
-            self.assertEqual(result["unfilledFields"], [])
-            filled_text = "\n".join(paragraph.text for paragraph in Document(str(output)).paragraphs)
-            self.assertIn("7.22", filled_text)
-            self.assertIn("1.16", filled_text)
-            self.assertIn("IEC S", filled_text)
-            self.assertNotIn("待填写", filled_text)
-
-    def test_bid_word_placeholder_filler_uses_table_row_label_before_model_column_header(self) -> None:
-        word_filler = load_word_filler_script("run_from_manifest")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            template = tmp_path / "待填写-投标关键数据一览表.docx"
-            doc = Document()
-            table = doc.add_table(rows=1, cols=3)
-            table.style = "Table Grid"
-            for index, text in enumerate(["项目名称", "[项目名称，待填写]", "[项目名称，待填写]"]):
-                table.cell(0, index).text = text
             for row in (
-                ["承诺方式", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["方案", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["机型", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["轮毂高度（m）", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["台数", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["容量（MW）", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["净发电量（MWh/y）", "[投标方案，待填写]", "[投标方案，待填写]"],
-                ["有效小时数（h）", "[投标方案，待填写]", "[投标方案，待填写]"],
+                ["轮毂高度（m）", "[轮毂高度，待填写]"],
+                ["台数", "[机组台数，待填写]"],
+                ["容量（MW）", "[总装机容量，待填写]"],
+                ["有效小时数（h）", "[保证有效小时数，待填写]"],
+                ["单台机组功率曲线保证率（%）", "[功率曲线保证率，待填写]"],
             ):
                 cells = table.add_row().cells
-                for index, text in enumerate(row):
-                    cells[index].text = text
-            guarantee = doc.add_table(rows=1, cols=2)
-            guarantee.style = "Table Grid"
-            guarantee.cell(0, 0).text = "保证项"
-            guarantee.cell(0, 1).text = "保证率"
-            for row in (
-                ["单台机组功率曲线保证率（%）", "[投标方案，待填写]"],
-                ["单台机组时间可利用率保证值（%）", "[投标方案，待填写]"],
-                ["全场机组时间可利用率保证值）（%）", "[投标方案，待填写]"],
-            ):
-                cells = guarantee.add_row().cells
                 cells[0].text, cells[1].text = row
             doc.save(template)
 
@@ -7152,24 +7065,19 @@ class TocSkillScriptTests(unittest.TestCase):
                         "projectName": "测试项目",
                         "blankSource": {
                             "id": "RAW-KEY-DATA",
-                            "title": "待填写-投标关键数据一览表.docx",
+                            "title": blank_name,
                             "docxPath": str(template),
-                            "placeholderCount": 18,
+                            "placeholderCount": 6,
                         },
                         "projectFactTable": {
                             "status": "confirmed",
                             "fields": [
-                                {"label": "项目名称", "value": "测试项目"},
-                                {"label": "投标方案", "value": "EW10.0-220-125"},
-                                {"label": "投标机型", "value": "EW10.0-220上置"},
-                                {"label": "轮毂高度", "value": "125", "unit": "m"},
-                                {"label": "机组台数", "value": "60", "unit": "台"},
-                                {"label": "总装机容量", "value": "600", "unit": "MW"},
-                                {"label": "保证发电量", "value": "1701601", "unit": "MWh"},
-                                {"label": "保证有效小时数", "value": "2836", "unit": "h"},
-                                {"label": "功率曲线保证率", "value": "97%", "unit": "%"},
-                                {"label": "单台可利用率", "value": "95%", "unit": "%"},
-                                {"label": "全场可利用率", "value": "98%", "unit": "%"},
+                                _field("项目名称", "测试项目", "[项目名称，待填写]"),
+                                _field("轮毂高度", "125", "[轮毂高度，待填写]"),
+                                _field("机组台数", "60", "[机组台数，待填写]"),
+                                _field("总装机容量", "600", "[总装机容量，待填写]"),
+                                _field("保证有效小时数", "2836", "[保证有效小时数，待填写]"),
+                                _field("功率曲线保证率", "97%", "[功率曲线保证率，待填写]"),
                             ],
                         },
                         "outputFile": str(output),
@@ -7182,21 +7090,18 @@ class TocSkillScriptTests(unittest.TestCase):
             result = word_filler.run_from_manifest(manifest_path)
 
             self.assertEqual(result["unfilledFields"], [])
-            filled_doc = Document(str(output))
-            rows = filled_doc.tables[0].rows
-            self.assertEqual(rows[1].cells[1].text, "承诺保证值（75%折减）")
-            self.assertEqual(rows[2].cells[1].text, "EW10.0-220-125")
-            self.assertEqual(rows[3].cells[1].text, "EW10.0-220-125")
-            self.assertEqual(rows[4].cells[1].text, "125")
-            self.assertEqual(rows[5].cells[1].text, "60")
-            self.assertEqual(rows[6].cells[1].text, "600")
-            self.assertEqual(rows[7].cells[1].text, "1701601")
-            self.assertEqual(rows[8].cells[1].text, "2836")
-            guarantee_rows = filled_doc.tables[1].rows
-            self.assertEqual(guarantee_rows[1].cells[1].text, "97%")
-            self.assertEqual(guarantee_rows[2].cells[1].text, "95%")
-            self.assertEqual(guarantee_rows[3].cells[1].text, "98%")
-            self.assertEqual(result["fillReport"]["semanticCheckCount"], 21)
+            self.assertTrue(result["fillReport"]["specDriven"])
+            # 六处占位符全部走「占位符即字段名」的确定性路径，没有一处靠上下文消歧
+            self.assertEqual(result["fillReport"]["specFieldNameHitCount"], 6)
+            rows = Document(str(output)).tables[0].rows
+            self.assertEqual(rows[0].cells[1].text, "测试项目")
+            self.assertEqual(rows[1].cells[1].text, "125")
+            self.assertEqual(rows[2].cells[1].text, "60")
+            self.assertEqual(rows[3].cells[1].text, "600")
+            self.assertEqual(rows[4].cells[1].text, "2836")
+            self.assertEqual(rows[5].cells[1].text, "97%")
+            # 关键数据表语义校验仍然生效：删素材链路没有把这层跨字段复核一起带走
+            self.assertEqual(result["fillReport"]["semanticCheckCount"], 6)
             self.assertEqual(result["fillReport"]["semanticFailedCount"], 0)
             self.assertEqual(result["fillReport"]["semanticValidationRate"], 1.0)
 
@@ -8999,6 +8904,178 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(updated[0]["status"], "UNMATCHED")
         self.assertEqual(updated[0]["paths"], [])
         self.assertIn("AI 填写未完成", updated[0]["note"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_blocks_partially_reviewed_multi_fill_task_item(self) -> None:
+        """R10-B07-02：多 fillTask 只复核一个，S7 不得因存在任一可用产物而放行整项。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [
+                                    {"id": "FILL-0058-A", "status": "completed"},
+                                    {"id": "FILL-0058-B", "status": "pending"},
+                                ],
+                                "matchedMaterials": [],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "ai_fill",
+                                        "fillTaskId": "FILL-0058-A",
+                                        "path": "/tmp/机组参数表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityGate": "human_confirmed",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        # 塔筒参数表仍 pending：整项阻断并显式提示，不能只合并已复核的机组参数表。
+        self.assertEqual(updated[0]["status"], "UNMATCHED")
+        self.assertEqual(updated[0]["paths"], [])
+        self.assertIn("AI 填写未完成", updated[0]["note"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_merges_multi_fill_task_item_after_all_reviewed(self) -> None:
+        """R10-B07-02：所有 fillTask 完成且产物均放行后，S7 正常合并全部产物。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [
+                                    {"id": "FILL-0058-A", "status": "completed"},
+                                    {"id": "FILL-0058-B", "status": "completed"},
+                                ],
+                                "matchedMaterials": [],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "ai_fill",
+                                        "fillTaskId": "FILL-0058-A",
+                                        "path": "/tmp/机组参数表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityGate": "human_confirmed",
+                                    },
+                                    {
+                                        "source": "ai_fill",
+                                        "fillTaskId": "FILL-0058-B",
+                                        "path": "/tmp/塔筒参数表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityGate": "human_confirmed",
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "MATCHED")
+        self.assertEqual(
+            updated[0]["paths"],
+            ["/tmp/机组参数表_AI填写.docx", "/tmp/塔筒参数表_AI填写.docx"],
+        )
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_manual_artifact_replaces_pending_fill_task(self) -> None:
+        """R10-B07-02：人工上传/选材产物按决策终审可替代填写任务，不被 pending 任务误阻断。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [{"id": "FILL-0058-A", "status": "pending"}],
+                                "matchedMaterials": [],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "manual_upload",
+                                        "path": "/tmp/人工上传_总方案信息表.docx",
+                                        "s7Ready": True,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "MATCHED")
+        self.assertEqual(updated[0]["paths"], ["/tmp/人工上传_总方案信息表.docx"])
         self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
 
     def test_bid_assembler_gap_plan_preserves_structural_items(self) -> None:

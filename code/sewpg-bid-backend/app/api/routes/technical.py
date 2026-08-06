@@ -453,6 +453,18 @@ async def save_technical_gap_fact_material_sources(
     return await technical_gap_service.save_fact_material_sources(project_id, data)
 
 
+@router.get("/api/technical/projects/{project_id}/gaps/facts/curate")
+async def get_technical_gap_fact_curate_status(project_id: str) -> dict[str, Any]:
+    """AI 匹配填充任务状态：前端轮询用，终态一并返回最新事实表与报告。"""
+    return await technical_gap_service.curate_status(project_id)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/facts/materials/{material_id}/fetch")
+async def fetch_technical_gap_fact_material(project_id: str, material_id: str) -> dict[str, Any]:
+    """按需物化事实表候选素材，返回本地可读路径：供事实表维护 Skill 读取前现取。"""
+    return await technical_gap_service.fetch_fact_material(project_id, material_id)
+
+
 @router.put("/api/technical/projects/{project_id}/gaps/facts")
 async def save_technical_gap_project_facts(
     project_id: str,
@@ -509,6 +521,20 @@ def ai_fill_all_technical_gap_materials(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     return technical_gap_service.ai_fill_all(project_id, request, data)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/body-fill")
+def body_fill_technical_gaps(
+    project_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    return technical_gap_service.body_fill_all(project_id, request, data)
+
+
+@router.get("/api/technical/projects/{project_id}/gaps/body-fill")
+async def get_technical_body_fill_status(project_id: str) -> dict[str, Any]:
+    return technical_gap_service.body_fill_status(project_id)
 
 
 @router.get("/api/technical/projects/{project_id}/materials/submissions")
@@ -823,7 +849,10 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
     # 素材流水线自动衔接：纯非清洗批次（PDF/Excel）没有清洗收尾时机，上传后直接触发
     # Wiki 增量；产生了清洗任务的批次由清洗收尾钩子触发（material_wiki_auto）。
     try:
-        on_material_upload_completed(int((result.get("cleaning") or {}).get("queued") or 0))
+        on_material_upload_completed(
+            int((result.get("cleaning") or {}).get("queued") or 0),
+            bid_type=TECHNICAL_BID_TYPE,
+        )
     except Exception as auto_exc:
         logging.getLogger(__name__).warning("素材流水线自动衔接失败（上传钩子）：%s", auto_exc)
     return result

@@ -65,6 +65,8 @@ class GapHeavySyncRouteHandlersAreNotAsyncTests(unittest.TestCase):
         "ai_fill_all_technical_gap_materials",
         "ai_fill_technical_gap_material",
         "upload_technical_gap_material",
+        # 一键正文填写只做提交（收集目标 + 入队），但落库链路与上面同源，保持同一纪律
+        "body_fill_technical_gaps",
     ]
 
     def test_handlers_are_plain_def_not_async_def(self) -> None:

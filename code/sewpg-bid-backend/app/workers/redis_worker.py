@@ -209,8 +209,12 @@ def _run_job(job: dict[str, Any]) -> bool:
             result = clean_material_file_sync(str(data.get("fileId") or project_id), data)
             final_state = _material_cleaning_final_state(result)
             try:
-                # 素材流水线自动衔接：本任务是清洗队列最后一个时，触发 Wiki 增量构建。
-                on_material_cleaning_job_finished(current_job_id=str(job.get("id") or ""))
+                # 素材流水线自动衔接：本任务是技术标清洗队列最后一个时，触发 Wiki 增量构建。
+                # 商务标清洗任务由钩子内按 bidType 隔离，不进入技术标 Wiki 链路。
+                on_material_cleaning_job_finished(
+                    current_job_id=str(job.get("id") or ""),
+                    bid_type=str(data.get("bidType") or ""),
+                )
             except Exception as auto_exc:
                 logger.warning("素材流水线自动衔接失败（清洗钩子）：%s", auto_exc)
         elif job_type == "material_deep_parse":
@@ -224,9 +228,11 @@ def _run_job(job: dict[str, Any]) -> bool:
             }
             try:
                 # 素材流水线自动衔接：解析产物就绪后补跑 Wiki，把兜底卡片升级为正式预览。
+                # 商务标深度解析任务由钩子内按 bidType 隔离，不进入技术标 Wiki 链路。
                 on_material_deep_parse_job_finished(
                     str(data.get("fileId") or project_id),
                     current_job_id=str(job.get("id") or ""),
+                    bid_type=str(data.get("bidType") or ""),
                 )
             except Exception as auto_exc:
                 logger.warning("素材流水线自动衔接失败（深度解析钩子）：%s", auto_exc)
@@ -238,6 +244,14 @@ def _run_job(job: dict[str, Any]) -> bool:
                 progress_callback=lambda progress: mark_job_progress(job, progress),
             )
             post_release_wiki_bid_type = str(data.get("bidType") or "")
+        elif job_type == "fact_curate":
+            from app.services.technical_fact_curate_job import run_fact_curate_job
+
+            final_state = run_fact_curate_job(project_id, data)
+        elif job_type == "technical_body_fill":
+            from app.services.technical_body_fill_job import run_body_fill_job
+
+            final_state = run_body_fill_job(project_id, data)
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
