@@ -7635,6 +7635,101 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertEqual(routing["tenderDocumentCount"], 2)
         self.assertEqual([item["name"] for item in routing["tenderDocuments"]], ["技术规范.pdf", "招标附图.docx"])
 
+    def test_bid_gap_planner_parent_rule_covers_sub_numbered_appendix(self) -> None:
+        """规则只写父级编号（附表F.2）时应覆盖子编号附表（F.2.1/F.2.2）。"""
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            output_path = root / "gap_plan.json"
+            toc_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"number": "附表F.2.1", "title": "附表F.2.1 投标机组设计认证", "level": 2},
+                            {"number": "附表G.2.1", "title": "附表G.2.1 场址载荷仿真关键计算方法", "level": 2},
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            blank = root / "附表F.2.1 投标机组设计认证.docx"
+            Document().save(blank)
+            other_blank = root / "附表G.2.1 场址载荷仿真关键计算方法.docx"
+            Document().save(other_blank)
+            parse_path.write_text(
+                json.dumps(
+                    {
+                        "structured": {
+                            "appendices": [
+                                {"id": "APPX-F21", "title": "附表F.2.1 投标机组设计认证", "docxPath": str(blank)},
+                                {
+                                    "id": "APPX-G21",
+                                    "title": "附表G.2.1 场址载荷仿真关键计算方法",
+                                    "docxPath": str(other_blank),
+                                },
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "projectId": "PRJ-HN",
+                        "projectName": "华能项目",
+                        "bidType": "技术标",
+                        "customerName": "华能",
+                        "tocJsonPath": str(toc_path),
+                        "parseResultPath": str(parse_path),
+                        "materialScope": {"paths": ["技术标/标准文件", "技术标/项目定制"]},
+                        "appendixSourceMatrix": {
+                            "rows": [
+                                {
+                                    "id": "Sheet1!R33",
+                                    "customer": "华能",
+                                    "tableTitle": "附表F.2 投标机型整机认证",
+                                    "projectSources": [],
+                                    "standardSources": ["认证证书"],
+                                    "otherSources": [],
+                                }
+                            ]
+                        },
+                        "materialIndex": [
+                            {
+                                "id": "RAW-CERT",
+                                "name": "EW10.0-220上置型式认证证书.pdf",
+                                "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书",
+                                "materialTier": "standard",
+                            }
+                        ],
+                        "outputFile": str(output_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = gap_runner.build_gap_plan(json_load(manifest_path))
+
+            f_item = result["items"][0]
+            f_task = f_item["appendixTasks"][0]
+            self.assertEqual(f_task["sourceRouting"]["source"], "appendix_source_matrix")
+            self.assertEqual(f_task["sourceRouting"]["ruleId"], "Sheet1!R33")
+            self.assertEqual(f_task["sourceRouting"]["standardSources"], ["认证证书"])
+            self.assertEqual(f_task["recommendedMaterials"][0]["id"], "RAW-CERT")
+            # 前缀不同的子编号（G.2.1）不应被 F.2 规则覆盖
+            g_task = result["items"][1]["appendixTasks"][0]
+            self.assertNotEqual(
+                (g_task.get("sourceRouting") or {}).get("source"), "appendix_source_matrix"
+            )
+
     def test_bid_table_filler_fills_same_shape_response_table_from_reference_docx(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
 

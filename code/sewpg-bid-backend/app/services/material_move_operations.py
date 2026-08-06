@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import PurePosixPath
@@ -16,6 +17,7 @@ from app.services.material_folder_scope import (
     is_raw_folder_move_protected_path,
     is_raw_folder_rename_protected_path,
 )
+from app.services.material_fulltext_artifacts import purge_material_fulltext_objects
 from app.services.material_move_metadata import (
     RAW_MOVE_FILE_ACTION,
     RAW_MOVE_FILE_VERSION_ACTION,
@@ -52,6 +54,7 @@ async def move_raw_file(
     infer_material_tier_from_folder: MaterialTierResolver,
 ) -> dict[str, Any]:
     numeric_id = int(file_id.replace("RAW-", ""))
+    fulltext_cleanup_target: tuple[int, int] | None = None
     async with async_session() as session:
         await ensure_runtime_tables(session)
         item_result = await session.execute(
@@ -95,6 +98,10 @@ async def move_raw_file(
             )
 
         if existing is not None and on_conflict == "overwrite":
+            fulltext_cleanup_target = (
+                int(existing.id),
+                int(existing.version or 1),
+            )
             await purge_raw_file_objects(session, existing)
             await session.delete(existing)
             move_action = ""
@@ -131,6 +138,8 @@ async def move_raw_file(
             last_action=move_action,
         )
         await session.commit()
+        if fulltext_cleanup_target is not None:
+            await asyncio.to_thread(purge_material_fulltext_objects, *fulltext_cleanup_target)
         # commit 后立即取一份快照作为兜底，避免二次读时被并发删除导致误报失败（L2）
         await session.refresh(item)
         await session.refresh(item, attribute_names=["folder"])
