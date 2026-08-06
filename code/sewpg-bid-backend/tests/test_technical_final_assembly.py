@@ -654,6 +654,66 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
 
         self.assertEqual(build_assembly._gap_plan_paths(item), [])
 
+    def test_gap_plan_paths_skips_revoked_artifact_without_matched_fallback(self) -> None:
+        # R10-B07-03：撤销「已定案」后产物停用，S7 不再消费，也不回退 matchedMaterials。
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [{"path": "matched-material.docx"}],
+            "resolvedArtifacts": [
+                {
+                    "source": "material_library",
+                    "path": "revoked-material.docx",
+                    "s7Ready": False,
+                    "active": False,
+                    "revokedAt": "2026-08-06T00:00:00Z",
+                }
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), [])
+
+    def test_gap_plan_paths_uses_only_latest_active_artifact(self) -> None:
+        # R10-B07-03：重新选材后旧产物被取代，最终装配只使用最新有效素材。
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [],
+            "resolvedArtifacts": [
+                {
+                    "source": "material_library",
+                    "path": "superseded-a.docx",
+                    "s7Ready": False,
+                    "active": False,
+                    "supersededAt": "2026-08-06T00:00:00Z",
+                },
+                {
+                    "source": "material_library",
+                    "path": "active-b.docx",
+                    "s7Ready": True,
+                    "active": True,
+                },
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), ["active-b.docx"])
+
+    def test_gap_plan_paths_treats_inactive_artifact_as_not_s7_ready(self) -> None:
+        # R10-B07-03：active=False 的非活动产物即使带 s7Ready 缺省值也不进 S7。
+        with patch.dict(sys.modules, {"yaml": object()}):
+            build_assembly = load_assembler_script("build_assembly")
+
+        item = {
+            "matchedMaterials": [],
+            "resolvedArtifacts": [
+                {"source": "material_library", "path": "inactive.docx", "active": False}
+            ],
+        }
+
+        self.assertEqual(build_assembly._gap_plan_paths(item), [])
+
     def test_init_params_accepts_unified_turbine_fields_and_unknown_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

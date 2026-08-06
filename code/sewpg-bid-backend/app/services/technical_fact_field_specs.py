@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.services.technical_fact_spec_import import classify_source
 
 SPECS_PATH = Path(__file__).resolve().parent.parent / "data" / "technical_fact_field_specs.json"
 
@@ -61,12 +62,26 @@ SPEC_SOURCE_KIND_CATEGORIES = {
     "cert": "清单-认证证书",
     "platform": "清单-平台输入",
     "derived": "清单-自动生成",
+    "unspecified": "清单-来源未指定",
 }
 
 
 # 手工缓存：(path, mtime) → specs。mtime 变化（上传覆盖/脚本重跑）自动重读，
 # 解决多进程/热更新下 lru_cache 不感知文件变更的弱一致问题。
 _SPECS_CACHE: dict[tuple[str, float], tuple[dict[str, Any], ...]] = {}
+
+
+def normalize_spec_source_kind(spec: dict[str, Any]) -> dict[str, Any]:
+    """按 referenceFile 重推 sourceKind：修正历史快照里「/」被归成 template 的条目。
+
+    早期 classify_source 把「/」与整格留空同归 template，导致「来源未指定但仍需取值」的
+    字段 valueRequired=False、被 curate 跳过。已落库的 spec 快照不重传就改不掉，
+    所以在加载入口按原始 referenceFile 重算，保证两条加载路径给出一致口径。
+    """
+    kind = classify_source(str(spec.get("referenceFile") or ""))
+    if kind == str(spec.get("sourceKind") or ""):
+        return spec
+    return {**spec, "sourceKind": kind, "valueRequired": kind != "template"}
 
 
 def _load_specs_file(path: Path) -> tuple[dict[str, Any], ...] | None:
@@ -84,7 +99,9 @@ def _load_specs_file(path: Path) -> tuple[dict[str, Any], ...] | None:
         if not isinstance(payload, list):
             return None
         _SPECS_CACHE.clear()
-        _SPECS_CACHE[key] = tuple(spec for spec in payload if isinstance(spec, dict))
+        _SPECS_CACHE[key] = tuple(
+            normalize_spec_source_kind(spec) for spec in payload if isinstance(spec, dict)
+        )
         cached = _SPECS_CACHE[key]
     return cached
 
@@ -105,7 +122,7 @@ def load_specs() -> tuple[dict[str, Any], ...]:
 
 
 def fillable_specs() -> list[dict[str, Any]]:
-    """128 条需取数填写的 spec（20 条模板更新条目不进事实表）。"""
+    """需取数填写的 spec（仅整格留空的模板占位条目不进事实表）。"""
     return [spec for spec in load_specs() if spec.get("valueRequired")]
 
 

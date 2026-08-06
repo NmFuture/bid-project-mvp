@@ -238,6 +238,10 @@ def _run_job(job: dict[str, Any]) -> bool:
                 progress_callback=lambda progress: mark_job_progress(job, progress),
             )
             post_release_wiki_bid_type = str(data.get("bidType") or "")
+        elif job_type == "fact_curate":
+            from app.services.technical_fact_curate_job import run_fact_curate_job
+
+            final_state = run_fact_curate_job(project_id, data)
         elif job_type == "s1_parse":
             from app.services.bid_parse_service import business_parse_service, technical_parse_service
             from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type

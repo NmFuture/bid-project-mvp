@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { technicalDocumentAPI } from '../../../api'
+import { technicalDocumentAPI, technicalGenerateAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
+import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
 import IconButton from '../../../components/ui/IconButton'
 import { DOCUMENT_FONT_OPTIONS } from '../../shared/fontOptions'
 import {
@@ -82,6 +84,10 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [technicalPreviewFullscreen, setTechnicalPreviewFullscreen] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const [pdfData, setPdfData] = useState(null)
+  const [generationStatus, setGenerationStatus] = useState(null)
+  const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
+  const [regenerationStarting, setRegenerationStarting] = useState(false)
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
   const [chatMessages, setChatMessages] = useState(() => [...INITIAL_TECHNICAL_CHAT_MESSAGES])
   const [chatInput, setChatInput] = useState('')
@@ -89,13 +95,16 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [chatSessionId, setChatSessionId] = useState('')
   const chatHistoryRef = useRef(null)
   const chatRequestVersionRef = useRef(0)
+  const regenerationRequestedRef = useRef(false)
   const [formatPreset, setFormatPreset] = useState('standard')
   const [formatApplying, setFormatApplying] = useState('')
   const [customFormat, setCustomFormat] = useState(DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES)
 
-  const loadDocument = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const loadDocument = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError('')
+    }
     try {
       const [payload, finalPayload] = await Promise.all([
         technicalDocumentAPI.get(id),
@@ -111,16 +120,28 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     } catch (e) {
       setError(e?.message || '技术标共创文档加载失败')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
+    }
+  }, [id])
+
+  const loadGenerationStatus = useCallback(async () => {
+    try {
+      const payload = await technicalGenerateAPI.status(id)
+      if (payload?.status === 'running') regenerationRequestedRef.current = true
+      setGenerationStatus(payload)
+      return payload
+    } catch {
+      return null
     }
   }, [id])
 
   useEffect(() => {
     const timer = setTimeout(() => {
       loadDocument()
+      loadGenerationStatus()
     }, 0)
     return () => clearTimeout(timer)
-  }, [loadDocument])
+  }, [loadDocument, loadGenerationStatus])
 
   useEffect(() => {
     chatRequestVersionRef.current += 1
@@ -145,6 +166,28 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
   const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
+  const generationRunning = generationStatus?.status === 'running'
+  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
+
+  useEffect(() => {
+    if (!generationRunning) return undefined
+    const timer = window.setInterval(() => {
+      loadGenerationStatus()
+    }, 1200)
+    return () => window.clearInterval(timer)
+  }, [generationRunning, loadGenerationStatus])
+
+  useEffect(() => {
+    if (generationStatus?.status === 'failed') {
+      regenerationRequestedRef.current = false
+      return
+    }
+    if (generationStatus?.status !== 'completed' || !regenerationRequestedRef.current) return
+    regenerationRequestedRef.current = false
+    setPdfData(null)
+    loadDocument({ silent: true })
+    showToast?.('技术标正文已重新生成，当前文档已刷新。')
+  }, [generationStatus?.status, loadDocument, showToast])
 
   useEffect(() => {
     if (!technicalPreviewFullscreen) return undefined
@@ -242,6 +285,31 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       showToast?.(e?.message || 'PDF 生成失败', 'error')
     } finally {
       setPdfPreparing(false)
+    }
+  }
+
+  const handleRequestRegenerate = () => {
+    if (regenerationStarting || generationRunning) return
+    setTechnicalPreviewFullscreen(false)
+    setRegenerationConfirmOpen(true)
+  }
+
+  const handleConfirmRegenerate = async () => {
+    if (regenerationStarting || generationRunning) return
+    setRegenerationConfirmOpen(false)
+    setRegenerationStarting(true)
+    setGenerationModalOpen(true)
+    regenerationRequestedRef.current = true
+    try {
+      const payload = await technicalGenerateAPI.run(id)
+      setGenerationStatus(payload)
+      showToast?.(payload?.message || '已开始重新生成技术标正文。')
+    } catch (e) {
+      regenerationRequestedRef.current = false
+      setGenerationModalOpen(false)
+      showToast?.(e?.message || '重新生成技术标正文失败', 'error')
+    } finally {
+      setRegenerationStarting(false)
     }
   }
 
@@ -565,6 +633,16 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 {pdfPreparing ? '生成中...' : '下载PDF'}
               </Button>
             )}
+            <Button
+              type="button"
+              onClick={handleRequestRegenerate}
+              disabled={regenerationStarting || generationRunning}
+              icon="refresh"
+              size="sm"
+              variant="secondary"
+            >
+              {regenerationStarting || generationRunning ? '重新生成中...' : '重新生成正文'}
+            </Button>
           </div>
         </div>
         <div className="min-h-0 flex-1 p-4">
@@ -629,6 +707,39 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       <StageBreadcrumb />
       <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
       {renderProjectWorkspace()}
+      <Dialog
+        open={regenerationConfirmOpen}
+        onClose={() => setRegenerationConfirmOpen(false)}
+        size="sm"
+      >
+        <DialogHeader onClose={() => setRegenerationConfirmOpen(false)}>
+          <h3 className="text-lg font-headline font-bold text-on-surface">确认重新生成正文？</h3>
+          <p className="mt-1 text-sm text-on-surface-variant">系统将重新执行技术标正文装配流程。</p>
+        </DialogHeader>
+        <DialogBody className="space-y-3 px-5 py-4">
+          <p className="text-sm leading-6 text-on-surface">
+            新正文将根据素材匹配页的当前结果生成，并覆盖共创导出页正在使用的正文。
+          </p>
+          <div className="rounded-md border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm leading-6 text-on-tertiary-fixed-variant">
+            尚未保存的共创修改可能丢失。请先完成保存，或下载当前 Word 留档后再继续。
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" onClick={() => setRegenerationConfirmOpen(false)} variant="quiet">
+            取消
+          </Button>
+          <Button type="button" onClick={handleConfirmRegenerate} variant="danger">
+            继续重新生成
+          </Button>
+        </DialogFooter>
+      </Dialog>
+      <TechnicalGenerationProgressModal
+        open={generationModalOpen || generationRunning}
+        status={generationStatus}
+        progress={generationProgress}
+        completedMessage="技术标正文已重新生成，共创文档已刷新为最新版本。"
+        onClose={() => setGenerationModalOpen(false)}
+      />
     </div>
   )
 }

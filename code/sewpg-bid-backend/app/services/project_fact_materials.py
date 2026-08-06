@@ -40,6 +40,31 @@ async def _downloadable_project_fact_material_payload(
         return payload, "raw"
 
 
+def project_fact_material_cached_path(cache_dir: Path, material_id: str) -> Path | None:
+    """已物化素材的本地路径：文件名前缀为素材 ID，命中即复用，不重复下载。"""
+    material_id = str(material_id or "").strip()
+    if not material_id or not cache_dir.is_dir():
+        return None
+    for path in sorted(cache_dir.glob(f"{material_id}-*")):
+        if path.is_file():
+            return path
+    return None
+
+
+def materialize_project_fact_material(
+    material: dict[str, Any],
+    work_dir: Path,
+    *,
+    bid_type: str,
+    cache_dir: Path | None = None,
+) -> dict[str, Any]:
+    """单条素材按需物化：复用批量物化的下载与命名逻辑，供 skill 读取前现取。"""
+    prepared = prepare_project_fact_material_files(
+        [material], work_dir, bid_type=bid_type, cache_dir=cache_dir, limit=1
+    )
+    return prepared[0] if prepared else dict(material)
+
+
 def prepare_project_fact_material_files(
     material_index: list[dict[str, Any]],
     work_dir: Path,
