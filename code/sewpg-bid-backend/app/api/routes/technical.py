@@ -453,6 +453,18 @@ async def save_technical_gap_fact_material_sources(
     return await technical_gap_service.save_fact_material_sources(project_id, data)
 
 
+@router.get("/api/technical/projects/{project_id}/gaps/facts/curate")
+async def get_technical_gap_fact_curate_status(project_id: str) -> dict[str, Any]:
+    """AI 匹配填充任务状态：前端轮询用，终态一并返回最新事实表与报告。"""
+    return await technical_gap_service.curate_status(project_id)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/facts/materials/{material_id}/fetch")
+async def fetch_technical_gap_fact_material(project_id: str, material_id: str) -> dict[str, Any]:
+    """按需物化事实表候选素材，返回本地可读路径：供事实表维护 Skill 读取前现取。"""
+    return await technical_gap_service.fetch_fact_material(project_id, material_id)
+
+
 @router.put("/api/technical/projects/{project_id}/gaps/facts")
 async def save_technical_gap_project_facts(
     project_id: str,

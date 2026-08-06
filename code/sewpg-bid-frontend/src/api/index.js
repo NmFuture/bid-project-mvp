@@ -566,13 +566,16 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/appendix-source-matrix`, { method: 'POST', body: data }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
+  // 提交后台任务，立即返回；执行进度经 curateFactsStatus 轮询
   curateFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/curate`, {
       method: 'POST',
       body: data,
-      timeoutMs: 30 * 60 * 1000,
+      timeoutMs: 60 * 1000,
       retryCount: 0,
     }),
+  curateFactsStatus: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/facts/curate`),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
   saveFactField: (projectId, fieldId, data) =>

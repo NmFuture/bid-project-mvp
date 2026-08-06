@@ -120,6 +120,22 @@ def parse_fields_from_parse(parse_result: dict[str, Any]) -> list[dict[str, Any]
     return fields[:320]
 
 
+def tender_document_summaries(parse_result: dict[str, Any]) -> list[dict[str, str]]:
+    documents = parse_result.get("documents")
+    if not isinstance(documents, list):
+        documents = parse_result.get("sourceFiles")
+    result: list[dict[str, str]] = []
+    for document in documents or []:
+        if not isinstance(document, dict) or document.get("status") == "failed":
+            continue
+        document_id = str(document.get("id") or "").strip()
+        name = str(document.get("name") or document.get("fileName") or "").strip()
+        if not document_id and not name:
+            continue
+        result.append({"id": document_id, "name": name})
+    return result
+
+
 def wiki_cards_by_section(wiki_dir: Path | None) -> dict[str, list[dict[str, Any]]]:
     if not wiki_dir or not (wiki_dir / "卡片").exists():
         return {}
@@ -2464,11 +2480,17 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     recommended_pool,
                     source_rule=source_rule,
                 )
+                routing = source_routing_payload(source_rule, recommended)
+                if routing.get("useTenderParseFields"):
+                    tender_documents = tender_document_summaries(parse_result)
+                    routing["tenderDocuments"] = tender_documents
+                    routing["tenderDocumentCount"] = len(tender_documents)
+                    routing["tenderDocumentStatus"] = "available" if tender_documents else "missing_source"
                 task = build_appendix_task(
                     appendix,
                     recommended,
                     parse_fields,
-                    source_routing=source_routing_payload(source_rule, recommended),
+                    source_routing=routing,
                 )
                 # 查表替换：甲方已填附表（…/技术附表输入文件）按命名严格命中——
                 # 精确编号（附表C.8）或整组字母（技术附H 覆盖 H 组全部），冲突键不定案。

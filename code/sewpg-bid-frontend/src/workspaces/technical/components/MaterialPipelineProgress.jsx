@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
 import {
   appendDismissedKey,
   firstUndismissedStageFailure,
   loadDismissedKeys,
 } from './materialPipelineFailures'
+import { createWikiJobSuccessTracker } from './wikiJobSuccessTracker'
 
 const POLL_MS = 5000
 // 轮询连续失败达到阈值才提示「进度查询失败」：单次网络抖动不打扰页面。
@@ -28,13 +29,22 @@ const loadSessionDismissedKeys = () => {
 // 运行中：快速失败、失败后才进页面、清洗/深度解析失败都能持续展示，直到用户关闭、
 // 重试成功或新任务终态覆盖。超大文件的预览要等后台深度解析，收尾必须如实：
 // 队列已空但仍有待补全时不装作全部完成。
-export default function MaterialPipelineProgress() {
+// onWikiJobSuccess：页面打开后观察到新的 Wiki 成功任务时回调一次（按 jobId 去重），
+// 包括在轮询间隔内快速完成或补跑切换 jobId 的任务，供 Wiki 页面重新加载目录树。
+export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
   const [snapshot, setSnapshot] = useState(null)
   const [dismissedKeys, setDismissedKeys] = useState(loadSessionDismissedKeys)
   const [pollFailures, setPollFailures] = useState(0)
   const [pollAlertDismissed, setPollAlertDismissed] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState('')
+  // 跨轮询记住已完成任务的通知状态；回调经 ref 取最新值，轮询 effect 不随渲染重建。
+  const [trackWikiJobSuccess] = useState(createWikiJobSuccessTracker)
+  const onWikiJobSuccessRef = useRef(onWikiJobSuccess)
+
+  useEffect(() => {
+    onWikiJobSuccessRef.current = onWikiJobSuccess
+  })
 
   useEffect(() => {
     try {
@@ -55,6 +65,8 @@ export default function MaterialPipelineProgress() {
         // 查询恢复后清零并重新武装提示：之后再次连续失败会重新提醒。
         setPollFailures(0)
         setPollAlertDismissed(false)
+        const succeededJobId = trackWikiJobSuccess(payload?.wiki)
+        if (succeededJobId) onWikiJobSuccessRef.current?.(succeededJobId)
       } catch {
         // 单次轮询失败保持上次快照；连续失败由阈值提示接管，不再静默。
         if (!cancelled) setPollFailures((count) => count + 1)
@@ -68,7 +80,7 @@ export default function MaterialPipelineProgress() {
       cancelled = true
       if (timer !== null) window.clearTimeout(timer)
     }
-  }, [])
+  }, [trackWikiJobSuccess])
 
   // 与 Wiki 页「刷新并重试」同一入口：refresh 会重试待重试预览，并补排深度解析。
   const handleRetry = async () => {
