@@ -8874,6 +8874,178 @@ class TocSkillScriptTests(unittest.TestCase):
         self.assertIn("AI 填写未完成", updated[0]["note"])
         self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
 
+    def test_bid_assembler_gap_plan_blocks_partially_reviewed_multi_fill_task_item(self) -> None:
+        """R10-B07-02：多 fillTask 只复核一个，S7 不得因存在任一可用产物而放行整项。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [
+                                    {"id": "FILL-0058-A", "status": "completed"},
+                                    {"id": "FILL-0058-B", "status": "pending"},
+                                ],
+                                "matchedMaterials": [],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "ai_fill",
+                                        "fillTaskId": "FILL-0058-A",
+                                        "path": "/tmp/机组参数表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityGate": "human_confirmed",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        # 塔筒参数表仍 pending：整项阻断并显式提示，不能只合并已复核的机组参数表。
+        self.assertEqual(updated[0]["status"], "UNMATCHED")
+        self.assertEqual(updated[0]["paths"], [])
+        self.assertIn("AI 填写未完成", updated[0]["note"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_merges_multi_fill_task_item_after_all_reviewed(self) -> None:
+        """R10-B07-02：所有 fillTask 完成且产物均放行后，S7 正常合并全部产物。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [
+                                    {"id": "FILL-0058-A", "status": "completed"},
+                                    {"id": "FILL-0058-B", "status": "completed"},
+                                ],
+                                "matchedMaterials": [],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "ai_fill",
+                                        "fillTaskId": "FILL-0058-A",
+                                        "path": "/tmp/机组参数表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityGate": "human_confirmed",
+                                    },
+                                    {
+                                        "source": "ai_fill",
+                                        "fillTaskId": "FILL-0058-B",
+                                        "path": "/tmp/塔筒参数表_AI填写.docx",
+                                        "s7Ready": True,
+                                        "qualityGate": "human_confirmed",
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "MATCHED")
+        self.assertEqual(
+            updated[0]["paths"],
+            ["/tmp/机组参数表_AI填写.docx", "/tmp/塔筒参数表_AI填写.docx"],
+        )
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
+    def test_bid_assembler_gap_plan_manual_artifact_replaces_pending_fill_task(self) -> None:
+        """R10-B07-02：人工上传/选材产物按决策终审可替代填写任务，不被 pending 任务误阻断。"""
+        build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap_plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-0058",
+                                "number": "附表A.1",
+                                "title": "投标机型总方案信息表",
+                                "fillTasks": [{"id": "FILL-0058-A", "status": "pending"}],
+                                "matchedMaterials": [],
+                                "resolvedArtifacts": [
+                                    {
+                                        "source": "manual_upload",
+                                        "path": "/tmp/人工上传_总方案信息表.docx",
+                                        "s7Ready": True,
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plan = [
+                {
+                    "chapter_no_flat": "附表A.1",
+                    "chapter_no": "",
+                    "title": "投标机型总方案信息表",
+                    "paths": [],
+                    "shifts": [],
+                    "attach_modes": [],
+                    "field_replace": False,
+                    "status": "NEEDS_REVIEW",
+                    "note": "待人工复核",
+                }
+            ]
+
+            updated = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+        self.assertEqual(updated[0]["status"], "MATCHED")
+        self.assertEqual(updated[0]["paths"], ["/tmp/人工上传_总方案信息表.docx"])
+        self.assertEqual(updated[0]["gap_plan_item_id"], "GAP-0058")
+
     def test_bid_assembler_gap_plan_preserves_structural_items(self) -> None:
         build_assembly = load_assembler_script("build_assembly")
 
