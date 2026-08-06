@@ -2900,6 +2900,24 @@ def position_site_sort_key(site: str) -> tuple[str, int, str]:
     return (match.group(1), int(match.group(2)), text)
 
 
+def replace_table_element(target_table: Any, generated_table: Any) -> None:
+    """用生成表替换目标表，保留目标表的 tblPr（样式引用/显式边框/外观）。
+
+    build_table_docx 在新文档里建表，样式引用 "Table Grid" 且无显式
+    tblBorders；整表直接替换后，目标文档样式表里没有 TableGrid 定义，
+    表格在 Word/OnlyOffice 里渲染成无框线纯文本。保留原 tblPr 可让
+    目标表维持招标模板自身的样式与网格线。
+    """
+    new_tbl = deepcopy(generated_table._tbl)
+    original_tblpr = target_table._tbl.tblPr
+    if original_tblpr is not None:
+        generated_tblpr = new_tbl.find(qn("w:tblPr"))
+        if generated_tblpr is not None:
+            new_tbl.remove(generated_tblpr)
+        new_tbl.insert(0, deepcopy(original_tblpr))
+    target_table._tbl.getparent().replace(target_table._tbl, new_tbl)
+
+
 def build_table_docx(rows: list[list[str]], style: str = "Table Grid") -> Any:
     generated = Document()
     table = generated.add_table(rows=1, cols=len(rows[0]) if rows else 1)
@@ -2920,7 +2938,7 @@ def replace_first_table(output_file: Path, rows: list[list[str]]) -> None:
     if not doc.tables or not rows:
         return
     generated_table = build_table_docx(rows)
-    doc.tables[0]._tbl.getparent().replace(doc.tables[0]._tbl, deepcopy(generated_table._tbl))
+    replace_table_element(doc.tables[0], generated_table)
     doc.save(str(output_file))
 
 
@@ -3137,7 +3155,7 @@ def apply_quote_appendix_table_fill(output_file: Path, sources: list[Source], sp
         return []
     target_table = doc.tables[0]
     generated_table = build_table_docx(rows)
-    target_table._tbl.getparent().replace(target_table._tbl, deepcopy(generated_table._tbl))
+    replace_table_element(target_table, generated_table)
     decisions: list[dict[str, Any]] = []
     for row_idx, row in enumerate(rows):
         for col_idx, value in enumerate(row):
@@ -3779,7 +3797,7 @@ def apply_curve_appendix_table_fill(output_file: Path, sources: list[Source], sp
     if not doc.tables:
         return []
     generated_table = build_table_docx(rows)
-    doc.tables[0]._tbl.getparent().replace(doc.tables[0]._tbl, deepcopy(generated_table._tbl))
+    replace_table_element(doc.tables[0], generated_table)
     doc.save(str(output_file))
     return curve_row_decisions(rows, source, "从项目功率/推力曲线 Excel 生成完整曲线附表；曲线范围外按招标填报习惯标为 /。")
 
@@ -3805,7 +3823,7 @@ def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source
         rows.append(["备注：如采用全场包络，只需填写分组1。"] * 5)
 
         generated_table = build_table_docx(rows)
-        target_table._tbl.getparent().replace(target_table._tbl, deepcopy(generated_table._tbl))
+        replace_table_element(target_table, generated_table)
         for row_idx, row in enumerate(rows):
             for col_idx, value in enumerate(row):
                 if not clean(value):
