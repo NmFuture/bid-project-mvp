@@ -205,8 +205,11 @@ const isTemplateTrackItem = (item) => {
 const hasAiFillArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
   .some((artifact) => String(artifact?.source || '') === 'ai_fill')
 
+// 人工产物算「成稿」必须与后端 S7 闸口同口径（s7Ready）：人工选中的「待填写-」空模板
+// s7Ready=false（R10-B07-01），只是定下要填的模板，不算成稿，不进「已就绪」。
 const hasManualArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
-  .some((artifact) => ['manual_upload', 'material_library', 'manual'].includes(String(artifact?.source || '')))
+  .some((artifact) => ['manual_upload', 'material_library', 'manual'].includes(String(artifact?.source || ''))
+    && artifact?.s7Ready !== false)
 
 export const technicalGapOwnTag = (item) => {
   if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
