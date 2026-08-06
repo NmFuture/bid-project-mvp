@@ -19,6 +19,39 @@ const clampPercentage = (value) => Math.max(0, Math.min(100, finiteNumber(value)
 export const isDirectoryProgressRunning = (progress) => runningStatuses.has(normalizeStatus(progress?.status))
 export const isDirectoryProgressFailed = (progress) => failedStatuses.has(normalizeStatus(progress?.status))
 
+export const buildDirectoryRegenerationPrompt = ({ dirty = false, hasDownstreamResults = false } = {}) => {
+  const warnings = ['重新生成将覆盖当前目录审核稿。']
+  if (dirty) warnings.push('重新生成将丢弃未保存修改。')
+  if (hasDownstreamResults) warnings.push('已有素材匹配和正文结果将失效，需重新确认目录并生成。')
+  return `${warnings.join('\n')}\n确认继续吗？`
+}
+
+export const shouldShowTemplateDirectoryGenerationButton = (progress = {}) =>
+  normalizeStatus(progress?.status) !== 'completed'
+
+export const beginDirectoryProgressEpoch = ({ incoming = null } = {}) => incoming
+
+export const loadConsistentOutlineReviewSnapshot = async ({
+  loadDirectoryState,
+  loadOutline,
+  loadProject,
+}) => {
+  const generationPayload = await loadDirectoryState()
+  let [outlinePayload, projectPayload] = await Promise.all([loadOutline(), loadProject()])
+  const generationCompletedAt = String(generationPayload?.generatedAt || '').trim()
+  const outlineGeneratedAt = String(outlinePayload?.generatedAt || '').trim()
+
+  if (
+    normalizeStatus(generationPayload?.status) === 'completed'
+    && generationCompletedAt
+    && generationCompletedAt !== outlineGeneratedAt
+  ) {
+    outlinePayload = await loadOutline()
+  }
+
+  return { outlinePayload, generationPayload, projectPayload }
+}
+
 export const directoryElapsedSeconds = (progress = {}, nowMs = Date.now()) => {
   const events = Array.isArray(progress?.events) ? progress.events : []
   const eventTimes = events

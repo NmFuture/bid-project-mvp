@@ -2086,7 +2086,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "update_directory_generation_state(project" in directory_flow_source
     assert "fail_directory_generation_state(project" in directory_flow_source
     assert "save_outline_state(project" in directory_flow_source
-    assert "regenerate_outline_state(project)" in directory_flow_source
+    assert 'return await self.run_generation(project_id, {"regenerateOutline": True})' in directory_flow_source
     assert "confirm_outline_state(project)" in directory_flow_source
     assert "normalize_bid_type" not in business_gap_planning_source
     assert "ensure_workspace_project_type(" in business_gap_planning_source
