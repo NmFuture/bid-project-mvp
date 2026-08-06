@@ -115,6 +115,10 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
         TECHNICAL_WORD_FILL_SKILL_NAME,
         run_technical_ai_fill_for_gap,
     )
+    from app.services.technical_gap_ai_fill import (
+        enrich_fact_table_with_spec_columns,
+        require_spec_driven_fact_table,
+    )
     from app.services.technical_gap_domain import recompute_technical_gap_decisions
 
     payload = dict(data or {})
@@ -137,6 +141,12 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
                 message="没有待填写的正文任务。",
                 finishedAt=_now_iso(),
             )
+        # 事实表是项目级单张表，缺清单列时整批都填不了。在这里先判一次，整批一条原因结束，
+        # 不进循环——否则 20 多条各报一次同一个错、各标一次红，用户得逐条点开才看得出同因。
+        fact_table = gap_state.get("projectFactTable")
+        require_spec_driven_fact_table(
+            enrich_fact_table_with_spec_columns(fact_table if isinstance(fact_table, dict) else {}, gap_state)
+        )
         _write_state(
             project_id,
             status="running",

@@ -199,16 +199,43 @@ def enrich_fact_table_with_spec_columns(
     return enriched
 
 
+def fact_table_spec_coverage(fact_table: dict[str, Any]) -> tuple[int, int]:
+    """事实表字段总数，以及其中带清单第 2/3 列（待填写文件 / 原占位符位置）的字段数。"""
+    fields = _object_items(fact_table.get("fields"))
+    covered = sum(
+        1
+        for field in fields
+        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip()
+    )
+    return len(fields), covered
+
+
 def fact_table_drives_placeholders(fact_table: dict[str, Any]) -> bool:
     """事实表字段是否带清单第 2/3 列（待填写文件 / 原占位符位置）。
 
-    带了就说明正文填写能按占位符精确查表定位字段，不再需要参考素材做模糊匹配；
-    没带（历史快照、清单缺列）则退回旧链路，素材照准备。
+    带了就说明正文填写能按占位符精确查表定位字段，不再需要参考素材做模糊匹配。
     """
-    for field in _object_items(fact_table.get("fields")):
-        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip():
-            return True
-    return False
+    return fact_table_spec_coverage(fact_table)[1] > 0
+
+
+def require_spec_driven_fact_table(fact_table: dict[str, Any]) -> None:
+    """正文填写前置校验：事实表必须能驱动占位符定位，否则直接失败。
+
+    以前清单元数据缺失会静默回退到旧的模糊匹配链路（上下文规则 + 全库相似度 + 从素材
+    抽事实 + 起 agent + 跑 OCR），单条几十秒且是错值的主要来源，而界面上只表现为「慢」，
+    用户无从知道自己走错了路。这里改成显式报错并给出修复动作。
+
+    只判零覆盖：部分字段缺列时，缺列的那些会在填写报告里记成 not_in_spec 并标黄，
+    可见且不会填错值，不需要在入口拦截。
+    """
+    total, covered = fact_table_spec_coverage(fact_table)
+    if not total:
+        raise RuntimeError("正文填写需要项目事实表，当前项目还没有可用的事实表字段，请先抽取并确认事实表。")
+    if not covered:
+        raise RuntimeError(
+            f"事实表 {total} 个字段都缺少清单的「待填写文件」「原占位符位置」两列，"
+            "正文填写无法定位字段，请重新上传项目事实表清单后再填写。"
+        )
 
 
 def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
@@ -1189,6 +1216,8 @@ def run_technical_ai_fill_for_gap(
     # 正文填写走清单定位（占位符原文 → 事实表字段），素材既不参与定位也不提供取值：
     # word-filler 只收 docx/xlsx，OCR 出来的 PDF 全被丢弃，脚本里那串防素材污染的补丁
     # 也印证素材在这条链路上是负资产。清单未下发时照旧准备素材，行为不变。
+    if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
+        require_spec_driven_fact_table(project_fact_table)
     spec_driven_fill = skill_name == TECHNICAL_WORD_FILL_SKILL_NAME and fact_table_drives_placeholders(
         project_fact_table
     )
