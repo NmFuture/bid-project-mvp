@@ -1,6 +1,6 @@
 ---
 name: bid-tech-word-placeholder-filler
-description: 技术标 S3 素材库待填写 Word 占位符填写。用于 manifest 已限定待填写 Word 与带清单列的项目事实表，需要保留原 Word 结构、按占位符查表填入、标黄无法确定内容。
+description: 技术标 S3 素材库待填写 Word 占位符填写。用于 manifest 已限定待填写 Word 与带清单列的项目事实表，需要保留原 Word 结构、按占位符查表填入字段值或嵌入整份素材、标黄无法确定内容。
 allowed-tools: [Read, Bash, Write]
 ---
 
@@ -9,7 +9,8 @@ allowed-tools: [Read, Bash, Write]
 你是技术标素材库待填写 Word 填写专家。你只能依据 manifest 中已经给定的内容工作：
 
 - `blankSource`：素材库中的 `待填写-*`、`机型固化&待填写-*` 等 Word 模板。
-- `projectFactTable`：已确认的项目事实表，字段自带清单第 2 列 `targetFile`（填进哪个 Word）与第 3 列 `placeholder`（占位符原文）。**取值只从这里来。**
+- `projectFactTable`：已确认的项目事实表，字段自带清单第 2 列 `targetFile`（填进哪个 Word）与第 3 列 `placeholder`（占位符原文）。**待填写的取值只从这里来。**
+- `embedSources`：待插入占位符对应的整份 Word 素材，后端已按项目素材范围检索并下载好本地路径。**待插入的素材只从这里来。**
 - `parseFields`：招标解析阶段抽取的结构化字段。
 - `projectTurbineModel`：当前投标机型。
 
@@ -22,6 +23,25 @@ allowed-tools: [Read, Bash, Write]
 - Agent 只确认 manifest 已给足待填写 Word 和参考范围，并调用一次命令。
 - 脚本负责读取 Word、识别段落和表格中的 `[字段，待填写]` / `[待填写：字段]` / `[字段，待补充]` 等占位符，按下面的三级收敛定位字段，替换可确定内容并生成报告。
 - 该 Skill 只处理正文/表格单元格占位符；S0 解析出来的空副表仍由 `bid-tech-table-filler` 处理。
+
+## 两种占位符类型
+
+后缀是类型的权威标记，同一份 Word 里两类可以混排：
+
+| 后缀 | 动作 | 查表对象 | 失败标记 |
+| --- | --- | --- | --- |
+| `待填写` / `待补充` / `待确认` | 填入一个字段值 | `projectFactTable` | `[待人工补充：字段名]` |
+| `待插入` | 嵌入一整份 Word 素材 | `embedSources` | `[待人工插入：素材名]` |
+
+两者同构，共用同一套精确定位（占位符文字归一化后精确匹配），差别只在查表对象与执行动作。
+
+待插入的约束：
+
+- **必须独占整段**才嵌入。混排（`详见[xx，待插入]后附`）与表格单元格内的一律标黄交人工——把一句话中间的几个字替换成一整份文档，版面语义说不清。
+- **插入内容不回扫**：素材自己带的占位符不再处理。
+- **Excel 素材不嵌入**。后端按素材原始后缀判定，`.xlsx/.xls/.xlsm` 一律标黄，提示人工另存为 Word；不因为素材恰好有自动转换的清洗稿就嵌进去（那份转换会丢合并单元格、认错表头）。
+- 同名素材按层级特异性取最专的一份（项目定制 > 客户定制 > 标准）；同层撞名标黄交人工。
+- 素材找不到、下载失败、同层撞名都由 `embedSources[].status` 显式带出原因，脚本原地标黄并写进报告，不静默跳过。
 
 ## 字段定位：逐级收敛
 
@@ -41,7 +61,7 @@ allowed-tools: [Read, Bash, Write]
 
 素材侧的占位符拆得越细，走第 1 级的比例越高，第 4 级自然越少触发，无需改代码。
 
-占位符识别范围：`[xx]` / `【xx】` 括号内容，可带 `待填写：` 前缀或 `，待填写 / 待补充 / 待确认` 后缀（如 `[质保期，待填写]`、`【待填写：交货期】`）。段落和表格单元格都会扫描。
+占位符识别范围：`[xx]` / `【xx】` 括号内容，可带 `待填写：` 前缀或 `，待填写 / 待补充 / 待确认 / 待插入` 后缀（如 `[质保期，待填写]`、`【待填写：交货期】`、`[塔架与基础工程量，待插入]`）。段落和表格单元格都会扫描。
 
 单 manifest 只处理一个 `blankSource`，无批量模式（批量需求由上游 gap-planner 拆成多个 fillTask、逐个下发 manifest）。
 
@@ -52,6 +72,7 @@ allowed-tools: [Read, Bash, Write]
 - 返回 `outputFile`、`unfilledFields`、`evidenceRefs`、`fillReport`。
 - Word 必须保留原文档结构，不能重建说明型 Word。
 - 填写依据写入 `outputFile` 同名的 `.fill_report.json` 和 `.fill_report.md`（与 `bid-tech-table-filler` 同一命名约定），含占位符总数/已填/待人工计数。
+- 整份嵌入单独计数：`embeddedCount`（已嵌入）与 `manualEmbedCount`（待人工插入）不混进 `filledPlaceholderCount`，逐条结果在 `embedDetails`。混在一起的话审核界面看不出哪些是整份文档。
 - 报告另给五张诊断表，供业务侧按黄标数量排优先级拉齐清单：`ambiguousPlaceholders`（该拆细占位符）、`compositePlaceholders`（一格多字段，需产品决策）、`placeholdersNotInSpec`（清单漏字段）、`fieldsWithoutValue`（该补事实表）、`fieldsNotFoundInDoc`（文件填错或占位符改过）。
 
 后端 manifest 调用：

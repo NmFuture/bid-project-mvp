@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import BASE_DIR
+from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
@@ -715,6 +716,149 @@ def _prepare_word_blank_source(blank_source: dict[str, Any], work_dir: Path) -> 
     return source
 
 
+# ---------- 待插入：整份素材嵌入的备料 ----------
+#
+# 正文占位符分两型，后缀是权威标记：`待填写` 填一个字段值，`待插入` 嵌一整份素材。
+# 素材检索要联网查库，按「skill 只依据 manifest 工作」的既有约定放在后端：这里按项目
+# 素材范围找同名素材、下载落地，写进 manifest.embedSources，脚本只管插入。
+
+# 只识别待插入后缀，用于备料；占位符解析的权威实现在 filler 的 PLACEHOLDER_RE。
+_EMBED_PLACEHOLDER_RE = re.compile(r"[\[【]\s*([^\]】\r\n]{1,80}?)\s*[,，、:：\s]*待插入\s*[\]】]")
+# 与 filler 的 norm() 同款归一化：全半角括号、分隔符差异不该影响占位符与素材名的比对
+_EMBED_NORM_RE = re.compile(r"[\s（）()、/\\:：；;，,。\-_—×*\[\]【】]+")
+# 素材分层的特异性：同名素材优先取更专的一层，同层撞名才交人工
+_EMBED_TIER_PRIORITY = {"project": 3, "customer": 2, "standard": 1}
+_EMBED_UNSUPPORTED_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
+
+
+def _embed_norm(value: Any) -> str:
+    return _EMBED_NORM_RE.sub("", str(value or "").replace("　", " ").strip().lower())
+
+
+def _scan_embed_placeholders(docx_path: Path) -> list[str]:
+    """扫描待填写 Word 里的待插入占位符，返回去重后的素材名。
+
+    只看段落：待插入要整份嵌入，必须独占段落，表格单元格里的由 filler 标黄交人工，
+    这里不必为它们备料。
+    """
+    from docx import Document
+
+    labels: list[str] = []
+    seen: set[str] = set()
+    for paragraph in Document(str(docx_path)).paragraphs:
+        for match in _EMBED_PLACEHOLDER_RE.finditer(paragraph.text or ""):
+            label = str(match.group(1) or "").strip()
+            key = _embed_norm(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            labels.append(label)
+    return labels
+
+
+def _pick_most_specific_material(materials: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+    """同名素材取最专的一层（项目定制 > 客户定制 > 标准）；同层撞名视为分不开。"""
+
+    def priority(material: dict[str, Any]) -> int:
+        return _EMBED_TIER_PRIORITY.get(str(material.get("materialTier") or ""), 0)
+
+    ranked = sorted(materials, key=priority, reverse=True)
+    top = priority(ranked[0])
+    return ranked[0], sum(1 for material in ranked if priority(material) == top) > 1
+
+
+def _embed_sources_for_fill(
+    project: dict[str, Any],
+    blank_docx_path: Path,
+    work_dir: Path,
+) -> list[dict[str, Any]]:
+    """为待填写 Word 里的每个待插入占位符备好可嵌入的 Word 素材。
+
+    每条都带 status：只有 ready 才会被嵌入，其余由 filler 原地标黄并写明原因，
+    不静默跳过——整份素材没进去却报成功，审核界面上看不出来。
+    """
+    labels = _scan_embed_placeholders(blank_docx_path)
+    if not labels:
+        return []
+    material_scope = build_project_material_scope(project)
+    candidates = _allowed_technical_material_index(material_scope, project_turbine_model(project))
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for material in candidates:
+        key = _embed_norm(Path(str(material.get("name") or "")).stem)
+        if key:
+            by_key.setdefault(key, []).append(material)
+
+    sources: list[dict[str, Any]] = []
+    for label in labels:
+        matches = by_key.get(_embed_norm(label)) or []
+        if not matches:
+            sources.append(
+                {
+                    "placeholder": label,
+                    "status": "not_found",
+                    "statusMessage": f"项目素材范围内未找到名为「{label}」的素材。",
+                }
+            )
+            continue
+        picked, ambiguous = _pick_most_specific_material(matches)
+        material_id = str(picked.get("id") or "")
+        name = str(picked.get("name") or "")
+        entry = {
+            "placeholder": label,
+            "materialId": material_id,
+            "name": name,
+            "folderPath": str(picked.get("folderPath") or ""),
+            "materialTier": str(picked.get("materialTier") or ""),
+        }
+        if ambiguous:
+            sources.append(
+                {
+                    **entry,
+                    "status": "ambiguous",
+                    "statusMessage": f"同一层级存在多个名为「{label}」的素材，请人工指定。",
+                    "candidateCount": len(matches),
+                }
+            )
+            continue
+        # 按素材原始后缀判断，不看能不能取到 docx：xlsx 若被 Wiki 预览转换过，
+        # 取素材时会拿到自动转换的清洗稿，那份转换有损（合并单元格丢失、表头认错），
+        # 悄悄嵌进投标材料就是静默降级。
+        if Path(name).suffix.lower() in _EMBED_UNSUPPORTED_SUFFIXES:
+            sources.append(
+                {
+                    **entry,
+                    "status": "unsupported_format",
+                    "statusMessage": f"「{name}」是 Excel 素材，请人工另存为 Word 后重新上传。",
+                }
+            )
+            continue
+        awaitable = _downloadable_technical_word_payload(material_id)
+        try:
+            payload, source_kind = _run_async(awaitable)
+            file_name = _safe_filename(
+                str(picked.get("cleanedFileName") or payload.get("fileName") or name or f"{material_id}.docx"),
+                f"{material_id}.docx",
+            )
+            if not file_name.lower().endswith(".docx"):
+                file_name = f"{Path(file_name).stem}.docx"
+            target_path = work_dir / "embed_sources" / f"{material_id}-{file_name}"
+            if not target_path.exists():
+                minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        except Exception as exc:  # noqa: BLE001 - 单份素材取不到不能中断整份文件的填写
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            sources.append(
+                {
+                    **entry,
+                    "status": "download_failed",
+                    "statusMessage": f"素材「{name}」下载失败：{exc}",
+                }
+            )
+            continue
+        sources.append({**entry, "status": "ready", "sourceKind": source_kind, "docxPath": str(target_path)})
+    return sources
+
+
 def _field_key(field: dict[str, Any]) -> str:
     return str(field.get("id") or field.get("key") or field.get("label") or field.get("title") or "").strip()
 
@@ -1240,8 +1384,10 @@ def run_technical_ai_fill_for_gap(
     else:
         output_file = work_dir / f"{output_stem}_AI填写.docx"
     manifest_path = work_dir / ("word_fill_input.json" if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else "table_fill_input.json")
+    embed_sources: list[dict[str, Any]] = []
     if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
         blank_source = _prepare_word_blank_source(blank_source, work_dir)
+        embed_sources = _embed_sources_for_fill(project, Path(str(blank_source["docxPath"])), work_dir)
     manifest = {
         "schemaVersion": WORD_FILL_SCHEMA_VERSION if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else TABLE_FILL_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),
@@ -1274,6 +1420,7 @@ def run_technical_ai_fill_for_gap(
             "tenderDocuments": tender_documents,
         },
         "blankSource": blank_source,
+        "embedSources": embed_sources,
         "referenceMaterialIds": selected_reference_ids,
         "referenceMaterials": reference_materials,
         "projectFactTable": project_fact_table,
