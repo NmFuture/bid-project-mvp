@@ -77,6 +77,45 @@ class EnsurePdfOcrSidecarTests(unittest.TestCase):
         self.assertTrue(status.startswith("failed"))
 
 
+class ProjectTenderDocumentsForFillTests(unittest.TestCase):
+    def test_reuses_original_tender_and_full_parse_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tender = root / "完整招标文件.pdf"
+            text_path = root / "TEN-1.txt"
+            nav_path = root / "TEN-1_document_nav.json"
+            tender.write_bytes(b"%PDF-1.4 fake")
+            text_path.write_text("完整招标文件解析全文", encoding="utf-8")
+            nav_path.write_text('{"blocks": [], "tables": []}', encoding="utf-8")
+            project = {
+                "parse_result": {
+                    "documents": [
+                        {
+                            "id": "TEN-1",
+                            "name": tender.name,
+                            "sourcePath": str(tender),
+                            "textPath": str(text_path),
+                            "documentNavPath": str(nav_path),
+                            "status": "completed",
+                        }
+                    ]
+                }
+            }
+            task = {"sourceRouting": {"useTenderParseFields": True}}
+
+            documents = ai_fill._project_tender_documents_for_fill(project, task)
+
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["sourcePath"], str(tender))
+        self.assertEqual(documents[0]["textPath"], str(text_path))
+        self.assertEqual(documents[0]["ocrTextPath"], str(text_path))
+        self.assertEqual(documents[0]["documentNavPath"], str(nav_path))
+
+    def test_rule_without_tender_source_does_not_attach_project_documents(self) -> None:
+        project = {"parse_result": {"documents": [{"id": "TEN-1", "name": "招标文件.pdf"}]}}
+        self.assertEqual(ai_fill._project_tender_documents_for_fill(project, {"sourceRouting": {}}), [])
+
+
 class PrepareFillMaterialsWithOcrTests(unittest.TestCase):
     """填表任务内部 OCR 循环补齐：循环到无配额跳过 / 零进展停止 / 轮数兜底。"""
 

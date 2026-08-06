@@ -50,8 +50,10 @@ NON_VALUE_HEADERS = ("编号", "序号", "备注", "说明", "计量单位", "�
 REQUIREMENT_VALUE_HEADERS = ("招标人要求值", "招标要求值", "技术要求值", "要求值", "招标人要求", "招标要求")
 BIDDER_RESPONSE_HEADERS = ("投标人响应值", "投标响应值", "响应值", "投标响应", "投标值")
 GENERIC_FACT_LIMIT_PER_FILE = 500
+TENDER_FACT_LIMIT_PER_FILE = 5000
 AUTO_SOURCE_SCORE_THRESHOLD = 26.0
 AUTO_SOURCE_MAX = 12
+TENDER_SOURCE_ROUTE = "项目招标文件全文"
 
 
 C1_CONCEPTS = {
@@ -268,6 +270,8 @@ class Source:
     selection_score: float = 0.0
     selection_reasons: tuple[str, ...] = ()
     ocr_text_path: Path | None = None  # PDF 素材的 OCR 文本 sidecar（后端生成）
+    text_path: Path | None = None
+    document_nav_path: Path | None = None
 
 
 @dataclass
@@ -616,6 +620,7 @@ def add_fact(
     source_name = source.name if isinstance(source, Source) else str(source)
     source_kind = source.kind if isinstance(source, Source) else "manifest"
     source_priority = source.priority if isinstance(source, Source) else 95
+    source_route = source.route if isinstance(source, Source) else ""
     fact_concepts = [concept] if concept else concepts_for(f"{label} {value_text}")
     facts.append(
         {
@@ -626,6 +631,7 @@ def add_fact(
             "source": source_name,
             "sourceKind": source_kind,
             "sourcePriority": source_priority,
+            "sourceRoute": source_route,
             "row": row,
             "sheet": sheet,
             "concepts": fact_concepts,
@@ -1188,11 +1194,13 @@ def add_source_from_material(
     selection_reasons: Iterable[str] | None = None,
 ) -> None:
     path = material_path(material, manifest_dir)
-    if path is None or path.suffix.lower() not in {".docx", ".xlsx", ".xlsm", ".pdf"}:
+    if path is None or path.suffix.lower() not in {".docx", ".xlsx", ".xlsm", ".pdf", ".txt", ".md"}:
         return
     name = material_label(material) or path.name
     suffix = path.suffix.lower()
     ocr_text_path: Path | None = None
+    text_path = first_existing_path((material.get("textPath"),), manifest_dir)
+    document_nav_path = first_existing_path((material.get("documentNavPath"),), manifest_dir)
     if suffix == ".pdf":
         for candidate in (Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None, path.with_suffix(".ocr.txt")):
             if candidate is not None and candidate.exists() and candidate.is_file():
@@ -1202,13 +1210,23 @@ def add_source_from_material(
         Source(
             name=name,
             path=path,
-            kind="xlsx" if suffix in {".xlsx", ".xlsm"} else ("pdf" if suffix == ".pdf" else "docx"),
+            kind=(
+                "xlsx"
+                if suffix in {".xlsx", ".xlsm"}
+                else "pdf"
+                if suffix == ".pdf"
+                else "text"
+                if suffix in {".txt", ".md"}
+                else "docx"
+            ),
             priority=priority,
             route=route,
             material_id=clean(material.get("id") or material.get("materialId")),
             selection_score=round(selection_score, 3),
             selection_reasons=tuple(clean(reason) for reason in selection_reasons or [] if clean(reason)),
             ocr_text_path=ocr_text_path,
+            text_path=text_path,
+            document_nav_path=document_nav_path,
         )
     )
 
@@ -1231,6 +1249,17 @@ def select_sources(
         "candidates": [],
         "selected": [],
     }
+
+    for document in object_items(manifest.get("tenderDocuments")):
+        add_source_from_material(
+            sources,
+            document,
+            manifest_dir,
+            priority=98,
+            route=TENDER_SOURCE_ROUTE,
+            selection_score=98,
+            selection_reasons=["附表填写规则要求读取项目招标文件全文"],
+        )
 
     for material in object_items(manifest.get("referenceMaterials")) + object_items(manifest.get("selectedReferenceMaterials")):
         material = enrich_material_with_known_path(material, manifest)
@@ -1347,6 +1376,9 @@ def select_sources(
             has_matching_pdf = any(pdf_intents(source) & spec_intents for source in selected)
             narrowed = []
             for source in selected:
+                if source.route == TENDER_SOURCE_ROUTE:
+                    narrowed.append(source)
+                    continue
                 source_intents = pdf_intents(source)
                 if source_intents and not (source_intents & spec_intents):
                     continue  # 证书意图与附表不符（如设计认证表里的部件证书）
@@ -1749,7 +1781,7 @@ def extract_doc_facts(source: Source) -> list[dict[str, Any]]:
     return facts
 
 
-def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
+def extract_doc_generic_facts(source: Source, *, limit: int = GENERIC_FACT_LIMIT_PER_FILE) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     try:
         doc = Document(str(source.path))
@@ -1770,6 +1802,8 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                 confidence=0.58,
                 notes="通用段落键值抽取",
             )
+            if len(facts) >= limit:
+                return facts
     for table_idx, table in enumerate(doc.tables, start=1):
         for row_idx, row in enumerate(table.rows, start=1):
             values = [clean(cell.text) for cell in row.cells]
@@ -1799,7 +1833,7 @@ def extract_doc_generic_facts(source: Source) -> list[dict[str, Any]]:
                 row_fact_count += 1
                 if row_fact_count >= 2:
                     break
-            if len(facts) >= GENERIC_FACT_LIMIT_PER_FILE:
+            if len(facts) >= limit:
                 return facts
     return facts
 
@@ -1853,6 +1887,166 @@ def pdf_ocr_text(source: Source) -> str:
         except Exception:
             continue
     return ""
+
+
+def _append_tender_text_facts(
+    facts: list[dict[str, Any]],
+    source: Source,
+    text: str,
+    *,
+    location_prefix: str,
+) -> None:
+    for line_index, raw_line in enumerate(text.splitlines(), start=1):
+        if len(facts) >= TENDER_FACT_LIMIT_PER_FILE:
+            return
+        line = clean(raw_line)
+        if not line:
+            continue
+        if line.startswith("|") or line.count("|") >= 2:
+            cells = [clean(cell) for cell in line.split("|")]
+            nonempty = [cell for cell in cells if cell and set(cell) - {"-", ":", " "}]
+            for label, value in zip(nonempty, nonempty[1:]):
+                if looks_like_header_or_empty(label, value):
+                    continue
+                add_fact(
+                    facts,
+                    label=label,
+                    value=value,
+                    source=source,
+                    row=line_index,
+                    sheet=location_prefix,
+                    confidence=0.84,
+                    notes="招标文件全文表格键值",
+                )
+                break
+            continue
+        match = re.match(r"^([^:：|]{2,60})[:：]\s*(.{1,180})$", line)
+        if match and not looks_like_header_or_empty(match.group(1), match.group(2)):
+            add_fact(
+                facts,
+                label=match.group(1),
+                value=match.group(2),
+                source=source,
+                row=line_index,
+                sheet=location_prefix,
+                confidence=0.8,
+                notes="招标文件全文键值",
+            )
+
+
+def _append_tender_nav_table_facts(
+    facts: list[dict[str, Any]],
+    source: Source,
+    table: dict[str, Any],
+) -> None:
+    rows = [
+        [clean(cell) for cell in row]
+        for row in (table.get("rows") if isinstance(table.get("rows"), list) else [])
+        if isinstance(row, list)
+    ]
+    if not rows:
+        return
+    header_index = next(
+        (
+            index
+            for index, row in enumerate(rows[:4])
+            if any(token in " ".join(row) for token in ("参数", "项目", "名称", "条款", "招标", "要求", "单位"))
+        ),
+        0,
+    )
+    headers = rows[header_index]
+    field_col = next(
+        (
+            index
+            for index, value in enumerate(headers)
+            if any(token in value for token in ("参数名称", "项目名称", "主要项目", "指标名称", "条款", "项目", "名称"))
+            and "响应" not in value
+        ),
+        -1,
+    )
+    value_col = next(
+        (
+            index
+            for index, value in enumerate(headers)
+            if any(token in value for token in ("招标人要求值", "招标要求值", "技术要求值", "要求值", "招标人要求", "招标要求"))
+            and "响应" not in value
+        ),
+        -1,
+    )
+    unit_col = next((index for index, value in enumerate(headers) if value in {"单位", "计量单位"}), -1)
+    location = f"P{table.get('pageNo') or '?'}:{table.get('id') or 'table'}"
+    if field_col >= 0 and value_col >= 0:
+        for row_index, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+            if max(field_col, value_col) >= len(row):
+                continue
+            label = clean(row[field_col])
+            value = clean(row[value_col])
+            if not label or not value or looks_like_header_or_empty(label, value):
+                continue
+            unit = clean(row[unit_col]) if unit_col >= 0 and unit_col < len(row) else ""
+            add_fact(
+                facts,
+                label=label,
+                value=value,
+                unit=unit,
+                source=source,
+                row=row_index,
+                sheet=location,
+                confidence=0.92,
+                notes="招标文件全文结构化表格",
+            )
+        return
+    for row_index, row in enumerate(rows, start=1):
+        nonempty = [cell for cell in row if cell]
+        for label, value in zip(nonempty, nonempty[1:]):
+            if looks_like_header_or_empty(label, value):
+                continue
+            add_fact(
+                facts,
+                label=label,
+                value=value,
+                source=source,
+                row=row_index,
+                sheet=location,
+                confidence=0.82,
+                notes="招标文件全文结构化表格键值",
+            )
+            break
+
+
+def extract_tender_document_facts(source: Source) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    if source.kind == "docx":
+        facts.extend(extract_doc_generic_facts(source, limit=TENDER_FACT_LIMIT_PER_FILE))
+    if source.document_nav_path and source.document_nav_path.is_file():
+        try:
+            nav = json.loads(source.document_nav_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            nav = {}
+        for table in object_items(nav.get("tables")):
+            _append_tender_nav_table_facts(facts, source, table)
+        nav_text = "\n".join(
+            str(block.get("text") or "")
+            for block in object_items(nav.get("blocks"))
+            if str(block.get("text") or "").strip()
+        )
+        _append_tender_text_facts(facts, source, nav_text, location_prefix="DocumentNav")
+    text_path = source.text_path or source.ocr_text_path or (source.path if source.kind == "text" else None)
+    if text_path and text_path.is_file():
+        try:
+            text = text_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        _append_tender_text_facts(facts, source, text, location_prefix=text_path.name)
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for fact in facts:
+        key = (clean(fact.get("label")), clean(fact.get("value")), clean(fact.get("unit")))
+        if not all(key[:2]) or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(fact)
+    return deduped[:TENDER_FACT_LIMIT_PER_FILE]
 
 
 def cert_value_clean(value: str) -> str:
@@ -2338,6 +2532,8 @@ def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
 def project_specific_source_allowed(candidate: dict[str, Any]) -> bool:
     if candidate["source"] in {"projectTurbineModel", "parseFields", "projectFactTable", "derived"}:
         return True
+    if candidate.get("sourceRoute") == TENDER_SOURCE_ROUTE:
+        return True
     return candidate.get("sourceKind") in {"xlsx", "docx"} and int(candidate.get("sourcePriority") or 0) >= 64
 
 
@@ -2391,6 +2587,7 @@ def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dic
                     "source": fact["source"],
                     "sourceKind": fact["sourceKind"],
                     "sourcePriority": fact.get("sourcePriority", 0),
+                    "sourceRoute": fact.get("sourceRoute", ""),
                     "row": fact["row"],
                     "sheet": fact["sheet"],
                     "score": score(field, fact, scenario),
@@ -4248,7 +4445,9 @@ def collect_facts(sources: list[Source], project: dict[str, Any], manifest: dict
     facts.extend(extract_project_facts(project))
     for source in sources:
         try:
-            if source.kind == "xlsx":
+            if source.route == TENDER_SOURCE_ROUTE:
+                facts.extend(extract_tender_document_facts(source))
+            elif source.kind == "xlsx":
                 source_meta, param_facts = extract_param_facts(source, project)
                 meta[source.name] = source_meta
                 facts.extend(param_facts)
