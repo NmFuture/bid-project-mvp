@@ -1311,7 +1311,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const factCurateRunning = ['queued', 'running'].includes(String(factCurateState?.status || ''))
   // 正文一键填写任务状态：同样跑在后台 worker，进度靠轮询恢复，关页面不影响
   const [bodyFillState, setBodyFillState] = useState(null)
-  const [bodyFillPending, setBodyFillPending] = useState(0)
   const bodyFillNotifiedRef = useRef('')
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
   const bodyFillDone = Number(bodyFillState?.done || 0)
@@ -1352,7 +1351,6 @@ export default function TechnicalGapRecognition({ showToast }) {
       try {
         const bodyStatus = await technicalGapsAPI.bodyFillStatus(id)
         setBodyFillState(bodyStatus?.bodyFillState || null)
-        setBodyFillPending(Number(bodyStatus?.pendingTotal || 0))
       } catch {
         setBodyFillState(null)
       }
@@ -2279,7 +2277,6 @@ export default function TechnicalGapRecognition({ showToast }) {
         const payload = await technicalGapsAPI.bodyFillStatus(id)
         const state = payload?.bodyFillState || null
         setBodyFillState(state)
-        setBodyFillPending(Number(payload?.pendingTotal || 0))
         const status = String(state?.status || '')
         if (!['succeeded', 'partial', 'failed'].includes(status)) return
         const notifyKey = `${state?.jobId || ''}:${state?.finishedAt || ''}`
