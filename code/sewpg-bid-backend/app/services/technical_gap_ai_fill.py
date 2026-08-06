@@ -165,6 +165,18 @@ def normalize_technical_gap_plan_fill_task_skills(plan: dict[str, Any]) -> int:
     return repaired
 
 
+def fact_table_drives_placeholders(fact_table: dict[str, Any]) -> bool:
+    """事实表字段是否带清单第 2/3 列（待填写文件 / 原占位符位置）。
+
+    带了就说明正文填写能按占位符精确查表定位字段，不再需要参考素材做模糊匹配；
+    没带（历史快照、清单缺列）则退回旧链路，素材照准备。
+    """
+    for field in _object_items(fact_table.get("fields")):
+        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip():
+            return True
+    return False
+
+
 def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     blank_source = task.get("blankSource") if isinstance(task.get("blankSource"), dict) else {}
     blank_id = str(blank_source.get("id") or "").strip()
@@ -759,7 +771,13 @@ def run_technical_table_filler_skill(
 def run_technical_word_placeholder_filler_skill(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+    *,
+    local_only: bool = False,
 ) -> dict[str, Any]:
+    if local_only:
+        # 清单驱动时脚本是纯确定性正则（占位符 → 事实表字段精确查表），agent 在这条链路上
+        # 只做一件事：转发一条 shell 命令。起会话的开销远大于执行本身，直接跑脚本。
+        return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
     prompt = _build_word_placeholder_filler_prompt(manifest_path)
     try:
         return OpencodeClient().run_bid_tech_table_filler_with_trace(
@@ -1133,8 +1151,16 @@ def run_technical_ai_fill_for_gap(
     skill_name = str(task.get("skill") or TECHNICAL_TABLE_FILL_SKILL_NAME)
     appendix_task = _appendix_task_for_fill(item, task)
     blank_source = dict(task.get("blankSource") or {}) if isinstance(task.get("blankSource"), dict) else {}
-    selected_reference_ids = _selected_reference_material_ids(item, appendix_task, data)
-    reference_materials = _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+    # 正文填写走清单定位（占位符原文 → 事实表字段），素材既不参与定位也不提供取值：
+    # word-filler 只收 docx/xlsx，OCR 出来的 PDF 全被丢弃，脚本里那串防素材污染的补丁
+    # 也印证素材在这条链路上是负资产。清单未下发时照旧准备素材，行为不变。
+    spec_driven_fill = skill_name == TECHNICAL_WORD_FILL_SKILL_NAME and fact_table_drives_placeholders(
+        project_fact_table
+    )
+    selected_reference_ids = [] if spec_driven_fill else _selected_reference_material_ids(item, appendix_task, data)
+    reference_materials = (
+        [] if spec_driven_fill else _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+    )
     blank_source_id = str(blank_source.get("id") or blank_source.get("materialId") or "").strip()
     reference_materials = [
         material
@@ -1142,12 +1168,16 @@ def run_technical_ai_fill_for_gap(
         if str(material.get("id") or material.get("materialId") or "").strip() != blank_source_id
     ]
     recommended_materials = list(reference_materials)
-    material_index = _material_index_for_fill(
-        project,
-        plan,
-        item,
-        selected_reference_ids,
-        reference_materials,
+    material_index = (
+        []
+        if spec_driven_fill
+        else _material_index_for_fill(
+            project,
+            plan,
+            item,
+            selected_reference_ids,
+            reference_materials,
+        )
     )
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     tender_documents = _project_tender_documents_for_fill(project, appendix_task)
@@ -1164,13 +1194,14 @@ def run_technical_ai_fill_for_gap(
     # 这两路（尤其是路由命中的认证证书 PDF）从未落地过，table-filler 拿到手时
     # material_path() 解析不出真实文件，会静默丢弃——即使上游路由完全正确。
     # 单轮准备有 OCR 配额上限，这里在任务内部循环补齐，保证一次点击用全量素材。
-    material_index, reference_materials, recommended_materials = _prepare_fill_materials_with_ocr(
-        material_index,
-        reference_materials,
-        recommended_materials,
-        work_dir,
-        cache_dir=shared_material_cache_dir,
-    )
+    if not spec_driven_fill:
+        material_index, reference_materials, recommended_materials = _prepare_fill_materials_with_ocr(
+            material_index,
+            reference_materials,
+            recommended_materials,
+            work_dir,
+            cache_dir=shared_material_cache_dir,
+        )
     artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
     output_stem = _safe_filename(str(item.get("title") or gap_id), gap_id)
@@ -1229,7 +1260,7 @@ def run_technical_ai_fill_for_gap(
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
-        result = run_technical_word_placeholder_filler_skill(manifest_path)
+        result = run_technical_word_placeholder_filler_skill(manifest_path, local_only=spec_driven_fill)
     else:
         result = run_technical_table_filler_skill(manifest_path)
     resolved_output = Path(str(result.get("outputFile") or output_file))

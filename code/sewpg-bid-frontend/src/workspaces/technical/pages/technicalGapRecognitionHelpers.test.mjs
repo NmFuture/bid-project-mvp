@@ -659,3 +659,36 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
   assert.equal(state.applied, true)
   assert.equal(state.coveredCount, 1)
 })
+
+test('正文填写汇总只数正文任务，失败按目录项计', () => {
+  const items = [
+    {
+      id: 'G1',
+      decision: 'fill_required',
+      fillTasks: [
+        { id: 'T1', skill: 'bid-tech-word-placeholder-filler', status: 'completed' },
+        { id: 'T2', skill: 'bid-tech-word-placeholder-filler', status: 'pending' },
+        // 附表由另一条线负责，不进正文汇总
+        { id: 'T3', skill: 'bid-tech-table-filler', status: 'pending' },
+      ],
+    },
+    {
+      id: 'G2',
+      decision: 'fill_required',
+      fillTasks: [{ id: 'T4', skill: 'bid-tech-word-placeholder-filler', status: 'pending' }],
+      fillError: { message: 'MinIO 取件失败' },
+    },
+    // 仅留标题与非填写轨不计入
+    { id: 'G3', decision: 'fill_required', titleOnly: true, fillTasks: [{ id: 'T5', skill: 'bid-tech-word-placeholder-filler' }] },
+    { id: 'G4', decision: 'ready', fillTasks: [{ id: 'T6', skill: 'bid-tech-word-placeholder-filler' }] },
+  ]
+
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 2, filled: 1, failed: 1 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0 })
+})
+
+test('目录项填写失败原因用于标红与重填提示', () => {
+  assert.equal(technicalHelpers.technicalGapFillError({ fillError: { message: '素材缺失' } }), '素材缺失')
+  assert.equal(technicalHelpers.technicalGapFillError({}), '')
+  assert.equal(technicalHelpers.technicalGapFillError({ fillError: 'bad' }), '')
+})
