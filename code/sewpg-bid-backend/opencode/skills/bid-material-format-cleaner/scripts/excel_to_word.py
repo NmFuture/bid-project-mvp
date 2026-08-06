@@ -6,7 +6,7 @@ excel_to_word.py — 将 Excel 文件转换为 Word 文档（表格形式）。
     python excel_to_word.py <excel_path> <output_path>
 
 处理流程:
-  1. 用 pandas 读取 Excel 所有 sheet（无表头模式，自动探测数据区域）
+  1. 用 openpyxl 逐格读取所有 sheet，按单元格数字格式渲染成显示值
   2. 裁剪前导/尾部/中间的全空行和全空列
   3. 第一行作为表头（加粗），后续行为数据
   4. Sheet 未命名（Sheet1/Sheet2...）时以文件名替代
@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from datetime import date, datetime, time
 from pathlib import Path
 
 
@@ -49,6 +50,75 @@ def _is_default_sheet_name(name: str) -> bool:
     return bool(re.match(r"^(Sheet|工作表)\d+$", name, re.IGNORECASE))
 
 
+# 格式码里的字面量（"吨"）、颜色与条件段（[红色]、[>100]）、转义字符都不参与小数位判断
+_FORMAT_LITERAL_RE = re.compile(r'"[^"]*"|\[[^\]]*\]|\\.')
+
+
+def _format_spec(number_format: str) -> str:
+    """取格式码的正数段并剥掉字面量、颜色与条件段。"""
+    return _FORMAT_LITERAL_RE.sub("", str(number_format or "").split(";")[0])
+
+
+def _general_number(value) -> str:
+    """General 格式：整数值的浮点不带小数尾巴，其余原样。"""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _format_number(value, number_format: str) -> str:
+    """按 Excel 数字格式渲染显示值。
+
+    Excel 单元格分「底层值」与「显示格式」两层，读到的底层值可能远比表格里显示的精细：
+    基础弯矩表把荷载列设成 `0`（整数显示），底层却存着 -149696.921875，直接 str() 会把
+    12 位小数写进投标材料，凭空改变原表的有效数字约定。这里按格式码的小数位取整，
+    只覆盖投标表格实际出现的几类（整数/定点小数/百分比/千分位），其余回落 General。
+    """
+    spec = _format_spec(number_format)
+    if not spec.strip() or "general" in spec.lower():
+        return _general_number(value)
+    percent = "%" in spec
+    if percent:
+        value = value * 100
+    decimal_match = re.search(r"\.([0#?]+)", spec)
+    decimals = len(decimal_match.group(1)) if decimal_match else 0
+    grouping = "," if re.search(r"[0#?],[0#?]", spec) else ""
+    text = f"{value:{grouping}.{decimals}f}"
+    return f"{text}%" if percent else text
+
+
+def _format_datetime(value) -> str:
+    if isinstance(value, datetime):
+        if (value.hour, value.minute, value.second) == (0, 0, 0):
+            return value.strftime("%Y-%m-%d")
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return value.strftime("%H:%M:%S")
+
+
+def _cell_display(cell) -> str | None:
+    """单元格的显示文本；空单元格返回 None 供后续裁剪识别。"""
+    value = cell.value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (datetime, date, time)):
+        return _format_datetime(value)
+    if isinstance(value, (int, float)):
+        return _format_number(value, cell.number_format)
+    return str(value)
+
+
+def _sheet_frame(worksheet):
+    import pandas as pd
+
+    return pd.DataFrame([[_cell_display(cell) for cell in row] for row in worksheet.iter_rows()])
+
+
 def _clean_dataframe(df):
     """清洗 DataFrame：去除全空行和全空列，裁剪到有效数据区域。"""
     import pandas as pd
@@ -75,6 +145,7 @@ def _clean_dataframe(df):
 
 def convert_excel_to_word(excel_path: Path, output_path: Path) -> None:
     """读取 Excel 所有 sheet，清洗脏数据后转为 Word 表格。"""
+    import openpyxl
     import pandas as pd
     from docx import Document
     from docx.shared import Pt, Cm
@@ -99,12 +170,13 @@ def convert_excel_to_word(excel_path: Path, output_path: Path) -> None:
     style.paragraph_format.space_after = Pt(0)
 
     file_stem = excel_path.stem
-    xls = pd.ExcelFile(excel_path)
+    workbook = openpyxl.load_workbook(excel_path, data_only=True)
+    sheet_names = list(workbook.sheetnames)
     sheets_written = 0
 
-    for idx, sheet_name in enumerate(xls.sheet_names):
-        # 无表头模式读取，让我们自己判断哪行是表头
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+    for idx, sheet_name in enumerate(sheet_names):
+        # 逐格读取（无表头模式），让我们自己判断哪行是表头
+        df = _sheet_frame(workbook[sheet_name])
 
         # 清洗：删除全空行和全空列
         df = _clean_dataframe(df)
@@ -124,7 +196,7 @@ def convert_excel_to_word(excel_path: Path, output_path: Path) -> None:
         # Sheet 标题：未命名时用文件名
         title = file_stem if _is_default_sheet_name(sheet_name) else sheet_name
         # 多 sheet 且全部未命名时加序号区分
-        if _is_default_sheet_name(sheet_name) and len(xls.sheet_names) > 1:
+        if _is_default_sheet_name(sheet_name) and len(sheet_names) > 1:
             title = f"{file_stem} ({idx + 1})"
         doc.add_heading(title, level=2)
 
