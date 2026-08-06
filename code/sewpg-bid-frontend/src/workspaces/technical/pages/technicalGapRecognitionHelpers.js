@@ -622,6 +622,14 @@ export const resultSummaryForItem = (selected, allItems = []) => {
           tone: 'resolved',
         }
       }
+      // no_fill_required：空白模板本身没有待填单元格，填 0 格是正确终态，
+      // 与 passed 同级放行（后端 FILL_QUALITY_ACCEPTED_STATUSES）。
+      if (qualityStatus === 'no_fill_required') {
+        return {
+          label: 'AI已填写 · 无需填写',
+          tone: 'resolved',
+        }
+      }
       if (qualityStatus && qualityStatus !== 'passed') {
         return {
           label: 'AI已填写 · 待复核',

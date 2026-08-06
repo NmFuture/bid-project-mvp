@@ -68,6 +68,7 @@ from app.services.business_gap_fact_table import (
     PROJECT_FACT_TABLE_SCHEMA_VERSION as BUSINESS_FACT_TABLE_SCHEMA_VERSION,
 )
 from app.services.technical_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
+from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
 from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import (
     build_technical_review_document_content,
@@ -3661,6 +3662,84 @@ def test_technical_ai_fill_action_stays_in_technical_ai_fill_module(tmp_path) ->
     assert artifact["qualityReport"]["status"] == "passed"
     assert Path(artifact["path"]).exists()
     assert artifact["onlyoffice"]["browserFileUrl"].startswith("http://testserver/api/technical/")
+
+
+def test_technical_ai_fill_no_fill_required_reaches_s7_ready(tmp_path) -> None:
+    """空白模板没有待填单元格时，填 0 格要走到 S7-ready 终态。
+
+    质量门给出 no_fill_required 后，写回链路若仍按 == "passed" 判定，产物会带
+    s7Ready=False 落库，technical_gap_artifact_is_s7_ready 的第一行短路就再也
+    放行不了——放行逻辑形同虚设。这里从 run_technical_ai_fill_for_gap 端到端断言。
+    """
+    project_id = _seed_technical_gap_project(
+        {
+            "scopeBoundary": {"readableScopes": []},
+            "materialIndex": [],
+            "items": [
+                {
+                    "id": "TG-NOFILL",
+                    "section": "技术方案",
+                    "title": "机型配置品牌表",
+                    "status": "needs_input",
+                    "decision": "fill_required",
+                    "usage": "table_fill",
+                    "appendixTasks": [{"id": "BLANK-NOFILL", "title": "机型配置品牌表"}],
+                    "fillTasks": [
+                        {
+                            "id": "FILL-NOFILL",
+                            "skill": "bid-tech-table-filler",
+                            "status": "pending",
+                            "blankSource": {"id": "BLANK-NOFILL", "title": "机型配置品牌表"},
+                        }
+                    ],
+                    "resolvedArtifacts": [],
+                }
+            ],
+            "summary": {"totalTocItems": 1, "fillableTaskCount": 1},
+        }
+    )
+    project = store._require(project_id)
+
+    def fake_no_fill_runner(manifest_path: Path) -> dict[str, object]:
+        output_path = Path(json.loads(Path(manifest_path).read_text(encoding="utf-8"))["outputFile"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"technical-ai-filled-docx")
+        return {
+            "schema_version": "bid-tech-table-fill-v1",
+            "outputFile": str(output_path),
+            "unfilledFields": [],
+            "evidenceRefs": [{"type": "blank_source", "path": "机型配置品牌表.docx"}],
+            "fillReport": {
+                "targetFieldCount": 0,
+                "filledFieldCount": 0,
+                "unfilledFieldCount": 0,
+                "noFillRequired": True,
+            },
+        }
+
+    with patch.object(
+        technical_gap_ai_fill_module,
+        "technical_workspace_dir",
+        return_value=tmp_path / "technical-workspace",
+    ), patch.object(
+        technical_gap_ai_fill_module,
+        "run_technical_table_filler_skill",
+        side_effect=fake_no_fill_runner,
+    ):
+        payload = technical_gap_actions_module.run_technical_ai_fill_for_gap(
+            project,
+            "TG-NOFILL",
+            {"fillTaskId": "FILL-NOFILL", "operator": "技术用户"},
+            browser_base_url="http://testserver",
+        )
+
+    artifact = payload["artifact"]
+    assert artifact["qualityReport"]["status"] == "no_fill_required"
+    assert artifact["s7Ready"] is True
+    assert technical_gap_artifact_is_s7_ready(artifact) is True
+    assert payload["item"]["status"] == "resolved"
+    assert payload["item"]["qualityStatus"] == "no_fill_required"
+    assert not any("验收未达标" in note for note in payload["item"]["reviewNotes"])
 
 
 def test_technical_body_fill_rejects_fact_table_without_spec_columns() -> None:

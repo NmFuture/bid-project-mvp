@@ -18,6 +18,7 @@ from app.services.ocr_service import ocr_service
 from app.services.opencode_client import OpencodeClient
 from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
+    FILL_QUALITY_ACCEPTED_STATUSES,
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
@@ -469,6 +470,81 @@ async def _downloadable_technical_fill_source_payload(material_id: str) -> tuple
     return payload, "raw"
 
 
+_FILL_ORIGINAL_SUFFIXES = (".xlsx", ".xlsm")
+
+
+async def _original_technical_fill_source_payload(material_id: str) -> dict[str, Any] | None:
+    """取素材 Excel 原件的下载信息。
+
+    清洗稿是 docx 文本化版本，丢掉了 sheet 结构：报价分项转写、功率曲线矩阵、
+    参数表机型列定位都必须读原生 Excel。返回 None 表示该素材没有需要额外落地
+    的 Excel 原件（本身是 Word/PDF，或取不到原件）。PDF 不在此列——其文本已由
+    清洗稿承载，额外落地只会凭空增加 OCR 开销。
+    """
+    try:
+        payload = await technical_material_store.raw_download_content(material_id)
+    except Exception:
+        return None
+    file_name = str(payload.get("fileName") or "").lower()
+    if not file_name.endswith(_FILL_ORIGINAL_SUFFIXES):
+        return None
+    return payload
+
+
+def _material_may_have_excel_original(item: dict[str, Any]) -> bool:
+    """按素材名判断是否值得回源取 Excel 原件，避免逐份多打一次 DB/MinIO。
+
+    素材名是上传时的原始文件名（清洗稿名单独放 cleanedFileName），后缀已足够
+    判定；名称缺失或后缀不认识时返回 True，交给下载分支探测。
+    """
+    for key in ("name", "title"):
+        text = str(item.get(key) or "").strip().lower()
+        if not text:
+            continue
+        if text.endswith(_FILL_ORIGINAL_SUFFIXES):
+            return True
+        if text.endswith((".docx", ".doc", ".pdf", ".txt", ".md")):
+            return False
+    return True
+
+
+def _resolve_original_material_file(
+    material_id: str,
+    item: dict[str, Any],
+    cache_dir: Path,
+) -> Path | None:
+    """把 Excel 原件落地到素材缓存，并在 item 上暴露 originalPath。
+
+    已落地的就是原件（清洗稿缺失走 raw 分支）时直接复用，不重复下载。
+    """
+    current = Path(str(item.get("path") or ""))
+    if current.suffix.lower() in _FILL_ORIGINAL_SUFFIXES and current.exists():
+        item["originalPath"] = str(current)
+        item["originalFileName"] = current.name
+        return current
+    if not _material_may_have_excel_original(item):
+        return None
+    awaitable = _original_technical_fill_source_payload(material_id)
+    try:
+        payload = _run_async(awaitable)
+    except Exception:
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        return None
+    if not payload:
+        return None
+    file_name = _safe_filename(str(payload.get("fileName") or ""), f"{material_id}原件")
+    target_path = cache_dir / f"{material_id}-{file_name}"
+    if not target_path.exists():
+        try:
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+        except Exception:
+            return None
+    item["originalPath"] = str(target_path)
+    item["originalFileName"] = target_path.name
+    return target_path
+
+
 async def _downloadable_technical_word_payload(material_id: str) -> tuple[dict[str, Any], str]:
     try:
         payload = await technical_material_store.raw_download_cleaned_content(material_id)
@@ -606,6 +682,9 @@ def _prepare_material_index_files(
                 "fileName": target_path.name,
             }
         )
+        # 清洗稿是 docx 文本化版本；Excel 原件另行落地，供报价转写、曲线矩阵等
+        # 依赖 sheet 结构的填表分支使用（见 _resolve_original_material_file）。
+        _resolve_original_material_file(material_id, item, cache_dir)
         if ocr_pdf and target_path.suffix.lower() == ".pdf":
             has_cache = target_path.with_suffix(".ocr.txt").exists()
             if has_cache:
@@ -1052,7 +1131,10 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         "correctnessRate": 0.85,
         "completenessRate": 0.85,
     }
-    status = "passed" if (
+    # 空白模板本身没有待填单元格（招标原文已写满，或整列留空即不限制）时，
+    # 填 0 格是正确终态，不是缺口。按覆盖率会误判 needs_review 并混进缺口统计。
+    no_fill_required = bool(report.get("noFillRequired")) and output_exists and filled_count == 0
+    status = "no_fill_required" if no_fill_required else "passed" if (
         coverage_rate >= thresholds["coverageRate"]
         and correctness_rate >= thresholds["correctnessRate"]
         and completeness_rate >= thresholds["completenessRate"]
@@ -1061,9 +1143,12 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         and failed_target_count == 0
         and output_exists
     ) else "needs_review"
+    source_coverage = report.get("sourceCoverage") if isinstance(report.get("sourceCoverage"), dict) else None
     return {
         "schemaVersion": "bid-fill-quality-report-v1",
         "status": status,
+        "noFillRequired": no_fill_required,
+        "sourceCoverage": source_coverage,
         "coverageRate": round(coverage_rate, 4),
         "correctnessRate": round(correctness_rate, 4),
         "completenessRate": round(completeness_rate, 4),
@@ -1163,7 +1248,7 @@ def _build_ai_fill_artifacts(
         artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
         title = str(target_report.get("title") or item_title or output_file.stem)
         quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
-        artifact_s7_ready = s7_ready and quality_report["status"] == "passed"
+        artifact_s7_ready = s7_ready and quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES
         artifacts.append(
             {
                 "id": artifact_id,
@@ -1474,7 +1559,7 @@ def run_technical_ai_fill_for_gap(
         parse_fields=parse_fields,
         tender_documents=tender_documents,
         manifest_path=manifest_path,
-        s7_ready=quality_report["status"] == "passed",
+        s7_ready=quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES,
         browser_base_url=browser_base_url,
         onlyoffice_base_url=onlyoffice_base_url,
     )
@@ -1484,7 +1569,7 @@ def run_technical_ai_fill_for_gap(
     task["outputArtifactId"] = artifact["id"]
     task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
     task["completedAt"] = created_at
-    item["status"] = "resolved" if quality_report["status"] == "passed" else "needs_input"
+    item["status"] = "resolved" if quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES else "needs_input"
     item["qualityStatus"] = quality_report["status"]
     item["qualityReport"] = quality_report
     item["resolvedArtifacts"] = _replace_resolved_artifacts(
@@ -1499,7 +1584,7 @@ def run_technical_ai_fill_for_gap(
     unfilled_count = len(result.get("unfilledFields") or [])
     if unfilled_count:
         item["reviewNotes"].append(f"AI 填写仍有未填字段：{unfilled_count} 项")
-    if quality_report["status"] != "passed":
+    if quality_report["status"] not in FILL_QUALITY_ACCEPTED_STATUSES:
         item["reviewNotes"].append("AI 填写质量验收未达标，请人工复核或补充事实表后重填。")
 
     plan["updatedAt"] = created_at
