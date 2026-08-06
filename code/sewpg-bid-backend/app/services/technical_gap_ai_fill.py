@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import subprocess
@@ -19,6 +20,7 @@ from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
+from app.services.technical_fact_spec_versions import resolve_project_specs
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -163,6 +165,38 @@ def normalize_technical_gap_plan_fill_task_skills(plan: dict[str, Any]) -> int:
     if repaired:
         plan["summary"] = summarize_technical_gap_plan(plan)
     return repaired
+
+
+def enrich_fact_table_with_spec_columns(
+    fact_table: dict[str, Any],
+    gap_state: dict[str, Any],
+) -> dict[str, Any]:
+    """给事实表字段补上清单第 2/3 列（待填写文件 / 原占位符位置）。
+
+    这两列是随「按清单定位」一起加的，改动前生成并存进 gap_state 的事实表没有它们，
+    正文填写会误判成「清单未下发」而回退到旧的模糊匹配链路（起 agent + 跑 OCR，单条
+    几十秒）。这里按 specKey 从项目当前生效清单现补，只补元数据不碰任何取值，
+    也就不需要用户重建事实表——重建会重跑规则抽取，动到已确认的值。
+    """
+    fields = fact_table.get("fields")
+    if not isinstance(fields, list) or not fields:
+        return fact_table
+    specs, _meta = resolve_project_specs(gap_state)
+    specs_by_key = {str(spec.get("key") or ""): spec for spec in specs if isinstance(spec, dict) and spec.get("key")}
+    if not specs_by_key:
+        return fact_table
+    enriched = copy.deepcopy(fact_table)
+    for field in enriched.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip():
+            continue
+        spec = specs_by_key.get(str(field.get("specKey") or ""))
+        if not spec:
+            continue
+        field["placeholder"] = str(spec.get("placeholder") or "")
+        field["targetFile"] = str(spec.get("targetFile") or "")
+    return enriched
 
 
 def fact_table_drives_placeholders(fact_table: dict[str, Any]) -> bool:
@@ -1129,6 +1163,7 @@ def run_technical_ai_fill_for_gap(
     gap_state = project.get("gap_state") or {}
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     project_fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+    project_fact_table = enrich_fact_table_with_spec_columns(project_fact_table, gap_state)
     normalize_technical_gap_plan_fill_task_skills(plan)
     items = plan.get("items") if isinstance(plan.get("items"), list) else []
     item = next((entry for entry in items if str(entry.get("id") or "") == gap_id), None)
