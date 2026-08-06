@@ -94,6 +94,27 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
         # 其余 spec 仍为骨架
         self.assertEqual(len(fields_by_key), 148)
 
+    def test_spec_placeholder_and_target_file_reach_fields(self) -> None:
+        # 正文填写按「待填写文件 + 占位符原文」定位字段，这两列必须随字段下发
+        fields_by_key: dict[str, dict] = {}
+        reconcile_fact_fields_with_specs(fields_by_key)
+        with_placeholder = [field for field in fields_by_key.values() if field.get("placeholder")]
+        self.assertEqual(len(with_placeholder), 148)
+        self.assertTrue(all(field.get("targetFile") for field in fields_by_key.values()))
+        tower = next(field for field in fields_by_key.values() if field["label"] == "第1段（底）塔节底部直径（m）")
+        self.assertIn("待填写-塔筒设计方案专题报告.docx", tower["targetFile"])
+        self.assertEqual(tower["placeholder"], "[技术方案，待填写]")
+
+    def test_spec_metadata_survives_normalization(self) -> None:
+        fields_by_key: dict[str, dict] = {}
+        reconcile_fact_fields_with_specs(fields_by_key)
+        source = next(field for field in fields_by_key.values() if field["label"] == "场址要求安全等级")
+        normalized = normalize_project_fact_field(
+            source, index=1, confirm=False, operator="测试用户", saved_at="2026-08-06T00:00:00Z"
+        )
+        self.assertEqual(normalized["placeholder"], source["placeholder"])
+        self.assertEqual(normalized["targetFile"], source["targetFile"])
+
     def test_needs_confirmation_spec_becomes_pending(self) -> None:
         # spec 87「函件签署日期」别名「日期」，无待确认；spec 7「发电小时数/电量承诺函版本」需确认
         fields_by_key = {
