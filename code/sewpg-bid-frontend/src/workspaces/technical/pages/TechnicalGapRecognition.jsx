@@ -989,6 +989,8 @@ function AiFillReferenceModal({
   onPreview,
   onConfirm,
   onClose,
+  onUpload,
+  uploadBusy,
 }) {
   if (!open) return null
   const usesTenderDocument = Boolean(tenderDocumentState?.required)
@@ -1073,6 +1075,34 @@ function AiFillReferenceModal({
               </div>
             )}
           </div>
+          {onUpload ? (
+            <div className="mt-3 rounded-md border border-dashed border-surface-container-high bg-surface-container-low/50 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-on-surface">上传补充素材</div>
+                  <div className="mt-0.5 text-[11px] text-outline">
+                    自动匹配不准时可手动补料：上传的文件会存入项目素材库，并自动勾选为本次 AI 填写的参考素材。
+                  </div>
+                </div>
+                <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container ${busy || uploadBusy ? 'pointer-events-none opacity-50' : ''}`}>
+                  <span className="material-symbols-outlined text-[16px]">upload_file</span>
+                  {uploadBusy ? '上传中...' : '上传素材'}
+                  <input
+                    type="file"
+                    multiple
+                    accept=".docx,.xlsx,.xls,.pdf"
+                    className="hidden"
+                    disabled={busy || uploadBusy}
+                    onChange={(event) => {
+                      const files = event.target.files
+                      event.target.value = ''
+                      if (files?.length) onUpload(files)
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="flex flex-wrap gap-1.5">
@@ -1298,6 +1328,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
+  // AI 填写弹窗内手动上传的补充素材：入项目素材库后注入候选列表并默认勾选，
+  // 关闭弹窗时清空，避免串到下一个附表任务。
+  const [aiFillUploadedCandidates, setAiFillUploadedCandidates] = useState([])
+  const [aiFillUploadBusy, setAiFillUploadBusy] = useState(false)
   // 事实表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
   // 未上传的项目不出字段，仅引导上传。factMaterialPaths 是用户自定义的参考资料目录。
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
@@ -1503,13 +1537,19 @@ export default function TechnicalGapRecognition({ showToast }) {
           ...asObjectArray(selected?.matchedMaterials),
           ...selectedCandidateMaterials,
         ].filter(Boolean)
-    return candidates.filter((item) => {
+    const base = candidates.filter((item) => {
       const key = String(item?.id || item?.materialId || item?.name || '').trim()
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
     // 上限 20：兼顾「章节同名目录素材」拼装列表（可能 10+ 份，全部确定相关）与渲染开销。
     }).sort((a, b) => technicalMatchScore(b) - technicalMatchScore(a)).slice(0, 20)
+    // 手动上传的补充素材排在最前，不受匹配度排序与 20 条上限影响
+    const uploaded = aiFillUploadedCandidates.filter((item) => {
+      const key = String(item?.id || item?.materialId || '').trim()
+      return key && !seen.has(key)
+    })
+    return [...uploaded, ...base]
   })()
   // AI 填写参考素材勾选态按「目录项 × 填写任务」隔离；没勾选过时用该任务的推荐默认值。
   const aiFillSelectionKeyFor = (task) => (selected && task
@@ -2145,6 +2185,79 @@ export default function TechnicalGapRecognition({ showToast }) {
         ? `已上传并选用：${result.artifact.fileName}`
         : '已上传并选用素材'),
     )
+  }
+
+  // AI 填写弹窗内的补料上传：走素材库 raw upload 入「项目素材」目录（区别于目录项底部
+  // 上传即定案的 gaps/{gid}/upload），拿到真实素材 id 后注入弹窗候选列表并默认勾选，
+  // AI 填写链路（referenceMaterials）零改动——后端按 material_id 从 MinIO 下载，
+  // 清洗未完成的素材回退原件也能用于填写。
+  const handleAiFillUpload = async (files) => {
+    const task = aiFillModalTask
+    const fileList = Array.from(files || [])
+    if (!task || !fileList.length) return
+    const projectScope = readableScopes.find((scope) => String(scope?.key || '') === 'project')
+    const targetPath = String(projectScope?.path || '').trim()
+    if (!targetPath) {
+      showToast?.('未找到项目素材目录，无法上传', 'error')
+      return
+    }
+    const identity = materialScope?.identity || {}
+    const buildForm = (onConflict) => {
+      const form = new FormData()
+      form.append('targetPath', targetPath)
+      form.append('projectId', id)
+      form.append('projectCode', String(identity.projectCode || ''))
+      form.append('projectName', String(identity.projectName || ''))
+      form.append('bidType', materialScope?.bidType || '技术标')
+      form.append('materialTier', '')
+      form.append('businessMaterialKind', 'other')
+      form.append('customerId', '')
+      form.append('customerName', '')
+      if (onConflict) form.append('onConflict', onConflict)
+      fileList.forEach((file) => {
+        form.append('files', file, file.name)
+        form.append('relativePaths', '')
+      })
+      return form
+    }
+    setAiFillUploadBusy(true)
+    try {
+      let result
+      try {
+        result = await technicalMaterialsAPI.raw.upload(buildForm(''))
+      } catch (e) {
+        // 同名冲突：归档旧版本后覆盖重试一次（对齐素材库页的 onConflict 语义）
+        if (e?.status === 409 && e?.code === 'MATERIAL_CONFLICT') {
+          result = await technicalMaterialsAPI.raw.upload(buildForm('replace'))
+        } else {
+          throw e
+        }
+      }
+      const items = asObjectArray(result?.items)
+      if (!items.length) {
+        showToast?.('上传完成，但未拿到素材记录，请到素材库确认', 'error')
+        return
+      }
+      setAiFillUploadedCandidates((current) => {
+        const existing = new Set(current.map((item) => String(item?.id || item?.materialId || '').trim()))
+        return [...current, ...items.filter((item) => !existing.has(String(item?.id || item?.materialId || '').trim()))]
+      })
+      const key = aiFillSelectionKeyFor(task)
+      const uploadedIds = items.map((item) => String(item?.id || item?.materialId || '').trim()).filter(Boolean)
+      if (key && uploadedIds.length) {
+        setAiFillReferenceSelections((current) => {
+          const active = Object.prototype.hasOwnProperty.call(current, key)
+            ? current[key]
+            : defaultAiFillReferenceMaterialIds(selected, [], task)
+          return { ...current, [key]: uniqueStrings([...active, ...uploadedIds]) }
+        })
+      }
+      showToast?.(`已上传 ${items.length} 份素材并加入本次 AI 填写参考`)
+    } catch (e) {
+      showToast?.(e?.message || '上传失败，请稍后重试', 'error')
+    } finally {
+      setAiFillUploadBusy(false)
+    }
   }
 
   // task 缺省为首个填写任务；多空表目录项（如 附表F.5 双任务）由各自素材卡传入对应任务。
@@ -3151,12 +3264,18 @@ export default function TechnicalGapRecognition({ showToast }) {
         busy={Boolean(busyAction)}
         onToggle={(materialId) => handleToggleAiFillReference(aiFillModalTask, materialId)}
         onPreview={handlePreviewMaterial}
+        onUpload={handleAiFillUpload}
+        uploadBusy={aiFillUploadBusy}
         onConfirm={() => {
           const task = aiFillModalTask
           setAiFillModalTask(null)
+          setAiFillUploadedCandidates([])
           handleAiFill(task)
         }}
-        onClose={() => setAiFillModalTask(null)}
+        onClose={() => {
+          setAiFillModalTask(null)
+          setAiFillUploadedCandidates([])
+        }}
       />
       <TechnicalPreviewModal
         open={previewOpen}
