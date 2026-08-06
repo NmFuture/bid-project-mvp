@@ -155,7 +155,10 @@ DATABASE_URL="postgresql+asyncpg://biduser:bidpass@localhost:5432/bidplatform" \
 - `-m "not integration"`：不加会连带跑需要 MinIO/Redis 的集成用例（CI 由独立
   job 覆盖，本地缺服务必失败）。
 - `APP_STORE_BACKEND=memory`：CI 的 backend job 用内存后端。
-- `DATABASE_URL`：指向本地 Compose 已映射的 `localhost:5432`。
+- `DATABASE_URL`：指向本地 Compose 已映射的 `localhost:5432`。`tests/conftest.py`
+  会把库名强制改写成 `<库名>_test` 并按 `code/initdb/01-init.sql` 自动建库，
+  所以测试永远不会写开发库。素材目录（`raw_folders`/`raw_files`）不受
+  `APP_STORE_BACKEND=memory` 影响，一定落真实 Postgres，这层隔离必须保留。
 
 集成用例按 CI 的 `backend-integration` job 单独跑，需先起依赖服务：
 
