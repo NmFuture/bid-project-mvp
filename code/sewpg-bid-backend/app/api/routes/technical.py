@@ -823,7 +823,10 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
     # 素材流水线自动衔接：纯非清洗批次（PDF/Excel）没有清洗收尾时机，上传后直接触发
     # Wiki 增量；产生了清洗任务的批次由清洗收尾钩子触发（material_wiki_auto）。
     try:
-        on_material_upload_completed(int((result.get("cleaning") or {}).get("queued") or 0))
+        on_material_upload_completed(
+            int((result.get("cleaning") or {}).get("queued") or 0),
+            bid_type=TECHNICAL_BID_TYPE,
+        )
     except Exception as auto_exc:
         logging.getLogger(__name__).warning("素材流水线自动衔接失败（上传钩子）：%s", auto_exc)
     return result

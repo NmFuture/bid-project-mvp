@@ -377,6 +377,7 @@ async def upload_raw_files(
                         clean_job_targets.append(
                             {
                                 "file_id": int(existing.id),
+                                "bid_type": normalized_bid_type,
                                 "source_version": next_version,
                                 "source_bucket": materials_bucket,
                                 "source_key": minio_key,
@@ -417,6 +418,7 @@ async def upload_raw_files(
                     clean_job_targets.append(
                         {
                             "file_id": int(record.id),
+                            "bid_type": normalized_bid_type,
                             "source_version": int(record.version or 1),
                             "source_bucket": materials_bucket,
                             "source_key": minio_key,
