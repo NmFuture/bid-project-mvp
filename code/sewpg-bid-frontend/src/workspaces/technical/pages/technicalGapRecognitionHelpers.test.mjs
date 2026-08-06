@@ -7,6 +7,7 @@ import {
   appendixTaskForFillTask,
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
+  tenderDocumentStateForAiFill,
   technicalGapTagOf,
 } from './technicalGapRecognitionHelpers.js'
 
@@ -237,6 +238,38 @@ test('技术标 AI 填表在仅附表任务有规则时使用对应空表推荐�
     defaultAiFillReferenceMaterialIds(selected, [], { blankSource: { id: 'APPX-D1' } }),
     ['RAW-D1'],
   )
+})
+
+test('招标文件来源规则允许零素材并展示项目完整招标文件', () => {
+  const state = tenderDocumentStateForAiFill({
+    sourceRouting: {
+      useTenderParseFields: true,
+      tenderDocumentStatus: 'available',
+      tenderDocumentCount: 2,
+      tenderDocuments: [
+        { id: 'TEN-1', name: '技术规范.pdf' },
+        { id: 'TEN-2', name: '招标附图.docx' },
+      ],
+    },
+  })
+
+  assert.equal(state.required, true)
+  assert.equal(state.missingSource, false)
+  assert.equal(state.documentCount, 2)
+  assert.deepEqual(state.documentNames, ['技术规范.pdf', '招标附图.docx'])
+})
+
+test('招标文件来源规则在项目无源文件时阻止空跑', () => {
+  const state = tenderDocumentStateForAiFill({
+    sourceRouting: {
+      useTenderParseFields: true,
+      tenderDocumentStatus: 'missing_source',
+      tenderDocumentCount: 0,
+    },
+  })
+
+  assert.equal(state.required, true)
+  assert.equal(state.missingSource, true)
 })
 
 test('待填写素材严格按「待填写-」前缀识别', () => {

@@ -367,6 +367,24 @@ export const appendixTaskForFillTask = (selected, task) => {
   return appendixTasks[0] || null
 }
 
+export const tenderDocumentStateForAiFill = (appendixTask) => {
+  const routing = appendixTask?.sourceRouting && typeof appendixTask.sourceRouting === 'object'
+    ? appendixTask.sourceRouting
+    : {}
+  const required = Boolean(routing.useTenderParseFields)
+  const documents = asObjectArray(routing.tenderDocuments)
+  const count = Number(routing.tenderDocumentCount)
+  const documentCount = Number.isFinite(count) && count >= 0 ? count : documents.length
+  const status = String(routing.tenderDocumentStatus || (documentCount > 0 ? 'available' : required ? 'unknown' : 'not_required'))
+  return {
+    required,
+    status,
+    documentCount,
+    documentNames: uniqueStrings(documents.map((document) => document.name)),
+    missingSource: required && status === 'missing_source',
+  }
+}
+
 export const defaultAiFillReferenceMaterialIds = (selected, selectedMaterialIds = [], task = null) => {
   const manualIds = uniqueStrings(selectedMaterialIds)
   if (manualIds.length) return manualIds

@@ -700,6 +700,26 @@ class GapReviewFlowTests(unittest.TestCase):
             {"id": "FIELD-POWER", "label": "单机容量", "value": "10MW", "sourceFile": "招标文件.docx"},
             {"id": "FIELD-ROTOR", "label": "叶轮直径", "value": "220m", "sourceFile": "招标文件.docx"},
         ]
+        tender_path = settings.uploads_dir / project_id / "完整招标文件.docx"
+        tender_path.parent.mkdir(parents=True, exist_ok=True)
+        tender_doc = Document()
+        tender_doc.add_paragraph("完整招标文件")
+        tender_doc.save(tender_path)
+        tender_text_path = tender_path.with_suffix(".txt")
+        tender_text_path.write_text("完整招标文件解析全文", encoding="utf-8")
+        # 生产链路把完整文档记录（含 sourcePath/textPath）写入 parse_storage.documents，
+        # parse_result 里只有摘要；这里按真实结构注入，不再手工塞 parse_result.documents。
+        parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        parse_storage["documents"] = [
+            {
+                "id": "TEN-1",
+                "name": tender_path.name,
+                "sourcePath": str(tender_path),
+                "textPath": str(tender_text_path),
+                "status": "completed",
+            }
+        ]
+        project["parse_storage"] = parse_storage
         store._persist_project(project)
         detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
@@ -724,10 +744,10 @@ class GapReviewFlowTests(unittest.TestCase):
             "tableTitle": "性能保证附表",
             "projectSources": [],
             "standardSources": ["性能保证基准素材"],
-            "otherSources": [],
+            "otherSources": ["响应招标文件填写"],
             "matchedMaterials": [{"id": "RAW-0001", "name": "性能保证基准素材.docx"}],
             "manualRequired": False,
-            "useTenderParseFields": False,
+            "useTenderParseFields": True,
         }
         project = store._require(project_id)
         project["gap_state"]["plan"] = gap_plan
@@ -772,12 +792,16 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(manifest["appendixTask"]["sourceRouting"]["standardSources"], ["性能保证基准素材"])
         self.assertEqual(manifest["recommendedMaterials"][0]["id"], "RAW-0001")
         self.assertEqual(manifest["referenceMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(manifest["tenderDocuments"][0]["id"], "TEN-1")
+        self.assertEqual(manifest["tenderDocuments"][0]["sourcePath"], str(tender_path))
+        self.assertEqual(manifest["tenderDocuments"][0]["textPath"], str(tender_text_path))
         self.assertEqual([item["id"] for item in manifest["materialIndex"]], ["RAW-0001"])
         self.assertEqual(manifest["parseFields"][0]["id"], "FIELD-POWER")
         self.assertEqual(manifest["blankSource"]["id"], "APP-PERF")
         artifact = response.json()["artifact"]
         self.assertEqual(artifact["fillReport"]["filledFieldCount"], 2)
         self.assertEqual(artifact["referenceMaterials"][0]["id"], "RAW-0001")
+        self.assertEqual(artifact["tenderDocuments"], [{"id": "TEN-1", "name": tender_path.name, "sourceType": "project_tender_document"}])
 
     def test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()

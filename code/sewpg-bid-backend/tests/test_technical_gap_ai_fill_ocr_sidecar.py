@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import technical_gap_ai_fill as ai_fill
+from app.services.bid_parse_state import complete_parse_state
 from app.services.peripheral import PeripheralError
 
 
@@ -75,6 +76,55 @@ class EnsurePdfOcrSidecarTests(unittest.TestCase):
             sidecar, status = ai_fill._ensure_pdf_ocr_sidecar(self.pdf_path)
         self.assertEqual(sidecar, "")
         self.assertTrue(status.startswith("failed"))
+
+
+class ProjectTenderDocumentsForFillTests(unittest.TestCase):
+    def test_reuses_original_tender_and_full_parse_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tender = root / "完整招标文件.pdf"
+            text_path = root / "TEN-1.txt"
+            nav_path = root / "TEN-1_document_nav.json"
+            tender.write_bytes(b"%PDF-1.4 fake")
+            text_path.write_text("完整招标文件解析全文", encoding="utf-8")
+            nav_path.write_text('{"blocks": [], "tables": []}', encoding="utf-8")
+            # 用真实 complete_parse_state() 生成项目状态：完整文档记录落在
+            # parse_storage.documents，parse_result 只有摘要，不手工注入 parse_result.documents。
+            project: dict = {"id": "PRJ-1", "currentStage": 2, "deadline": "", "bidType": "技术标"}
+            complete_parse_state(
+                project,
+                [{"id": "TEN-1", "name": tender.name, "size_label": "1KB"}],
+                [],
+                summary=None,
+                parse_storage={
+                    "documents": [
+                        {
+                            "id": "TEN-1",
+                            "name": tender.name,
+                            "sourcePath": str(tender),
+                            "textPath": str(text_path),
+                            "documentNavPath": str(nav_path),
+                            "status": "completed",
+                        }
+                    ],
+                    "items": [],
+                    "structured": {},
+                },
+            )
+            self.assertNotIn("documents", project["parse_result"])
+            task = {"sourceRouting": {"useTenderParseFields": True}}
+
+            documents = ai_fill._project_tender_documents_for_fill(project, task)
+
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["sourcePath"], str(tender))
+        self.assertEqual(documents[0]["textPath"], str(text_path))
+        self.assertEqual(documents[0]["ocrTextPath"], str(text_path))
+        self.assertEqual(documents[0]["documentNavPath"], str(nav_path))
+
+    def test_rule_without_tender_source_does_not_attach_project_documents(self) -> None:
+        project = {"parse_storage": {"documents": [{"id": "TEN-1", "name": "招标文件.pdf"}]}}
+        self.assertEqual(ai_fill._project_tender_documents_for_fill(project, {"sourceRouting": {}}), [])
 
 
 class PrepareFillMaterialsWithOcrTests(unittest.TestCase):

@@ -7575,6 +7575,66 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(d_task["recommendedMaterials"][0]["id"], "RAW-POWER")
             self.assertIn("project 来源规定命中", d_task["recommendedMaterials"][0]["matchReason"])
 
+    def test_bid_gap_planner_routes_tender_rule_to_all_project_tender_documents(self) -> None:
+        gap_runner = load_gap_planner_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            toc_path = root / "toc.json"
+            parse_path = root / "parse.json"
+            blank = root / "附表B.6 技术服务响应表.docx"
+            Document().save(blank)
+            toc_path.write_text(
+                json.dumps({"items": [{"number": "附表B.6", "title": "附表B.6 技术服务响应表", "level": 2}]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            parse_path.write_text(
+                json.dumps(
+                    {
+                        "documents": [
+                            {"id": "TEN-1", "name": "技术规范.pdf", "status": "completed"},
+                            {"id": "TEN-2", "name": "招标附图.docx", "status": "completed"},
+                            {"id": "TEN-3", "name": "损坏文件.pdf", "status": "failed"},
+                        ],
+                        "structured": {
+                            "appendices": [
+                                {"id": "APPX-B6", "title": "附表B.6 技术服务响应表", "docxPath": str(blank)}
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            plan = gap_runner.build_gap_plan(
+                {
+                    "projectId": "PRJ-TENDER",
+                    "projectName": "招标文件填写项目",
+                    "tocJsonPath": str(toc_path),
+                    "parseResultPath": str(parse_path),
+                    "materialIndex": [],
+                    "appendixSourceMatrix": {
+                        "rows": [
+                            {
+                                "id": "Sheet1!R8",
+                                "tableTitle": "附表B.6 技术服务响应表",
+                                "projectSources": [],
+                                "standardSources": [],
+                                "otherSources": ["响应招标文件填写"],
+                            }
+                        ]
+                    },
+                }
+            )
+
+        routing = plan["items"][0]["appendixTasks"][0]["sourceRouting"]
+        self.assertEqual(routing["status"], "tender_parse_fields")
+        self.assertTrue(routing["useTenderParseFields"])
+        self.assertEqual(routing["tenderDocumentStatus"], "available")
+        self.assertEqual(routing["tenderDocumentCount"], 2)
+        self.assertEqual([item["name"] for item in routing["tenderDocuments"]], ["技术规范.pdf", "招标附图.docx"])
+
     def test_bid_gap_planner_parent_rule_covers_sub_numbered_appendix(self) -> None:
         """规则只写父级编号（附表F.2）时应覆盖子编号附表（F.2.1/F.2.2）。"""
         gap_runner = load_gap_planner_script("run_from_manifest")
@@ -7738,6 +7798,73 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual(rows[1].cells[2].text, "提供不少于10人次现场培训")
             self.assertEqual(rows[2].cells[2].text, "提供7x24小时远程技术支持")
             self.assertEqual(rows[3].cells[2].text, "按招标要求提交全套技术资料")
+
+    def test_bid_table_filler_reads_whole_tender_document_without_material_references(self) -> None:
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            blank = tmp_path / "附表B.6 技术服务响应表.docx"
+            blank_doc = Document()
+            target = blank_doc.add_table(rows=1, cols=3)
+            for index, text in enumerate(["序号", "服务项目", "投标人响应值"]):
+                target.cell(0, index).text = text
+            for row in (["1", "现场培训", ""], ["2", "资料交付", ""]):
+                cells = target.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            blank_doc.save(blank)
+
+            tender = tmp_path / "完整招标文件.docx"
+            tender_doc = Document()
+            tender_doc.add_heading("1 项目概况", level=1)
+            unrelated = tender_doc.add_table(rows=2, cols=2)
+            unrelated.cell(0, 0).text = "付款方式"
+            unrelated.cell(0, 1).text = "分期付款"
+            unrelated.cell(1, 0).text = "交货地点"
+            unrelated.cell(1, 1).text = "项目现场"
+            tender_doc.add_heading("附表B.6 技术服务响应表", level=1)
+            source = tender_doc.add_table(rows=1, cols=3)
+            for index, text in enumerate(["编号", "服务项目", "响应内容"]):
+                source.cell(0, index).text = text
+            for row in (["1", "现场培训", "提供不少于10人次现场培训"], ["2", "资料交付", "提交全套技术资料"]):
+                cells = source.add_row().cells
+                for index, text in enumerate(row):
+                    cells[index].text = text
+            tender_doc.save(tender)
+
+            output = tmp_path / "filled.docx"
+            manifest_path = tmp_path / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": "bid-tech-table-fill-v1",
+                        "appendixTask": {"id": "APPX-B6", "title": "附表B.6 技术服务响应表", "docxPath": str(blank)},
+                        "referenceMaterials": [],
+                        "materialIndex": [],
+                        "tenderDocuments": [
+                            {
+                                "id": "TEN-1",
+                                "name": tender.name,
+                                "sourcePath": str(tender),
+                                "sourceType": "project_tender_document",
+                            }
+                        ],
+                        "outputFile": str(output),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            result = table_filler.run_from_manifest(manifest_path)
+
+            self.assertEqual(result["fillReport"]["referenceMaterialCount"], 1)
+            self.assertEqual(result["fillReport"]["unfilledFieldCount"], 0)
+            self.assertEqual(result["fillReport"]["sourceSelection"]["selected"][0]["route"], "项目招标文件全文")
+            filled = Document(str(output)).tables[0]
+            self.assertEqual(filled.cell(1, 2).text, "提供不少于10人次现场培训")
+            self.assertEqual(filled.cell(2, 2).text, "提交全套技术资料")
 
     def test_bid_table_filler_uses_parse_fields_and_project_materials_for_project_specific_values(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
