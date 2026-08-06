@@ -583,7 +583,10 @@ def material_requires_fill(material: dict[str, Any] | None) -> bool:
     if int(material.get("placeholderCount") or 0) > 0:
         return True
     text = material_text(material)
-    return any(marker in text for marker in ("待填写", "待补充", "待确认"))
+    # 「待插入」同样要走 AI 填写：正文填写链路把它当整份素材嵌入，与待填写共用一条任务。
+    # 漏掉它的话，正文只剩待插入占位符的模板（如塔筒设计方案专题报告）就拿不到填写任务，
+    # 嵌入功能对该文件静默失效——此前能跑通只是因为文件名仍带「待填写-」前缀被这里命中。
+    return any(marker in text for marker in ("待填写", "待补充", "待确认", "待插入"))
 
 
 # 展示分口径（产品裁决 2026-07-16）：0.99 专用于「文件名精确命中」（与自动定案同款
