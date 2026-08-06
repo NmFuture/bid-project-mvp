@@ -289,7 +289,7 @@ async def save_technical_outline(
 
 
 @router.post("/api/technical/projects/{project_id}/outline/regenerate")
-async def regenerate_technical_outline(project_id: str) -> dict[str, Any]:
+async def regenerate_technical_outline(project_id: str) -> JSONResponse:
     return await technical_directory_service.regenerate_outline(project_id)
 
 

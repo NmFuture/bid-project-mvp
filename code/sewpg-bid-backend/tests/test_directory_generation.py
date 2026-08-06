@@ -24,6 +24,7 @@ from app.services.bid_outline_state import (
     complete_directory_generation_state,
     directory_state_with_rule_evidence,
     regenerate_outline_state,
+    save_generated_outline_state,
     save_outline_state,
     start_directory_generation_state,
 )
@@ -2300,6 +2301,75 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["tasks"][0]["status"], "running")
         self.assertEqual(payload["tasks"][1]["status"], "pending")
+
+    def test_regenerate_outline_starts_background_job_without_overwriting_current_results(self) -> None:
+        project_id = self._prepare_project_with_parse_result()
+        project = store.require_project_for_update(project_id)
+        project["currentStage"] = 5
+        project["outline_state"] = {
+            "outlineVersion": 7,
+            "reviewStatus": "confirmed",
+            "generatedAt": "2026-08-01T00:00:00Z",
+            "summary": {"totalNodeCount": 1},
+            "nodes": [{"id": "OLD-1", "title": "现行审核目录", "children": []}],
+        }
+        project["gap_state"] = {"recognitionStatus": "completed", "items": [{"id": "GAP-1"}]}
+        project["fill_state"] = {"status": "completed", "output": {"fileName": "旧正文.docx"}}
+        store.persist_project_state(project)
+
+        with patch("app.services.bid_directory_flow._schedule_directory_generation_job") as schedule_job:
+            response = self.client.post(f"/api/technical/projects/{project_id}/outline/regenerate")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "running")
+        scheduled_data = schedule_job.call_args.args[1]
+        self.assertTrue(scheduled_data["regenerateOutline"])
+        current = store.get_project_runtime_state(project_id)
+        self.assertEqual(current["outline_state"]["nodes"][0]["title"], "现行审核目录")
+        self.assertEqual(current["gap_state"]["recognitionStatus"], "completed")
+        self.assertEqual(current["fill_state"]["status"], "completed")
+        self.assertEqual(current["currentStage"], 5)
+
+    def test_regenerated_outline_success_resets_technical_downstream_state_atomically(self) -> None:
+        project_id = self._prepare_project_with_parse_result()
+        project = store.require_project_for_update(project_id)
+        project["currentStage"] = 5
+        project["gap_state"] = {"recognitionStatus": "completed", "items": [{"id": "GAP-1"}]}
+        project["fill_state"] = {"status": "completed", "output": {"fileName": "旧正文.docx"}}
+        project["document_state"] = {"status": "completed", "fileName": "旧正文.docx"}
+        project["review_document_state"] = {"parseStatus": "completed", "fileName": "旧预览.docx"}
+
+        save_generated_outline_state(
+            project,
+            nodes=[{"id": "NEW-1", "title": "重新生成目录", "children": []}],
+            generated_at="2026-08-05T00:00:00Z",
+            summary="目录重新生成完成。",
+            invalidate_technical_downstream=True,
+        )
+
+        self.assertEqual(project["currentStage"], 2)
+        self.assertEqual(project["outline_state"]["reviewStatus"], "draft")
+        self.assertEqual(project["outline_state"]["nodes"][0]["title"], "重新生成目录")
+        self.assertEqual(project["gap_state"]["recognitionStatus"], "idle")
+        self.assertEqual(project["gap_state"]["items"], [])
+        self.assertEqual(project["fill_state"]["status"], "idle")
+        self.assertEqual(project["document_state"]["status"], "ready")
+        self.assertEqual(project["review_document_state"]["parseStatus"], "idle")
+
+    def test_running_directory_generation_rejects_outline_save_and_confirm(self) -> None:
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        save_response = self.client.put(
+            f"/api/technical/projects/{project_id}/outline",
+            json={"nodes": [{"id": "STALE-1", "title": "旧目录", "children": []}]},
+        )
+        confirm_response = self.client.post(f"/api/technical/projects/{project_id}/outline/confirm")
+
+        self.assertEqual(save_response.status_code, 409)
+        self.assertEqual(confirm_response.status_code, 409)
+        self.assertIn("目录生成任务正在执行", save_response.json()["detail"])
+        self.assertIn("目录生成任务正在执行", confirm_response.json()["detail"])
 
     def test_generate_outline_fails_when_template_is_missing(self) -> None:
         from app.services.outline_generation import generate_outline_for_project
