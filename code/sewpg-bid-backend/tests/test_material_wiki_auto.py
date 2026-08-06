@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 from app.core.config import settings
 from app.services import material_wiki_auto
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
+from app.workers import redis_worker
 
 
 class _FakeRedis:
@@ -33,6 +35,13 @@ class _FakeRedis:
     def expire(self, key: str, seconds: int) -> bool:
         _ = seconds
         return key in self.store
+
+    def eval(self, script: str, key_count: int, key: str, value: str) -> int:
+        _ = script, key_count
+        if self.store.get(key) != value:
+            return 0
+        self.store.pop(key, None)
+        return 1
 
 
 class MaterialWikiAutoTests(unittest.TestCase):
@@ -86,8 +95,8 @@ class MaterialWikiAutoTests(unittest.TestCase):
             material_wiki_auto.request_technical_wiki_auto_refresh("测试")
         self.assertIn(material_wiki_auto._AUTO_REFRESH_PENDING_KEY, self.fake_redis.store)
 
-    def test_wiki_finished_consumes_pending_and_reruns(self) -> None:
-        self.fake_redis.store[material_wiki_auto._AUTO_REFRESH_PENDING_KEY] = "1"
+    def test_wiki_finished_acknowledges_pending_and_reruns(self) -> None:
+        self.fake_redis.store[material_wiki_auto._AUTO_REFRESH_PENDING_KEY] = "pending-1"
         with (
             patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
             patch(
@@ -95,7 +104,7 @@ class MaterialWikiAutoTests(unittest.TestCase):
                 return_value={"jobId": "WIKI-2", "status": "queued", "reused": False},
             ) as enqueue,
         ):
-            material_wiki_auto.on_material_wiki_job_finished()
+            material_wiki_auto.on_material_wiki_job_finished(TECHNICAL_BID_TYPE)
         enqueue.assert_called_once()
         self.assertNotIn(material_wiki_auto._AUTO_REFRESH_PENDING_KEY, self.fake_redis.store)
 
@@ -103,8 +112,124 @@ class MaterialWikiAutoTests(unittest.TestCase):
         with patch(
             "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
         ) as enqueue:
-            material_wiki_auto.on_material_wiki_job_finished()
+            material_wiki_auto.on_material_wiki_job_finished(TECHNICAL_BID_TYPE)
         enqueue.assert_not_called()
+
+    def test_wiki_finished_keeps_pending_when_enqueue_fails(self) -> None:
+        from app.services.peripheral import PeripheralError
+
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-1"
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                side_effect=PeripheralError(503, "队列不可用", "MATERIAL_QUEUE_UNAVAILABLE"),
+            ),
+        ):
+            material_wiki_auto.on_material_wiki_job_finished(TECHNICAL_BID_TYPE)
+        self.assertEqual(self.fake_redis.store.get(pending_key), "pending-1")
+
+    def test_wiki_finished_does_not_ack_newer_pending_token(self) -> None:
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-old"
+
+        def enqueue_with_concurrent_change(*_args, **_kwargs):
+            self.fake_redis.store[pending_key] = "pending-new"
+            return {"jobId": "WIKI-2", "status": "queued", "reused": False}
+
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                side_effect=enqueue_with_concurrent_change,
+            ),
+        ):
+            material_wiki_auto.on_material_wiki_job_finished(TECHNICAL_BID_TYPE)
+        self.assertEqual(self.fake_redis.store.get(pending_key), "pending-new")
+
+    def test_business_wiki_finished_does_not_consume_technical_pending(self) -> None:
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-technical"
+        with patch("app.services.material_wiki_jobs.enqueue_material_wiki_generation") as enqueue:
+            material_wiki_auto.on_material_wiki_job_finished(BUSINESS_BID_TYPE)
+        enqueue.assert_not_called()
+        self.assertEqual(self.fake_redis.store.get(pending_key), "pending-technical")
+
+    def test_wiki_finished_waits_for_cleaning_without_consuming_pending(self) -> None:
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-1"
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                return_value=[{"id": "CLEANING-1"}],
+            ),
+            patch("app.services.material_wiki_jobs.enqueue_material_wiki_generation") as enqueue,
+        ):
+            material_wiki_auto.on_material_wiki_job_finished(TECHNICAL_BID_TYPE)
+        enqueue.assert_not_called()
+        self.assertEqual(self.fake_redis.store.get(pending_key), "pending-1")
+
+    def test_idle_retry_claim_throttles_repeated_queue_failures(self) -> None:
+        from app.services.peripheral import PeripheralError
+
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-1"
+        with (
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                side_effect=PeripheralError(503, "队列不可用", "MATERIAL_QUEUE_UNAVAILABLE"),
+            ) as enqueue,
+        ):
+            material_wiki_auto.retry_pending_technical_wiki_auto_refresh(claim_retry=True)
+            material_wiki_auto.retry_pending_technical_wiki_auto_refresh(claim_retry=True)
+        enqueue.assert_called_once()
+        self.assertEqual(self.fake_redis.store.get(pending_key), "pending-1")
+
+    def test_worker_releases_wiki_lock_before_followup_hook(self) -> None:
+        events: list[str] = []
+        queued_job_ids: list[str] = []
+        pending_key = material_wiki_auto._AUTO_REFRESH_PENDING_KEY
+        self.fake_redis.store[pending_key] = "pending-1"
+        job = {
+            "id": "WIKI-1",
+            "type": "material_wiki_generation",
+            "projectId": "wiki:technical",
+            "data": {"bidType": TECHNICAL_BID_TYPE, "mode": "refresh"},
+        }
+
+        def enqueue_followup(*_args, **_kwargs):
+            events.append("enqueue")
+            queued_job_ids.append("WIKI-2")
+            return {"jobId": "WIKI-2", "status": "queued", "reused": False}
+
+        with (
+            patch("app.workers.redis_worker.mark_job_status"),
+            patch("app.workers.redis_worker.mark_job_inflight"),
+            patch("app.workers.redis_worker.clear_job_inflight"),
+            patch("app.workers.redis_worker.renew_generation_lock", return_value=True),
+            patch(
+                "app.workers.redis_worker.release_generation_lock",
+                side_effect=lambda _job: events.append("release"),
+            ),
+            patch("app.services.job_queue.find_active_jobs_of_type", return_value=[]),
+            patch(
+                "app.services.material_wiki_jobs.execute_material_wiki_generation",
+                return_value={"status": "success", "summary": "done"},
+            ),
+            patch(
+                "app.services.material_wiki_jobs.enqueue_material_wiki_generation",
+                side_effect=enqueue_followup,
+            ) as enqueue,
+        ):
+            completed = redis_worker._run_job(job)
+        self.assertTrue(completed)
+        self.assertEqual(events, ["release", "enqueue"])
+        self.assertEqual(enqueue.call_args.args[0], TECHNICAL_BID_TYPE)
+        self.assertEqual(queued_job_ids, ["WIKI-2"])
+        self.assertNotEqual(queued_job_ids[0], job["id"])
+        self.assertNotIn(pending_key, self.fake_redis.store)
 
     def test_upload_hook_only_fires_for_non_cleaning_batches(self) -> None:
         with (
@@ -206,6 +331,7 @@ class MaterialWikiAutoTests(unittest.TestCase):
             material_wiki_auto.on_material_tree_changed("删除素材目录")
         enqueue.assert_called_once()
         self.assertEqual(enqueue.call_args.kwargs.get("mode"), "refresh")
+        self.assertNotIn(material_wiki_auto._AUTO_REFRESH_PENDING_KEY, self.fake_redis.store)
 
     def test_tree_change_during_running_wiki_marks_pending(self) -> None:
         from app.services.peripheral import PeripheralError
@@ -227,7 +353,7 @@ class MaterialWikiAutoTests(unittest.TestCase):
         ):
             material_wiki_auto.on_material_cleaning_job_finished(current_job_id="X")
             material_wiki_auto.on_material_upload_completed(clean_job_count=0)
-            material_wiki_auto.on_material_wiki_job_finished()
+            material_wiki_auto.on_material_wiki_job_finished(TECHNICAL_BID_TYPE)
             material_wiki_auto.on_material_deep_parse_job_finished("RAW-1", current_job_id="X")
             material_wiki_auto.on_material_tree_changed("删除素材文件")
         enqueue.assert_not_called()
