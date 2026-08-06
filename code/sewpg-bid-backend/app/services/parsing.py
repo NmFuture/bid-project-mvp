@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -7268,6 +7268,12 @@ def parse_tender_documents(
     business_section_tree_path = ""
     business_section_tree_summary: dict[str, Any] = {}
 
+    # 技术标且真的会跑 opencode 时，附表提取与结构化解析并行；其余情况保持原来的串行顺序。
+    appendix_runs_with_skill = profile.key != "business" and settings.s1_parse_opencode_enabled
+    appendices: list[dict[str, Any]] = []
+    appendices_future: Future[list[dict[str, Any]]] | None = None
+    appendix_pool: ThreadPoolExecutor | None = None
+
     if profile.key == "business":
         _raise_if_parse_cancelled(cancel_check)
         section_tree_path, section_tree_payload = write_business_section_tree(parseable_documents, project_dir)
@@ -7324,44 +7330,63 @@ def parse_tender_documents(
                 )
             )
     else:
-        _raise_if_parse_cancelled(cancel_check)
-        if progress_callback:
-            progress_callback("appendices_started", {"documentCount": len(parseable_documents), "fileExtension": primary_extension})
-        appendices = _extract_markdown_appendices(project_id, parseable_documents, texts_by_id, profile=profile)
-        appendices.extend(
-            _extract_docx_appendices(
+
+        def extract_appendices(
+            appendix_progress: Callable[[str, dict[str, Any] | None], None] | None,
+        ) -> list[dict[str, Any]]:
+            _raise_if_parse_cancelled(cancel_check)
+            if appendix_progress:
+                appendix_progress(
+                    "appendices_started",
+                    {"documentCount": len(parseable_documents), "fileExtension": primary_extension},
+                )
+            collected = _extract_markdown_appendices(project_id, parseable_documents, texts_by_id, profile=profile)
+            collected.extend(
+                _extract_docx_appendices(
+                    project_id,
+                    parseable_documents,
+                    start_index=len(collected),
+                    profile=profile,
+                    progress_callback=appendix_progress,
+                    cancel_check=cancel_check,
+                )
+            )
+            document_nav_appendices = _extract_document_nav_appendices(
                 project_id,
                 parseable_documents,
-                start_index=len(appendices),
+                start_index=len(collected),
                 profile=profile,
-                progress_callback=progress_callback,
-                cancel_check=cancel_check,
             )
-        )
-        document_nav_appendices = _extract_document_nav_appendices(
-            project_id,
-            parseable_documents,
-            start_index=len(appendices),
-            profile=profile,
-        )
-        appendices.extend(document_nav_appendices)
-        document_nav_document_ids = {
-            str(item.get("sourceDocumentId") or "")
-            for item in document_nav_appendices
-            if str(item.get("sourceDocumentId") or "")
-        }
-        appendices.extend(
-            _extract_text_appendices(
-                project_id,
-                parseable_documents,
-                texts_by_id,
-                start_index=len(appendices),
-                profile=profile,
-                skip_document_ids=document_nav_document_ids,
+            collected.extend(document_nav_appendices)
+            document_nav_document_ids = {
+                str(item.get("sourceDocumentId") or "")
+                for item in document_nav_appendices
+                if str(item.get("sourceDocumentId") or "")
+            }
+            collected.extend(
+                _extract_text_appendices(
+                    project_id,
+                    parseable_documents,
+                    texts_by_id,
+                    start_index=len(collected),
+                    profile=profile,
+                    skip_document_ids=document_nav_document_ids,
+                )
             )
-        )
-    appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
-    structured_result["structured"]["appendices"] = appendices
+            return collected
+
+        if appendix_runs_with_skill:
+            # 附表提取与 opencode 会话之间没有依赖：导航索引只读 manifest.documents，
+            # finalize 重写结构化结果时也不含 appendices，附表是 finalize 之后才从内存合并回去的。
+            # 所以放到后台线程与 prepare + 分片会话同时跑，把这段本地耗时藏进会话等待里。
+            # 重叠期间不上报附表阶段进度：两个阶段同时写进度会让阶段标签来回跳。
+            appendix_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s1-appendix")
+            appendices_future = appendix_pool.submit(extract_appendices, None)
+        else:
+            appendices = extract_appendices(progress_callback)
+    if appendices_future is None:
+        appendices = _prepare_appendix_outputs(project_id, appendices, renumber=True, profile=profile)
+        structured_result["structured"]["appendices"] = appendices
     if profile.key == "business" and not settings.s1_parse_opencode_enabled:
         local_business_result = _business_local_contract_result(
             project_id,
@@ -7373,7 +7398,7 @@ def parse_tender_documents(
         structured_result = local_business_result
     else:
         local_business_result = structured_result
-    if progress_callback:
+    if progress_callback and appendices_future is None:
         progress_callback(
             "appendices_extracted",
             {
@@ -7407,28 +7432,49 @@ def parse_tender_documents(
     if progress_callback:
         progress_callback("skill_manifest_ready", {"manifestPath": str(skill_manifest_path), "fileExtension": primary_extension})
     _raise_if_parse_cancelled(cancel_check)
-    structured_result, skill_warning = _run_parse_skill(
-        skill_manifest_path,
-        local_result=structured_result,
-        profile=profile,
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
-    )
-    _raise_if_parse_cancelled(cancel_check)
-    if progress_callback and settings.s1_parse_opencode_enabled:
-        progress_callback("opencode_finished", {})
-    if _needs_business_s1_finalize_guard(
-        profile=profile,
-        structured_result=structured_result,
-        skill_manifest_path=skill_manifest_path,
-    ):
-        structured_result, finalize_warning = _finalize_business_s1_result(
+    try:
+        structured_result, skill_warning = _run_parse_skill(
             skill_manifest_path,
-            structured_result,
-            profile,
+            local_result=structured_result,
+            profile=profile,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
-        if finalize_warning:
-            skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+        _raise_if_parse_cancelled(cancel_check)
+        if progress_callback and settings.s1_parse_opencode_enabled:
+            progress_callback("opencode_finished", {})
+        if _needs_business_s1_finalize_guard(
+            profile=profile,
+            structured_result=structured_result,
+            skill_manifest_path=skill_manifest_path,
+        ):
+            structured_result, finalize_warning = _finalize_business_s1_result(
+                skill_manifest_path,
+                structured_result,
+                profile,
+            )
+            if finalize_warning:
+                skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+    except BaseException:
+        # 主链路已经失败，这里只负责回收附表线程，避免解析结束后还有线程在往项目目录写文件。
+        # 附表自身的异常只记日志，不能盖掉原始失败原因。
+        if appendices_future is not None:
+            try:
+                appendices_future.result()
+            except BaseException:
+                logger.warning("解析失败后回收附表提取线程时报错。", exc_info=True)
+            if appendix_pool is not None:
+                appendix_pool.shutdown(wait=True)
+        raise
+    if appendices_future is not None:
+        # 附表分支的异常必须在这里显式抛出，不能因为会话成功就当作附表也成功。
+        # 结果由下面既有的合并块写回 structured；这里不再补发附表阶段事件，
+        # 否则结构化解析已经结束后阶段标签会倒回“提取附表中”。
+        try:
+            appendices = appendices_future.result()
+        finally:
+            if appendix_pool is not None:
+                appendix_pool.shutdown(wait=True)
     if template_extraction_warning:
         warnings.append(template_extraction_warning)
     structured_result = _merge_business_local_artifacts(
