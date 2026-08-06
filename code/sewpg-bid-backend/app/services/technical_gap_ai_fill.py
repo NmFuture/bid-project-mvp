@@ -182,10 +182,15 @@ def _project_tender_documents_for_fill(
     routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
     if not routing.get("useTenderParseFields"):
         return []
-    parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
-    documents = parse_result.get("documents")
+    # 完整文档记录（含 sourcePath/textPath）由解析链路写入 project.parse_storage.documents；
+    # project.parse_result 里只有摘要（sourceFiles），旧数据可能带 documents，均作兜底。
+    parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+    documents = parse_storage.get("documents")
     if not isinstance(documents, list):
-        documents = parse_result.get("sourceFiles")
+        parse_result = project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+        documents = parse_result.get("documents")
+        if not isinstance(documents, list):
+            documents = parse_result.get("sourceFiles")
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for document in _object_items(documents):

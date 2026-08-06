@@ -578,7 +578,10 @@ class GapReviewFlowTests(unittest.TestCase):
         tender_doc.save(tender_path)
         tender_text_path = tender_path.with_suffix(".txt")
         tender_text_path.write_text("完整招标文件解析全文", encoding="utf-8")
-        project["parse_result"]["documents"] = [
+        # 生产链路把完整文档记录（含 sourcePath/textPath）写入 parse_storage.documents，
+        # parse_result 里只有摘要；这里按真实结构注入，不再手工塞 parse_result.documents。
+        parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        parse_storage["documents"] = [
             {
                 "id": "TEN-1",
                 "name": tender_path.name,
@@ -587,6 +590,7 @@ class GapReviewFlowTests(unittest.TestCase):
                 "status": "completed",
             }
         ]
+        project["parse_storage"] = parse_storage
         store._persist_project(project)
         detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services import technical_gap_ai_fill as ai_fill
+from app.services.bid_parse_state import complete_parse_state
 from app.services.peripheral import PeripheralError
 
 
@@ -87,8 +88,15 @@ class ProjectTenderDocumentsForFillTests(unittest.TestCase):
             tender.write_bytes(b"%PDF-1.4 fake")
             text_path.write_text("完整招标文件解析全文", encoding="utf-8")
             nav_path.write_text('{"blocks": [], "tables": []}', encoding="utf-8")
-            project = {
-                "parse_result": {
+            # 用真实 complete_parse_state() 生成项目状态：完整文档记录落在
+            # parse_storage.documents，parse_result 只有摘要，不手工注入 parse_result.documents。
+            project: dict = {"id": "PRJ-1", "currentStage": 2, "deadline": "", "bidType": "技术标"}
+            complete_parse_state(
+                project,
+                [{"id": "TEN-1", "name": tender.name, "size_label": "1KB"}],
+                [],
+                summary=None,
+                parse_storage={
                     "documents": [
                         {
                             "id": "TEN-1",
@@ -98,9 +106,12 @@ class ProjectTenderDocumentsForFillTests(unittest.TestCase):
                             "documentNavPath": str(nav_path),
                             "status": "completed",
                         }
-                    ]
-                }
-            }
+                    ],
+                    "items": [],
+                    "structured": {},
+                },
+            )
+            self.assertNotIn("documents", project["parse_result"])
             task = {"sourceRouting": {"useTenderParseFields": True}}
 
             documents = ai_fill._project_tender_documents_for_fill(project, task)
@@ -112,7 +123,7 @@ class ProjectTenderDocumentsForFillTests(unittest.TestCase):
         self.assertEqual(documents[0]["documentNavPath"], str(nav_path))
 
     def test_rule_without_tender_source_does_not_attach_project_documents(self) -> None:
-        project = {"parse_result": {"documents": [{"id": "TEN-1", "name": "招标文件.pdf"}]}}
+        project = {"parse_storage": {"documents": [{"id": "TEN-1", "name": "招标文件.pdf"}]}}
         self.assertEqual(ai_fill._project_tender_documents_for_fill(project, {"sourceRouting": {}}), [])
 
 
