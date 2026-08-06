@@ -6,6 +6,7 @@ import MarkdownLite from '../../../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
 import { sortNodesByName } from '../../../utils/materialSort'
+import { startWikiJobStatusPolling } from '../technicalWikiJobPolling'
 import { createFulltextRequestGuard } from './fulltextRequestGuard'
 
 const safeMessage = (error, fallback) =>
@@ -194,6 +195,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   }, [])
 
   const loadData = useCallback(async (params = {}, options = {}) => {
+    const isCancelled = () => options.signal?.aborted || options.isCancelled?.()
     // preserveTree：仅切换选中节点内容，不动树结构，也不展示任何加载提示，
     // 避免左栏「正在同步目录树」提示条闪现导致目录树闪烁 / 高度跳动。
     // 非 preserveTree（首屏 / 刷新 / 重建）才展示全屏 loading。
@@ -205,9 +207,11 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       const response = await technicalMaterialsAPI.wiki.list({
         ...params,
         bidType: activeBidType,
-      })
+      }, { signal: options.signal })
+      if (isCancelled()) return
       applyPayload(response, { preserveTree: options.preserveTree })
     } catch (e) {
+      if (isCancelled()) return
       console.error(e)
       const message = safeMessage(e, 'Wiki 数据加载失败，请稍后重试。')
       // preserveTree 下首屏树已在，静默失败时用 toast 提示，不打断当前视图。
@@ -217,7 +221,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         setError(message)
       }
     } finally {
-      if (!options.preserveTree) {
+      if (!options.preserveTree && !isCancelled()) {
         setLoading(false)
       }
     }
@@ -233,7 +237,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   // 后台 Wiki 生成任务轮询：到达终态后应用结果或提示失败
   useEffect(() => {
     if (!wikiJobActive || !wikiJobId) return undefined
-    let stopped = false
     const finish = () => {
       setWikiJobActive(false)
       setWikiJobId('')
@@ -244,40 +247,45 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       writeWikiJobStorage(WIKI_JOB_ID_STORAGE_KEY, '')
       writeWikiJobStorage(WIKI_JOB_MODE_STORAGE_KEY, '')
     }
-    const tick = async () => {
-      try {
-        const status = await technicalMaterialsAPI.wiki.bootstrapStatus(wikiJobId)
-        if (stopped) return
+
+    return startWikiJobStatusPolling({
+      fetchStatus: (signal) => technicalMaterialsAPI.wiki.bootstrapStatus(wikiJobId, { signal }),
+      onStatus: async (status, pollContext) => {
         const state = String(status?.status || '').toLowerCase()
         if (state === 'queued' || state === 'running') {
           setWikiJobPhase(String(status?.progress?.phase || ''))
-          return
+          return true
         }
-        finish()
         if (state === 'succeeded') {
-          await loadData()
+          await loadData({}, pollContext)
+          if (pollContext.isCancelled()) return false
+          finish()
           showToast(status?.message || `${activeBidType} Wiki 已更新`)
         } else if (state === 'failed' || state === 'cancelled') {
+          finish()
           showToast(status?.message || status?.error || 'Wiki 生成失败，请稍后重试。', 'error')
         } else {
           // idle：后端重启丢了任务状态，AI 预览缓存已保留，提示重触续跑
-          showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')
-          loadData()
-        }
-      } catch (error) {
-        if (!stopped && error?.status === 404) {
+          await loadData({}, pollContext)
+          if (pollContext.isCancelled()) return false
           finish()
-          loadData()
+          showToast('Wiki 生成任务已随服务重启中断，已生成的预览缓存已保留，可重新触发继续。', 'warning')
         }
-        // 单次轮询失败不影响任务本身，下一轮重试
-      }
-    }
-    const timer = setInterval(tick, 8000)
-    tick()
-    return () => {
-      stopped = true
-      clearInterval(timer)
-    }
+        return false
+      },
+      onNotFound: async (_pollError, pollContext) => {
+        await loadData({}, pollContext)
+        if (pollContext.isCancelled()) return
+        finish()
+      },
+      onUnavailable: (pollError) => {
+        finish()
+        showToast(
+          safeMessage(pollError, 'Wiki 任务状态连续查询失败，已停止本页跟踪，请刷新页面确认结果。'),
+          'error',
+        )
+      },
+    })
   }, [wikiJobActive, wikiJobId, activeBidType, loadData, showToast])
 
   const selectedNode = useMemo(() => normalizeNode(data?.selectedNode), [data])
