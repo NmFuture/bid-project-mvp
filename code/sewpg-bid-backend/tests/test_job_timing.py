@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import threading
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -288,6 +290,33 @@ def test_finalize_job_timing_uses_parent_run_id(monkeypatch) -> None:
     assert params[1] == "run-1"
 
 
+def test_finalize_job_timing_commits_ddl_before_insert(monkeypatch) -> None:
+    """建表要单独提交：否则 INSERT 超时回滚会把建表一起丢掉，而 _sync_ready 已置位不再重建。"""
+
+    class RecordingConnection(FakeConnection):
+        def __init__(self) -> None:
+            super().__init__()
+            self.trace: list[str] = []
+
+        def execute(self, sql, params=None):
+            self.trace.append("ddl" if "CREATE" in str(sql) else "insert")
+            super().execute(sql, params)
+
+        def commit(self):
+            self.trace.append("commit")
+            super().commit()
+
+    connection = RecordingConnection()
+    monkeypatch.setattr(job_timing, "get_redis_client", lambda: None)
+    monkeypatch.setattr(job_timing.psycopg, "connect", lambda *args, **kwargs: connection)
+    monkeypatch.setattr(job_timing, "_sync_ready", False)
+    monkeypatch.setattr(job_timing, "_project_name", lambda project_id: "")
+
+    job_timing._finalize_job_timing({"id": "job-ddl", "type": "s1_parse"}, "succeeded")
+
+    assert connection.trace.index("commit") < connection.trace.index("insert")
+
+
 def test_finalize_job_timing_degrades_on_db_error(monkeypatch, caplog) -> None:
     monkeypatch.setattr(job_timing, "get_redis_client", lambda: None)
 
@@ -531,3 +560,34 @@ class TestMonitoringRoutes:
 
         assert response.status_code == 404
         get_mock.assert_awaited_once_with(999)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires PostgreSQL")
+def test_ensure_job_timing_tables_persists_after_read_only_session() -> None:
+    """只读查询路径也必须把建表提交掉，否则会话结束回滚，第二次查询直接 UndefinedTable。"""
+
+    from sqlalchemy import text
+
+    from app.models import async_session
+
+    async def _drop() -> None:
+        async with async_session() as session:
+            await session.execute(text("DROP TABLE IF EXISTS job_timings"))
+            await session.commit()
+
+    async def _regclass():
+        async with async_session() as session:
+            return (await session.execute(text("SELECT to_regclass('public.job_timings')"))).scalar()
+
+    asyncio.run(_drop())
+    job_timing._job_timing_tables._ready = False
+    try:
+        assert asyncio.run(_regclass()) is None
+
+        assert asyncio.run(job_timing.list_job_timings(days=7, limit=5)) == {"items": [], "total": 0}
+        assert asyncio.run(_regclass()) == "job_timings"
+        # _ready 已置位 → 第二次跳过 DDL，表必须真的落库才不会报 UndefinedTable
+        assert asyncio.run(job_timing.list_job_timings(days=7, limit=5)) == {"items": [], "total": 0}
+    finally:
+        job_timing._job_timing_tables._ready = False

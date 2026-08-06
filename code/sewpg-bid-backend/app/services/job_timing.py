@@ -155,6 +155,8 @@ class JobTimingTables:
 
         for ddl in _JOB_TIMINGS_DDL:
             await session.execute(text(ddl))
+        # 调用方多是只读会话，不 commit 会连建表一起回滚；置位必须晚于提交
+        await session.commit()
         self._ready = True
 
 
@@ -175,6 +177,8 @@ def _ensure_sync(connection: Any) -> None:
         return
     for ddl in _JOB_TIMINGS_DDL:
         connection.execute(ddl)
+    # 单独提交建表：否则后面的 INSERT 一旦超时回滚，会把建表一起丢掉
+    connection.commit()
     _sync_ready = True
 
 
