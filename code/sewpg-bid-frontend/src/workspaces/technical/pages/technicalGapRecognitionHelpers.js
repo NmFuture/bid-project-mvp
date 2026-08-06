@@ -13,6 +13,27 @@ export const uniqueStrings = (items) => {
     })
 }
 
+export const technicalAppendixSourceMatrixUploadMessage = (payload) => {
+  const rowCount = Math.max(0, Number(payload?.rowCount) || 0)
+  const applied = payload?.applied && typeof payload.applied === 'object' ? payload.applied : {}
+  const routedItems = Math.max(0, Number(applied.routedItems) || 0)
+  const clearedItems = Math.max(0, Number(applied.clearedItems) || 0)
+  const clearedTasks = Math.max(0, Number(applied.clearedTasks) || 0)
+  const clearedParts = [
+    clearedItems ? `${clearedItems} 个目录项` : '',
+    clearedTasks ? `${clearedTasks} 个附表任务` : '',
+  ].filter(Boolean)
+
+  if (routedItems) {
+    const clearedText = clearedParts.length ? `，并已清除 ${clearedParts.join('、')}的旧规则关联` : ''
+    return `已解析 ${rowCount} 条附表来源规则，已应用到 ${routedItems} 个目录项的附表任务${clearedText}`
+  }
+  if (clearedParts.length) {
+    return `已解析 ${rowCount} 条附表来源规则，未新增匹配，已清除 ${clearedParts.join('、')}的旧规则关联`
+  }
+  return `已解析 ${rowCount} 条附表来源规则，将在下次缺口识别时生效`
+}
+
 export const technicalGenerationPresentation = (status) => {
   const assembly = status?.assembly && typeof status.assembly === 'object' ? status.assembly : {}
   const warnings = asObjectArray(assembly.warnings)

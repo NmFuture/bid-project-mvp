@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { technicalGapsAPI, technicalOutlineAPI, technicalStagesAPI } from '../../../api'
+import { technicalDirectoryAPI, technicalGapsAPI, technicalOutlineAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
@@ -9,10 +9,23 @@ import MaterialMatchProgressModal from '../../../components/shared/MaterialMatch
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
+import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
+import Toolbar from '../../../components/ui/Toolbar'
 import { getOutlineDisplayNumber } from '../../../utils/outlineNumber'
 import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import OutlineActionTag from '../components/OutlineActionTag'
 import { getTechnicalStageRoute } from '../technicalStageFlow'
+import {
+  beginDirectoryProgressEpoch,
+  buildDirectoryRegenerationPrompt,
+  directoryElapsedSeconds,
+  estimateDirectoryDisplayPercentage,
+  isDirectoryProgressFailed,
+  isDirectoryProgressRunning,
+  loadConsistentOutlineReviewSnapshot,
+  mergeMonotonicDirectoryProgress,
+  summarizeDirectoryProgress,
+} from '../technicalDirectoryProgress'
 import {
   markOutlineNodeEdited,
   pickTenderBasis,
@@ -193,6 +206,71 @@ const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null
   return payload.nonce
 }
 
+function DirectoryGenerationProgressModal({ open, state, progress, onClose }) {
+  if (!open) return null
+  const summary = summarizeDirectoryProgress(state || {})
+  const running = isDirectoryProgressRunning(state)
+  const completed = state?.status === 'completed'
+  const failed = isDirectoryProgressFailed(state)
+
+  return (
+    <Dialog open={open} onClose={onClose} size="sm">
+      <DialogHeader onClose={onClose}>
+        <h3 className="text-lg font-headline font-bold text-on-surface">
+          {running ? '正在重新生成目录' : completed ? '目录重新生成完成' : failed ? '目录重新生成失败' : '重新生成目录'}
+        </h3>
+        <p className="mt-1 text-sm text-on-surface-variant">{summary.summary}</p>
+      </DialogHeader>
+      <DialogBody className="space-y-4 p-5">
+        <div className="flex items-center gap-3">
+          <div className="h-3 flex-1 overflow-hidden rounded-full bg-surface-container-high">
+            <div
+              className={`h-full transition-all duration-700 ${failed ? 'bg-error' : completed ? 'bg-secondary' : 'bg-primary'}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <span className="w-12 text-right text-xs font-semibold text-outline">{Math.floor(progress)}%</span>
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {summary.steps.map((step) => (
+            <div
+              key={step.id}
+              className={`min-h-14 border px-3 py-2 text-xs ${
+                step.status === 'failed'
+                  ? 'border-error/30 bg-error/10 text-error'
+                  : step.status === 'done'
+                    ? 'border-secondary/25 bg-secondary-container/35 text-on-secondary-container'
+                    : step.status === 'running'
+                      ? 'border-primary/30 bg-primary/5 text-primary'
+                      : 'border-surface-container-high bg-surface-container-low text-outline'
+              }`}
+            >
+              <div className="font-semibold">{step.label}</div>
+              <div className="mt-1">{step.status === 'done' ? '已完成' : step.status === 'running' ? '进行中' : step.status === 'failed' ? '失败' : '等待中'}</div>
+            </div>
+          ))}
+        </div>
+        {running ? (
+          <p className="text-xs text-outline">任务在后台运行，可以关闭弹窗或离开页面。</p>
+        ) : null}
+        {completed ? (
+          <div className="border border-secondary/25 bg-secondary-container/35 px-3 py-2 text-sm text-on-secondary-container">
+            新目录已载入，请重新审核并进入素材匹配。
+          </div>
+        ) : null}
+        {failed ? (
+          <div className="border border-error/25 bg-error/10 px-3 py-2 text-sm text-error">
+            当前目录及原有下游结果未被修改，可关闭后重试。
+          </div>
+        ) : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button type="button" onClick={onClose} variant={completed ? 'primary' : 'quiet'}>关闭</Button>
+      </DialogFooter>
+    </Dialog>
+  )
+}
+
 export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tech' }) {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -203,6 +281,12 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const [regenerationModalOpen, setRegenerationModalOpen] = useState(false)
+  const [directoryState, setDirectoryState] = useState(null)
+  const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
+  const [reviewStatus, setReviewStatus] = useState('draft')
+  const [currentStage, setCurrentStage] = useState(2)
   const [materialMatchProgress, setMaterialMatchProgress] = useState({
     open: false,
     running: false,
@@ -224,28 +308,40 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     pendingSearchNonceRef.current = nonce || ''
   }, [])
 
+  const applyOutlinePayload = useCallback((payload) => {
+    const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
+    setNodes(nextNodes)
+    setDirty(false)
+    setActiveNodeId((current) => nextNodes.some((node) => node.id === current) ? current : nextNodes[0]?.id || '')
+    setCollapsedNodeIds(
+      countNodes(nextNodes) > 180
+        ? new Set(collectExpandableNodeIds(nextNodes))
+        : new Set(),
+    )
+    setTenderPreview(payload?.tenderPreview || null)
+    setReviewStatus(String(payload?.reviewStatus || 'draft'))
+    setOnlyofficeError('')
+  }, [])
+
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const payload = await technicalOutlineAPI.get(id)
-      const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
-      setNodes(nextNodes)
-      setDirty(false)
-      setActiveNodeId(nextNodes[0]?.id || '')
-      setCollapsedNodeIds(
-        countNodes(nextNodes) > 180
-          ? new Set(collectExpandableNodeIds(nextNodes))
-          : new Set(),
-      )
-      setTenderPreview(payload?.tenderPreview || null)
-      setOnlyofficeError('')
+      const { outlinePayload, generationPayload, projectPayload } = await loadConsistentOutlineReviewSnapshot({
+        loadDirectoryState: () => technicalDirectoryAPI.status(id).catch(() => null),
+        loadOutline: () => technicalOutlineAPI.get(id),
+        loadProject: () => technicalProjectsAPI.get(id).catch(() => null),
+      })
+      applyOutlinePayload(outlinePayload)
+      setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, generationPayload))
+      if (isDirectoryProgressRunning(generationPayload)) setRegenerationModalOpen(true)
+      setCurrentStage(Number(projectPayload?.currentStage) || 2)
     } catch (e) {
       setError(e?.message || '目录数据加载失败')
     } finally {
       setLoading(false)
     }
-  }, [id])
+  }, [applyOutlinePayload, id])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -253,6 +349,62 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }, 0)
     return () => clearTimeout(timer)
   }, [loadData])
+
+  const directoryRunning = isDirectoryProgressRunning(directoryState)
+  const directoryLocked = regenerating || directoryRunning
+  const directoryElapsed = directoryElapsedSeconds(directoryState || {}, directoryProgressClock)
+  const directoryProgress = estimateDirectoryDisplayPercentage({
+    status: directoryState?.status || 'idle',
+    elapsedSeconds: directoryElapsed,
+    fallbackPercentage: directoryState?.percentage || 0,
+  })
+
+  useEffect(() => {
+    if (!directoryRunning) return undefined
+    const timer = window.setInterval(() => setDirectoryProgressClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [directoryRunning])
+
+  useEffect(() => {
+    if (!directoryRunning) return undefined
+    let cancelled = false
+    let timer = null
+
+    const pollDirectoryStatus = async () => {
+      try {
+        const payload = await technicalDirectoryAPI.status(id)
+        if (cancelled) return
+        if (payload?.status === 'completed') {
+          const [outlinePayload, projectPayload] = await Promise.all([
+            technicalOutlineAPI.get(id),
+            technicalProjectsAPI.get(id).catch(() => null),
+          ])
+          if (cancelled) return
+          setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+          applyOutlinePayload(outlinePayload)
+          setCurrentStage(Number(projectPayload?.currentStage) || 2)
+          setRegenerating(false)
+          showToast?.('目录重新生成完成，请重新审核。')
+          return
+        }
+        setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+        if (isDirectoryProgressFailed(payload)) {
+          setRegenerating(false)
+          showToast?.('目录重新生成失败，当前目录未被修改。', 'error')
+          return
+        }
+      } catch {
+        // 后台任务不中断，保留当前进度并继续轮询。
+      }
+      if (!cancelled) timer = window.setTimeout(pollDirectoryStatus, 1000)
+    }
+
+    timer = window.setTimeout(pollDirectoryStatus, 1000)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [applyOutlinePayload, directoryRunning, id, showToast])
 
   useEffect(() => {
     if (!pendingSearchText) return undefined
@@ -310,8 +462,30 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     sendOnlyOfficeSearch(searchText, onlyofficeEmbedRef, markPendingSearch)
   }, [id, markPendingSearch, showToast, tenderPreview?.activeFile?.id])
 
+  const handleRegenerateDirectory = async () => {
+    if (directoryLocked) return
+    const confirmed = window.confirm(buildDirectoryRegenerationPrompt({
+      dirty,
+      hasDownstreamResults: currentStage > 2 || reviewStatus === 'confirmed',
+    }))
+    if (!confirmed) return
+
+    setRegenerating(true)
+    setRegenerationModalOpen(true)
+    try {
+      const payload = await technicalOutlineAPI.regenerate(id)
+      setDirectoryState((previous) => beginDirectoryProgressEpoch({ previous, incoming: payload }))
+      showToast?.(payload?.message || '已开始重新生成目录。')
+    } catch (e) {
+      setRegenerationModalOpen(false)
+      showToast?.(e?.message || '启动目录重新生成失败', 'error')
+    } finally {
+      setRegenerating(false)
+    }
+  }
+
   const handleSave = async () => {
-    if (saving) return
+    if (saving || directoryLocked) return
     if (!dirty) {
       showToast?.('目录暂无变更，无需保存。')
       return
@@ -324,6 +498,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       const nextNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
       setNodes(nextNodes)
       setDirty(false)
+      setReviewStatus(String(payload?.reviewStatus || 'draft'))
       if (!nextNodes.find((node) => node.id === activeNodeId)) {
         setActiveNodeId(nextNodes[0]?.id || '')
       }
@@ -336,6 +511,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   }
 
   const handleConfirm = async () => {
+    if (directoryLocked) return
     if (!nodes.length) {
       showToast?.('目录为空，请先新增章节后再确认。', 'error')
       return
@@ -352,6 +528,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       }
 
       await technicalOutlineAPI.confirm(id)
+      setReviewStatus('confirmed')
       showToast?.('目录确认已完成，正在执行素材匹配...')
       await technicalGapsAPI.runDetection(id)
       setMaterialMatchProgress({ open: true, running: false, error: '' })
@@ -519,7 +696,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           <div key={node.id}>
             <div
               onClick={() => setActiveNodeId(node.id)}
-              draggable
+              draggable={!directoryLocked}
               onDragStart={(event) => handleDragStart(event, node.id)}
               onDragOver={(event) => handleDragOver(event, node.id)}
               onDrop={(event) => handleDrop(event, node.id)}
@@ -640,16 +817,24 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         className="mb-2"
         actionsClassName="stage-header-actions"
         actions={(
-          <>
+          <Toolbar>
+            <Button
+              onClick={handleRegenerateDirectory}
+              disabled={directoryLocked || saving || confirming}
+              size="lg"
+              variant="primary"
+            >
+              {directoryLocked ? '生成中...' : '重新生成目录'}
+            </Button>
             <Button
               onClick={handleConfirm}
-              disabled={confirming}
+              disabled={confirming || directoryLocked}
               size="lg"
               variant="success"
             >
               {confirming ? '进入中...' : '进入素材匹配'}
             </Button>
-          </>
+          </Toolbar>
         )}
       />
 
@@ -666,7 +851,10 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         )}
         documentAreaClassName="flex flex-col"
         sidebar={(
-          <section className="flex h-full min-h-0 flex-col overflow-hidden">
+          <fieldset
+            disabled={directoryLocked}
+            className={`flex h-full min-h-0 flex-col overflow-hidden border-0 p-0 ${directoryLocked ? 'opacity-70' : ''}`}
+          >
             <div className="flex h-[72px] min-h-[72px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
               <h3 className="text-base font-semibold text-on-surface">投标文件目录</h3>
               <div className="flex flex-wrap items-center justify-end gap-2">
@@ -707,7 +895,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
                 </div>
               )}
             </div>
-          </section>
+          </fieldset>
         )}
       >
         {onlyofficeError && (
@@ -745,6 +933,12 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         running={materialMatchProgress.running}
         error={materialMatchProgress.error}
         onClose={() => setMaterialMatchProgress({ open: false, running: false, error: '' })}
+      />
+      <DirectoryGenerationProgressModal
+        open={regenerationModalOpen}
+        state={directoryState}
+        progress={directoryProgress}
+        onClose={() => setRegenerationModalOpen(false)}
       />
     </div>
   )

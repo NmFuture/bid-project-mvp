@@ -26,6 +26,7 @@ import {
   primaryBlankSource,
   TECHNICAL_GAP_READY_SCORE,
   TECHNICAL_GAP_TAG_CONFIG,
+  technicalAppendixSourceMatrixUploadMessage,
   technicalGenerationPresentation,
   technicalGapDescendants,
   technicalGapTagOf,
@@ -2259,10 +2260,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       formData.append('file', file)
       const payload = await technicalGapsAPI.uploadAppendixSourceMatrix(id, formData)
       setSourceMatrixMeta({ imported: true, fileName: payload?.fileName || file.name })
-      const applied = payload?.applied || {}
-      showToast?.(applied.routedItems
-        ? `已解析 ${payload?.rowCount ?? 0} 条附表来源规则，已应用到 ${applied.routedItems} 个目录项的附表任务`
-        : `已解析 ${payload?.rowCount ?? 0} 条附表来源规则，将在下次缺口识别时生效`)
+      showToast?.(technicalAppendixSourceMatrixUploadMessage(payload))
       await loadData({ silent: true })
     } catch (e) {
       showToast?.(e?.message || '附表填写规则上传失败', 'error')
