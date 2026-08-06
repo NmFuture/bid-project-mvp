@@ -15,6 +15,10 @@ from app.services.technical_gap_actions import (
     register_technical_existing_gap_material,
     register_technical_manual_gap_upload,
 )
+from app.services.technical_gap_domain import (
+    recompute_technical_gap_decisions,
+    technical_gap_artifact_is_s7_ready,
+)
 from app.services.technical_gap_service import technical_gap_service
 
 
@@ -124,6 +128,51 @@ class SelectionAutoConfirmTests(unittest.TestCase):
         self.assertEqual(item["status"], "resolved")
         self.assertTrue(item["humanConfirmed"])
         self.assertEqual(item["humanConfirmedBy"], "测试员")
+
+    def test_select_fill_template_enters_pending_fill_and_stays_out_of_s7(self) -> None:
+        """R10-B07-01：选中「待填写-」空模板 → 待填写而非已就绪，产物 s7Ready=False。"""
+        project = _project(_items())
+        with tempfile.TemporaryDirectory() as tmp:
+            prepared_path = Path(tmp) / "01-待填写-投标说明函.docx"
+            prepared_path.write_bytes(b"docx-bytes")
+            result = register_technical_existing_gap_material(
+                project,
+                "GAP-0002",
+                {"operator": "测试员"},
+                [
+                    {
+                        "materialId": "RAW-TPL1",
+                        "materialName": "待填写-投标说明函.docx",
+                        "fileName": prepared_path.name,
+                        "path": str(prepared_path),
+                        "folderPath": "技术标/通用素材/示例",
+                        "materialTier": "standard",
+                        "sourceKind": "cleaned",
+                    }
+                ],
+            )
+        item = result["item"]
+        artifact = result["artifact"]
+        # 空模板不是成稿：产物保持 s7Ready=False，S7 闸口与决策终审同口径拦截。
+        self.assertFalse(artifact["s7Ready"])
+        self.assertFalse(technical_gap_artifact_is_s7_ready(artifact))
+        # 目录项进入「待填写」而非「已就绪」。
+        self.assertEqual(item["status"], "needs_input")
+        self.assertEqual(item["decision"], "fill_required")
+        self.assertNotIn("resolvedAt", item)
+        # 选定即定案仍然成立：定下的是模板本身，并挂出待执行的 AI 填写任务。
+        self.assertTrue(item["humanConfirmed"])
+        fill_tasks = item.get("fillTasks") or []
+        self.assertEqual(len(fill_tasks), 1)
+        self.assertEqual(fill_tasks[0]["status"], "pending")
+        self.assertEqual(fill_tasks[0]["blankSource"]["sourceType"], "material_fill_template")
+        self.assertEqual(fill_tasks[0]["blankSource"]["materialId"], "RAW-TPL1")
+        # 决策终审不得把空模板产物翻回成稿。
+        plan = project["gap_state"]["plan"]
+        recompute_technical_gap_decisions(plan)
+        final_item = next(entry for entry in plan["items"] if entry["id"] == "GAP-0002")
+        self.assertEqual(final_item["decision"], "fill_required")
+        self.assertEqual(final_item["status"], "needs_input")
 
 
 if __name__ == "__main__":
