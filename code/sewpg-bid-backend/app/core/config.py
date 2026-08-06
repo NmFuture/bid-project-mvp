@@ -70,6 +70,22 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_float_env(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _s4_table_fill_mode_env() -> str:
+    value = os.getenv("S4_TABLE_FILL_MODE", "script").strip().lower()
+    return value if value in {"llm", "script"} else "script"
+
+
 def _docling_device_env() -> str:
     value = os.getenv("DOCLING_DEVICE", "cpu").strip().lower() or "cpu"
     return value if value in {"auto", "cpu", "cuda"} else "cpu"
@@ -140,6 +156,8 @@ class Settings:
     s1_parse_opencode_enabled: bool
     s1_parse_technical_shard_enabled: bool
     s1_parse_shard_concurrency: int
+    s4_table_fill_mode: str
+    s4_llm_fill_timeout_sec: float | None
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
@@ -237,6 +255,12 @@ settings = Settings(
     s1_parse_technical_shard_enabled=_bool_env("S1_PARSE_TECHNICAL_SHARD_ENABLED", True),
     # projectBasics 与 6 个清单分片共 7 个独立会话，默认全部并发执行。
     s1_parse_shard_concurrency=_int_env("S1_PARSE_SHARD_CONCURRENCY", 7),
+    # S4 附表填写模式：script=纯脚本（默认，行为不变）；llm=agent 判断 + 脚本校验执行。
+    # 取值只接受 llm/script，其他值按 script 处理（本地安全默认）。
+    s4_table_fill_mode=_s4_table_fill_mode_env(),
+    # LLM 填写会话明显变长：独立超时，缺省沿用 OPENCODE_TIMEOUT_SEC；
+    # 5090 实测取值只写 docker-compose.5090.yml。
+    s4_llm_fill_timeout_sec=_optional_float_env("S4_LLM_FILL_TIMEOUT_SEC"),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",

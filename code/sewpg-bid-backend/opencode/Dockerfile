@@ -125,6 +125,22 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
     && printf '%s\n' \
       '#!/bin/sh' \
       'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: s4fill-prepare <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-table-filler/scripts/run_from_manifest.py --prepare "$1"' \
+      > /usr/local/bin/s4fill-prepare \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
+      '  echo "usage: s4fill-apply <manifest>" >&2' \
+      '  exit 64' \
+      'fi' \
+      'exec python3 /workspace/.opencode/skills/bid-tech-table-filler/scripts/run_from_manifest.py --apply "$1"' \
+      > /usr/local/bin/s4fill-apply \
+    && printf '%s\n' \
+      '#!/bin/sh' \
+      'if [ "$#" -ne 1 ]; then' \
       '  echo "usage: s4wordfill <manifest>" >&2' \
       '  exit 64' \
       'fi' \
@@ -146,7 +162,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint \
       'fi' \
       'exec python3 /workspace/.opencode/skills/wikibuild_router.py "$1"' \
       > /usr/local/bin/wikibuild \
-    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s2outline /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4wordfill /usr/local/bin/factcurate /usr/local/bin/wikibuild
+    && chmod +x /usr/local/bin/s1parse /usr/local/bin/s2toc /usr/local/bin/s2outline /usr/local/bin/business-outline /usr/local/bin/btplnav /usr/local/bin/businessassemble /usr/local/bin/businessformat /usr/local/bin/s4gap /usr/local/bin/businessgap /usr/local/bin/businesstablefill /usr/local/bin/s4fill /usr/local/bin/s4fill-prepare /usr/local/bin/s4fill-apply /usr/local/bin/s4wordfill /usr/local/bin/factcurate /usr/local/bin/wikibuild
 
 EXPOSE 4096
 
