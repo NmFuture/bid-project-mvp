@@ -199,16 +199,43 @@ def enrich_fact_table_with_spec_columns(
     return enriched
 
 
+def fact_table_spec_coverage(fact_table: dict[str, Any]) -> tuple[int, int]:
+    """事实表字段总数，以及其中带清单第 2/3 列（待填写文件 / 原占位符位置）的字段数。"""
+    fields = _object_items(fact_table.get("fields"))
+    covered = sum(
+        1
+        for field in fields
+        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip()
+    )
+    return len(fields), covered
+
+
 def fact_table_drives_placeholders(fact_table: dict[str, Any]) -> bool:
     """事实表字段是否带清单第 2/3 列（待填写文件 / 原占位符位置）。
 
-    带了就说明正文填写能按占位符精确查表定位字段，不再需要参考素材做模糊匹配；
-    没带（历史快照、清单缺列）则退回旧链路，素材照准备。
+    带了就说明正文填写能按占位符精确查表定位字段，不再需要参考素材做模糊匹配。
     """
-    for field in _object_items(fact_table.get("fields")):
-        if str(field.get("placeholder") or "").strip() or str(field.get("targetFile") or "").strip():
-            return True
-    return False
+    return fact_table_spec_coverage(fact_table)[1] > 0
+
+
+def require_spec_driven_fact_table(fact_table: dict[str, Any]) -> None:
+    """正文填写前置校验：事实表必须能驱动占位符定位，否则直接失败。
+
+    以前清单元数据缺失会静默回退到旧的模糊匹配链路（上下文规则 + 全库相似度 + 从素材
+    抽事实 + 起 agent + 跑 OCR），单条几十秒且是错值的主要来源，而界面上只表现为「慢」，
+    用户无从知道自己走错了路。这里改成显式报错并给出修复动作。
+
+    只判零覆盖：部分字段缺列时，缺列的那些会在填写报告里记成 not_in_spec 并标黄，
+    可见且不会填错值，不需要在入口拦截。
+    """
+    total, covered = fact_table_spec_coverage(fact_table)
+    if not total:
+        raise RuntimeError("正文填写需要项目事实表，当前项目还没有可用的事实表字段，请先抽取并确认事实表。")
+    if not covered:
+        raise RuntimeError(
+            f"事实表 {total} 个字段都缺少清单的「待填写文件」「原占位符位置」两列，"
+            "正文填写无法定位字段，请重新上传项目事实表清单后再填写。"
+        )
 
 
 def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
@@ -767,22 +794,6 @@ s4fill {manifest_path}
 """.strip()
 
 
-def _build_word_placeholder_filler_prompt(manifest_path: Path) -> str:
-    return f"""
-Use the {TECHNICAL_WORD_FILL_SKILL_NAME} skill.
-
-你现在在做技术标素材库待填写 Word 的 AI 填写。后端已经准备好 manifest，其中包含待填写 Word、人工指定参考素材、解析字段、项目投标机型和输出路径。
-
-manifest：{manifest_path}
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
-
-s4wordfill {manifest_path}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-""".strip()
-
-
 def run_technical_table_filler_skill(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
@@ -802,29 +813,13 @@ def run_technical_table_filler_skill(
         return _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
 
 
-def run_technical_word_placeholder_filler_skill(
-    manifest_path: Path,
-    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
-    *,
-    local_only: bool = False,
-) -> dict[str, Any]:
-    if local_only:
-        # 清单驱动时脚本是纯确定性正则（占位符 → 事实表字段精确查表），agent 在这条链路上
-        # 只做一件事：转发一条 shell 命令。起会话的开销远大于执行本身，直接跑脚本。
-        return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
-    prompt = _build_word_placeholder_filler_prompt(manifest_path)
-    try:
-        return OpencodeClient().run_bid_tech_table_filler_with_trace(
-            prompt,
-            stream_callback=(
-                (lambda details: progress_callback("word_filler_delta", details))
-                if progress_callback
-                else None
-            ),
-            early_tool_command="s4wordfill",
-        )
-    except Exception:
-        return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
+def run_technical_word_placeholder_filler_skill(manifest_path: Path) -> dict[str, Any]:
+    """正文填写：直接跑本地脚本。
+
+    脚本是纯确定性查表（占位符原文 → 事实表字段），agent 在这条链路上只做一件事——
+    转发一条 shell 命令，起会话的开销远大于执行本身。
+    """
+    return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
 
 
 def _numeric_report_value(report: dict[str, Any], *keys: str) -> int:
@@ -1186,15 +1181,14 @@ def run_technical_ai_fill_for_gap(
     skill_name = str(task.get("skill") or TECHNICAL_TABLE_FILL_SKILL_NAME)
     appendix_task = _appendix_task_for_fill(item, task)
     blank_source = dict(task.get("blankSource") or {}) if isinstance(task.get("blankSource"), dict) else {}
-    # 正文填写走清单定位（占位符原文 → 事实表字段），素材既不参与定位也不提供取值：
-    # word-filler 只收 docx/xlsx，OCR 出来的 PDF 全被丢弃，脚本里那串防素材污染的补丁
-    # 也印证素材在这条链路上是负资产。清单未下发时照旧准备素材，行为不变。
-    spec_driven_fill = skill_name == TECHNICAL_WORD_FILL_SKILL_NAME and fact_table_drives_placeholders(
-        project_fact_table
-    )
-    selected_reference_ids = [] if spec_driven_fill else _selected_reference_material_ids(item, appendix_task, data)
+    # 正文填写只走清单定位（占位符原文 → 事实表字段），素材既不参与定位也不提供取值，
+    # 因此不备素材、不跑 OCR、不起 agent；附表填写仍按原路准备素材。
+    is_word_fill = skill_name == TECHNICAL_WORD_FILL_SKILL_NAME
+    if is_word_fill:
+        require_spec_driven_fact_table(project_fact_table)
+    selected_reference_ids = [] if is_word_fill else _selected_reference_material_ids(item, appendix_task, data)
     reference_materials = (
-        [] if spec_driven_fill else _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
+        [] if is_word_fill else _reference_materials_for_fill(item, appendix_task, data, selected_reference_ids)
     )
     blank_source_id = str(blank_source.get("id") or blank_source.get("materialId") or "").strip()
     reference_materials = [
@@ -1205,7 +1199,7 @@ def run_technical_ai_fill_for_gap(
     recommended_materials = list(reference_materials)
     material_index = (
         []
-        if spec_driven_fill
+        if is_word_fill
         else _material_index_for_fill(
             project,
             plan,
@@ -1229,7 +1223,7 @@ def run_technical_ai_fill_for_gap(
     # 这两路（尤其是路由命中的认证证书 PDF）从未落地过，table-filler 拿到手时
     # material_path() 解析不出真实文件，会静默丢弃——即使上游路由完全正确。
     # 单轮准备有 OCR 配额上限，这里在任务内部循环补齐，保证一次点击用全量素材。
-    if not spec_driven_fill:
+    if not is_word_fill:
         material_index, reference_materials, recommended_materials = _prepare_fill_materials_with_ocr(
             material_index,
             reference_materials,
@@ -1295,7 +1289,7 @@ def run_technical_ai_fill_for_gap(
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
-        result = run_technical_word_placeholder_filler_skill(manifest_path, local_only=spec_driven_fill)
+        result = run_technical_word_placeholder_filler_skill(manifest_path)
     else:
         result = run_technical_table_filler_skill(manifest_path)
     resolved_output = Path(str(result.get("outputFile") or output_file))

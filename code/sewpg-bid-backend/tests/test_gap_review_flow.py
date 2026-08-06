@@ -1656,7 +1656,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self._confirm_project_fact_table(project_id, {"保证值": "满足招标要求"})
         calls: list[str] = []
 
-        def fake_run_word_filler(manifest_path, progress_callback=None, *, local_only=False):
+        def fake_run_word_filler(manifest_path):
             calls.append("word")
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             output_file = Path(manifest["outputFile"])
@@ -1847,7 +1847,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
         manifests: list[dict] = []
 
-        def fake_run_word_filler(manifest_path, progress_callback=None, *, local_only=False):
+        def fake_run_word_filler(manifest_path):
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
             manifests.append(manifest)
             output_file = Path(manifest["outputFile"])

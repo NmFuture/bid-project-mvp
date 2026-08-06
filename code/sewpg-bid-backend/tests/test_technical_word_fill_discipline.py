@@ -1,7 +1,8 @@
-"""word-placeholder-filler 填写纪律单测（AI 填写金标评测修复）。
+"""word-placeholder-filler 填写纪律单测。
 
-金标反评（正式技术卷逐字段对照）暴露的污染模式：一条无关素材证据批量覆盖
-承诺值占位符、事实缺失级联到错误规则、同一证据喷洒多个占位符。
+正文填写只按事实表清单（待填写文件 + 原占位符位置）定位字段。旧的模糊匹配链路
+及其防污染补丁已随链路一起删除，对应用例作废——现在的纪律由「定位不到就标黄」
+保证，而不是靠给模糊匹配打补丁。
 fixture 为脱敏合成数据（通用领域词面，无真实项目数据）。
 """
 from __future__ import annotations
@@ -24,92 +25,6 @@ filler = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None
 sys.modules["tech_word_filler_under_test"] = filler
 _SPEC.loader.exec_module(filler)
-
-
-def _material_fact(label: str, value: str) -> dict:
-    return {"label": label, "value": value, "sourceKind": "docx", "confidence": 0.95, "sourcePriority": 100}
-
-
-def _table_fact(label: str, value: str) -> dict:
-    return {"label": label, "value": value, "sourceKind": "manifest", "confidence": 0.9, "sourcePriority": 90}
-
-
-class DirectionalMatchTests(unittest.TestCase):
-    def test_material_fact_no_fuzzy_path(self) -> None:
-        # 素材事实禁走模糊路径：通用占位符标签不得靠 SequenceMatcher 蹭到无关素材参数
-        junk = _material_fact("冲击功", "QT350-22AL / 平均值≥10J，单个值≥7J(-40℃)")
-        self.assertEqual(filler.label_score("投标响应", "任意上下文", junk), 0.0)
-
-    def test_manifest_fact_keeps_fuzzy_path(self) -> None:
-        fact = _table_fact("功率曲线保证率", "97%")
-        self.assertGreater(filler.label_score("功率曲线保证", "", fact), 0.6)
-
-    def test_short_fact_key_reverse_containment_blocked(self) -> None:
-        # 反向包含（事实键 ⊂ 占位符标签）只对 ≥5 字键放行
-        short = _table_fact("方案", "某方案文本")
-        self.assertEqual(filler.label_score("投标技术方案说明", "", short), 0.0)
-
-
-class NumericSlotGuardTests(unittest.TestCase):
-    def test_ge_prefix_slot_detected(self) -> None:
-        text = "功率曲线保证率应满足≥[待填写]"
-        i = text.index("[")
-        self.assertTrue(filler.numeric_slot(text, {"start": i, "end": i + 5}, "投标响应"))
-
-    def test_unit_suffix_slot_detected(self) -> None:
-        text = "全场配置[待填写]台机组"
-        i = text.index("[")
-        self.assertTrue(filler.numeric_slot(text, {"start": i, "end": text.index("]") + 1}, "待填写内容"))
-
-    def test_long_mixed_value_rejected(self) -> None:
-        self.assertFalse(filler.value_fits_numeric_slot("QT350-22AL / 平均值≥10J，单个值≥7J(-40℃)"))
-        self.assertTrue(filler.value_fits_numeric_slot("2836h"))
-        self.assertTrue(filler.value_fits_numeric_slot("97%"))
-
-    def test_replace_text_guards_numeric_slot(self) -> None:
-        # 端到端：数字槽位遇到长混合值 → 诚实占位而非错填
-        junk = _material_fact("投标响应", "QT350-22AL / 平均值≥10J，单个值≥7J(-40℃)")
-        text = "每台风电机组的功率曲线保证≥[投标响应，待填写]"
-        replaced, decisions, unfilled, highlighted = filler.replace_text(text, [junk], text, {})
-        self.assertIn("待人工补充", replaced)
-        self.assertNotIn("QT350", replaced)
-        self.assertTrue(highlighted)
-
-
-class SingleUseTests(unittest.TestCase):
-    def test_material_fact_single_use_across_labels(self) -> None:
-        junk = _material_fact("某参数", "某参数值123")
-        used: dict = {}
-        first, _ = filler.choose_fact("某参数", "", [junk], used)
-        self.assertIsNotNone(first)
-        used[(filler.norm("某参数"), filler.norm("某参数值123"))] = filler.norm("某参数")
-        second, _ = filler.choose_fact("另一个字段", "", [junk], used)
-        self.assertIsNone(second)  # 不得喷洒到语义不同的占位符
-
-    def test_manifest_fact_reuse_allowed(self) -> None:
-        fact = _table_fact("总装机容量", "600MW")
-        used: dict = {}
-        for _ in range(3):
-            sel, _alts = filler.choose_fact("总装机容量", "", [fact], used)
-            self.assertIsNotNone(sel)  # 事实表值可合法复用
-
-
-class ManualSentinelTests(unittest.TestCase):
-    def test_missing_fact_stops_cascade(self) -> None:
-        # 单机容量缺失时：规则返回哨兵 → 人工占位，不得级联填成总装机容量
-        facts = [_table_fact("总装机容量", "600MW")]
-        text = "单机容量[投标方案，待填写]MW"
-        context = "单机容量（风电机组出口端）/ " + text
-        replaced, decisions, unfilled, _ = filler.replace_text(text, facts, context, {})
-        self.assertNotIn("600", replaced)
-        self.assertIn("待人工补充", replaced)
-
-    def test_chapter_index_never_gets_model_name(self) -> None:
-        # 章节索引列短路：即使行上下文含机型词也不得被机型值覆盖
-        facts = [_table_fact("投标机型", "EW10.0-220上置")]
-        selected = filler.context_fact("章节索引", "机型 EW10.0-220 相关行上下文", {"start": 0, "end": 0}, 0, facts)
-        self.assertIsNotNone(selected)
-        self.assertNotIn("EW10.0", str(selected.get("value")))
 
 
 def _spec_fact(label: str, value: str, placeholders: list[str], targets: list[str]) -> dict:
@@ -246,11 +161,81 @@ class SpecLocateTests(unittest.TestCase):
         # 字段名自带括号逗号时不得被切碎
         self.assertEqual(filler.composite_field_names(index, "折减系数（考核值，%）"), [])
 
-    def test_missing_fact_table_falls_back_to_legacy_chain(self) -> None:
+    def test_missing_fact_table_disables_the_index(self) -> None:
         index = filler.build_spec_index({}, [], {"任意文件"})
         self.assertFalse(index.enabled)
         _selected, _alts, status = filler.spec_locate(index, {"label": "任意占位符"}, "上下文")
         self.assertEqual(status, "skipped")
+
+
+class DerivedComputedFactsTests(unittest.TestCase):
+    """事实之间的拼接：删素材抽取时保留下来，喂给关键数据表的跨字段语义校验。"""
+
+    def _facts(self, *pairs: tuple[str, str]) -> list[dict]:
+        return [
+            {"label": label, "value": value, "sourceKind": "manifest", "confidence": 0.97, "sourcePriority": 90}
+            for label, value in pairs
+        ]
+
+    def _exact(self, facts: list[dict], label: str) -> list[str]:
+        # 不用 first_fact_value：它带包含匹配，查「容量」会捞到「单机容量」
+        return [str(fact["value"]) for fact in facts if fact["label"] == label]
+
+    def test_capacity_is_never_computed(self) -> None:
+        # 「容量 = 台数 × 单机容量」原本就恒不执行：查「容量」必然先命中「单机容量」，
+        # 分支前提（容量为空）与它自己的输入（单机容量有值）互斥
+        facts = self._facts(("台数", "60"), ("单机容量", "10"))
+        filler.derive_computed_facts(facts)
+        self.assertEqual(self._exact(facts, "容量"), [])
+
+    def test_scheme_is_composed_from_model_and_hub_height(self) -> None:
+        facts = self._facts(("投标机型", "EW10.0-220"), ("轮毂高度", "125"), ("台数", "60"))
+        filler.derive_computed_facts(facts)
+        self.assertEqual(self._exact(facts, "投标方案"), ["60台EW10.0-220-125"])
+        self.assertEqual(self._exact(facts, "方案"), ["60*EW10.0-220-125"])
+
+    def test_no_material_reading_involved(self) -> None:
+        # 只做算术与拼接：缺机型/轮毂高度时不产出方案，也不去任何文档里找
+        facts = self._facts(("台数", "60"))
+        filler.derive_computed_facts(facts)
+        self.assertEqual(self._exact(facts, "投标方案"), [])
+
+
+class SpeclessManifestTests(unittest.TestCase):
+    """清单元数据缺失时脚本直接失败，不再退回模糊匹配填出可疑值。"""
+
+    def test_run_from_manifest_refuses_specless_fact_table(self) -> None:
+        import json
+        import tempfile
+
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            blank = work / "待填写-样例.docx"
+            document = Document()
+            document.add_paragraph("投标机型[投标机型，待填写]")
+            document.save(str(blank))
+            manifest_path = work / "word_fill_input.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "blankSource": {"docxPath": str(blank), "title": blank.name},
+                        "outputFile": str(work / "out.docx"),
+                        # 事实表有值但没有清单第 2/3 列 —— 正是过去静默走旧链路的入口
+                        "projectFactTable": {
+                            "status": "confirmed",
+                            "fields": [{"label": "投标机型", "value": "EW10.0-220", "status": "confirmed"}],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                filler.run_from_manifest(manifest_path)
+            self.assertIn("重新上传", str(ctx.exception))
+            self.assertFalse((work / "out.docx").exists())
 
 
 if __name__ == "__main__":
