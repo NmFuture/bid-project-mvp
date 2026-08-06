@@ -11,10 +11,18 @@ from app.services.technical_body_fill_job import (
     collect_body_fill_targets,
     empty_body_fill_state,
 )
-from app.services.technical_gap_ai_fill import fact_table_drives_placeholders
+from app.services.technical_gap_ai_fill import (
+    fact_table_drives_placeholders,
+    fact_table_spec_coverage,
+    require_spec_driven_fact_table,
+)
 
 WORD_SKILL = "bid-tech-word-placeholder-filler"
 TABLE_SKILL = "bid-tech-table-filler"
+
+SPEC_DRIVEN_FACT_TABLE = {
+    "fields": [{"label": "投标机型", "value": "EW10.0-220", "placeholder": "[投标机型，待填写]"}]
+}
 
 
 def _item(gap_id: str, *tasks: dict, decision: str = "fill_required", **extra) -> dict:
@@ -25,8 +33,11 @@ def _task(task_id: str, skill: str = WORD_SKILL, status: str = "pending") -> dic
     return {"id": task_id, "skill": skill, "status": status}
 
 
-def _gap_state(*items: dict) -> dict:
-    return {"plan": {"items": list(items)}}
+def _gap_state(*items: dict, fact_table: dict | None = None) -> dict:
+    return {
+        "plan": {"items": list(items)},
+        "projectFactTable": SPEC_DRIVEN_FACT_TABLE if fact_table is None else fact_table,
+    }
 
 
 class CollectTargetsTests(unittest.TestCase):
@@ -85,10 +96,42 @@ class SpecDrivenFillTests(unittest.TestCase):
         table = {"fields": [{"label": "投标机型", "targetFile": "客户定制/华能/待填写-x.docx"}]}
         self.assertTrue(fact_table_drives_placeholders(table))
 
-    def test_legacy_fact_table_falls_back_to_material_chain(self) -> None:
-        # 历史快照没有清单第 2/3 列：素材照准备，走旧的模糊匹配链路
+    def test_legacy_fact_table_has_no_spec_columns(self) -> None:
         self.assertFalse(fact_table_drives_placeholders({"fields": [{"label": "投标机型", "value": "EW10.0-220"}]}))
         self.assertFalse(fact_table_drives_placeholders({}))
+
+    def test_coverage_counts_fields_with_spec_columns(self) -> None:
+        table = {
+            "fields": [
+                {"label": "A", "placeholder": "[A，待填写]"},
+                {"label": "B", "targetFile": "待填写-x.docx"},
+                {"label": "C"},
+            ]
+        }
+        self.assertEqual(fact_table_spec_coverage(table), (3, 2))
+        self.assertEqual(fact_table_spec_coverage({}), (0, 0))
+
+
+class RequireSpecDrivenFactTableTests(unittest.TestCase):
+    """清单元数据缺失时正文填写必须显式失败，不再静默回退到旧的模糊匹配链路。"""
+
+    def test_no_fields_asks_for_fact_table(self) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            require_spec_driven_fact_table({})
+        self.assertIn("事实表", str(ctx.exception))
+
+    def test_zero_coverage_reports_field_count_and_asks_for_spec_upload(self) -> None:
+        table = {"fields": [{"label": f"字段{index}", "value": "x"} for index in range(148)]}
+        with self.assertRaises(RuntimeError) as ctx:
+            require_spec_driven_fact_table(table)
+        message = str(ctx.exception)
+        self.assertIn("148", message)
+        self.assertIn("重新上传", message)
+
+    def test_partial_coverage_passes(self) -> None:
+        # 缺列的字段会在填写报告里记成 not_in_spec 并标黄，可见且不会填错值，入口不拦
+        table = {"fields": [{"label": "A", "placeholder": "[A，待填写]"}, {"label": "B"}]}
+        require_spec_driven_fact_table(table)
 
 
 class RunBodyFillJobTests(unittest.TestCase):
@@ -163,6 +206,23 @@ class RunBodyFillJobTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(state["total"], 0)
         self.assertIn("没有待填写", state["message"])
+
+    def test_fact_table_without_spec_columns_fails_the_whole_batch_upfront(self) -> None:
+        # 事实表是项目级单张表：缺清单列时整批一条原因结束，不逐条跑、不逐条标红
+        self.project["gap_state"] = _gap_state(
+            _item("G1", _task("T1")),
+            _item("G2", _task("T2")),
+            fact_table={"fields": [{"label": "投标机型", "value": "EW10.0-220"}]},
+        )
+        calls: list[str] = []
+        with self.assertRaises(RuntimeError):
+            self._run(lambda project, gap_id, data, **kwargs: calls.append(gap_id))
+
+        state = self.project["gap_state"]["bodyFillState"]
+        self.assertEqual(calls, [])
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("重新上传", state["message"])
+        self.assertFalse(any("fillError" in item for item in self.project["gap_state"]["plan"]["items"]))
 
 
 if __name__ == "__main__":

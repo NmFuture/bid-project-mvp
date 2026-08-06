@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from openpyxl import Workbook
 from starlette.datastructures import URL
 
@@ -3660,6 +3661,51 @@ def test_technical_ai_fill_action_stays_in_technical_ai_fill_module(tmp_path) ->
     assert artifact["qualityReport"]["status"] == "passed"
     assert Path(artifact["path"]).exists()
     assert artifact["onlyoffice"]["browserFileUrl"].startswith("http://testserver/api/technical/")
+
+
+def test_technical_body_fill_rejects_fact_table_without_spec_columns() -> None:
+    """正文填写的清单元数据缺失时显式失败，不再静默回退到旧的模糊匹配链路。"""
+    project_id = _seed_technical_gap_project(
+        {
+            "items": [
+                {
+                    "id": "TG-BODY",
+                    "number": "5.8.2",
+                    "title": "变桨系统专题",
+                    "status": "needs_input",
+                    "decision": "fill_required",
+                    "usage": "section_fill",
+                    "appendixTasks": [{"id": "BLANK-BODY", "title": "待填写-变桨系统专题.docx"}],
+                    "fillTasks": [
+                        {
+                            "id": "FILL-BODY",
+                            "skill": "bid-tech-word-placeholder-filler",
+                            "status": "pending",
+                            "blankSource": {
+                                "id": "BLANK-BODY",
+                                "title": "待填写-变桨系统专题.docx",
+                                "sourceType": "material_fill_template",
+                            },
+                        }
+                    ],
+                    "resolvedArtifacts": [],
+                }
+            ],
+            "summary": {"totalTocItems": 1, "fillableTaskCount": 1},
+        }
+    )
+    project = store._require(project_id)
+    project["gap_state"]["projectFactTable"] = {
+        "status": "confirmed",
+        "fields": [{"label": "项目名称", "value": "技术标服务拆分测试项目", "status": "confirmed"}],
+    }
+
+    with pytest.raises(RuntimeError, match="重新上传"):
+        technical_gap_actions_module.run_technical_ai_fill_for_gap(
+            project,
+            "TG-BODY",
+            {"fillTaskId": "FILL-BODY", "operator": "技术用户"},
+        )
 
 
 def test_technical_gap_fact_table_lookup_stays_in_technical_service() -> None:
