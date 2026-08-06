@@ -417,6 +417,39 @@ test('目录标签v4：AI填写完成变待复核模板，复核通过收口已�
   assert.equal(technicalGapTagOf({ ...filled, qualityStatus: 'passed' }), 'template_review')
 })
 
+test('目录标签v6：已取代产物不参与标签、预览和当前产物列表', () => {
+  const item = {
+    id: 'G1',
+    decision: 'ready',
+    status: 'resolved',
+    humanConfirmed: true,
+    resolvedArtifacts: [
+      {
+        id: 'ART-OLD',
+        source: 'ai_fill',
+        fileName: '旧AI填写.docx',
+        active: false,
+        supersededAt: '2026-08-06T00:00:00Z',
+        onlyoffice: { fileUrl: '/old.docx' },
+      },
+      {
+        id: 'ART-NEW',
+        source: 'material_library',
+        fileName: '新选素材.docx',
+        materialId: 'RAW-NEW',
+        s7Ready: true,
+        active: true,
+        onlyoffice: { fileUrl: '/new.docx' },
+      },
+    ],
+  }
+
+  assert.equal(technicalGapTagOf(item), 'material_ready')
+  assert.equal(technicalHelpers.latestResolvedArtifact(item).id, 'ART-NEW')
+  assert.deepEqual(technicalHelpers.currentResolvedArtifacts(item).map((artifact) => artifact.id), ['ART-NEW'])
+  assert.deepEqual(technicalHelpers.previewChoicesForItem(item).map((choice) => choice.artifact.id), ['ART-NEW'])
+})
+
 test('目录标签v6：选定即定案——人工选材/上传直接变已就绪（行为改动② 2026-08-04）', () => {
   // 后端 register 已在人工选材/上传时落 humanConfirmed + resolvedArtifacts。
   assert.equal(

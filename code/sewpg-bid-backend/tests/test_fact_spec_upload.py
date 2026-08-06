@@ -158,7 +158,7 @@ def test_deleting_override_falls_back_to_repo_default(client, override_path, tmp
     override_path.unlink()
     fallback = specs_module.load_specs()
     assert len(fallback) == 148
-    assert len(specs_module.fillable_specs()) == 128
+    assert len(specs_module.fillable_specs()) == 148
 
 
 def test_corrupt_override_falls_back_to_repo_default(override_path) -> None:

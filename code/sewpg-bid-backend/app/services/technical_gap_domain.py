@@ -29,6 +29,9 @@ def technical_outline_number_and_title(
 
 
 def technical_gap_artifact_is_s7_ready(artifact: dict[str, Any]) -> bool:
+    # active=False 表示已被撤销/取代的非活动产物（保留审计），一律不进 S7。
+    if artifact.get("active", True) is False:
+        return False
     if artifact.get("s7Ready", True) is False:
         return False
     if str(artifact.get("source") or "") != "ai_fill":

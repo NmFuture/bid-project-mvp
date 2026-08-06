@@ -92,14 +92,14 @@ def test_material_home_project_parses_third_segment() -> None:
     assert material_home_project({}) == ""
 
 
-# ---------------------------------------------------------------- 必需类别聚合（与 spec 148/128 对账）
+# ---------------------------------------------------------------- 必需类别聚合（与 spec 148 对账）
 
 
 def test_required_material_classes_aggregation_matches_specs() -> None:
     specs = load_specs()
     fillable = fillable_specs()
     assert len(specs) == 148
-    assert len(fillable) == 128
+    assert len(fillable) == 148
 
     required = required_material_classes()
     counts = {key: value["fieldCount"] for key, value in required.items()}

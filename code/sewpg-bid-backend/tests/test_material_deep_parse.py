@@ -260,7 +260,7 @@ class BuildPreviewPlansDeepParseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["status"], "fallback")
         self.assertTrue(payload["retryable"])
         self.assertIn("后台全文提取", payload["skipReason"])
-        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True})
+        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True, "bidType": "技术标"})
 
     async def test_oversize_docx_pending_keeps_deep_parse_message(self) -> None:
         raw = _raw_file("方案.docx")
@@ -290,7 +290,7 @@ class BuildPreviewPlansDeepParseTests(unittest.IsolatedAsyncioTestCase):
         payload = plans[0]["payload"]
         self.assertTrue(payload["retryable"])
         self.assertIn("后台深度解析", payload["skipReason"])
-        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True})
+        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True, "bidType": "技术标"})
 
     async def test_pdf_extract_failures_over_limit_turn_terminal(self) -> None:
         raw = _raw_file(
@@ -405,7 +405,7 @@ class BuildPreviewPlansDeepParseTests(unittest.IsolatedAsyncioTestCase):
         payload = plans[0]["payload"]
         self.assertTrue(payload["retryable"])
         self.assertIn("后台全文提取", payload["skipReason"])
-        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True})
+        enqueue_mock.assert_called_once_with("RAW-0001", {"allowConvert": True, "bidType": "技术标"})
 
     async def test_non_pending_skip_stays_terminal(self) -> None:
         raw = _raw_file("现场照片.png")
@@ -447,7 +447,7 @@ class BusinessProfileGateTests(unittest.TestCase):
 
         self.assertTrue(profile["deepParsePending"])
         self.assertIn("后台深度解析", profile["parseError"])
-        enqueue_mock.assert_called_once_with("RAW-0001")
+        enqueue_mock.assert_called_once_with("RAW-0001", {"bidType": "商务标"})
 
     def test_xlsx_does_not_enqueue_background_convert(self) -> None:
         with patch("app.services.business_wiki_generation.enqueue_deep_parse_job") as enqueue_mock:
@@ -1052,8 +1052,8 @@ class EnqueueAndWorkerTests(unittest.TestCase):
             ),
             patch("app.services.material_deep_parse.submit_local_job") as local_mock,
         ):
-            first = enqueue_deep_parse_job("RAW-0001")
-            second = enqueue_deep_parse_job("RAW-0001")
+            first = enqueue_deep_parse_job("RAW-0001", {"bidType": "技术标"})
+            second = enqueue_deep_parse_job("RAW-0001", {"bidType": "技术标"})
 
         self.assertTrue(first["queued"])
         self.assertTrue(first["local"])
@@ -1076,6 +1076,59 @@ class EnqueueAndWorkerTests(unittest.TestCase):
             )
 
         runner_mock.assert_called_once_with("RAW-0001", {"fileId": "RAW-0001"})
+
+    def test_enqueue_deep_parse_job_requires_bid_type(self) -> None:
+        # 深度解析任务必须携带并校验 bidType（R10-B04-01）。
+        with self.assertRaises(ValueError):
+            enqueue_deep_parse_job("RAW-0001")
+        with self.assertRaises(ValueError):
+            enqueue_deep_parse_job("RAW-0001", {"bidType": "标书"})
+
+    def test_worker_passes_bid_type_to_deep_parse_hook(self) -> None:
+        from app.workers import redis_worker
+
+        with patch(
+            "app.services.material_deep_parse.deep_parse_material_file_sync",
+            return_value={"deepParseStatus": "parsed", "deepParseMessage": "ok"},
+        ), patch(
+            "app.workers.redis_worker.renew_generation_lock",
+            return_value=True,
+        ), patch(
+            "app.services.material_wiki_auto.on_material_deep_parse_job_finished",
+        ) as hook_mock:
+            redis_worker._run_job(
+                {
+                    "id": "job-2",
+                    "type": "material_deep_parse",
+                    "projectId": "RAW-0001",
+                    "data": {"fileId": "RAW-0001", "bidType": "商务标"},
+                }
+            )
+
+        hook_mock.assert_called_once_with("RAW-0001", current_job_id="job-2", bid_type="商务标")
+
+    def test_worker_passes_bid_type_to_cleaning_hook(self) -> None:
+        from app.workers import redis_worker
+
+        with patch(
+            "app.services.material_cleaning.clean_material_file_sync",
+            return_value={"cleanStatus": "cleaned", "cleanMessage": "ok"},
+        ), patch(
+            "app.workers.redis_worker.renew_generation_lock",
+            return_value=True,
+        ), patch(
+            "app.services.material_wiki_auto.on_material_cleaning_job_finished",
+        ) as hook_mock:
+            redis_worker._run_job(
+                {
+                    "id": "job-3",
+                    "type": "material_cleaning",
+                    "projectId": "RAW-0001",
+                    "data": {"fileId": "RAW-0001", "bidType": "商务标"},
+                }
+            )
+
+        hook_mock.assert_called_once_with(current_job_id="job-3", bid_type="商务标")
 
 
 if __name__ == "__main__":
