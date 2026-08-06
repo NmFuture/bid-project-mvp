@@ -4,6 +4,12 @@
 The runner intentionally keeps the LLM/Agent contract small: OpenCode calls
 `s4fill <manifest>`, while this deterministic script preserves the original
 Word file and writes into the detected value cells.
+
+Two additive LLM-mode entry points do not change the default path at all:
+`--prepare` writes fill_brief.json (target fields + locked material list) for
+the agent, and `--apply` validates the agent-written fill_plan.json (evidence
+excerpts must be greppable in their declared sources) before running the same
+fill/report pipeline with fillMode="llm-plan".
 """
 
 from __future__ import annotations
@@ -4759,6 +4765,38 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
             "total": len(mapping["decisions"]),
         }
 
+    return finalize_fill_result(
+        manifest,
+        spec,
+        output_file,
+        fields,
+        mapping,
+        sources,
+        source_selection,
+        source_docx,
+        source_meta,
+    )
+
+
+def finalize_fill_result(
+    manifest: dict[str, Any],
+    spec: AppendixSpec,
+    output_file: Path,
+    fields: list[dict[str, Any]],
+    mapping: dict[str, Any],
+    sources: list[Source],
+    source_selection: dict[str, Any],
+    source_docx: Path,
+    source_meta: dict[str, Any],
+    *,
+    fill_mode: str | None = None,
+) -> dict[str, Any]:
+    """Assemble the fill result payload and write the sidecar reports.
+
+    Shared tail of run_single_manifest (fill_mode=None keeps the script path
+    byte-for-byte identical) and the LLM plan path (fill_mode="llm-plan" adds
+    fillMode to fillReport and the per-cell evidence excerpt to evidenceRefs).
+    """
     unfilled = [decision["field"] for decision in mapping["decisions"] if decision["action"] == "manual"]
     reference_sources = [
         {
@@ -4789,17 +4827,18 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
     for decision in mapping["decisions"]:
         fact = decision.get("selectedFact")
         if fact:
-            evidence_refs.append(
-                {
-                    "type": "selected_fact",
-                    "field": decision["field"],
-                    "source": fact.get("source"),
-                    "sourcePath": fact.get("sourcePath"),
-                    "sheet": fact.get("sheet"),
-                    "row": fact.get("row"),
-                    "column": fact.get("column"),
-                }
-            )
+            evidence = {
+                "type": "selected_fact",
+                "field": decision["field"],
+                "source": fact.get("source"),
+                "sourcePath": fact.get("sourcePath"),
+                "sheet": fact.get("sheet"),
+                "row": fact.get("row"),
+                "column": fact.get("column"),
+            }
+            if fill_mode is not None:
+                evidence["excerpt"] = fact.get("excerpt")
+            evidence_refs.append(evidence)
 
     filled_details = []
     for decision in mapping["decisions"]:
@@ -4822,6 +4861,25 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
     no_fill_required = not mapping["decisions"] and appendix_has_no_fill_target(spec)
     source_coverage = build_source_coverage(spec, fields, mapping, manifest, sources)
 
+    fill_report: dict[str, Any] = {
+        "title": spec.title,
+        "appendixId": spec.appendix_id,
+        "filledFieldCount": mapping["summary"]["fill"],
+        "partialFieldCount": mapping["summary"]["partial"],
+        "unfilledFieldCount": mapping["summary"]["manual"],
+        "targetFieldCount": mapping["summary"]["total"],
+        "referenceMaterialCount": len(sources),
+        "referenceSources": reference_sources,
+        "sourceSelection": source_selection,
+        "blankDocxPath": str(source_docx),
+        "preservedOriginalStructure": True,
+        "manualMarker": "[待人工补充：字段名]",
+        "manualHighlight": "FFF2CC",
+        "noFillRequired": no_fill_required,
+        "sourceCoverage": source_coverage,
+    }
+    if fill_mode is not None:
+        fill_report["fillMode"] = fill_mode
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "outputFile": str(output_file),
@@ -4831,23 +4889,7 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
         "unfilledFieldDetails": [item for item in filled_details if item["action"] == "manual"],
         "mapping": mapping,
         "factMeta": source_meta,
-        "fillReport": {
-            "title": spec.title,
-            "appendixId": spec.appendix_id,
-            "filledFieldCount": mapping["summary"]["fill"],
-            "partialFieldCount": mapping["summary"]["partial"],
-            "unfilledFieldCount": mapping["summary"]["manual"],
-            "targetFieldCount": mapping["summary"]["total"],
-            "referenceMaterialCount": len(sources),
-            "referenceSources": reference_sources,
-            "sourceSelection": source_selection,
-            "blankDocxPath": str(source_docx),
-            "preservedOriginalStructure": True,
-            "manualMarker": "[待人工补充：字段名]",
-            "manualHighlight": "FFF2CC",
-            "noFillRequired": no_fill_required,
-            "sourceCoverage": source_coverage,
-        },
+        "fillReport": fill_report,
         "filledAt": now_iso(),
     }
     json_path, md_path = write_sidecar_reports(output_file, result)
@@ -4979,11 +5021,525 @@ def compact_summary(result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# LLM plan mode (--prepare / --apply): additive entry points for the
+# "agent judges, script executes" flow. Detection, normalization, conflict
+# detection, write-back and reports all reuse the functions above; the
+# default `--manifest` path is unchanged.
+# ---------------------------------------------------------------------------
+
+BRIEF_SCHEMA_VERSION = "bid-tech-table-fill-brief-v1"
+PLAN_SCHEMA_VERSION = "bid-tech-table-fill-plan-v1"
+LLM_FILL_MODE = "llm-plan"
+FILL_BRIEF_FILENAME = "fill_brief.json"
+FILL_PLAN_FILENAME = "fill_plan.json"
+
+# 填写铁律：写进 brief 约束 agent 的取值行为（与 SKILL.md 的契约一致）。
+FILL_BRIEF_RULES = (
+    "不编造：任何填写值必须能在素材、事实表或招标文件原文中找到依据，找不到依据的格子必须 action=manual。",
+    "不确定的字段不要猜：action=manual，脚本会写入 [待人工补充：字段名] 并黄高亮。",
+    "响应单元格只写数值或结论本身，不要写单位；单位由脚本按单位列口径写入。",
+    "机型字段只写英数字型号编码，不写「上置/下置」等中文布局后缀。",
+    "素材范围锁定本简报 materials 列表（manifest 给定内容），禁止读取列表之外的文件。",
+    "每个非 manual 格子必须带 evidence.excerpt（来源文件原文原句）；脚本会按 excerpt 在 sourcePath 中校验，命中不了强制降级 manual。",
+    "招标要求值 requirementValue 是明确具体值时优先直抄。",
+)
+
+
+class PlanValidationError(RuntimeError):
+    """Structural fill-plan validation failure: nothing is written and the
+    error list is returned on stdout so the agent can fix the plan and retry."""
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        self.errors = errors
+        super().__init__(f"fill plan validation failed with {len(errors)} error(s)")
+
+
+def brief_material_entry(material: dict[str, Any], manifest_dir: Path, route: str) -> dict[str, Any]:
+    """Brief material entry; path resolution reuses the same locating keys and
+    the original-xlsx-first rule as add_source_from_material."""
+    resolved = material_path(material, manifest_dir)
+    original = original_material_path(material, manifest_dir)
+    cleaned_docx: Path | None = None
+    if original is not None and resolved is not None and resolved.suffix.lower() == ".docx":
+        cleaned_docx = resolved
+    effective = original or resolved
+    ocr_text: Path | None = None
+    if effective is not None and effective.suffix.lower() == ".pdf":
+        candidates = (
+            Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None,
+            effective.with_suffix(".ocr.txt"),
+        )
+        for candidate in candidates:
+            if candidate is not None and candidate.exists() and candidate.is_file():
+                ocr_text = candidate.resolve()
+                break
+    return {
+        "id": clean(material.get("id") or material.get("materialId")),
+        "name": material_label(material) or (effective.name if effective else ""),
+        "route": route,
+        "path": str(effective) if effective else "",
+        "ocrTextPath": str(ocr_text) if ocr_text else "",
+        "originalPath": str(original) if original else "",
+        "cleanedPath": str(cleaned_docx) if cleaned_docx else "",
+    }
+
+
+def collect_brief_materials(manifest: dict[str, Any], manifest_dir: Path) -> list[dict[str, Any]]:
+    """Material list locked to the manifest: referenceMaterials first (highest
+    priority), then tenderDocuments, then materialIndex/recommendedMaterials,
+    each annotated with its route."""
+    materials: list[dict[str, Any]] = []
+    for material in object_items(manifest.get("referenceMaterials")) + object_items(manifest.get("selectedReferenceMaterials")):
+        materials.append(brief_material_entry(enrich_material_with_known_path(material, manifest), manifest_dir, "referenceMaterial"))
+    for document in object_items(manifest.get("tenderDocuments")):
+        materials.append(brief_material_entry(document, manifest_dir, "tenderDocument"))
+    for material in object_items(manifest.get("materialIndex")):
+        materials.append(brief_material_entry(material, manifest_dir, "materialIndex"))
+    for material in object_items(manifest.get("recommendedMaterials")):
+        materials.append(brief_material_entry(enrich_material_with_known_path(material, manifest), manifest_dir, "recommendedMaterials"))
+    return materials
+
+
+def brief_fact_table_fields(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fact-table fields the agent may quote: confirmed/extracted only."""
+    table = manifest.get("projectFactTable") if isinstance(manifest.get("projectFactTable"), dict) else {}
+    return [
+        {
+            "label": clean(field.get("label")),
+            "value": clean(field.get("value")),
+            "unit": clean(field.get("unit")),
+            "status": clean(field.get("status")),
+        }
+        for field in object_items(table.get("fields"))
+        if clean(field.get("status")) in {"confirmed", "extracted"}
+    ]
+
+
+def brief_target_field(field: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "targetFieldId": clean(field.get("id")),
+        "tableIndex": field.get("tableIndex"),
+        "rowIndex": field.get("rowIndex"),
+        "valueCol": field.get("valueCol"),
+        "unitCol": field.get("unitCol"),
+        "field": clean(field.get("field")),
+        "rowLabel": clean(field.get("listRowLabel")),
+        "columnLabel": clean(field.get("listColumnLabel")),
+        "requirementValue": clean(field.get("requirementValue")),
+        "unit": clean(field.get("unit")),
+        "group": clean(field.get("group")),
+    }
+
+
+def run_prepare(manifest_path: Path) -> dict[str, Any]:
+    """--prepare: write fill_brief.json next to the manifest and return the
+    small stdout summary. Detection reuses the exact functions of the script
+    path, so the brief's targetFields match what s4fill would fill."""
+    manifest = load_manifest(manifest_path)
+    if target_entries(manifest):
+        raise RuntimeError("--prepare 只支持单附表 manifest；批量 manifest 请先拆分。")
+    source_docx = blank_docx_path(manifest, manifest_path)
+    spec = detect_appendix_spec(source_docx, manifest)
+    output_file = output_path_for_target(manifest, manifest_path, spec)
+    fields = extract_target_fields(spec)
+    materials = collect_brief_materials(manifest, manifest_path.parent)
+    brief = {
+        "schemaVersion": BRIEF_SCHEMA_VERSION,
+        "blankDocxPath": str(source_docx),
+        "outputFile": str(output_file),
+        "planFile": str(manifest_path.with_name(FILL_PLAN_FILENAME)),
+        "title": spec.title,
+        "appendixId": spec.appendix_id,
+        "targetFields": [brief_target_field(field) for field in fields],
+        "materials": materials,
+        "factTableFields": brief_fact_table_fields(manifest),
+        "parseFields": manifest.get("parseFields") if isinstance(manifest.get("parseFields"), list) else [],
+        "projectTurbineModel": manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {},
+        "rules": list(FILL_BRIEF_RULES),
+    }
+    brief_file = manifest_path.with_name(FILL_BRIEF_FILENAME)
+    brief_file.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"briefFile": str(brief_file), "targetFieldCount": len(fields), "materialCount": len(materials)}
+
+
+def xlsx_text(path: Path) -> str:
+    wb = load_workbook(path, data_only=True, read_only=True)
+    parts: list[str] = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            parts.extend(clean(value) for value in row if clean(value))
+    wb.close()
+    return "\n".join(parts)
+
+
+def evidence_source_text(path: Path) -> str:
+    """Full text of an evidence source for excerpt grepping: docx paragraphs +
+    table rows, xlsx all cell texts, pdf its OCR sidecar, txt/md verbatim."""
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return doc_text(path)
+    if suffix in {".xlsx", ".xlsm"}:
+        return xlsx_text(path)
+    if suffix == ".pdf":
+        sidecar = path.with_suffix(".ocr.txt")
+        return sidecar.read_text(encoding="utf-8") if sidecar.exists() else ""
+    if suffix in {".txt", ".md"}:
+        return path.read_text(encoding="utf-8", errors="replace")
+    return ""
+
+
+def evidence_corpus_text(manifest: dict[str, Any], evidence: dict[str, Any], manifest_dir: Path) -> str | None:
+    """The corpus the excerpt must be found in; None means unverifiable (the
+    cell is then downgraded to manual). File-less routes (fact table,
+    parseFields, projectTurbineModel) are checked against the manifest payload."""
+    source_path = first_existing_path((evidence.get("sourcePath"),), manifest_dir)
+    if source_path is not None:
+        try:
+            return evidence_source_text(source_path)
+        except Exception:
+            return None
+    route = clean(evidence.get("sourceRoute"))
+    if route == "factTable":
+        return json.dumps(manifest.get("projectFactTable") or {}, ensure_ascii=False)
+    if route == "parseFields":
+        return json.dumps(manifest.get("parseFields") or [], ensure_ascii=False)
+    if route == "projectTurbineModel":
+        return json.dumps(manifest.get("projectTurbineModel") or {}, ensure_ascii=False)
+    return None
+
+
+def excerpt_hit(excerpt: str, corpus: str) -> bool:
+    """Verbatim hit check, ignoring whitespace differences only (docx/xlsx
+    extraction inserts newlines and cell separators); every non-whitespace
+    character of the excerpt must appear in order in the source text."""
+    needle = re.sub(r"\s+", "", clean(excerpt))
+    return bool(needle) and needle in re.sub(r"\s+", "", corpus)
+
+
+def load_fill_plan(manifest_path: Path) -> dict[str, Any]:
+    plan_file = manifest_path.with_name(FILL_PLAN_FILENAME)
+    if not plan_file.exists():
+        raise RuntimeError(f"未找到填写计划 {plan_file}；请先按 fill_brief.json 写 {FILL_PLAN_FILENAME}。")
+    try:
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PlanValidationError([{"field": "", "error": f"{FILL_PLAN_FILENAME} 不是合法 JSON：{exc}"}])
+    if not isinstance(plan, dict) or clean(plan.get("schemaVersion")) != PLAN_SCHEMA_VERSION:
+        raise PlanValidationError([{"field": "", "error": f"schemaVersion 必须是 {PLAN_SCHEMA_VERSION}。"}])
+    return plan
+
+
+def field_cell_key(spec: AppendixSpec, field: dict[str, Any]) -> tuple[int, int, int]:
+    """Write-back coordinate of a target field, with the same fallbacks as fill_doc."""
+    table_index = field.get("tableIndex")
+    value_col = field.get("valueCol")
+    return (
+        spec.table_index if table_index is None else int(table_index),
+        int(field["rowIndex"]),
+        spec.value_col if value_col is None else int(value_col),
+    )
+
+
+def collect_plan_fills(
+    spec: AppendixSpec,
+    plan: dict[str, Any],
+    fields: list[dict[str, Any]],
+    blank_doc: Any,
+) -> tuple[dict[tuple[int, int, int], dict[str, Any]], list[dict[str, Any]]]:
+    """Structural validation of plan fills: known targetFieldId, integer
+    coordinates matching the field, in-bounds and still pending in the blank
+    docx. Accepted fills are keyed by (table, row, column) — list tables fill
+    several columns of one row, so the key must include the column (same dedup
+    rule as fill_doc)."""
+    field_by_id = {clean(field.get("id")): field for field in fields}
+    accepted: dict[tuple[int, int, int], dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+    for position, fill in enumerate(object_items(plan.get("fills"))):
+        label = clean(fill.get("field")) or clean(fill.get("targetFieldId")) or f"fills[{position}]"
+        field_id = clean(fill.get("targetFieldId"))
+        field = field_by_id.get(field_id)
+        if field is None:
+            errors.append({"field": label, "error": f"未知 targetFieldId：{field_id or '（缺失）'}；必须与 fill_brief.json 的 targetFields 一致。"})
+            continue
+        action = clean(fill.get("action")) or "fill"
+        if action not in {"fill", "partial", "manual"}:
+            errors.append({"field": label, "error": f"action 必须是 fill/partial/manual，收到：{action or '（空）'}。"})
+            continue
+        expected = field_cell_key(spec, field)
+        provided = (fill.get("tableIndex"), fill.get("rowIndex"), fill.get("valueCol"))
+        coords: list[int] = []
+        mismatch = False
+        invalid = False
+        for want, got, name in zip(expected, provided, ("tableIndex", "rowIndex", "valueCol")):
+            if got is None:
+                coords.append(want)
+                continue
+            try:
+                got_int = int(got)
+            except (TypeError, ValueError):
+                errors.append({"field": label, "error": f"{name} 必须是整数，收到：{got!r}。"})
+                invalid = True
+                break
+            if got_int != want:
+                mismatch = True
+            coords.append(got_int)
+        if invalid:
+            continue
+        table_index, row_index, value_col = coords
+        # Bounds are checked on the provided coordinates too: a stale or
+        # hand-written plan must surface as a structural error, not a silent skip.
+        if table_index < 0 or table_index >= len(blank_doc.tables):
+            errors.append({"field": label, "error": f"tableIndex {table_index} 越界：空表共 {len(blank_doc.tables)} 张表。"})
+            continue
+        table = blank_doc.tables[table_index]
+        if row_index < 0 or row_index >= len(table.rows):
+            errors.append({"field": label, "error": f"rowIndex {row_index} 越界：表 {table_index} 共 {len(table.rows)} 行。"})
+            continue
+        if value_col < 0 or value_col >= len(table.rows[row_index].cells):
+            errors.append({"field": label, "error": f"valueCol {value_col} 越界：表 {table_index} 第 {row_index} 行共 {len(table.rows[row_index].cells)} 列。"})
+            continue
+        if mismatch:
+            errors.append({"field": label, "error": f"坐标 ({table_index}, {row_index}, {value_col}) 与 targetFieldId {field_id} 的坐标 {expected} 不一致。"})
+            continue
+        if not cell_needs_fill(table.rows[row_index].cells[value_col].text):
+            errors.append({"field": label, "error": f"目标单元格（表 {table_index} 行 {row_index} 列 {value_col}）不是待填空位。"})
+            continue
+        accepted[(table_index, row_index, value_col)] = fill
+    return accepted, errors
+
+
+def plan_value_conflict(field: dict[str, Any], plan_candidate: dict[str, Any], facts: list[dict[str, Any]], scenario: str) -> str:
+    """Run the plan value through the existing find_conflict as one candidate:
+    a clearly contradictory high-score fact yields the conflict text (the
+    caller downgrades low-confidence fills, mirroring map_fields)."""
+    candidates = [
+        {
+            "factId": fact["id"],
+            "label": fact["label"],
+            "value": fact["value"],
+            "unit": fact["unit"],
+            "source": fact["source"],
+            "sourceKind": fact["sourceKind"],
+            "sourcePriority": fact.get("sourcePriority", 0),
+            "row": fact["row"],
+            "sheet": fact["sheet"],
+            "score": score(field, fact, scenario),
+            "usable": fact["usable"],
+            "notes": fact["notes"],
+            "risk": fact["risk"],
+        }
+        for fact in facts
+        if score(field, fact, scenario) > 0
+    ]
+    candidates.append(plan_candidate)
+    candidates.sort(key=lambda item: (item["score"], item["sourceKind"] == "xlsx", item.get("sourcePriority", 0)), reverse=True)
+    return find_conflict(candidates)
+
+
+def plan_fill_decision(
+    field: dict[str, Any],
+    fill: dict[str, Any],
+    manifest: dict[str, Any],
+    manifest_dir: Path,
+    facts: list[dict[str, Any]],
+    scenario: str,
+) -> dict[str, Any]:
+    """Convert one accepted plan fill into a map_fields-shaped decision.
+
+    Non-structural problems (unusable value, excerpt not found in its declared
+    source, low-confidence value contradicting strong facts) downgrade the cell
+    to manual with the existing [待人工补充：字段名] marker instead of failing
+    the whole run; structural errors were already rejected by collect_plan_fills.
+    """
+    field_id = clean(field.get("id"))
+    action = clean(fill.get("action")) or "fill"
+    reason = clean(fill.get("reason"))
+    try:
+        confidence = max(0.0, min(1.0, float(fill.get("confidence"))))
+    except (TypeError, ValueError):
+        confidence = 0.6
+    base = {
+        "targetFieldId": field_id,
+        "rowIndex": field["rowIndex"],
+        "tableIndex": field.get("tableIndex"),
+        "valueCol": field.get("valueCol"),
+        "unitCol": field.get("unitCol"),
+        "field": field["field"],
+        "unit": field["unit"],
+    }
+
+    def manual(reason_text: str) -> dict[str, Any]:
+        return {
+            **base,
+            "action": "manual",
+            "value": f"[待人工补充：{field['field']}]",
+            "confidence": 0,
+            "selectedFact": None,
+            "alternatives": [],
+            "reason": reason_text,
+        }
+
+    if action == "manual":
+        return manual(reason or "agent 判断该字段需人工补充。")
+    value_text = clean(fill.get("value"))
+    evidence = fill.get("evidence") if isinstance(fill.get("evidence"), dict) else {}
+    excerpt = clean(evidence.get("excerpt"))
+    source_path = first_existing_path((evidence.get("sourcePath"),), manifest_dir)
+    downgrade = ""
+    if not usable_value(value_text):
+        downgrade = f"计划值不可用（空值/占位/纯单位）：{value_text or '（空）'}"
+    elif not excerpt:
+        downgrade = "缺少 evidence.excerpt，无法溯源"
+    else:
+        corpus = evidence_corpus_text(manifest, evidence, manifest_dir)
+        if corpus is None:
+            downgrade = f"证据来源不可读：{clean(evidence.get('sourcePath')) or clean(evidence.get('sourceRoute')) or '（未声明）'}"
+        elif not excerpt_hit(excerpt, corpus):
+            downgrade = "证据未命中：excerpt 在其声明的来源文本中原样找不到"
+    if not downgrade:
+        plan_candidate = {
+            "factId": f"{field_id}-PLAN",
+            "label": field["field"],
+            "value": value_text,
+            "unit": clean(fill.get("unit")),
+            "source": "llm-plan",
+            "sourceKind": "llm_plan",
+            "sourcePriority": 90,
+            "row": field["rowIndex"],
+            "sheet": "",
+            "score": confidence,
+            "usable": True,
+            "notes": "",
+            "risk": "",
+        }
+        conflict = plan_value_conflict(field, plan_candidate, facts, scenario)
+        if conflict and confidence < 0.82:
+            downgrade = conflict
+    if downgrade:
+        note = f"{downgrade}（原计划值：{value_text}）。"
+        return manual(f"{note}{reason}" if reason else note)
+    selected = {
+        "factId": f"{field_id}-PLAN",
+        "label": field["field"],
+        "value": value_text,
+        "unit": clean(fill.get("unit")),
+        "source": clean(evidence.get("sourcePath")) or clean(evidence.get("sourceRoute")) or "llm-plan",
+        "sourceKind": "llm_plan",
+        "sourcePriority": 90,
+        "sourceRoute": clean(evidence.get("sourceRoute")),
+        "row": evidence.get("row"),
+        "sheet": evidence.get("sheet"),
+        "column": evidence.get("column"),
+        "score": confidence,
+        "usable": True,
+        "notes": reason,
+        "risk": "",
+        "actionHint": "fill",
+        "sourcePath": str(source_path) if source_path is not None else clean(evidence.get("sourcePath")),
+        "excerpt": excerpt,
+    }
+    display_value = normalize_value_for_field(field, selected)
+    return {
+        **base,
+        "action": action,
+        "value": display_value,
+        "unit": field["unit"] or selected["unit"],
+        "confidence": confidence,
+        "selectedFact": selected,
+        "alternatives": [],
+        "reason": reason or "LLM 填写计划取值，证据经脚本溯源校验。",
+    }
+
+
+def run_apply(manifest_path: Path) -> dict[str, Any]:
+    """--apply: validate fill_plan.json next to the manifest, then write back
+    through the same fill_doc + sidecar-report pipeline as the script path.
+    Structural validation errors raise PlanValidationError before any file is
+    written; the returned result only adds fillMode="llm-plan"."""
+    manifest = load_manifest(manifest_path)
+    if target_entries(manifest):
+        raise RuntimeError("--apply 只支持单附表 manifest；批量 manifest 请先拆分。")
+    plan = load_fill_plan(manifest_path)
+    source_docx = blank_docx_path(manifest, manifest_path)
+    spec = detect_appendix_spec(source_docx, manifest)
+    output_file = output_path_for_target(manifest, manifest_path, spec)
+    fields = extract_target_fields(spec)
+    blank_doc = Document(str(source_docx))
+    accepted, errors = collect_plan_fills(spec, plan, fields, blank_doc)
+    if errors:
+        raise PlanValidationError(errors)
+    project = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
+    scenario = "excel_recipe" if clean(manifest.get("excelRecipePath") or manifest.get("recipePath")) else "auto_or_manual"
+    sources, source_selection = select_sources(manifest, manifest_path, spec, fields)
+    source_meta, facts = collect_facts(sources, project, manifest)
+    decisions = [
+        plan_fill_decision(
+            field,
+            accepted.get(field_cell_key(spec, field)) or {"action": "manual", "reason": "填写计划未覆盖该字段，按待人工处理。"},
+            manifest,
+            manifest_path.parent,
+            facts,
+            scenario,
+        )
+        for field in fields
+    ]
+    mapping = {
+        "schema": "bid-tech-table-field-mapping-v1",
+        "scenario": scenario,
+        "appendixId": spec.appendix_id,
+        "title": spec.title,
+        "targetFile": spec.source.name,
+        "table": {
+            "tableIndex": spec.table_index,
+            "headerRow": spec.header_row,
+            "fieldCol": spec.field_col,
+            "valueCol": spec.value_col,
+            "unitCol": spec.unit_col,
+            "remarkCol": spec.remark_col,
+        },
+        "summary": {
+            "fill": sum(decision["action"] == "fill" for decision in decisions),
+            "partial": sum(decision["action"] == "partial" for decision in decisions),
+            "manual": sum(decision["action"] == "manual" for decision in decisions),
+            "total": len(decisions),
+        },
+        "decisions": decisions,
+    }
+    fill_doc(spec, mapping, output_file)
+    return finalize_fill_result(
+        manifest,
+        spec,
+        output_file,
+        fields,
+        mapping,
+        sources,
+        source_selection,
+        source_docx,
+        source_meta,
+        fill_mode=LLM_FILL_MODE,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--manifest")
+    modes.add_argument("--prepare", metavar="MANIFEST", help="产出填写简报 fill_brief.json 后退出")
+    modes.add_argument("--apply", metavar="MANIFEST", help="校验并执行 fill_plan.json")
     parser.add_argument("--response", choices=("summary", "full"), default="summary")
     args = parser.parse_args()
+    if args.prepare:
+        print(json.dumps(run_prepare(Path(args.prepare).expanduser()), ensure_ascii=False))
+        return
+    if args.apply:
+        try:
+            result = run_apply(Path(args.apply).expanduser())
+        except PlanValidationError as exc:
+            print(json.dumps({"validationErrors": exc.errors}, ensure_ascii=False, indent=2))
+            raise SystemExit(1)
+        print(json.dumps(compact_summary(result), ensure_ascii=False, indent=2))
+        return
     result = run_from_manifest(Path(args.manifest).expanduser())
     payload = compact_summary(result) if args.response == "summary" else result
     print(json.dumps(payload, ensure_ascii=False, indent=2))
