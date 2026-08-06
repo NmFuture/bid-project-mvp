@@ -1951,6 +1951,9 @@ class ParsePipelineTests(unittest.TestCase):
             }
 
             with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
+                "app.services.parsing._run_technical_sharded_parse_skill",
+                side_effect=RuntimeError("unit-test sharded parse failed"),
+            ), patch(
                 "app.services.parsing.OpencodeClient.generate_tender_parse_with_trace",
                 side_effect=error,
             ):
@@ -2053,39 +2056,12 @@ class ParsePipelineTests(unittest.TestCase):
 
     def test_upload_and_parse_image_uses_visual_recognition_without_manual_ocr_flow(self) -> None:
         project_id = self.create_project()
+        recognized_text = "项目名称：图片型招标文件\n招标编号：IMG-2026-001\n投标截止日期：2026年8月20日"
 
-        fake_response = {
-            "choices": [
-                {
-                    "message": {
-                        "content": "项目名称：图片型招标文件\n招标编号：IMG-2026-001\n投标截止日期：2026年8月20日"
-                    }
-                }
-            ]
-        }
-
-        async def fake_post(*_args, **_kwargs):
-            class Response:
-                status_code = 200
-
-                @staticmethod
-                def json():
-                    return fake_response
-
-            return Response()
-
-        with patch("app.services.system_settings.system_settings_service.get_model_secret_config") as config, patch(
-            "httpx.AsyncClient.post",
-            side_effect=fake_post,
+        with patch(
+            "app.services.parsing.ocr_service.recognize_text_for_parse",
+            new=AsyncMock(return_value=(recognized_text, {"pageCount": 1})),
         ):
-            config.return_value = {
-                "enabled": True,
-                "baseUrl": "https://ocr.example.com/v1",
-                "apiKey": "ocr-secret-key",
-                "model": "deepseek-ai/DeepSeek-OCR",
-                "timeoutMs": 60000,
-                "maxTokens": 2048,
-            }
             response = self.client.post(
                 self.parse_results_url(project_id, "/upload-and-run"),
                 files=[

@@ -27,6 +27,8 @@ from app.services.template_store import is_valid_docx_bytes, is_valid_docx_strea
 
 logger = logging.getLogger(__name__)
 
+OPENCODE_MODEL_CONFIG_SYNC_TIMEOUT_SECONDS = 3.0
+
 DEFAULT_TEMPLATE_TYPES = {
     "technical": "技术标",
     "business": "商务标",
@@ -325,14 +327,6 @@ class SystemSettingsService:
                 "maxTokens": 32768,
             },
         )
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            try:
-                return asyncio.run(self.get_model_secret_config("llm"))
-            except Exception:
-                return fallback
-
         result: dict[str, Any] = {}
         error: BaseException | None = None
 
@@ -345,7 +339,7 @@ class SystemSettingsService:
 
         thread = threading.Thread(target=run, daemon=True, name="load-opencode-model-config")
         thread.start()
-        thread.join(timeout=3)
+        thread.join(timeout=OPENCODE_MODEL_CONFIG_SYNC_TIMEOUT_SECONDS)
         if thread.is_alive() or error:
             return fallback
         return result or fallback

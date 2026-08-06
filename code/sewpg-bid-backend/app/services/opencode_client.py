@@ -636,6 +636,46 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def run_tender_parse_shard_with_trace(
+        self,
+        prompt_text: str,
+        *,
+        title: str = "S1 技术标分片解读",
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """运行一个技术标分片会话。
+
+        分片会话的产出是 s1parse submit 写进提交文件的副作用，不是返回值——
+        finalize 由后端在所有分片汇合后统一执行，所以这里不解析业务 JSON，只回传 trace。
+        """
+        session = self.create_session(title)
+        session_id = str(session.get("id") or "")
+        try:
+            if session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": self.provider_id,
+                        "modelId": self.model_id,
+                    }
+                )
+            if cancel_check is not None and cancel_check():
+                raise ParseCancelledError("解析已取消。")
+        except ParseCancelledError:
+            self.abort_session(session_id)
+            raise
+        # 传入 stream_callback 以启用轮询与 idle 监管；不使用 early_tool_command，
+        # 分片会话没有 finalize 这种唯一终止命令，走通用完成判定即可。
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback or (lambda _details: None),
+            cancel_check=cancel_check,
+        )
+        return {"opencodeOutput": self._build_output_trace(session_id, response)}
+
     def review_business_commitments_with_trace(
         self,
         prompt_text: str,

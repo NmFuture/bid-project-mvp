@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import docx_indexer, navigator_cli
-from .checklist import load_checklist
+from .checklist import load_checklist, load_shards
 from .finalizer import SKILL_NAME, finalize, summary
 from .paths import (
     document_map_path,
@@ -17,7 +17,7 @@ from .paths import (
     submission_path,
     validation_report_path,
 )
-from .submission_store import submit
+from .submission_store import shard_progress, submit
 from .validator import validate
 
 
@@ -33,6 +33,10 @@ def prepare(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         {
             "targetSkill": SKILL_NAME,
             "checklistCount": len(load_checklist()),
+            "shards": [
+                {"key": shard["key"], "label": shard["label"], "rowCount": len(shard["rowNos"])}
+                for shard in load_shards()
+            ],
             "structuredResultPath": str(structured_result_path(manifest_path, manifest)),
             "submissionPath": str(submission_path(manifest_path, manifest)),
             "validationReportPath": str(validation_report_path(manifest_path, manifest)),
@@ -72,6 +76,7 @@ def status(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         "validationStatus": validation.get("status") or "",
         "missingTargets": validation.get("missingTargets") or [],
         "validationErrors": validation.get("validationErrors") or [],
+        **shard_progress(manifest_path, manifest),
     }
 
 
@@ -96,8 +101,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_search = sub.add_parser("search")
     p_search.add_argument("manifest")
-    p_search.add_argument("query")
+    # 支持一次传多个 query，把 N 次 LLM 往返压成 1 次。
+    p_search.add_argument("query", nargs="+")
     p_search.add_argument("--limit", type=int, default=20)
+
+    p_checklist = sub.add_parser("checklist")
+    p_checklist.add_argument("manifest")
+    p_checklist.add_argument("--shard", required=True)
+    p_checklist.add_argument("--no-hints", action="store_true")
+    p_checklist.add_argument("--hint-limit", type=int, default=8)
 
     p_read = sub.add_parser("read")
     p_read.add_argument("manifest")
@@ -121,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("manifest")
     p_submit.add_argument("target_key")
     p_submit.add_argument("json_value", type=_json_arg)
+    p_submit.add_argument("--shard", default="")
 
     p_status = sub.add_parser("status")
     p_status.add_argument("manifest")
@@ -148,7 +161,20 @@ def main(argv: list[str] | None = None) -> int:
     if command == "overview":
         return print_json(navigator_cli.overview(manifest_path, manifest, page=args.page, page_size=args.page_size))
     if command == "search":
-        return print_json(navigator_cli.search(manifest_path, manifest, args.query, limit=args.limit))
+        queries = list(args.query)
+        if len(queries) == 1:
+            return print_json(navigator_cli.search(manifest_path, manifest, queries[0], limit=args.limit))
+        return print_json(navigator_cli.search_many(manifest_path, manifest, queries, limit=args.limit))
+    if command == "checklist":
+        return print_json(
+            navigator_cli.shard_checklist(
+                manifest_path,
+                manifest,
+                args.shard,
+                with_hints=not args.no_hints,
+                hint_limit=args.hint_limit,
+            )
+        )
     if command == "read":
         return print_json(navigator_cli.read(manifest_path, manifest, args.id, mode=args.mode, max_chars=args.max_chars))
     if command == "table":
@@ -156,7 +182,9 @@ def main(argv: list[str] | None = None) -> int:
     if command == "window":
         return print_json(navigator_cli.window(manifest_path, manifest, args.evidence_id, before=args.before, after=args.after))
     if command == "submit":
-        return print_json(submit(manifest_path, manifest, args.target_key, args.json_value))
+        return print_json(
+            submit(manifest_path, manifest, args.target_key, args.json_value, shard=args.shard)
+        )
     if command == "status":
         return print_json(status(manifest_path, manifest))
     if command == "validate":
