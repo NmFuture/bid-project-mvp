@@ -386,6 +386,9 @@ class TechnicalGapService:
             confirmed_by = str((data or {}).get("operator") or "当前用户")
             for artifact in batch_artifacts:
                 artifact["s7Ready"] = True
+                artifact["active"] = True
+                artifact.pop("revokedAt", None)
+                artifact.pop("revokedBy", None)
                 artifact["qualityGate"] = "human_confirmed"
                 artifact["confirmed"] = True
                 artifact["confirmedAt"] = confirmed_at
@@ -436,6 +439,32 @@ class TechnicalGapService:
             plan_item["humanConfirmed"] = confirmed
             plan_item["humanConfirmedAt"] = timestamp if confirmed else ""
             plan_item["humanConfirmedBy"] = operator if confirmed else ""
+            artifacts = [
+                artifact
+                for artifact in (plan_item.get("resolvedArtifacts") or [])
+                if isinstance(artifact, dict)
+            ]
+            if confirmed:
+                # 重新确认只恢复上次撤销停用的产物；已被新选材/上传取代的（supersededAt）不恢复。
+                for artifact in artifacts:
+                    if artifact.get("supersededAt") or "revokedAt" not in artifact:
+                        continue
+                    artifact.pop("revokedAt", None)
+                    artifact.pop("revokedBy", None)
+                    artifact["s7Ready"] = True
+                    artifact["active"] = True
+            else:
+                # 撤销定案必须同时停用当前产物：保留在 resolvedArtifacts 里作审计历史，
+                # 但 s7Ready/active 置否，S7 装配不再消费被撤销的素材。
+                for artifact in artifacts:
+                    if artifact.get("s7Ready", True) is False:
+                        continue
+                    artifact["s7Ready"] = False
+                    artifact["active"] = False
+                    artifact["revokedAt"] = timestamp
+                    artifact["revokedBy"] = operator
+                if str(plan_item.get("qualityStatus") or "") == "human_confirmed":
+                    plan_item["qualityStatus"] = ""
             plan_item.setdefault("reviewNotes", []).append(
                 f"人工确认已就绪：{operator}" if confirmed else f"撤销就绪确认：{operator}"
             )

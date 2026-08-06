@@ -33,6 +33,31 @@ def _safe_filename(value: str, fallback: str) -> str:
     return text or fallback
 
 
+def _supersede_technical_gap_resolved_artifacts(
+    item: dict[str, Any],
+    *,
+    created_at: str,
+    operator: str,
+) -> int:
+    """登记新一批产物前，把既有产物统一标为「已被取代」（保留审计、不参与 S7）。
+
+    一个目录项同一时刻只有一批当前有效产物：重新选材/上传即取代旧产物；
+    一并清掉旧产物上的撤销标记，避免之后「确认」把已被取代的旧产物恢复进装配。
+    """
+    superseded = 0
+    for artifact in item.get("resolvedArtifacts") or []:
+        if not isinstance(artifact, dict) or artifact.get("supersededAt"):
+            continue
+        artifact.pop("revokedAt", None)
+        artifact.pop("revokedBy", None)
+        artifact["s7Ready"] = False
+        artifact["active"] = False
+        artifact["supersededAt"] = created_at
+        artifact["supersededBy"] = operator
+        superseded += 1
+    return superseded
+
+
 def _project_dir(project: dict[str, Any]) -> Path:
     project_id = str(project.get("id") or "")
     project_dir = technical_workspace_dir(project_id)
@@ -206,9 +231,13 @@ def register_technical_manual_gap_upload(
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
                 "s7Ready": True,
+                "active": True,
             }
         )
 
+    _supersede_technical_gap_resolved_artifacts(
+        item, created_at=created_at, operator=str(data.get("operator") or "当前用户")
+    )
     item["status"] = "resolved"
     item.setdefault("resolvedArtifacts", []).extend(artifacts)
     item["resolvedAt"] = created_at
@@ -354,14 +383,21 @@ def register_technical_existing_gap_material(
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
                 "s7Ready": True,
+                "active": True,
             }
         )
 
+    superseded_count = _supersede_technical_gap_resolved_artifacts(
+        item, created_at=created_at, operator=str(data.get("operator") or "当前用户")
+    )
     item["status"] = "resolved"
     item.setdefault("resolvedArtifacts", []).extend(artifacts)
     item["resolvedAt"] = created_at
     item["resolvedSource"] = artifacts[0]["fileName"]
-    item.setdefault("reviewNotes", []).append(f"人工选择已有素材：{len(artifacts)} 份")
+    select_note = f"人工选择已有素材：{len(artifacts)} 份"
+    if superseded_count:
+        select_note += f"，取代此前 {superseded_count} 份产物"
+    item.setdefault("reviewNotes", []).append(select_note)
     # 选定即定案（产品裁决 2026-08-04）：人工亲手选素材本身就是人工决策，不再要求二次点「确认」。
     item["humanConfirmed"] = True
     item["humanConfirmedAt"] = created_at
