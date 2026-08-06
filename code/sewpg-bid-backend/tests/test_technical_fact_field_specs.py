@@ -297,12 +297,12 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertFalse(manual.get("specSeq"))
         self.assertEqual(table["summary"]["specTotal"], 148)
 
-    def test_build_preserves_confirmed_field_removed_from_current_specs(self) -> None:
-        """规则换版后，旧规则下已确认字段保留为清单外历史事实，不污染新规则进度。"""
-        project = {"id": "P-SPEC", "name": "规则换版项目", "parse_result": {}}
-        gap_state = {
+    @staticmethod
+    def _gap_state_with_confirmed_legacy_field(rule_id: str) -> dict:
+        return {
             "projectFactTable": {
                 "schemaVersion": "bid-project-fact-table-v2",
+                "factSpecsRef": {"source": "project", "ruleId": rule_id},
                 "fields": [
                     {
                         "id": "FACT-9002",
@@ -317,25 +317,31 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
                 ],
             }
         }
-        current_specs = [
-            {
-                "seq": 0,
-                "key": "current-field",
-                "label": "当前规则字段",
-                "valueRequired": True,
-                "sourceKind": "tender",
-            }
-        ]
 
+    _CURRENT_SPECS = [
+        {
+            "seq": 0,
+            "key": "current-field",
+            "label": "当前规则字段",
+            "valueRequired": True,
+            "sourceKind": "tender",
+        }
+    ]
+
+    def _build_with_current_specs(self, gap_state: dict) -> dict:
         with (
             patch.object(
                 fact_table_module,
                 "resolve_project_specs",
-                return_value=(current_specs, {"source": "project", "ruleId": "fsr-current"}),
+                return_value=(self._CURRENT_SPECS, {"source": "project", "ruleId": "fsr-current"}),
             ),
             patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
         ):
-            table = build_project_fact_table(project, gap_state)
+            return build_project_fact_table({"id": "P-SPEC", "name": "规则项目", "parse_result": {}}, gap_state)
+
+    def test_build_preserves_confirmed_field_on_same_rule_version(self) -> None:
+        """同一份 Excel 刷新：已人工确认但不在当前清单的字段保留为清单外历史事实。"""
+        table = self._build_with_current_specs(self._gap_state_with_confirmed_legacy_field("fsr-current"))
 
         self.assertEqual(table["summary"]["specTotal"], 1)
         current = next(field for field in table["fields"] if field["label"] == "当前规则字段")
@@ -345,6 +351,72 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertEqual(legacy["status"], FACT_STATUS_CONFIRMED)
         self.assertTrue(legacy["outOfSpec"])
         self.assertNotIn("specSeq", legacy)
+        self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
+
+    def test_build_drops_ai_values_but_keeps_human_edits_on_refresh(self) -> None:
+        """同一份 Excel 刷新：AI 填的值一律重来，人改过的格子（manualEdit）保留。
+
+        回归 PRJ-0002：AI 在缺素材时给字段凑了错值，旧逻辑「有值就继承」让错值
+        跨轮黏住，AI 自己也不再纠正。
+        """
+        gap_state = {
+            "projectFactTable": {
+                "schemaVersion": "bid-project-fact-table-v2",
+                "factSpecsRef": {"source": "project", "ruleId": "fsr-current"},
+                "fields": [
+                    {
+                        "id": "FACT-0001",
+                        "key": "ai填的字段",
+                        "label": "AI 填的字段",
+                        "value": "AI 凑的错值",
+                        "status": FACT_STATUS_PENDING_CONFIRMATION,
+                        "specSeq": 1,
+                        "specKey": "ai-field",
+                        "sourceRefs": [{"type": "factCurator", "title": "AI 匹配填充"}],
+                    },
+                    {
+                        "id": "FACT-0002",
+                        "key": "人改的字段",
+                        "label": "人改的字段",
+                        "value": "人工订正值",
+                        "status": FACT_STATUS_EXTRACTED,
+                        "specSeq": 2,
+                        "specKey": "human-field",
+                        "sourceRefs": [{"type": "manualEdit", "title": "人工修改"}],
+                    },
+                ],
+            }
+        }
+        specs = [
+            {"seq": 1, "key": "ai-field", "label": "AI 填的字段", "valueRequired": True, "sourceKind": "tender"},
+            {"seq": 2, "key": "human-field", "label": "人改的字段", "valueRequired": True, "sourceKind": "tender"},
+        ]
+        with (
+            patch.object(
+                fact_table_module,
+                "resolve_project_specs",
+                return_value=(specs, {"source": "project", "ruleId": "fsr-current"}),
+            ),
+            patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
+        ):
+            table = build_project_fact_table({"id": "P-SPEC", "name": "刷新项目", "parse_result": {}}, gap_state)
+
+        ai_field = next(field for field in table["fields"] if field["label"] == "AI 填的字段")
+        self.assertEqual(ai_field["value"], "")
+        self.assertEqual(ai_field["status"], FACT_STATUS_UNEXTRACTED)
+        human_field = next(field for field in table["fields"] if field["label"] == "人改的字段")
+        self.assertEqual(human_field["value"], "人工订正值")
+        self.assertTrue(
+            any(ref.get("type") == "manualEdit" for ref in human_field["sourceRefs"]),
+            "人工标记必须跨轮保留，否则下一轮重建会把它当 AI 值冲掉",
+        )
+
+    def test_build_drops_previous_fields_when_rule_version_changes(self) -> None:
+        """重传新 Excel（规则版本变更）视作从头来：上一版的值连人工确认的也不继承。"""
+        table = self._build_with_current_specs(self._gap_state_with_confirmed_legacy_field("fsr-previous"))
+
+        self.assertEqual(table["summary"]["specTotal"], 1)
+        self.assertNotIn("旧规则字段", [field["label"] for field in table["fields"]])
         self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
 
     def test_build_falls_back_to_global_specs_when_project_not_uploaded(self) -> None:

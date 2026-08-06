@@ -874,8 +874,11 @@ class TechnicalGapService:
             confirm = bool(payload.get("confirm") or payload.get("confirmed"))
             operator = str(payload.get("operator") or "当前用户")
             saved_at = now_iso()
+            # 整表 confirm 只把表级 status 升为 confirmed（正文填写的准入闸门），
+            # 不逐字段盖成"已人工确认"——字段级确认只由 PATCH 单字段接口产生。
+            # 否则一次保存就把 148 个字段全变成 AI 禁区，AI 自己填错的值再也纠正不了。
             fields = [
-                normalize_project_fact_field(field, index=index, confirm=confirm, operator=operator, saved_at=saved_at)
+                normalize_project_fact_field(field, index=index, confirm=False, operator=operator, saved_at=saved_at)
                 for index, field in enumerate(incoming_fields, start=1)
                 if isinstance(field, dict)
             ]

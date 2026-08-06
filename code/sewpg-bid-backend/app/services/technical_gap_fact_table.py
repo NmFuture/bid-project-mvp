@@ -123,6 +123,10 @@ FACT_MATERIAL_SOURCE_PRIORITIES = {
     "standard": 100,
 }
 
+# 人工来源标记：manualFact 是人工新增的字段行，manualEdit 是人在页面上改过的格子。
+# 重建时只有带这些标记（或人工确认/标不适用）的值跨轮保留，见 is_human_authored_fact_field。
+FACT_MANUAL_SOURCE_TYPES = {"manualFact", "manualEdit"}
+
 
 def empty_fact_summary() -> dict[str, int]:
     return {
@@ -332,7 +336,7 @@ def normalize_project_fact_field(
 ) -> dict[str, Any]:
     value = str(field.get("value") or "").strip()
     if confirm:
-        # 整表确认时保留人工标记的"不适用"，其余有值→已人工确认、无值→缺少来源
+        # 逐字段确认（PATCH 单字段）时保留人工标记的"不适用"，其余有值→已人工确认、无值→缺少来源
         incoming = normalize_fact_status(field.get("status"), has_value=bool(value))
         status = (
             incoming
@@ -463,7 +467,7 @@ def reconcile_fact_fields_with_specs(
             "sourceKind": str(spec.get("sourceKind") or ""),
             "sourceHint": str(spec.get("referenceFile") or ""),
         }
-        # 上一轮的人工结果（有值或人工置过的状态）随重建保留
+        # 上一轮的人工结果随重建保留；AI 与规则抽取的值一律不继承，本轮重新取
         previous = next(
             (existing_by_key[k] for k in [key, *match_keys, f"spec-{int(spec.get('seq') or 0):03d}"] if k in existing_by_key),
             None,
@@ -471,7 +475,7 @@ def reconcile_fact_fields_with_specs(
         if previous is not None:
             prev_value = str(previous.get("value") or "").strip()
             prev_status = normalize_fact_status(previous.get("status"), has_value=bool(prev_value))
-            if prev_value or prev_status in {FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE, FACT_STATUS_PENDING_CONFIRMATION}:
+            if is_human_authored_fact_field(previous):
                 skeleton["value"] = prev_value
                 skeleton["unit"] = str(previous.get("unit") or "")
                 skeleton["status"] = prev_status
@@ -491,6 +495,20 @@ def is_manual_fact_field(field: dict[str, Any]) -> bool:
     return any(isinstance(ref, dict) and str(ref.get("type") or "") == "manualFact" for ref in refs)
 
 
+def is_human_authored_fact_field(field: dict[str, Any]) -> bool:
+    """人工产出的值：重建时只有这些跨轮保留，AI 与规则抽取的值一律重来。
+
+    覆盖四种人工动作：新增字段（manualFact）、页面上改值（manualEdit）、
+    逐字段确认（confirmed）、标记不适用（not_applicable）。
+    """
+    refs = field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else []
+    if any(
+        isinstance(ref, dict) and str(ref.get("type") or "") in FACT_MANUAL_SOURCE_TYPES for ref in refs
+    ):
+        return True
+    return str(field.get("status") or "") in {FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE}
+
+
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
     built_at = _now_iso()
     existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
@@ -502,6 +520,15 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     fields_by_key: dict[str, dict[str, Any]] = {}
     # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
     project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    # 换了新 Excel（规则版本变更）视作从头来：连人工值一起丢弃。清单换掉后字段本就
+    # 可能对不上号，继承旧值只会让上一版的结论混进新清单。同一份 Excel 刷新不受影响。
+    existing_rule_id = str(
+        (existing_table.get("factSpecsRef") or {}).get("ruleId") or ""
+        if isinstance(existing_table.get("factSpecsRef"), dict)
+        else ""
+    )
+    if existing_rule_id != str(fact_specs_meta.get("ruleId") or ""):
+        existing_by_key = {}
 
     def is_material_fact_ref(ref: dict[str, Any]) -> bool:
         return str(ref.get("type") or "") in {"materialFact", "derivedMaterialFact"}
@@ -541,7 +568,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         existing = existing_by_key.get(key)
         preserve_existing = bool(
             existing
-            and str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
+            and is_human_authored_fact_field(existing)
             and str(existing.get("value") or "").strip()
         )
         if preserve_existing:
@@ -557,10 +584,16 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 "value": value_text,
                 "unit": str(((existing or {}).get("unit") if preserve_existing else unit) or ""),
                 "required": bool((existing or {}).get("required", required)),
-                "status": FACT_STATUS_CONFIRMED if preserve_existing else (FACT_STATUS_EXTRACTED if value_text else FACT_STATUS_MISSING_SOURCE),
+                "status": normalize_fact_status((existing or {}).get("status"), has_value=True)
+                if preserve_existing
+                else (FACT_STATUS_EXTRACTED if value_text else FACT_STATUS_MISSING_SOURCE),
                 "confidence": float(((existing or {}).get("confidence") if preserve_existing else None) or (confidence if value_text else 0) or 0),
                 "sourcePriority": int((existing or {}).get("sourcePriority") if preserve_existing else (incoming_priority if value_text else 0)),
-                "sourceRefs": [],
+                # 保留旧 sourceRefs：人工标记（manualEdit/manualFact）存在这里，
+                # 清空会让下一轮重建认不出这是人工值而误当 AI 值冲掉
+                "sourceRefs": copy.deepcopy((existing or {}).get("sourceRefs"))
+                if preserve_existing and isinstance((existing or {}).get("sourceRefs"), list)
+                else [],
                 "alternatives": copy.deepcopy(
                     (existing or {}).get("alternatives")
                     if preserve_existing and isinstance((existing or {}).get("alternatives"), list)
@@ -626,10 +659,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if source_ref:
             field.setdefault("sourceRefs", []).append(source_ref)
         if preserve_existing and value_text:
-            field["status"] = FACT_STATUS_CONFIRMED
+            field["status"] = normalize_fact_status(existing.get("status"), has_value=True)
 
     def preserve_compatible_existing_fields() -> None:
-        """保留人工新增字段及旧规则下已确认的字段，避免重建时丢失人工结论。
+        """保留人工产出的字段（新增/改值/确认/不适用），避免重建时丢失人工结论。
 
         已确认字段先移除旧 spec 元数据，再参与当前规则对齐；若没有命中当前规则，
         则以 outOfSpec 标记留在表尾，且不计入当前规则版本的进度。
@@ -646,10 +679,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 for ref in (existing.get("sourceRefs") if isinstance(existing.get("sourceRefs"), list) else [])
                 if isinstance(ref, dict)
             ]
+            if not is_human_authored_fact_field(existing):
+                continue
             is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
             is_confirmed = str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
-            if not (is_manual or is_confirmed):
-                continue
             has_value = bool(str(existing.get("value") or "").strip())
             field = copy.deepcopy(existing)
             for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint"):

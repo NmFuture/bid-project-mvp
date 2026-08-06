@@ -1777,9 +1777,15 @@ export default function TechnicalGapRecognition({ showToast }) {
       if (key === 'status') {
         return { ...field, status: value }
       }
+      // 人改过的格子打 manualEdit 标记：重建时只有人工值跨轮保留，
+      // AI 与规则抽的值一律重来，没有标记就会被当成 AI 值冲掉
+      const sourceRefs = key === 'value' && !asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualEdit')
+        ? [{ type: 'manualEdit', title: '人工修改', field: field.label || '' }, ...asObjectArray(field.sourceRefs)]
+        : field.sourceRefs
       return {
         ...field,
         [key]: value,
+        sourceRefs,
         status: String(key === 'value' ? value : field.value || '').trim()
           ? (field.status === 'confirmed' ? 'confirmed' : 'extracted')
           : 'unextracted',
@@ -1828,7 +1834,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactTable(payload)
       setFactFields(asObjectArray(payload?.fields))
       setData((current) => current ? { ...current, projectFactTable: payload } : current)
-      showToast?.('项目事实表已保存，可以开始 AI 填写')
+      showToast?.('项目事实表已保存并定稿，正文填写将使用这一版')
       return payload
     } catch (e) {
       showToast?.(e?.message || '项目事实表保存失败', 'error')
@@ -2201,8 +2207,20 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactFields(asObjectArray(table?.fields))
       setFactCurateReport(null)
       setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      showToast?.(`事实表已解析 ${payload?.specTotal ?? 0} 个字段，并已自动更新`)
       setFactModalOpen(true)
+      // 重建完直接接上 AI 填充，人不用再点一次「刷新并 AI 填充」。
+      // 提交后立即返回，进度沿用 factCurateState 轮询，关页面不影响后台任务。
+      const specTotal = payload?.specTotal ?? 0
+      try {
+        const curatePayload = await technicalGapsAPI.curateFacts(id, {})
+        setFactCurateState(curatePayload?.factCurateState || null)
+        showToast?.(`事实表已解析 ${specTotal} 个字段，正在 AI 填充`)
+      } catch (curateError) {
+        showToast?.(
+          `事实表已解析 ${specTotal} 个字段，但 AI 填充未启动：${curateError?.message || '请手动点击「刷新并 AI 填充」'}`,
+          'error',
+        )
+      }
     } catch (e) {
       showToast?.(
         specsUploaded
