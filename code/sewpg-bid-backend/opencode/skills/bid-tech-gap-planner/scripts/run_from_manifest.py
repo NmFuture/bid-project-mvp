@@ -259,7 +259,19 @@ def appendix_rule_code_score(table_title: Any, rule_title: Any) -> float:
     start_code = normalize_appendix_code(rule_match.group(1))
     end_code = normalize_appendix_code(rule_match.group(2) or "")
     if not end_code:
-        return 0.96 if table_code == start_code else 0.0
+        if table_code == start_code:
+            return 0.96
+        # 子编号覆盖：规则只写父级编号（如 F.2）时覆盖附表子编号（F.2.1/F.2.2）。
+        # 分值低于精确命中与区间命中，更具体的规则（若有）仍然优先。
+        table_parts = _appendix_code_parts(table_code)
+        start_parts = _appendix_code_parts(start_code)
+        if table_parts and start_parts:
+            table_prefix, table_numbers = table_parts
+            start_prefix, start_numbers = start_parts
+            if not (table_prefix and start_prefix and table_prefix != start_prefix):
+                if len(table_numbers) > len(start_numbers) and table_numbers[: len(start_numbers)] == start_numbers:
+                    return 0.93
+        return 0.0
 
     table_parts = _appendix_code_parts(table_code)
     start_parts = _appendix_code_parts(start_code)

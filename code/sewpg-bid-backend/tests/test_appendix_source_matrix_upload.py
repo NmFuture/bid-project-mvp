@@ -14,6 +14,7 @@ from app.main import app
 from app.core.config import settings
 from app.services.store import store
 from app.services.technical_appendix_source_matrix import (
+    appendix_rule_code_score,
     apply_appendix_source_matrix_to_plan,
     load_appendix_source_matrix_for_project,
 )
@@ -406,6 +407,70 @@ class ApplyMatrixToPlanTests(unittest.TestCase):
         self.assertEqual(stats["routedItems"], 0)
         self.assertEqual(task["sourceRouting"]["source"], "client_appendix_input")
         self.assertEqual(task["recommendedMaterials"], [{"id": "RAW-CLIENT"}])
+
+
+class AppendixRuleCodeScoreTests(unittest.TestCase):
+    """父级编号规则覆盖子编号附表（F.2 规则命中 F.2.1）。"""
+
+    def test_parent_rule_covers_sub_numbered_table(self) -> None:
+        self.assertEqual(
+            appendix_rule_code_score("附表F.2.1 投标机组设计认证", "附表F.2 投标机型整机认证"),
+            0.93,
+        )
+        self.assertEqual(
+            appendix_rule_code_score("附表G.3.2 塔筒极限强度设计安全余量", "附表G.3 钢塔筒招标项目场址设计安全性"),
+            0.93,
+        )
+
+    def test_exact_and_range_scores_unchanged(self) -> None:
+        self.assertEqual(
+            appendix_rule_code_score("附表C.1 总体技术参数与规格", "附表C.1 总体技术参数与规格"),
+            0.96,
+        )
+        self.assertEqual(appendix_rule_code_score("附表D.3 功率曲线", "附表D.1-D.6"), 0.94)
+
+    def test_sub_code_coverage_boundaries(self) -> None:
+        # 前缀不同不覆盖
+        self.assertEqual(appendix_rule_code_score("附表G.2.1 场址载荷", "附表F.2 整机认证"), 0.0)
+        # 反向（子级规则覆盖父级附表）不成立
+        self.assertEqual(appendix_rule_code_score("附表F.2 整机认证", "附表F.2.1 设计认证"), 0.0)
+        # 兄弟编号不覆盖
+        self.assertEqual(appendix_rule_code_score("附表F.3.1 大部件认证", "附表F.2 整机认证"), 0.0)
+
+    def test_apply_routes_sub_numbered_task_by_parent_rule(self) -> None:
+        plan = {
+            "items": [
+                {
+                    "id": "toc-1",
+                    "appendixTasks": [{"id": "A1", "title": "附表F.2.1 投标机组设计认证"}],
+                }
+            ]
+        }
+        matrix = {
+            "rows": [
+                {
+                    "id": "Sheet1!R33",
+                    "customer": "华能",
+                    "tableTitle": "附表F.2 投标机型整机认证",
+                    "projectSources": [],
+                    "standardSources": ["认证证书"],
+                    "otherSources": [],
+                }
+            ]
+        }
+        materials = [
+            {
+                "id": "RAW-CERT",
+                "name": "EW10.0-220上置型式认证证书.pdf",
+                "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书",
+                "materialTier": "standard",
+            }
+        ]
+        stats = apply_appendix_source_matrix_to_plan(plan, matrix, customer_name="华能", materials=materials)
+        task = plan["items"][0]["appendixTasks"][0]
+        self.assertEqual(task["sourceRouting"]["ruleId"], "Sheet1!R33")
+        self.assertEqual(task["recommendedMaterials"][0]["id"], "RAW-CERT")
+        self.assertEqual(stats["matchedTasks"], 1)
 
 
 if __name__ == "__main__":
