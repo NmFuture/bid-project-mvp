@@ -279,3 +279,15 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-backend/tests/test_technical_word_fill_discipline.py`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-06 02:36:29 post-commit 68b6c31
+
+提交摘要：fix(技术标): 同一占位符被多个同义字段共用时不再静默取首个
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/opencode/skills/bid-tech-word-placeholder-filler/scripts/run_from_manifest.py`
+- `code/sewpg-bid-backend/tests/test_technical_word_fill_discipline.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
