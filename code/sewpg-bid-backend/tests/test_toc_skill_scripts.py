@@ -8172,6 +8172,42 @@ class TocSkillScriptTests(unittest.TestCase):
             self.assertEqual([cell.text for cell in rows[2].cells], ["1", "变桨限位开关_FD 2031_S1", "EW10.0-220-125", "EA", "12", "\\", "\\", "\\"])
             self.assertEqual(result["unfilledFields"], [])
 
+    def test_bid_table_filler_replace_first_table_preserves_table_props(self) -> None:
+        """整表替换必须保留目标表的样式引用与显式边框，否则渲染成无框线文本。"""
+        table_filler = load_table_filler_script("run_from_manifest")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blank = Path(tmp) / "附表D.7 性能及考核承诺保证表.docx"
+            doc = Document()
+            table = doc.add_table(rows=2, cols=4)
+            tbl_pr = table._tbl.tblPr
+            style_el = tbl_pr.find(qn("w:tblStyle"))
+            if style_el is None:
+                style_el = OxmlElement("w:tblStyle")
+                tbl_pr.insert(0, style_el)
+            style_el.set(qn("w:val"), "89")
+            borders = OxmlElement("w:tblBorders")
+            for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+                el = OxmlElement(f"w:{edge}")
+                el.set(qn("w:val"), "single")
+                el.set(qn("w:sz"), "4")
+                borders.append(el)
+            tbl_pr.append(borders)
+            for index, text in enumerate(["项目", "保证值", "授权人签名", "日期"]):
+                table.cell(0, index).text = text
+            doc.save(blank)
+
+            table_filler.replace_first_table(
+                blank,
+                [["项目", "保证值", "授权人签名", "日期"], ["功率曲线保证值", "97%", "", "2026-01-23"]],
+            )
+
+            filled = Document(str(blank))
+            new_tbl_pr = filled.tables[0]._tbl.tblPr
+            self.assertEqual(new_tbl_pr.find(qn("w:tblStyle")).get(qn("w:val")), "89")
+            self.assertIsNotNone(new_tbl_pr.find(qn("w:tblBorders")))
+            self.assertEqual(filled.tables[0].rows[1].cells[1].text, "97%")
+
     def test_bid_table_filler_batch_output_names_include_appendix_id_to_avoid_collisions(self) -> None:
         table_filler = load_table_filler_script("run_from_manifest")
 
