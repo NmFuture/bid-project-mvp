@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from docx import Document
 
 
@@ -112,6 +113,7 @@ def test_enqueue_cleaning_job_binds_source_version_and_uses_versioned_lock() -> 
     ) as enqueue_mock:
         result = enqueue_cleaning_job(
             7,
+            bid_type="技术标",
             source_version=3,
             source_bucket="materials",
             source_key="raw-versions/RAW-0007/v3/授权书.doc",
@@ -123,11 +125,66 @@ def test_enqueue_cleaning_job_binds_source_version_and_uses_versioned_lock() -> 
         "RAW-0007:v3",
         {
             "fileId": "RAW-0007",
+            "bidType": "技术标",
             "sourceVersion": 3,
             "sourceBucket": "materials",
             "sourceKey": "raw-versions/RAW-0007/v3/授权书.doc",
         },
     )
+
+
+def test_enqueue_cleaning_job_requires_bid_type() -> None:
+    from app.services.material_raw_object_operations import enqueue_cleaning_job
+
+    # 清洗任务必须携带并校验 bidType（R10-B04-01），缺失或非法直接拒绝入队。
+    with pytest.raises(ValueError):
+        enqueue_cleaning_job(7, bid_type="")
+    with pytest.raises(ValueError):
+        enqueue_cleaning_job(7, bid_type="标书")
+
+
+def test_requeue_latest_cleaning_defaults_only_missing_bid_type_to_technical() -> None:
+    from app.services import material_cleaning
+
+    item = SimpleNamespace(
+        id=7,
+        version=3,
+        minio_bucket="materials",
+        minio_key="raw-versions/RAW-0007/v3/授权书.doc",
+        ext_fields={"cleanStatus": "pending"},
+        folder=None,
+    )
+    with (
+        patch.object(material_cleaning, "async_session", return_value=_RawFileSession(item)),
+        patch.object(material_cleaning, "enqueue_cleaning_job", return_value={"queued": True}) as enqueue,
+    ):
+        result = asyncio.run(material_cleaning._requeue_latest_cleaning("RAW-0007", stale_version=2))
+
+    assert result == {"queued": True}
+    assert enqueue.call_args.kwargs["bid_type"] == "技术标"
+
+
+def test_requeue_latest_cleaning_rejects_explicit_invalid_bid_type() -> None:
+    from app.services import material_cleaning
+
+    item = SimpleNamespace(
+        id=7,
+        version=3,
+        minio_bucket="materials",
+        minio_key="raw-versions/RAW-0007/v3/授权书.doc",
+        ext_fields={"cleanStatus": "pending", "bidType": "其他标"},
+        folder=None,
+    )
+    with (
+        patch.object(material_cleaning, "async_session", return_value=_RawFileSession(item)),
+        patch.object(material_cleaning, "enqueue_cleaning_job") as enqueue,
+        patch.object(material_cleaning.logger, "warning") as warning,
+    ):
+        result = asyncio.run(material_cleaning._requeue_latest_cleaning("RAW-0007", stale_version=2))
+
+    assert result == {"queued": False, "reason": "invalid_bid_type"}
+    enqueue.assert_not_called()
+    warning.assert_called_once()
 
 
 def test_overwrite_ext_fields_discards_previous_cleaned_artifact() -> None:
@@ -481,6 +538,7 @@ def test_overwrite_upload_uses_versioned_source_and_enqueues_that_version() -> N
     put_mock.assert_called_once_with("bid-materials", expected_key, b"version-b", content_type="application/msword")
     enqueue_job.assert_called_once_with(
         file_id=7,
+        bid_type="技术标",
         source_version=3,
         source_bucket="bid-materials",
         source_key=expected_key,

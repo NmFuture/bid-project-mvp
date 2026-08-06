@@ -12,8 +12,9 @@
   预览阶段完成：解析批次收尾后再补跑一轮，把兜底卡片升级为正式预览。
 - 总开关 MATERIAL_WIKI_AUTO_REFRESH（默认开）。
 
-商务标上传共用清洗队列：其批次收尾也会触发一次技术标 Wiki refresh——
-refresh 只补缺失预览，技术标文件没变化时近似空转、不产生模型调用。
+商务标素材共用清洗/深度解析队列，但与技术标 Wiki 链路严格隔离：任务入队时携带
+bidType，完成钩子与技术标进度统计只认技术标任务——商务标批次收尾不动技术标的
+批次分母、pending 标记，也不会触发技术标 Wiki 刷新。
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from uuid import uuid4
 from app.core.config import settings
 from app.core.redis import RedisError, get_redis_client
 from app.services.bid_type import TECHNICAL_BID_TYPE
+from app.services.material_folder_scope import normalize_material_bid_type
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ _PENDING_RETRY_CLAIM_KEY = "bid:wiki:auto-refresh-pending-retry:technical"
 _PENDING_RETRY_CLAIM_TTL_SEC = 30
 _DEEP_PARSE_CLAIM_PREFIX = "bid:wiki:auto-refresh-deep-parse:"
 _DEEP_PARSE_CLAIM_TTL_SEC = 6 * 3600
+# 清洗批次分母只统计技术标口径：商务标上传不登记、商务标清洗收尾也不清零。
 _CLEANING_BATCH_TOTAL_KEY = "bid:pipeline:cleaning-batch-total"
 _CLEANING_BATCH_TTL_SEC = 24 * 3600
 
@@ -170,7 +173,33 @@ def _cleaning_batch_total() -> int:
         return 0
 
 
-def _has_other_active_jobs(job_type: str, exclude_job_id: str = "") -> bool:
+def _pipeline_bid_type(value: Any, *, context: str) -> str:
+    """解析队列任务标类；仅升级前缺失值兼容为技术标。"""
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return TECHNICAL_BID_TYPE
+    normalized = normalize_material_bid_type(raw_value)
+    if not normalized:
+        logger.warning("素材流水线：%s 携带非法 bidType=%r，已忽略。", context, raw_value)
+    return normalized
+
+
+def _job_in_bid_scope(job: dict[str, Any], bid_type: str) -> bool:
+    """判断队列任务是否属于指定标类口径（按任务数据里的 bidType）。
+
+    未携带 bidType 的历史任务（本隔离改动前入队）当时只可能走技术标链路，
+    归入技术标口径，避免升级期间漏触发或漏统计。
+    显式非法值不得降级为技术标，从所有标类口径排除并告警。
+    """
+    data = job.get("data") if isinstance(job.get("data"), dict) else {}
+    job_bid_type = _pipeline_bid_type(
+        data.get("bidType"),
+        context=f"队列任务 {str(job.get('id') or '').strip() or '<unknown>'}",
+    )
+    return bool(job_bid_type and job_bid_type == bid_type)
+
+
+def _has_other_active_jobs(job_type: str, exclude_job_id: str = "", *, bid_type: str = "") -> bool:
     from app.services.job_queue import find_active_jobs_of_type
 
     try:
@@ -179,11 +208,14 @@ def _has_other_active_jobs(job_type: str, exclude_job_id: str = "") -> bool:
         logger.warning("素材流水线：查询 %s 队列失败：%s", job_type, exc)
         return True
     excluded = str(exclude_job_id or "")
-    return any(str(job.get("id") or "") != excluded for job in jobs)
+    return any(
+        str(job.get("id") or "") != excluded and (not bid_type or _job_in_bid_scope(job, bid_type))
+        for job in jobs
+    )
 
 
-def _has_other_active_cleaning_jobs(exclude_job_id: str = "") -> bool:
-    return _has_other_active_jobs(MATERIAL_CLEANING_JOB_TYPE, exclude_job_id)
+def _has_other_active_cleaning_jobs(exclude_job_id: str = "", *, bid_type: str = "") -> bool:
+    return _has_other_active_jobs(MATERIAL_CLEANING_JOB_TYPE, exclude_job_id, bid_type=bid_type)
 
 
 def _enqueue_technical_wiki_refresh(reason: str, pending_token: str) -> dict[str, Any] | None:
@@ -218,7 +250,7 @@ def retry_pending_technical_wiki_auto_refresh(*, claim_retry: bool = False) -> b
     if not auto_refresh_enabled():
         return False
     token = _pending_token()
-    if not token or _has_other_active_cleaning_jobs():
+    if not token or _has_other_active_cleaning_jobs(bid_type=TECHNICAL_BID_TYPE):
         return False
     if claim_retry and not _claim_pending_retry():
         return False
@@ -226,11 +258,16 @@ def retry_pending_technical_wiki_auto_refresh(*, claim_retry: bool = False) -> b
     return bool(result and not result.get("reused"))
 
 
-def on_material_cleaning_job_finished(current_job_id: str = "") -> None:
-    """清洗任务完成钩子：本任务是队列里最后一个时，触发 Wiki 增量。"""
-    if _has_other_active_cleaning_jobs(exclude_job_id=current_job_id):
+def on_material_cleaning_job_finished(current_job_id: str = "", *, bid_type: str = "") -> None:
+    """清洗任务完成钩子：本任务是技术标清洗队列里最后一个时，触发 Wiki 增量。
+
+    商务标清洗任务与技术标 Wiki 链路完全隔离：不动技术标批次分母、不触发刷新。
+    """
+    if _pipeline_bid_type(bid_type, context="清洗完成钩子") != TECHNICAL_BID_TYPE:
         return
-    # 队列已排空：本轮清洗批次结束，分母归零，进度条不再显示清洗段计数。
+    if _has_other_active_cleaning_jobs(exclude_job_id=current_job_id, bid_type=TECHNICAL_BID_TYPE):
+        return
+    # 技术标队列已排空：本轮清洗批次结束，分母归零，进度条不再显示清洗段计数。
     _reset_cleaning_batch_total()
     if not auto_refresh_enabled():
         return
@@ -244,19 +281,25 @@ def on_material_wiki_job_finished(bid_type: str) -> None:
     retry_pending_technical_wiki_auto_refresh()
 
 
-def on_material_deep_parse_job_finished(file_id: str, current_job_id: str = "") -> None:
+def on_material_deep_parse_job_finished(file_id: str, current_job_id: str = "", *, bid_type: str = "") -> None:
     """深度解析完成钩子：产物就绪后补跑一轮 Wiki，把兜底卡片升级为正式预览。
 
     超大 docx / PDF / XLSX 的预览依赖后台深度解析，而深度解析几乎必然晚于本轮
     Wiki 的预览阶段完成——卡片只能先落「已排队后台深度解析」的本地 TLDR 并标
     retryable，等下一轮刷新升级。手动流程靠人再点一次刷新兜住，自动链路必须自己
     补这一跳，否则卡片永远停在兜底文案（2026-08-05 实测 RAW-2297）。
+
+    商务标深度解析任务与技术标 Wiki 链路完全隔离，不触发补跑。
     """
+    if _pipeline_bid_type(bid_type, context="深度解析完成钩子") != TECHNICAL_BID_TYPE:
+        return
     if not auto_refresh_enabled():
         return
-    if _has_other_active_jobs(MATERIAL_DEEP_PARSE_JOB_TYPE, exclude_job_id=current_job_id):
+    if _has_other_active_jobs(
+        MATERIAL_DEEP_PARSE_JOB_TYPE, exclude_job_id=current_job_id, bid_type=TECHNICAL_BID_TYPE
+    ):
         return
-    if _has_other_active_cleaning_jobs():
+    if _has_other_active_cleaning_jobs(bid_type=TECHNICAL_BID_TYPE):
         # 新批次还在清洗，清洗收尾钩子稍后会触发，无需重复。
         return
     if not _claim_deep_parse_refresh(file_id):
@@ -295,7 +338,6 @@ async def technical_pipeline_progress() -> dict[str, Any]:
     """素材流水线进度聚合：清洗队列剩余 + 最新 Wiki 任务阶段进度，供前端进度条轮询。"""
     from app.services.job_queue import (
         find_active_jobs_of_type,
-        job_matches_bid_type,
         latest_terminal_job_of_type,
     )
     from app.services.material_wiki_jobs import latest_material_wiki_job_status
@@ -303,14 +345,12 @@ async def technical_pipeline_progress() -> dict[str, Any]:
 
     def _queue_snapshot(job_type: str) -> dict[str, Any]:
         try:
-            jobs = [
-                job
-                for job in find_active_jobs_of_type(job_type)
-                if job_matches_bid_type(job, TECHNICAL_BID_TYPE)
-            ]
+            jobs = find_active_jobs_of_type(job_type)
         except Exception as exc:
             logger.warning("素材流水线：查询 %s 进度失败：%s", job_type, exc)
             jobs = []
+        # 技术标进度只统计技术标口径任务，商务标清洗/深度解析不混入。
+        jobs = [job for job in jobs if _job_in_bid_scope(job, TECHNICAL_BID_TYPE)]
         return {
             "active": len(jobs),
             "processing": sum(1 for job in jobs if str(job.get("status") or "") == "processing"),
@@ -339,13 +379,18 @@ async def technical_pipeline_progress() -> dict[str, Any]:
     }
 
 
-def on_material_upload_completed(clean_job_count: int) -> None:
-    """上传入口钩子：记清洗批次分母；本批未产生清洗任务（纯 PDF/Excel）时直接触发 Wiki 增量。"""
+def on_material_upload_completed(clean_job_count: int, *, bid_type: str = "") -> None:
+    """上传入口钩子：记清洗批次分母；本批未产生清洗任务（纯 PDF/Excel）时直接触发 Wiki 增量。
+
+    商务标上传与技术标 Wiki 链路隔离：不登记技术标批次分母、不触发刷新。
+    """
+    if _pipeline_bid_type(bid_type, context="上传完成钩子") != TECHNICAL_BID_TYPE:
+        return
     add_cleaning_batch_total(int(clean_job_count or 0))
     if not auto_refresh_enabled():
         return
     if int(clean_job_count or 0) > 0:
         return
-    if _has_other_active_cleaning_jobs():
+    if _has_other_active_cleaning_jobs(bid_type=TECHNICAL_BID_TYPE):
         return
     request_technical_wiki_auto_refresh("纯非清洗批次上传")

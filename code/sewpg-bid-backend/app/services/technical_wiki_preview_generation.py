@@ -436,7 +436,7 @@ async def _build_preview_plans(index_files: list[dict[str, Any]]) -> tuple[list[
                         # allowConvert 标记只由技术标闸口下发；PDF 走 extract 不消费该标记，
                         # XLSX 据此走后台转 Word 分支。
                         if deep_parse_status_allows_enqueue(ext_fields):
-                            enqueue_deep_parse_job(file_id, {"allowConvert": True})
+                            enqueue_deep_parse_job(file_id, {"allowConvert": True, "bidType": TECHNICAL_BID_TYPE})
                             deep_status = deep_status or "queued"
                         skip_reason = (
                             "已排队后台全文提取，完成后自动补全预览"
