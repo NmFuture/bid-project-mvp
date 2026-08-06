@@ -11,8 +11,6 @@ gap_state["bodyFillState"] 持久化，前端轮询即可，页面刷新、换�
 from __future__ import annotations
 
 import copy
-import os
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,21 +24,14 @@ from app.services.technical_gap_state import ensure_technical_gap_state
 
 BODY_FILL_JOB_TYPE = "technical_body_fill"
 
-# 并发只受本机 CPU 与 MinIO 取件影响：清单驱动的正文填写不调模型服务，本地开 4 路安全。
-# 5090 上的取值写 code/docker-compose.5090.yml，不动这里的默认值。
-DEFAULT_BODY_FILL_CONCURRENCY = 4
+# 串行执行，不做并发。清单驱动后单条只要约 1 秒（实测 manifest 落盘到产物生成 1 秒），
+# 一批 20 多条也就 20 多秒，并发省不下什么；而落库链路里的 persist 走 asyncio.run，
+# asyncpg 连接池绑定 event loop，多线程各开新 loop 复用同一个池会直接卡死——
+# 实测并发 4 时脚本 1 秒跑完、任务却在写回处挂了 12 分钟不动。
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def body_fill_concurrency() -> int:
-    try:
-        value = int(os.getenv("TECHNICAL_BODY_FILL_CONCURRENCY", str(DEFAULT_BODY_FILL_CONCURRENCY)))
-    except (TypeError, ValueError):
-        return DEFAULT_BODY_FILL_CONCURRENCY
-    return max(1, min(value, 16))
 
 
 def empty_body_fill_state() -> dict[str, Any]:
@@ -107,6 +98,14 @@ def schedule_body_fill_job(project_id: str, data: dict[str, Any] | None = None) 
 
 def body_fill_locked(project_id: str) -> bool:
     return bool(is_generation_locked(BODY_FILL_JOB_TYPE, project_id))
+
+
+def body_fill_stale(gap_state: dict[str, Any], project_id: str) -> bool:
+    """状态是 running 但队列锁已经没了：worker 被重启/杀掉留下的僵尸。
+
+    不识别它的话，前端会一直显示「填写中」，且新任务会被 409 挡住，只能改库才能恢复。
+    """
+    return body_fill_running(gap_state) and not body_fill_locked(project_id)
 
 
 def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -185,13 +184,8 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
                 errors=errors[:20],
             )
 
-    concurrency = min(body_fill_concurrency(), len(targets))
-    if concurrency > 1:
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            list(pool.map(fill_one, targets))
-    else:
-        for target in targets:
-            fill_one(target)
+    for target in targets:
+        fill_one(target)
 
     latest = require_technical_gap_project_for_update(project_id)
     latest_gap_state = ensure_technical_gap_state(latest)

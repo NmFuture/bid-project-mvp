@@ -67,6 +67,7 @@ from app.services.technical_fact_curate_job import (
 from app.services.technical_body_fill_job import (
     body_fill_locked,
     body_fill_running,
+    body_fill_stale,
     body_fill_state,
     collect_body_fill_targets,
     schedule_body_fill_job,
@@ -1142,7 +1143,9 @@ class TechnicalGapService:
                 project["updatedAt"] = now_iso()
                 persist_technical_gap_project(project)
             self._require_confirmed_project_fact_table(gap_state)
-            if body_fill_running(gap_state) or body_fill_locked(project_id):
+            # 僵尸状态（worker 被重启/杀掉，状态停在 running 但队列锁已释放）不挡新任务，
+            # 否则前端永远显示「填写中」，只能改库才能恢复
+            if body_fill_running(gap_state) and not body_fill_stale(gap_state, project_id):
                 raise PeripheralError(409, "正文填写任务正在执行，请等待完成后再提交。", "BODY_FILL_RUNNING")
             payload = dict(data or {})
             targets = collect_body_fill_targets(gap_state, payload)
@@ -1164,8 +1167,12 @@ class TechnicalGapService:
     def body_fill_status(self, project_id: str) -> dict[str, Any]:
         project = self.ensure_project(project_id)
         gap_state = ensure_technical_gap_state(project)
+        state = body_fill_state(gap_state)
+        if body_fill_stale(gap_state, project_id):
+            state["status"] = "failed"
+            state["message"] = "任务执行中断（服务重启或进程退出），请重新发起一键填写。"
         return {
-            "bodyFillState": body_fill_state(gap_state),
+            "bodyFillState": state,
             "pendingTotal": len(collect_body_fill_targets(gap_state, {})),
             "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
         }
