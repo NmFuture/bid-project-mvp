@@ -137,3 +137,140 @@ def test_reclaim_marks_stale_inflight_job_failed_and_releases_lock() -> None:
 def test_reclaim_no_client_returns_zero() -> None:
     with patch.object(job_queue, "get_redis_client", return_value=None):
         assert job_queue.reclaim_stale_inflight_jobs(60) == 0
+
+
+def test_mark_job_status_records_last_terminal_snapshot() -> None:
+    """终态任务离开 active 集合后，进度接口仍能凭该快照展示失败原因（R10-B07-05）。"""
+    client = MagicMock()
+    job = {"id": "clean-1", "type": "material_cleaning", "projectId": "p-1"}
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        job_queue.mark_job_status(job, "failed", "清洗失败：未生成 Word 文件。")
+
+    key, raw = client.set.call_args.args[:2]
+    assert key == f"{job_queue.LAST_TERMINAL_KEY_PREFIX}:material_cleaning:technical"
+    assert client.set.call_args.kwargs.get("ex") == job_queue.settings.redis_job_result_ttl_sec
+    snapshot = json.loads(raw)
+    assert snapshot["jobId"] == "clean-1"
+    assert snapshot["type"] == "material_cleaning"
+    assert snapshot["bidType"] == "技术标"
+    assert snapshot["status"] == "failed"
+    assert snapshot["message"] == "清洗失败：未生成 Word 文件。"
+    assert snapshot["finishedAt"]
+
+
+def test_mark_job_status_truncates_long_terminal_message() -> None:
+    client = MagicMock()
+    job = {"id": "clean-2", "type": "material_cleaning"}
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        job_queue.mark_job_status(job, "failed", "x" * 600)
+
+    snapshot = json.loads(client.set.call_args.args[1])
+    assert len(snapshot["message"]) == job_queue.LAST_TERMINAL_MESSAGE_MAX
+
+
+def test_mark_job_status_isolates_business_terminal_snapshot() -> None:
+    client = MagicMock()
+    job = {
+        "id": "clean-business-1",
+        "type": "material_cleaning",
+        "data": {"bidType": "商务标"},
+    }
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        job_queue.mark_job_status(job, "failed", "商务素材清洗失败")
+
+    key, raw = client.set.call_args.args[:2]
+    assert key == f"{job_queue.LAST_TERMINAL_KEY_PREFIX}:material_cleaning:business"
+    assert json.loads(raw)["bidType"] == "商务标"
+
+
+def test_mark_job_status_skips_snapshot_for_explicit_invalid_bid_type() -> None:
+    for invalid_bid_type in ("", None, 0, "unknown", "非技术标", "技术资料", "商务资料"):
+        client = MagicMock()
+        job = {
+            "id": f"clean-invalid-{invalid_bid_type}",
+            "type": "material_cleaning",
+            "data": {"bidType": invalid_bid_type},
+        }
+
+        with patch.object(job_queue, "get_redis_client", return_value=client):
+            job_queue.mark_job_status(job, "failed", "bad type")
+
+        client.set.assert_not_called()
+
+
+def test_mark_job_status_skips_terminal_snapshot_for_intermediate_status() -> None:
+    client = MagicMock()
+    job = {"id": "clean-3", "type": "material_cleaning"}
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        job_queue.mark_job_status(job, "running")
+
+    client.set.assert_not_called()
+
+
+def test_latest_terminal_job_of_type_reads_snapshot() -> None:
+    client = MagicMock()
+    client.get.return_value = json.dumps(
+        {"jobId": "dp-1", "bidType": "商务标", "status": "cancelled"}
+    )
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        snapshot = job_queue.latest_terminal_job_of_type("material_deep_parse", "商务标")
+
+    assert snapshot == {"jobId": "dp-1", "bidType": "商务标", "status": "cancelled"}
+    client.get.assert_called_once_with(
+        f"{job_queue.LAST_TERMINAL_KEY_PREFIX}:material_deep_parse:business"
+    )
+
+
+def test_latest_terminal_job_of_type_accepts_legacy_unscoped_snapshot_only_for_technical() -> None:
+    legacy = json.dumps({"jobId": "legacy-1", "status": "failed", "message": "legacy"})
+    client = MagicMock()
+    client.get.side_effect = [None, legacy]
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        snapshot = job_queue.latest_terminal_job_of_type("material_cleaning", "技术标")
+
+    assert snapshot == {"jobId": "legacy-1", "status": "failed", "message": "legacy"}
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        f"{job_queue.LAST_TERMINAL_KEY_PREFIX}:material_cleaning:technical",
+        f"{job_queue.LAST_TERMINAL_KEY_PREFIX}:material_cleaning",
+    ]
+
+
+def test_latest_terminal_job_of_type_rejects_cross_bid_and_invalid_legacy_snapshots() -> None:
+    client = MagicMock()
+    client.get.side_effect = [
+        None,
+        json.dumps({"jobId": "business-1", "bidType": "商务标", "status": "failed"}),
+    ]
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        assert job_queue.latest_terminal_job_of_type("material_cleaning", "技术标") is None
+
+    for invalid_bid_type in ("", None, 0, "unknown", "非技术标", "技术资料", "商务资料"):
+        client = MagicMock()
+        client.get.side_effect = [
+            None,
+            json.dumps(
+                {"jobId": "invalid-1", "bidType": invalid_bid_type, "status": "failed"}
+            ),
+        ]
+        with patch.object(job_queue, "get_redis_client", return_value=client):
+            assert job_queue.latest_terminal_job_of_type("material_cleaning", "技术标") is None
+
+
+def test_latest_terminal_job_of_type_returns_none_when_missing_or_broken() -> None:
+    client = MagicMock()
+    client.get.return_value = None
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        assert job_queue.latest_terminal_job_of_type("material_cleaning") is None
+
+    client.get.return_value = "{not-json"
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        assert job_queue.latest_terminal_job_of_type("material_cleaning") is None
+
+    with patch.object(job_queue, "get_redis_client", return_value=None):
+        assert job_queue.latest_terminal_job_of_type("material_cleaning") is None

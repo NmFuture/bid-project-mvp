@@ -1,8 +1,9 @@
 """素材流水线自动衔接（上传→清洗→Wiki 增量，产品裁决 2026-08-04）单测。"""
 from __future__ import annotations
 
+import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.core.config import settings
 from app.services import material_wiki_auto
@@ -357,6 +358,78 @@ class MaterialWikiAutoTests(unittest.TestCase):
             material_wiki_auto.on_material_deep_parse_job_finished("RAW-1", current_job_id="X")
             material_wiki_auto.on_material_tree_changed("删除素材文件")
         enqueue.assert_not_called()
+
+
+class PipelineProgressTerminalTests(unittest.TestCase):
+    """进度聚合必须带出各阶段最近终态（R10-B07-05）：失败/取消的任务离开 active 后仍可展示。"""
+
+    @staticmethod
+    def _run_progress(*, cleaning_terminal=None, deep_parse_terminal=None, active_by_type=None):
+        terminal_by_type = {
+            material_wiki_auto.MATERIAL_CLEANING_JOB_TYPE: cleaning_terminal,
+            material_wiki_auto.MATERIAL_DEEP_PARSE_JOB_TYPE: deep_parse_terminal,
+        }
+        active_by_type = active_by_type or {}
+
+        with (
+            patch(
+                "app.services.job_queue.find_active_jobs_of_type",
+                side_effect=lambda job_type: active_by_type.get(job_type, []),
+            ),
+            patch(
+                "app.services.job_queue.latest_terminal_job_of_type",
+                side_effect=lambda job_type, bid_type: terminal_by_type.get(job_type),
+            ),
+            patch(
+                "app.services.material_wiki_jobs.latest_material_wiki_job_status",
+                return_value={"status": "idle"},
+            ),
+            patch.object(
+                material_wiki_auto,
+                "_pending_preview_count",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            return asyncio.run(material_wiki_auto.technical_pipeline_progress())
+
+    def test_progress_includes_last_terminal_per_stage(self) -> None:
+        payload = self._run_progress(
+            cleaning_terminal={
+                "jobId": "clean-1",
+                "status": "failed",
+                "message": "清洗失败：未生成 Word 文件。",
+                "finishedAt": "2026-08-06T01:00:00Z",
+            },
+            deep_parse_terminal={
+                "jobId": "dp-1",
+                "status": "cancelled",
+                "message": "任务锁已失效或已被新任务替代。",
+                "finishedAt": "2026-08-06T01:05:00Z",
+            },
+        )
+        self.assertEqual(payload["cleaning"]["active"], 0)
+        self.assertEqual(payload["cleaning"]["lastTerminal"]["jobId"], "clean-1")
+        self.assertEqual(payload["cleaning"]["lastTerminal"]["status"], "failed")
+        self.assertEqual(payload["cleaning"]["lastTerminal"]["finishedAt"], "2026-08-06T01:00:00Z")
+        self.assertEqual(payload["deepParse"]["lastTerminal"]["status"], "cancelled")
+
+    def test_progress_last_terminal_defaults_to_none(self) -> None:
+        payload = self._run_progress()
+        self.assertIsNone(payload["cleaning"]["lastTerminal"])
+        self.assertIsNone(payload["deepParse"]["lastTerminal"])
+
+    def test_progress_filters_business_active_jobs_but_keeps_legacy_technical_jobs(self) -> None:
+        payload = self._run_progress(
+            active_by_type={
+                material_wiki_auto.MATERIAL_CLEANING_JOB_TYPE: [
+                    {"id": "legacy-tech", "data": {}},
+                    {"id": "business-1", "data": {"bidType": "商务标"}},
+                    {"id": "invalid-1", "data": {"bidType": "unknown"}},
+                ],
+            },
+        )
+
+        self.assertEqual(payload["cleaning"]["active"], 1)
 
 
 if __name__ == "__main__":

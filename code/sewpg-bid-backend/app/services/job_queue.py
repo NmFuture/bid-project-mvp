@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.core.redis import RedisError, get_redis_client
+from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,14 @@ LOCK_KEY_PREFIX = "bid:lock:"
 S1_WORKFLOW_LOCK_KEY = f"{LOCK_KEY_PREFIX}s1_parse:workflow"
 INFLIGHT_KEY = "bid:jobs:inflight"
 CANCEL_KEY_PREFIX = "bid:job:cancel:"
+LAST_TERMINAL_KEY_PREFIX = "bid:jobs:last-terminal"
+TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
+_BID_TYPE_KEY_SCOPE = {
+    TECHNICAL_BID_TYPE: "technical",
+    BUSINESS_BID_TYPE: "business",
+}
+# 终态快照里的原因只用于进度横幅展示，截断兜底；完整原文仍在 job hash 的 message 字段。
+LAST_TERMINAL_MESSAGE_MAX = 500
 INTERNAL_JOB_TYPES = {
     "s1_docling_batch",
     "s1_parse_continue",
@@ -417,6 +426,119 @@ def mark_job_status(job: dict[str, Any], status: str, message: str = "") -> None
         pipe.execute()
     except RedisError as exc:
         logger.warning("Failed to update Redis job status: %s", exc)
+        return
+
+    if status in TERMINAL_JOB_STATUSES:
+        _record_last_terminal(job, status, message, finished_at=updated_at)
+
+
+def _job_bid_type(job: dict[str, Any]) -> str:
+    """解析任务标类；引入 bidType 之前的历史任务归技术标。"""
+
+    data = job.get("data") if isinstance(job.get("data"), dict) else {}
+    if "bidType" in data:
+        raw_bid_type = data["bidType"]
+    elif "__bidType" in data:
+        raw_bid_type = data["__bidType"]
+    elif "bidType" in job:
+        raw_bid_type = job["bidType"]
+    else:
+        return TECHNICAL_BID_TYPE
+    resolved = raw_bid_type.strip() if isinstance(raw_bid_type, str) else ""
+    # 终态隔离只接受 canonical 值；“非技术标”、“技术资料”等模糊文本不得归入技术标。
+    return resolved if resolved in _BID_TYPE_KEY_SCOPE else ""
+
+
+def _require_terminal_bid_type(bid_type: str) -> str:
+    resolved = str(bid_type or "").strip()
+    if resolved not in _BID_TYPE_KEY_SCOPE:
+        raise ValueError("终态任务标类必须精确为技术标或商务标。")
+    return resolved
+
+
+def job_matches_bid_type(job: dict[str, Any], bid_type: str) -> bool:
+    """按标类匹配队列任务或终态快照，兼容历史无 bidType 技术标任务。"""
+
+    return _job_bid_type(job) == _require_terminal_bid_type(bid_type)
+
+
+def _last_terminal_key(job_type: str, bid_type: str) -> str:
+    resolved_bid_type = _require_terminal_bid_type(bid_type)
+    return f"{LAST_TERMINAL_KEY_PREFIX}:{job_type}:{_BID_TYPE_KEY_SCOPE[resolved_bid_type]}"
+
+
+def _legacy_last_terminal_key(job_type: str) -> str:
+    return f"{LAST_TERMINAL_KEY_PREFIX}:{job_type}"
+
+
+def _record_last_terminal(job: dict[str, Any], status: str, message: str, *, finished_at: str) -> None:
+    """按任务类型记忆最近一次终态快照，供进度接口在任务离开 active 集合后仍能展示终态。
+
+    队列视图只覆盖进行中的任务：失败/取消/成功一旦收尾就查无痕迹，前端只能回到空闲态。
+    这里按任务类型 + 标类留一份最近终态，避免商务任务覆盖后被技术标横幅读取。
+    无 bidType 的历史任务按技术标兼容。TTL 与 job hash 一致；快照写失败不影响状态标记本身。
+    """
+
+    job_type = str(job.get("type") or "")
+    job_id = str(job.get("id") or "")
+    if not job_type or not job_id:
+        return
+    client = get_redis_client()
+    if client is None:
+        return
+    bid_type = _job_bid_type(job)
+    if bid_type not in _BID_TYPE_KEY_SCOPE:
+        logger.warning("Skipping terminal snapshot with invalid bid type: %s", bid_type)
+        return
+    snapshot = {
+        "jobId": job_id,
+        "type": job_type,
+        "bidType": bid_type,
+        "status": status,
+        "message": str(message or "")[:LAST_TERMINAL_MESSAGE_MAX],
+        "finishedAt": finished_at,
+    }
+    try:
+        client.set(
+            _last_terminal_key(job_type, bid_type),
+            json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+            ex=settings.redis_job_result_ttl_sec,
+        )
+    except RedisError as exc:
+        logger.warning("Failed to record last terminal job: %s", exc)
+
+
+def latest_terminal_job_of_type(
+    job_type: str,
+    bid_type: str = TECHNICAL_BID_TYPE,
+) -> dict[str, Any] | None:
+    """读取指定任务类型和标类的最近终态快照。
+
+    技术标在新分键无记录时回退读取旧的未分键快照；其中显式标为商务标的数据仍会被拒绝。
+    """
+
+    if job_type not in KNOWN_JOB_TYPES:
+        raise ValueError(f"Unknown job type: {job_type}")
+    resolved_bid_type = _require_terminal_bid_type(bid_type)
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_last_terminal_key(job_type, resolved_bid_type))
+        if not raw and resolved_bid_type == TECHNICAL_BID_TYPE:
+            raw = client.get(_legacy_last_terminal_key(job_type))
+    except RedisError as exc:
+        logger.warning("Failed to read last terminal job: %s", exc)
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(str(raw))
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or not job_matches_bid_type(payload, resolved_bid_type):
+        return None
+    return payload
 
 
 def mark_job_progress(job: dict[str, Any], progress: dict[str, Any]) -> None:
@@ -799,6 +921,8 @@ def reclaim_stale_inflight_jobs(max_age_sec: int, queue_key: str = QUEUE_KEY) ->
             "id": str(job_id),
             "type": job_type,
             "projectId": project_id,
+            # 保留标类等入队数据，否则商务任务回收为失败时会误写技术标终态。
+            "data": entry.get("data") if isinstance(entry.get("data"), dict) else {},
             "__queueKey": str(entry.get("queueKey") or ""),
             "__processingPayload": str(entry.get("processingPayload") or ""),
         }

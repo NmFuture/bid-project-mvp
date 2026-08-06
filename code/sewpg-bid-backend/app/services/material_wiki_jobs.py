@@ -13,6 +13,7 @@ from app.services.job_queue import (
     enqueue_generation_job,
     find_active_jobs_of_type,
     get_job_status,
+    latest_terminal_job_of_type,
 )
 from app.services.peripheral import PeripheralError
 
@@ -117,7 +118,27 @@ def latest_material_wiki_job_status(bid_type: str) -> dict[str, Any]:
             "MATERIAL_QUEUE_UNAVAILABLE",
         ) from exc
     if not job_id:
-        return {"status": "idle"}
+        # latest pointer 从入队时开始计 TTL，长任务可能在终态快照前先过期。
+        # 只回退同标类 scoped generic terminal，不扫描 active 队列，避免跨标混入。
+        terminal = latest_terminal_job_of_type(MATERIAL_WIKI_JOB_TYPE, resolved_bid_type)
+        if not terminal:
+            return {"status": "idle"}
+        terminal_status = str(terminal.get("status") or "").lower()
+        if terminal_status not in {"succeeded", "failed", "cancelled"}:
+            return {"status": "idle"}
+        result = {
+            "jobId": str(terminal.get("jobId") or ""),
+            "bidType": resolved_bid_type,
+            "status": terminal_status,
+            "progress": {},
+            "message": str(terminal.get("message") or ""),
+        }
+        finished_at = str(terminal.get("finishedAt") or "")
+        if finished_at:
+            result["finishedAt"] = finished_at
+        if terminal_status in {"failed", "cancelled"}:
+            result["error"] = result["message"]
+        return result
     try:
         payload = material_wiki_job_status(job_id, resolved_bid_type)
     except PeripheralError as exc:
@@ -128,10 +149,15 @@ def latest_material_wiki_job_status(bid_type: str) -> dict[str, Any]:
     compatible_state = "running" if state in {"queued", "running"} else state
     result = {
         "jobId": job_id,
+        "bidType": resolved_bid_type,
         "status": compatible_state,
         "progress": payload.get("progress") if isinstance(payload.get("progress"), dict) else {},
         "message": str(payload.get("message") or ""),
     }
+    # 结束时间：终态任务离开轮询视野后，前端仍可据此展示「何时失败/取消」。
+    updated_at = str(payload.get("updatedAt") or "")
+    if compatible_state in {"succeeded", "failed", "cancelled"} and updated_at:
+        result["finishedAt"] = updated_at
     if compatible_state in {"failed", "cancelled"}:
         result["error"] = result["message"]
     return result
