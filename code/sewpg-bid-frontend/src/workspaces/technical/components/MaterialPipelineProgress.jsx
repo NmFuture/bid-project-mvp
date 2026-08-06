@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { technicalMaterialsAPI } from '../../../api'
+import { createWikiJobSuccessTracker } from './wikiJobSuccessTracker'
 
 const POLL_MS = 5000
 
@@ -13,10 +14,18 @@ const pipelineRunning = (payload) => (
 // 挂在原始素材页与 Wiki 页顶部。任务全在后端执行，这里只轮询展示——切页、刷新浏览器
 // 都不影响任务；空闲时整条不渲染，保持页面整洁。失败提示仅在本次会话观察到运行后展示，可关闭。
 // 超大文件的预览要等后台深度解析，收尾必须如实：队列已空但仍有待补全时不装作全部完成。
-export default function MaterialPipelineProgress() {
+// onWikiJobSuccess：页面打开后观察到新的 Wiki 成功任务时回调一次（按 jobId 去重），
+// 包括在轮询间隔内快速完成或补跑切换 jobId 的任务，供 Wiki 页面重新加载目录树。
+export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
   const [snapshot, setSnapshot] = useState(null)
   const [dismissedJobId, setDismissedJobId] = useState('')
   const [sawRunning, setSawRunning] = useState(false)
+  // 跨轮询记住已完成任务的通知状态；回调经 ref 取最新值，轮询 effect 不随渲染重建。
+  const [trackWikiJobSuccess] = useState(createWikiJobSuccessTracker)
+  const onWikiJobSuccessRef = useRef(onWikiJobSuccess)
+  useEffect(() => {
+    onWikiJobSuccessRef.current = onWikiJobSuccess
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -26,6 +35,8 @@ export default function MaterialPipelineProgress() {
         if (cancelled) return
         setSnapshot(payload)
         if (pipelineRunning(payload)) setSawRunning(true)
+        const succeededJobId = trackWikiJobSuccess(payload?.wiki)
+        if (succeededJobId) onWikiJobSuccessRef.current?.(succeededJobId)
       } catch {
         // 轮询失败保持上次快照，不打扰页面。
       }
@@ -36,7 +47,7 @@ export default function MaterialPipelineProgress() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [])
+  }, [trackWikiJobSuccess])
 
   const cleaningRemaining = Number(snapshot?.cleaning?.active || 0)
   const deepParseRemaining = Number(snapshot?.deepParse?.active || 0)

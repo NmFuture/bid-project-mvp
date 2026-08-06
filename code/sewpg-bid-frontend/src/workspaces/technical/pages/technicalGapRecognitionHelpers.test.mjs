@@ -458,6 +458,32 @@ test('目录标签v6：空确认防御——没有素材实体证据时确认不
   )
 })
 
+test('目录标签v6：人工选中未填写的「待填写-」模板进待填写，不进已就绪（R10-B07-01）', () => {
+  // 后端 register 对空模板产物落 s7Ready=false：它只是定下要填的模板，不算成稿。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G1',
+      decision: 'fill_required',
+      status: 'needs_input',
+      fillTasks: [{ id: 'FILL-G1-RAW-TPL1', status: 'pending', blankSource: { materialId: 'RAW-TPL1', sourceType: 'material_fill_template' } }],
+      resolvedArtifacts: [{ id: 'ART-1', source: 'material_library', fileName: '01-待填写-投标说明函.docx', s7Ready: false }],
+      humanConfirmed: true,
+    }),
+    'template_ready',
+  )
+  // 对照：s7Ready 的人工选材产物（成稿）仍是已就绪。
+  assert.equal(
+    technicalGapTagOf({
+      id: 'G2',
+      decision: 'ready',
+      status: 'resolved',
+      resolvedArtifacts: [{ id: 'ART-2', source: 'material_library', fileName: '01-性能保证.docx', s7Ready: true }],
+      humanConfirmed: true,
+    }),
+    'material_ready',
+  )
+})
+
 test('目录标签v6：树状冻结——未忽略的活动祖先冻结整棵子树（父章覆盖）', () => {
   const chapter = { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] }
   const mid = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
