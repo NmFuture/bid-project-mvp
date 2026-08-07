@@ -439,8 +439,12 @@ def _apply_document_page_format(doc: Document, page_cfg: Any) -> None:
 
 def _apply_document_body_format(doc: Document, style_spec: dict[str, Any]) -> None:
     body_cfg = style_spec.get("body")
+    toc_protected = _toc_protected_paragraph_elements(doc)
     preserve_after_image = False
     for paragraph in doc.paragraphs:
+        if paragraph._element in toc_protected:
+            preserve_after_image = False
+            continue
         if _paragraph_heading_level(paragraph):
             preserve_after_image = False
             continue
@@ -600,7 +604,7 @@ def _apply_toc_page_break(doc: Document, enabled: bool, *, adopt_unmarked: bool 
 def _toc_result_anchor(doc: Document):
     body = doc.element.body
     instruction = next(
-        (node for node in body.iter(qn("w:instrText")) if "TOC" in (node.text or "").upper()),
+        (node for node in body.iter(qn("w:instrText")) if _is_toc_instruction(node.text)),
         None,
     )
     if instruction is None:
@@ -618,17 +622,13 @@ def _toc_result_anchor(doc: Document):
         return outer_sdt
     if toc_paragraph is None:
         return None
+
+    protected = _toc_protected_paragraph_elements(doc)
     anchor = toc_paragraph
     current = toc_paragraph
-    found_end = False
-    while current is not None and current.tag == qn("w:p"):
+    while current is not None and current.tag == qn("w:p") and current in protected:
         anchor = current
-        if any(node.get(qn("w:fldCharType")) == "end" for node in current.iter(qn("w:fldChar"))):
-            found_end = True
-            break
         current = current.getnext()
-    if not found_end:
-        anchor = toc_paragraph
     current = anchor.getnext()
     while _is_toc_result_paragraph(current):
         anchor = current
@@ -819,8 +819,89 @@ def _table_contains_visual(table) -> bool:
     return bool(table._tbl.xpath(".//w:drawing|.//w:pict|.//w:object"))
 
 
+def _toc_protected_paragraph_elements(doc: Document) -> set[Any]:
+    body = doc.element.body
+    paragraphs = list(body.iter(qn("w:p")))
+    protected: set[Any] = set()
+    toc_instruction_paragraphs: set[Any] = set()
+    active_fields: list[dict[str, Any]] = []
+
+    for paragraph in paragraphs:
+        for field in active_fields:
+            field["paragraphs"].add(paragraph)
+
+        for node in paragraph.iter():
+            if node.tag == qn("w:fldSimple") and _is_toc_instruction(node.get(qn("w:instr"))):
+                protected.add(paragraph)
+                toc_instruction_paragraphs.add(paragraph)
+                continue
+
+            if node.tag == qn("w:fldChar"):
+                field_type = str(node.get(qn("w:fldCharType")) or "").lower()
+                if field_type == "begin":
+                    active_fields.append({"paragraphs": {paragraph}, "is_toc": False})
+                elif field_type == "end" and active_fields:
+                    field = active_fields.pop()
+                    if field["is_toc"]:
+                        protected.update(field["paragraphs"])
+                continue
+
+            if node.tag != qn("w:instrText") or not _is_toc_instruction(node.text):
+                continue
+            toc_instruction_paragraphs.add(paragraph)
+            if active_fields:
+                active_fields[-1]["is_toc"] = True
+            else:
+                protected.add(paragraph)
+
+    for field in active_fields:
+        if field["is_toc"]:
+            protected.update(field["paragraphs"])
+
+    paragraph_positions = {paragraph: index for index, paragraph in enumerate(paragraphs)}
+    for paragraph in toc_instruction_paragraphs:
+        index = paragraph_positions.get(paragraph, 0)
+        while index > 0 and paragraphs[index - 1] in protected:
+            index -= 1
+        if index <= 0:
+            continue
+        title = paragraphs[index - 1]
+        if _is_toc_heading_element(title, doc):
+            protected.add(title)
+
+    return protected
+
+
+def _is_toc_instruction(value: Any) -> bool:
+    return bool(re.search(r"\bTOC\b", str(value or ""), flags=re.IGNORECASE))
+
+
+def _is_toc_heading_element(element, doc: Document) -> bool:
+    p_pr = element.find(qn("w:pPr"))
+    p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
+    style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
+    identifiers = [style_id]
+    if style_id:
+        identifiers.extend(
+            str(getattr(style, "name", "") or "")
+            for style in doc.styles
+            if str(getattr(style, "style_id", "") or "") == style_id
+        )
+    if any(_is_toc_heading_identifier(identifier) for identifier in identifiers):
+        return True
+
+    text = "".join(str(node.text or "") for node in element.iter(qn("w:t")))
+    normalized = re.sub(r"\s+", "", text).casefold()
+    return normalized in {"目录", "contents", "tableofcontents"}
+
+
+def _is_toc_heading_identifier(value: Any) -> bool:
+    normalized = re.sub(r"[\s_-]+", "", str(value or "")).casefold()
+    return normalized in {"toc", "tocheading", "目录标题"}
+
+
 def _is_preserved_layout_paragraph(paragraph) -> bool:
-    if _paragraph_uses_toc_style(paragraph):
+    if _paragraph_uses_toc_style(paragraph) or _paragraph_uses_toc_heading_style(paragraph):
         return True
     style = getattr(paragraph, "style", None)
     style_name = str(getattr(style, "name", "") or "").strip().lower()
@@ -843,6 +924,15 @@ def _paragraph_uses_toc_style(paragraph) -> bool:
             return True
         style = getattr(style, "base_style", None)
     return False
+
+
+def _paragraph_uses_toc_heading_style(paragraph) -> bool:
+    p_pr = paragraph._element.find(qn("w:pPr"))
+    p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
+    style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
+    style = getattr(paragraph, "style", None)
+    style_name = str(getattr(style, "name", "") or "")
+    return _is_toc_heading_identifier(style_id) or _is_toc_heading_identifier(style_name)
 
 
 def _clean_paragraph_text(text: str) -> str:

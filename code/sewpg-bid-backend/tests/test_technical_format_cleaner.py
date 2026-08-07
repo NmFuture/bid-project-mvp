@@ -129,6 +129,26 @@ def _write_existing_toc_document(path: Path) -> None:
     doc.save(path)
 
 
+def _write_inserted_toc_region_document(path: Path) -> None:
+    doc = Document()
+    doc.add_paragraph("正文标题", style="Heading 1")
+    body_toc_text = doc.add_paragraph("正文中的目录说明")
+    cleaner.insert_toc_field(doc)
+
+    toc_title = next(paragraph for paragraph in doc.paragraphs if paragraph.text == "目录")
+    toc_field = next(
+        paragraph
+        for paragraph in doc.paragraphs
+        if any("TOC" in (node.text or "").upper() for node in paragraph._element.iter(qn("w:instrText")))
+    )
+    _set_distinct_format(toc_title, 4)
+    _set_distinct_format(toc_field, 5)
+    for run in toc_field.runs:
+        run.font.size = Pt(13)
+    _set_distinct_format(body_toc_text, 6)
+    doc.save(path)
+
+
 class TechnicalFormatCleanerTests(unittest.TestCase):
     def test_run_manifest_returns_warnings_without_writing_markdown_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -230,6 +250,155 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
                 document_xml = archive.read("word/document.xml").decode("utf-8")
             self.assertIn('w:ascii="Arial"', document_xml)
             self.assertIn('w:eastAsia="宋体"', document_xml)
+
+    def test_production_cleaner_preserves_inserted_toc_title_and_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_file = root / "toc-region-input.docx"
+            outline_file = root / "outline.json"
+            output_file = root / "toc-region-output.docx"
+            style_file = root / "style.json"
+            manifest_file = root / "manifest.json"
+            _write_inserted_toc_region_document(input_file)
+            _write_empty_outline(outline_file)
+            _write_style_spec(style_file, insert_toc=False)
+            _write_manifest(
+                manifest_file,
+                input_file=input_file,
+                outline_file=outline_file,
+                output_file=output_file,
+                style_file=style_file,
+            )
+
+            _run_application_cleaner(manifest_file)
+
+            output = Document(str(output_file))
+            toc_title = next(paragraph for paragraph in output.paragraphs if paragraph.text == "目录")
+            toc_field = next(
+                paragraph
+                for paragraph in output.paragraphs
+                if any(
+                    "TOC" in (node.text or "").upper()
+                    for node in paragraph._element.iter(qn("w:instrText"))
+                )
+            )
+            body = next(paragraph for paragraph in output.paragraphs if paragraph.text == "正文中的目录说明")
+
+            for paragraph, index in ((toc_title, 4), (toc_field, 5)):
+                self.assertEqual(paragraph.alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+                self.assertAlmostEqual(paragraph.paragraph_format.left_indent.cm, index, places=2)
+                self.assertAlmostEqual(paragraph.paragraph_format.space_before.pt, index, places=3)
+                self.assertAlmostEqual(paragraph.paragraph_format.space_after.pt, index + 1, places=3)
+                self.assertAlmostEqual(paragraph.paragraph_format.line_spacing, 1 + index / 10, places=3)
+                visible_runs = [run for run in paragraph.runs if run.text]
+                self.assertTrue(visible_runs)
+                self.assertAlmostEqual(visible_runs[0].font.size.pt, 8 + index)
+
+            self.assertEqual(body.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertAlmostEqual(body.runs[0].font.size.pt, 16)
+
+    def test_toc_structure_detection_handles_sdt_simple_and_nested_fields(self) -> None:
+        doc = Document()
+
+        def append_field_char(paragraph, field_type: str) -> None:
+            run = OxmlElement("w:r")
+            field = OxmlElement("w:fldChar")
+            field.set(qn("w:fldCharType"), field_type)
+            run.append(field)
+            paragraph._element.append(run)
+
+        def append_instruction(paragraph, instruction_text: str) -> None:
+            run = OxmlElement("w:r")
+            instruction = OxmlElement("w:instrText")
+            instruction.text = instruction_text
+            run.append(instruction)
+            paragraph._element.append(run)
+
+        toc_title = doc.add_paragraph("目 录")
+        _set_distinct_format(toc_title, 3)
+        toc_begin = doc.add_paragraph()
+        append_field_char(toc_begin, "begin")
+        toc_instruction = doc.add_paragraph()
+        append_instruction(toc_instruction, ' TOC \\o "1-3" ')
+        append_field_char(toc_instruction, "separate")
+        toc_result = doc.add_paragraph("第一章 ...... 1")
+        append_field_char(toc_result, "begin")
+        append_instruction(toc_result, " PAGEREF _Toc123 \\h ")
+        append_field_char(toc_result, "end")
+        toc_end = doc.add_paragraph()
+        append_field_char(toc_end, "end")
+
+        self.assertIs(cleaner._toc_result_anchor(doc), toc_end._element)
+
+        body = doc.element.body
+        sdt = OxmlElement("w:sdt")
+        sdt_content = OxmlElement("w:sdtContent")
+        sdt.append(sdt_content)
+        for paragraph in (toc_begin, toc_instruction, toc_result, toc_end):
+            body.remove(paragraph._element)
+            sdt_content.append(paragraph._element)
+        toc_title._element.addnext(sdt)
+
+        simple_title = doc.add_paragraph("Contents")
+        _set_distinct_format(simple_title, 4)
+        simple_toc = doc.add_paragraph()
+        fld_simple = OxmlElement("w:fldSimple")
+        fld_simple.set(qn("w:instr"), ' TOC \\o "1-3" ')
+        simple_run = OxmlElement("w:r")
+        simple_text = OxmlElement("w:t")
+        simple_text.text = "Simple TOC"
+        simple_run.append(simple_text)
+        fld_simple.append(simple_run)
+        simple_toc._element.append(fld_simple)
+
+        standalone_title = doc.add_paragraph("目录")
+        _set_distinct_format(standalone_title, 5)
+        page_field = doc.add_paragraph()
+        append_field_char(page_field, "begin")
+        append_instruction(page_field, " PAGE ")
+        append_field_char(page_field, "separate")
+        page_field.add_run("页码域")
+        append_field_char(page_field, "end")
+        _set_distinct_format(page_field, 6)
+        for run in page_field.runs:
+            run.font.size = Pt(14)
+
+        protected = cleaner._toc_protected_paragraph_elements(doc)
+
+        self.assertIn(toc_title._element, protected)
+        self.assertIn(toc_begin._element, protected)
+        self.assertIn(toc_instruction._element, protected)
+        self.assertIn(toc_result._element, protected)
+        self.assertIn(toc_end._element, protected)
+        self.assertIn(simple_title._element, protected)
+        self.assertIn(simple_toc._element, protected)
+        self.assertNotIn(standalone_title._element, protected)
+        self.assertNotIn(page_field._element, protected)
+
+        cleaner._apply_document_body_format(
+            doc,
+            {
+                "body": {
+                    "zh_font": "宋体",
+                    "en_font": "Arial",
+                    "size_pt": 16,
+                    "align": "both",
+                    "space_before_pt": 0,
+                    "space_after_pt": 0,
+                    "line_spacing": 1.5,
+                    "first_line_indent_chars": 2,
+                }
+            },
+        )
+
+        self.assertEqual(toc_title.alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+        self.assertEqual(simple_title.alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+        self.assertEqual(standalone_title.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+        self.assertAlmostEqual(standalone_title.runs[0].font.size.pt, 16)
+        self.assertEqual(page_field.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+        visible_runs = [run for run in page_field.runs if run.text]
+        self.assertTrue(visible_runs)
+        self.assertAlmostEqual(visible_runs[0].font.size.pt, 16)
 
     def test_force_canonical_toc_removes_english_and_chinese_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
