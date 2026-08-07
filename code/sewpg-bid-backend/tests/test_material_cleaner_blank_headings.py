@@ -129,6 +129,57 @@ class MaterialCleanerBlankHeadingTests(unittest.TestCase):
         self.assertIsNotNone(p_pr)
         self.assertIsNone(p_pr.find(qn("w:outlineLvl")))
 
+    def test_normalize_preserves_trailing_blank_heading_with_carriage_return(self) -> None:
+        word_cleaner = _load_word_cleaner()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trailing-blank-heading-w-cr.docx"
+            document = Document()
+            document.add_paragraph("正文")
+            blank_heading = document.add_paragraph(style="Heading 2")
+            blank_heading.add_run()._r.append(OxmlElement("w:cr"))
+            document.save(path)
+
+            word_cleaner.cmd_normalize(path)
+            word_cleaner.cmd_normalize(path)
+
+            cleaned = Document(path)
+            carriage_return_paragraphs = [
+                paragraph
+                for paragraph in cleaned.paragraphs
+                if next(paragraph._p.iter(qn("w:cr")), None) is not None
+            ]
+
+        self.assertEqual(len(cleaned.paragraphs), 2)
+        self.assertEqual(len(carriage_return_paragraphs), 1)
+        self.assertEqual(carriage_return_paragraphs[0].style.name, "Normal")
+
+    def test_normalize_preserves_carriage_returns_in_body_and_table_cell(self) -> None:
+        word_cleaner = _load_word_cleaner()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body-and-table-w-cr.docx"
+            document = Document()
+            body_paragraph = document.add_paragraph()
+            body_paragraph.add_run("正文上")
+            body_paragraph.add_run()._r.append(OxmlElement("w:cr"))
+            body_paragraph.add_run("正文下")
+
+            cell_paragraph = document.add_table(rows=1, cols=1).cell(0, 0).paragraphs[0]
+            cell_paragraph.add_run("单元格上")
+            cell_paragraph.add_run()._r.append(OxmlElement("w:cr"))
+            cell_paragraph.add_run("单元格下")
+            document.save(path)
+
+            word_cleaner.cmd_normalize(path)
+
+            cleaned = Document(path)
+            cleaned_body = cleaned.paragraphs[0]
+            cleaned_cell = cleaned.tables[0].cell(0, 0).paragraphs[0]
+
+        self.assertEqual(len(list(cleaned_body._p.iter(qn("w:cr")))), 1)
+        self.assertEqual(len(list(cleaned_cell._p.iter(qn("w:cr")))), 1)
+
     def test_normalize_collapses_blank_headings_without_manual_breaks(self) -> None:
         word_cleaner = _load_word_cleaner()
 
