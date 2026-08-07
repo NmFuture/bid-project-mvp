@@ -31,12 +31,14 @@ def _load_driver():
 
 
 class MaterialCleanerDriverScopeTests(unittest.TestCase):
-    def test_skill_documents_blank_heading_metadata_cleanup(self) -> None:
+    def test_skill_documents_blank_heading_cleanup_contract(self) -> None:
         skill_text = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("空白标题", skill_text)
-        self.assertIn("保留段落及其中的换行符和分页符", skill_text)
         self.assertIn("清除 Heading 样式和 outlineLvl", skill_text)
+        self.assertIn("含手工换行或分页符的段落予以保留", skill_text)
+        self.assertIn("纯空段落按空行合并和空白页清理规则处理", skill_text)
+        self.assertNotIn("保留段落及其中的换行符和分页符", skill_text)
 
     def test_pdf_and_excel_converter_scripts_exist(self) -> None:
         script_dir = DRIVER_PATH.parent

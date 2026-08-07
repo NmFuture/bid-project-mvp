@@ -94,7 +94,7 @@ MinIO raw/.../source.doc
 3. 前部已是正文时跳过 trim，只执行 normalize 和 verify。
 4. 存在封面、目录、前言、声明、审批或修订记录时定位一次正文锚点并 trim。
 5. 只把已有 Heading 样式或 outline 层级视为标题，不根据短文本或数字编号猜标题。
-6. 空白标题只清除 Heading 样式和 outlineLvl，保留段落及其中的换行符和分页符。
+6. 空白标题统一清除 Heading 样式和 outlineLvl；含手工换行或分页符的段落予以保留，纯空段落按空行合并和空白页清理规则处理。
 7. 验证失败时最多纠偏一次；仍异常则标记 `REVIEW`。
 8. 所有修改只发生在临时副本，源 DOCX 不修改。
 
