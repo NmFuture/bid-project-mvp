@@ -8703,6 +8703,39 @@ class TocSkillScriptTests(unittest.TestCase):
         outline = heading._p.find(qn("w:pPr")).find(qn("w:outlineLvl"))
         self.assertEqual(outline.get(qn("w:val")), "5")
 
+    def test_material_cleaner_suppresses_inherited_numbering_on_direct_outline_heading(self) -> None:
+        """direct-outline 标题应局部抑制样式链编号，且不影响共用样式的正文。"""
+        word_cleaner = load_material_cleaner_script("word_cleaner")
+
+        doc = Document()
+        numbered_base = self._make_hidden_numbered_custom_style(
+            doc,
+            "自动编号基准",
+            "Normal",
+            "7",
+        )
+        shared = doc.styles.add_style("共享编号正文", WD_STYLE_TYPE.PARAGRAPH)
+        shared.base_style = numbered_base
+
+        heading = doc.add_paragraph("总体技术路线", style=shared)
+        heading_p_pr = heading._p.get_or_add_pPr()
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), "2")
+        heading_p_pr.append(outline)
+        body_item = doc.add_paragraph("正文列表项", style=shared)
+
+        normalized = word_cleaner._strip_numbered_heading_prefixes(doc)
+
+        self.assertEqual(normalized, 1)
+        heading_num_pr = heading._p.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertIsNotNone(heading_num_pr)
+        self.assertEqual(heading_num_pr.find(qn("w:numId")).get(qn("w:val")), "0")
+        style_num_pr = numbered_base.element.find(qn("w:pPr")).find(qn("w:numPr"))
+        self.assertEqual(style_num_pr.find(qn("w:numId")).get(qn("w:val")), "7")
+        body_p_pr = body_item._p.find(qn("w:pPr"))
+        self.assertIsNotNone(body_p_pr)
+        self.assertIsNone(body_p_pr.find(qn("w:numPr")))
+
     def test_bid_assembler_gap_plan_flags_unconfirmed_candidates(self) -> None:
         """1.1/4.7 回归：只有候选素材、未确认 matchedMaterials 时给出显式提示。"""
         build_assembly = load_assembler_script("build_assembly")

@@ -311,6 +311,55 @@ def _paragraph_has_numpr(para) -> bool:
     return pPr is not None and pPr.find(qn("w:numPr")) is not None
 
 
+def _numpr_suppresses_numbering(num_pr) -> bool:
+    """numId=0 表示当前层级显式关闭自动编号。"""
+    from docx.oxml.ns import qn
+
+    if num_pr is None:
+        return False
+    num_id = num_pr.find(qn("w:numId"))
+    return num_id is not None and num_id.get(qn("w:val")) == "0"
+
+
+def _style_chain_has_effective_numbering(style) -> bool:
+    """沿 basedOn 链判断最近的 numPr 是否会启用自动编号。"""
+    from docx.oxml.ns import qn
+
+    seen: set[int] = set()
+    current = style
+    while current is not None:
+        element = getattr(current, "element", None)
+        if element is None or id(element) in seen:
+            break
+        seen.add(id(element))
+        p_pr = element.find(qn("w:pPr"))
+        num_pr = p_pr.find(qn("w:numPr")) if p_pr is not None else None
+        if num_pr is not None:
+            return not _numpr_suppresses_numbering(num_pr)
+        current = getattr(current, "base_style", None)
+    return False
+
+
+def _ensure_paragraph_numbering_suppression(para) -> bool:
+    """仅在当前段落写入 numId=0，不修改可能被正文共用的样式。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    p_pr = para._element.get_or_add_pPr()
+    num_pr = p_pr.find(qn("w:numPr"))
+    if _numpr_suppresses_numbering(num_pr):
+        return False
+    if num_pr is None:
+        num_pr = OxmlElement("w:numPr")
+        p_pr.append(num_pr)
+    num_id = num_pr.find(qn("w:numId"))
+    if num_id is None:
+        num_id = OxmlElement("w:numId")
+        num_pr.append(num_id)
+    num_id.set(qn("w:val"), "0")
+    return True
+
+
 def _resolve_heading_level(para, inferred_depth: int) -> int:
     """优先保留段落及 basedOn 样式链的 Heading/outline 层级。"""
     style_level = _extract_heading_level_from_style(_get_para_style(para))
@@ -415,16 +464,25 @@ def _strip_numbered_heading_prefixes(doc) -> int:
         if not _looks_like_heading_para(para):
             continue
 
+        style_level = _extract_heading_level_from_style(_get_para_style(para))
+        outline_level = _get_outline_level(para._element)
+        style_chain_level = _style_chain_heading_level(para)
+        is_direct_outline_heading = (
+            outline_level is not None
+            and style_level is None
+            and style_chain_level is None
+        )
+
         changed = False
         if had_visible_prefix:
             _replace_para_text_preserve_runs(para, cleaned_text)
             changed = True
 
-        if had_numpr:
+        if is_direct_outline_heading and _style_chain_has_effective_numbering(para.style):
+            changed = _ensure_paragraph_numbering_suppression(para) or changed
+        elif had_numpr:
             changed = _remove_paragraph_numpr(para) or changed
 
-        style_level = _extract_heading_level_from_style(_get_para_style(para))
-        style_chain_level = _style_chain_heading_level(para)
         # 部分标书用 Normal + 直接 outlineLvl 表示目录层级，同时依赖原样式控制
         # 图片和表格分页；强制套用内置 Heading 会改变段落间距并制造空白页。
         if style_level is not None or style_chain_level is not None:
