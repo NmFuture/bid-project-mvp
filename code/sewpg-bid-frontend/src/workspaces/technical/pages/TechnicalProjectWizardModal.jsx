@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { technicalMaterialsAPI, technicalProjectInfoOptionsAPI, technicalProjectsAPI } from '../../../api'
+import { technicalMaterialsAPI, technicalProjectsAPI } from '../../../api'
 import Button from '../../../components/ui/Button'
 import {
   STATIC_FOUNDATION_TYPE_OPTIONS,
-  STATIC_PROJECT_INFO_OPTIONS,
   OTHER_OPTION_LABEL,
   deriveCustomerOptionsFromIndex,
   deriveTurbineModelOptionsFromIndex,
-  loadProjectInfoOptions,
 } from '../../shared/projectInfoOptions'
 import {
   buildPrimaryTurbineModel,
@@ -138,7 +136,6 @@ export default function TechnicalProjectWizardModal({
   const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
     draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
   )
-  const [projectInfoOptions, setProjectInfoOptions] = useState(STATIC_PROJECT_INFO_OPTIONS)
   // 客户 / 风机机型候选改为从技术标三级目录 JSON 索引派生（客户定制 / 标准文件），
   // 末尾固定带「其他」。见 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
   const [indexCustomerOptions, setIndexCustomerOptions] = useState([])
@@ -164,14 +161,18 @@ export default function TechnicalProjectWizardModal({
     const merged = mergeOptionValues(indexCustomerOptions.filter((item) => item !== OTHER_OPTION_LABEL), extra)
     return [...merged, OTHER_OPTION_LABEL]
   }, [indexCustomerOptions, customerIsOther, form.customerName])
+  // 机型候选与客户同口径：只认素材库标准文件目录，不回落 STATIC_TURBINE_MODEL_OPTIONS。
+  // 回落会让用户选到素材库里没有的机型，后续按机型取素材同样落空。
   const turbineModelOptions = useMemo(() => {
-    const base = indexTurbineModelOptions.length ? indexTurbineModelOptions : projectInfoOptions.turbineModels
     const formModels = form.turbineModels
       .filter((row) => !otherTurbineRowIds.has(row.id))
       .map((row) => row.model)
-    const merged = mergeOptionValues(base.filter((item) => item !== OTHER_OPTION_LABEL), formModels)
+    const merged = mergeOptionValues(
+      indexTurbineModelOptions.filter((item) => item !== OTHER_OPTION_LABEL),
+      formModels,
+    )
     return [...merged, OTHER_OPTION_LABEL]
-  }, [indexTurbineModelOptions, projectInfoOptions.turbineModels, form.turbineModels, otherTurbineRowIds])
+  }, [indexTurbineModelOptions, form.turbineModels, otherTurbineRowIds])
 
   const updateTurbineRow = (rowId, key, value) => {
     setForm((prev) => ({
@@ -232,19 +233,6 @@ export default function TechnicalProjectWizardModal({
     selectedMaterialProjectId,
   ])
 
-  useEffect(() => {
-    let mounted = true
-    const loadOptions = async () => {
-      const options = await loadProjectInfoOptions(technicalProjectInfoOptionsAPI)
-      if (!mounted) return
-      // 仅作静态兜底；客户/机型默认值不再自动注入，候选以 JSON 索引派生为准，留空待用户选。
-      setProjectInfoOptions(options)
-    }
-    loadOptions()
-    return () => {
-      mounted = false
-    }
-  }, [])
 
   useEffect(() => {
     let mounted = true
