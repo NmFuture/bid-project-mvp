@@ -4,7 +4,9 @@ python-multipart==0.0.32
 httpx==0.28.1
 python-docx==1.1.2
 pypdf==6.14.2
-PyMuPDF>=1.24.0
+# 锁死版本：1.28.2 起 `import fitz` 会把弃用警告打到 stdout，污染 s1parse 的纯 JSON
+# 输出契约，导致解析链路整体失败。项目有 8 处仍在 `import fitz`，改名前不得放开上界。
+PyMuPDF==1.28.0
 pandas>=2.2.0
 openpyxl>=3.1.0
 lxml>=5.2.0
