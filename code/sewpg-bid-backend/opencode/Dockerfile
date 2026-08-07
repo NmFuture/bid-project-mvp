@@ -20,7 +20,9 @@ RUN apt-get update \
 RUN npm install -g "opencode-ai@${OPENCODE_NPM_VERSION}" \
     && npm cache clean --force
 
-RUN python3 -m pip install --no-cache-dir --break-system-packages "python-docx==1.1.2" "pymupdf>=1.24.0"
+# pymupdf 锁死 1.28.0：1.28.2 起 `import fitz` 会把弃用警告打到 stdout，
+# 污染 s1parse 的纯 JSON 输出契约。s1parse 就跑在本镜像内，放开上界会直接打死解析链路。
+RUN python3 -m pip install --no-cache-dir --break-system-packages "python-docx==1.1.2" "pymupdf==1.28.0"
 RUN python3 -m pip install --no-cache-dir --break-system-packages "pandas>=2.2.0" "openpyxl>=3.1.0"
 RUN python3 -m pip install --no-cache-dir --break-system-packages "lxml>=5.2.0" "docxcompose>=2.2.0" "PyYAML>=6.0.0"
 
