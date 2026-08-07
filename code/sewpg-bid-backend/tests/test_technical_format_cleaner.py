@@ -129,6 +129,43 @@ def _write_existing_toc_document(path: Path) -> None:
     doc.save(path)
 
 
+def _write_custom_style_toc_document(path: Path) -> None:
+    doc = Document()
+    toc_style = doc.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+    toc_style.base_style = doc.styles["Normal"]
+    inherited_style = doc.styles.add_style("Inherited Toc Entry", WD_STYLE_TYPE.PARAGRAPH)
+    inherited_style.base_style = toc_style
+    custom_style = doc.styles.add_style("Project Directory Entry", WD_STYLE_TYPE.PARAGRAPH)
+    custom_style.base_style = doc.styles["Normal"]
+
+    field = doc.add_paragraph()
+    instruction_run = OxmlElement("w:r")
+    instruction = OxmlElement("w:instrText")
+    instruction.text = ' TOC \\o "1-3" '
+    instruction_run.append(instruction)
+    field._element.append(instruction_run)
+
+    doc.add_paragraph("OLD_INHERITED_TOC_ENTRY", style=inherited_style)
+    custom_entry = doc.add_paragraph(style=custom_style)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), "_Toc123456789")
+    hyperlink_run = OxmlElement("w:r")
+    hyperlink_text = OxmlElement("w:t")
+    hyperlink_text.text = "OLD_CUSTOM_TOC_ENTRY"
+    hyperlink_run.append(hyperlink_text)
+    hyperlink.append(hyperlink_run)
+    custom_entry._element.append(hyperlink)
+
+    page_break = doc.add_paragraph()
+    page_break_run = OxmlElement("w:r")
+    page_break_element = OxmlElement("w:br")
+    page_break_element.set(qn("w:type"), "page")
+    page_break_run.append(page_break_element)
+    page_break._element.append(page_break_run)
+    doc.add_paragraph("BODY_MUST_REMAIN", style="Heading 1")
+    doc.save(path)
+
+
 class TechnicalFormatCleanerTests(unittest.TestCase):
     def test_run_manifest_returns_warnings_without_writing_markdown_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -262,11 +299,66 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
                 any("TOC" in (node.text or "").upper() for node in output.element.iter(qn("w:instrText")))
             )
 
+    def test_force_canonical_toc_removes_custom_and_inherited_results_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_file = root / "custom-existing-toc.docx"
+            outline_file = root / "outline.json"
+            first_output = root / "canonical-toc-first.docx"
+            second_output = root / "canonical-toc-second.docx"
+            style_file = root / "style.json"
+            first_manifest = root / "manifest-first.json"
+            second_manifest = root / "manifest-second.json"
+            _write_custom_style_toc_document(input_file)
+            _write_empty_outline(outline_file)
+            _write_style_spec(style_file, insert_toc=True)
+
+            for source, target, manifest in (
+                (input_file, first_output, first_manifest),
+                (first_output, second_output, second_manifest),
+            ):
+                _write_manifest(
+                    manifest,
+                    input_file=source,
+                    outline_file=outline_file,
+                    output_file=target,
+                    style_file=style_file,
+                    force_canonical_toc=True,
+                )
+                _run_application_cleaner(manifest)
+
+            output = Document(str(second_output))
+            all_text = "".join(node.text or "" for node in output.element.iter(qn("w:t")))
+            self.assertNotIn("OLD_INHERITED_TOC_ENTRY", all_text)
+            self.assertNotIn("OLD_CUSTOM_TOC_ENTRY", all_text)
+            self.assertIn("BODY_MUST_REMAIN", all_text)
+            toc_instructions = [
+                node for node in output.element.iter(qn("w:instrText")) if "TOC" in (node.text or "").upper()
+            ]
+            self.assertEqual(len(toc_instructions), 1)
+            toc_breaks = [
+                node
+                for node in output.element.iter(qn("w:bookmarkStart"))
+                if node.get(qn("w:name")) == cleaner.TOC_BREAK_BOOKMARK
+            ]
+            self.assertEqual(len(toc_breaks), 1)
+            self.assertEqual(sum(paragraph.text == "目录" for paragraph in output.paragraphs), 1)
+            page_breaks = [
+                node
+                for node in output.element.iter(qn("w:br"))
+                if (node.get(qn("w:type")) or "page") == "page"
+            ]
+            self.assertEqual(len(page_breaks), 2)
+
     def test_toc_style_identifier_accepts_only_supported_levels(self) -> None:
         for value in ("TOC 1", "toc1", "目录 1", "目录9"):
             self.assertTrue(cleaner._is_toc_style_identifier(value))
         for value in ("TOC 0", "TOC 10", "TOC Notes", "目录", "目录 10"):
             self.assertFalse(cleaner._is_toc_style_identifier(value))
+
+    def test_toc_field_instruction_excludes_pageref_bookmarks(self) -> None:
+        self.assertTrue(cleaner._is_toc_field_instruction(' TOC \\o "1-3" '))
+        self.assertFalse(cleaner._is_toc_field_instruction(" PAGEREF _Toc123456789 \\h "))
 
     def test_tech_assembly_delegates_to_application_cleaner(self) -> None:
         tree = ast.parse(TECH_ASSEMBLY_PATH.read_text(encoding="utf-8"), filename=str(TECH_ASSEMBLY_PATH))
