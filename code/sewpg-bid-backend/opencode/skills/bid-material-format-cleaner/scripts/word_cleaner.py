@@ -729,7 +729,10 @@ def _has_manual_break(para_element) -> bool:
     """段落是否承载手工换行或分页节点。"""
     from docx.oxml.ns import qn
 
-    return next(para_element.iter(qn("w:br")), None) is not None
+    return any(
+        next(para_element.iter(qn(tag)), None) is not None
+        for tag in ("w:br", "w:cr")
+    )
 
 
 def _has_sect_pr(para_element) -> bool:
