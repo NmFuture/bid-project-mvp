@@ -157,6 +157,45 @@ class BuildPayloadTests(unittest.TestCase):
         self.assertEqual(tiers["客户素材"]["tier"], "customer")
         self.assertEqual(tiers["项目素材"]["tier"], "project")
 
+    def test_index_options_route_strips_files_and_keeps_derivable_names(self) -> None:
+        """轻量候选接口必须只回目录名，且保持前端派生函数依赖的字段。
+
+        完整索引把每个目录的 files 全带上，2026-08-07 实测 25.7 MB / 49.5 s，
+        前端 12 秒默认超时必然失败并回落到硬编码客户清单。本接口存在的唯一
+        理由就是不带 files——一旦回归，超时问题会原样复现。
+        """
+        from app.api.routes import technical as technical_routes
+
+        payload = tmi._build_payload(_tree(), _files())
+        with patch.object(technical_routes, "__name__", technical_routes.__name__):
+            with patch(
+                "app.services.technical_material_index.load_technical_material_index",
+                return_value=payload,
+            ):
+                result = asyncio.run(technical_routes.technical_material_index_options())
+
+        serialized = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn('"files"', serialized)
+        self.assertNotIn('"tags"', serialized)
+
+        tiers = {tier["tier"]: tier for tier in result["tiers"]}
+        self.assertEqual(set(tiers), {"standard", "customer", "project"})
+
+        # 前端 deriveCustomerOptionsFromIndex 读 folders[].customerName
+        customer_names = [f["customerName"] for f in tiers["customer"]["folders"]]
+        self.assertTrue(all(customer_names), "客户目录必须回填 customerName")
+
+        # 前端 deriveTurbineModelOptionsFromIndex 读 tier=standard 的 folders[].name
+        self.assertTrue(all(f["name"] for f in tiers["standard"]["folders"]))
+
+        # 与完整索引的目录名逐一对齐，不允许漏项
+        full_customer = [
+            f["customerName"]
+            for t in payload["tiers"] if t["tier"] == "customer"
+            for f in t["folders"]
+        ]
+        self.assertEqual(customer_names, full_customer)
+
     def test_files_merged_into_correct_third_level_folder(self) -> None:
         payload = tmi._build_payload(_tree(), _files())
         general = next(t for t in payload["tiers"] if t["name"] == "通用素材")

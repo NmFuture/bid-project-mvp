@@ -5727,3 +5727,35 @@ def test_business_gap_artifact_lookup_stays_in_business_service() -> None:
 
     assert payload["artifactId"] == "ART-LOOKUP"
     assert payload["sourceMode"] == "uploaded_in_business_s3"
+
+
+def test_customer_registry_covers_material_library_folder_names() -> None:
+    """客户注册表的规范名必须能对上素材库客户目录名，否则按客户取素材会落空。
+
+    客户/项目档的第 3 级目录是身份目录（material_folder_scope.py 注释），目录名
+    即 customerName。2026-08-07 5090 实测素材库客户目录为「华能集团」「国电投」，
+    而注册表当时只有华能，且建项目弹窗的硬编码清单写的是「国家电投」——两边对
+    不上时 customer_matches 无法命中，用户选了客户却取不到任何素材。
+    """
+    from app.services.identity import canonical_customer
+
+    # 素材库实有目录名必须能解析出与自身一致的规范名
+    for folder_name in ("华能集团", "国电投"):
+        resolved = canonical_customer(folder_name)
+        assert resolved["customerCanonicalName"] == folder_name, (
+            f"素材库目录 {folder_name} 未能解析为同名规范客户"
+        )
+        assert resolved["customerId"], f"{folder_name} 缺少 customerId"
+
+    # 历史/别名写法必须归一到同一个客户，避免老数据失联
+    spic_ids = {
+        canonical_customer(name)["customerId"]
+        for name in ("国电投", "国家电投", "国家电力投资", "中电投")
+    }
+    assert spic_ids == {"CUST-SPIC"}, f"国电投别名未归一：{spic_ids}"
+
+    huaneng_ids = {
+        canonical_customer(name)["customerId"]
+        for name in ("华能", "华能集团", "中国华能")
+    }
+    assert huaneng_ids == {"CUST-HUANENG"}, f"华能别名未归一：{huaneng_ids}"

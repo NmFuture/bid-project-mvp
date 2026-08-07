@@ -701,6 +701,53 @@ async def technical_material_index() -> dict[str, Any]:
     return payload
 
 
+@router.get("/api/technical/materials/index/options")
+async def technical_material_index_options() -> dict[str, Any]:
+    """客户 / 机型候选清单：只回三级目录名，不带文件列表。
+
+    `/materials/index` 返回完整索引，每个目录都挂着 `files`，2026-08-07 实测
+    25.7 MB / 49.5 s。前端建项目弹窗仅为取客户名与机型名就要下载全量，必然
+    超过 12 秒默认超时，超时后静默回落到硬编码清单，用户会看到素材库里根本
+    不存在的客户。本接口把响应压到目录名级别。
+
+    返回结构与完整索引的 `tiers[].folders[].name / customerName` 保持一致，
+    前端 deriveCustomerOptionsFromIndex / deriveTurbineModelOptionsFromIndex
+    可直接复用，无需适配。
+    """
+    from app.services.technical_material_index import (
+        load_technical_material_index,
+        rebuild_technical_material_index,
+    )
+
+    payload = load_technical_material_index()
+    if not payload:
+        payload = await rebuild_technical_material_index()
+
+    tiers: list[dict[str, Any]] = []
+    for tier in (payload.get("tiers") if isinstance(payload, dict) else None) or []:
+        if not isinstance(tier, dict):
+            continue
+        tiers.append(
+            {
+                "tier": str(tier.get("tier") or ""),
+                "name": str(tier.get("name") or ""),
+                "folders": [
+                    {
+                        "name": str(folder.get("name") or ""),
+                        "customerName": str(folder.get("customerName") or ""),
+                    }
+                    for folder in (tier.get("folders") or [])
+                    if isinstance(folder, dict)
+                ],
+            }
+        )
+
+    return {
+        "tiers": tiers,
+        "generatedAt": str(payload.get("generatedAt") or "") if isinstance(payload, dict) else "",
+    }
+
+
 @router.put("/api/technical/materials/index/tags")
 async def set_technical_material_index_tags(
     data: dict[str, Any] = Body(default_factory=dict),

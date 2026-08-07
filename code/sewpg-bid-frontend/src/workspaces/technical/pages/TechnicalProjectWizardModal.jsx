@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { technicalMaterialsAPI, technicalProjectInfoOptionsAPI, technicalProjectsAPI } from '../../../api'
+import { technicalMaterialsAPI, technicalProjectsAPI } from '../../../api'
 import Button from '../../../components/ui/Button'
 import {
   STATIC_FOUNDATION_TYPE_OPTIONS,
-  STATIC_PROJECT_INFO_OPTIONS,
   OTHER_OPTION_LABEL,
   deriveCustomerOptionsFromIndex,
   deriveTurbineModelOptionsFromIndex,
-  loadProjectInfoOptions,
 } from '../../shared/projectInfoOptions'
 import {
   buildPrimaryTurbineModel,
@@ -138,7 +136,6 @@ export default function TechnicalProjectWizardModal({
   const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
     draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
   )
-  const [projectInfoOptions, setProjectInfoOptions] = useState(STATIC_PROJECT_INFO_OPTIONS)
   // 客户 / 风机机型候选改为从技术标三级目录 JSON 索引派生（客户定制 / 标准文件），
   // 末尾固定带「其他」。见 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
   const [indexCustomerOptions, setIndexCustomerOptions] = useState([])
@@ -148,26 +145,34 @@ export default function TechnicalProjectWizardModal({
   const [otherTurbineRowIds, setOtherTurbineRowIds] = useState(() => new Set())
   const [loadingIdentities, setLoadingIdentities] = useState(false)
   const [identityError, setIdentityError] = useState('')
+  const [indexOptionsError, setIndexOptionsError] = useState('')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
 
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
   const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
   // 「其他」恒为最后一项，合并 form 现值时要避免把它当成真实候选重复插入。
+  // 客户候选只认素材库客户目录，不再回落到 STATIC_CUSTOMER_OPTIONS：静态清单里
+  // 有大量素材库中不存在的客户，一旦回落用户会选到没有素材的客户，且界面毫无提示，
+  // 要到后续按客户取素材时才暴露（2026-08-07 实测：素材库仅「华能集团」「国电投」
+  // 两个目录，回落后下拉却显示 14 个）。加载失败时宁可只留「其他」手工输入。
   const customerOptions = useMemo(() => {
-    const base = indexCustomerOptions.length ? indexCustomerOptions : projectInfoOptions.customers
     const extra = customerIsOther ? [] : [form.customerName]
-    const merged = mergeOptionValues(base.filter((item) => item !== OTHER_OPTION_LABEL), extra)
+    const merged = mergeOptionValues(indexCustomerOptions.filter((item) => item !== OTHER_OPTION_LABEL), extra)
     return [...merged, OTHER_OPTION_LABEL]
-  }, [indexCustomerOptions, projectInfoOptions.customers, customerIsOther, form.customerName])
+  }, [indexCustomerOptions, customerIsOther, form.customerName])
+  // 机型候选与客户同口径：只认素材库标准文件目录，不回落 STATIC_TURBINE_MODEL_OPTIONS。
+  // 回落会让用户选到素材库里没有的机型，后续按机型取素材同样落空。
   const turbineModelOptions = useMemo(() => {
-    const base = indexTurbineModelOptions.length ? indexTurbineModelOptions : projectInfoOptions.turbineModels
     const formModels = form.turbineModels
       .filter((row) => !otherTurbineRowIds.has(row.id))
       .map((row) => row.model)
-    const merged = mergeOptionValues(base.filter((item) => item !== OTHER_OPTION_LABEL), formModels)
+    const merged = mergeOptionValues(
+      indexTurbineModelOptions.filter((item) => item !== OTHER_OPTION_LABEL),
+      formModels,
+    )
     return [...merged, OTHER_OPTION_LABEL]
-  }, [indexTurbineModelOptions, projectInfoOptions.turbineModels, form.turbineModels, otherTurbineRowIds])
+  }, [indexTurbineModelOptions, form.turbineModels, otherTurbineRowIds])
 
   const updateTurbineRow = (rowId, key, value) => {
     setForm((prev) => ({
@@ -228,26 +233,15 @@ export default function TechnicalProjectWizardModal({
     selectedMaterialProjectId,
   ])
 
-  useEffect(() => {
-    let mounted = true
-    const loadOptions = async () => {
-      const options = await loadProjectInfoOptions(technicalProjectInfoOptionsAPI)
-      if (!mounted) return
-      // 仅作静态兜底；客户/机型默认值不再自动注入，候选以 JSON 索引派生为准，留空待用户选。
-      setProjectInfoOptions(options)
-    }
-    loadOptions()
-    return () => {
-      mounted = false
-    }
-  }, [])
 
   useEffect(() => {
     let mounted = true
     const loadIndexOptions = async () => {
-      if (!materialsApi?.index) return
+      const loadIndex = materialsApi?.indexOptions || materialsApi?.index
+      if (!loadIndex) return
       try {
-        const payload = await materialsApi.index()
+        setIndexOptionsError('')
+        const payload = await loadIndex()
         if (!mounted) return
         const customers = deriveCustomerOptionsFromIndex(payload)
         const turbines = deriveTurbineModelOptionsFromIndex(payload)
@@ -268,10 +262,13 @@ export default function TechnicalProjectWizardModal({
           })
           return next
         })
-      } catch {
+      } catch (e) {
         if (!mounted) return
         setIndexCustomerOptions([])
         setIndexTurbineModelOptions([])
+        // 必须显式告知：客户候选已不做静态回落，静默失败会让下拉只剩「其他」，
+        // 用户无从判断是素材库真的没有客户，还是接口挂了。
+        setIndexOptionsError(e?.message || '素材库客户/机型清单加载失败，请重试或手工填写。')
       }
     }
     loadIndexOptions()
@@ -507,6 +504,9 @@ export default function TechnicalProjectWizardModal({
                     <option key={item} value={item}>{item}</option>
                   ))}
                 </select>
+              )}
+              {indexOptionsError && (
+                <p className="mt-1.5 text-xs text-error">{indexOptionsError}</p>
               )}
               {(identityError || loadingIdentities) && (
                 <p className={`mt-1.5 text-xs ${identityError ? 'text-error' : 'text-outline'}`}>
