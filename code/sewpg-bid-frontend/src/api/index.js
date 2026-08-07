@@ -647,6 +647,9 @@ export const technicalMaterialsAPI = {
   pipelineProgress: () => request('/technical/materials/pipeline-progress'),
   turbineModelOptions: () => request('/technical/materials/turbine-model-options'),
   index: () => request('/technical/materials/index'),
+  // 只回三级目录名的轻量版：完整索引带着每个目录的文件列表，实测 25.7 MB / 49.5 s，
+  // 建项目弹窗只为取客户名与机型名，用完整版必然撞上 12 秒默认超时。
+  indexOptions: () => request('/technical/materials/index/options'),
   setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),
   raw: {
     tree: () => request('/technical/materials/raw/tree'),
