@@ -29,7 +29,8 @@ from agentic.checklist import (  # noqa: E402
     shard_keys,
     shard_of_row,
 )
-from agentic.paths import load_manifest  # noqa: E402
+from agentic import nav_store  # noqa: E402
+from agentic.paths import load_manifest, nav_store_path  # noqa: E402
 from agentic.submission_store import load as load_submissions  # noqa: E402
 from agentic.submission_store import shard_progress, submit  # noqa: E402
 
@@ -93,6 +94,64 @@ class ShardSubmissionTests(unittest.TestCase):
             }
             for row in checklist_for_shard(shard_key)
         ]
+
+    def _build_nav_store(self) -> str:
+        """建一个只含单条证据的导航索引，返回那条证据的 evidenceId。"""
+        nav_path = nav_store_path(self.manifest_path, self.manifest)
+        nav_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = nav_store.connect(nav_path)
+        try:
+            nav_store.init_db(conn)
+            nav_store.insert_document(conn, {"id": "TEN-1", "name": "招标文件"})
+            nav_store.insert_evidence(
+                conn,
+                {
+                    "id": "TEN-1:B000003",
+                    "documentId": "TEN-1",
+                    "kind": "block",
+                    "bodyIndex": 3,
+                    "text": "中央监控系统全国产化软硬件，主控系统国产自主可控。",
+                },
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return "TEN-1:B000003"
+
+    def test_shard_submit_rejects_unknown_evidence_ids(self) -> None:
+        # 模型把证据原文当成 evidenceId 提交（2026-08-07 线上实际发生），
+        # 必须在 submit 当场硬失败，否则错误要等后端统一 finalize 才暴露，
+        # 那时分片会话已结束、无法回查重提，整条分片链路只能作废回落单会话。
+        known = self._build_nav_store()
+        shard_key = shard_keys()[0]
+        rows = self._rows_for(shard_key)
+        rows[0]["status"] = "found"
+        rows[0]["evidenceIds"] = ["中央监控系统全国产化软硬件，主控系统国产自主可控。"]
+
+        with self.assertRaises(RuntimeError) as ctx:
+            submit(self.manifest_path, self.manifest, "technicalInterpretation", rows, shard=shard_key)
+
+        message = str(ctx.exception)
+        self.assertIn("unknown evidenceIds", message)
+        # 报错必须给出真实的 ID 样例，模型据此才能改对格式。
+        self.assertIn(known, message)
+        # 硬失败不得留下脏数据。
+        self.assertEqual(load_submissions(self.manifest_path, self.manifest).get("targets", {}), {})
+
+    def test_shard_submit_accepts_known_evidence_ids(self) -> None:
+        known = self._build_nav_store()
+        shard_key = shard_keys()[0]
+        rows = self._rows_for(shard_key)
+        rows[0]["status"] = "found"
+        rows[0]["evidenceIds"] = [known]
+
+        submit(self.manifest_path, self.manifest, "technicalInterpretation", rows, shard=shard_key)
+
+        stored = load_submissions(self.manifest_path, self.manifest)["targets"]["technicalInterpretation"]
+        self.assertEqual(
+            {int(row["rowNo"]) for row in stored},
+            {int(row["rowNo"]) for row in checklist_for_shard(shard_key)},
+        )
 
     def test_shard_submissions_merge_instead_of_overwrite(self) -> None:
         first, second = shard_keys()[0], shard_keys()[1]

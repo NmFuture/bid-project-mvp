@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+from . import nav_store
 from .checklist import shard_by_key, shard_keys
-from .paths import submission_path
+from .delivery_contract import evidence_ids_from_value
+from .paths import nav_store_path, submission_path
 
 
 TARGET_KEYS = {"projectBasics", "technicalInterpretation"}
@@ -162,6 +164,43 @@ def _merge_shard_rows(
     return [merged[row_no] for row_no in sorted(merged)], sorted(accepted)
 
 
+def _assert_evidence_ids_known(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    shard_key: str,
+    value: Any,
+) -> None:
+    # 分片会话被禁止执行 validate/finalize，提交后没有任何自查手段。evidenceId 错误若留到
+    # 后端统一 finalize 才暴露，会话早已结束、无法回查重提，整条分片链路只能整体失败并回落
+    # 单会话（2026-08-07 实测：11 个 evidenceId 提交了证据原文，7 个分片全部作废）。
+    # 因此在 submit 当场硬失败，把「校验-纠错」闭环还给分片会话——这正是单会话链路里
+    # 「validate 失败时继续回查并重新 submit」所依赖的机制。
+    nav_path = nav_store_path(manifest_path, manifest)
+    if not nav_path.is_file():
+        # 导航索引缺失是 prepare 阶段的问题，由 validate 统一报 missing_nav_store，
+        # 这里不越权阻断提交。
+        return
+    submitted = evidence_ids_from_value(value)
+    if not submitted:
+        return
+    conn = nav_store.connect(nav_path)
+    try:
+        unknown = [evidence_id for evidence_id in submitted if not nav_store.evidence_exists(conn, evidence_id)]
+        if not unknown:
+            return
+        sample = nav_store.fetch_all(conn, "SELECT id FROM evidence LIMIT 1")
+    finally:
+        conn.close()
+    hint = ""
+    if sample:
+        hint = f"，正确的 evidenceId 形如 {sample[0]['id']}"
+    raise RuntimeError(
+        f"shard {shard_key} submitted unknown evidenceIds: {unknown[:10]}"
+        f"{'' if len(unknown) <= 10 else f' (+{len(unknown) - 10} more)'}; "
+        f"只能提交 s1parse search/read 返回过的 evidenceId，不要把证据原文当作 evidenceId{hint}"
+    )
+
+
 def submit(
     manifest_path: Path,
     manifest: dict[str, Any],
@@ -179,6 +218,7 @@ def submit(
                 f"targetKey {target_key} does not support --shard; sharded targets are {sorted(SHARDED_TARGET_KEYS)}"
             )
         shard_by_key(shard_key)
+        _assert_evidence_ids_known(manifest_path, manifest, shard_key, value)
 
     path = submission_path(manifest_path, manifest)
     with _file_lock(path):

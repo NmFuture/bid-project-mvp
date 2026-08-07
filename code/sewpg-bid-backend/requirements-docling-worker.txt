@@ -1,7 +1,8 @@
 -c requirements-docling-lock.txt
 
 # Docling worker 只保留解析、共享卷读写和 Redis 任务所需依赖。
-PyMuPDF>=1.24.0
+# 锁死 1.28.0：1.28.2 起 `import fitz` 会把弃用警告打到 stdout，污染 JSON 输出契约。
+PyMuPDF==1.28.0
 redis>=5.2.0
 docling==2.108.0
 onnxruntime==1.27.0
