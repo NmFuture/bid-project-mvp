@@ -432,6 +432,28 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
               ))}
             </div>
           )}
+          {uploadedTemplateFiles.length > 0 && (
+            <div className="flex flex-col gap-2" aria-label="已上传项目模板">
+              {uploadedTemplateFiles.map((file) => (
+                <div key={file.id} className="flex items-center gap-3 rounded-md bg-surface-container-low px-3 py-2.5">
+                  <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">description</span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-on-surface" title={file.name}>{file.name}</span>
+                  <span className="shrink-0 text-xs text-outline">{file.size}</span>
+                  <span className="shrink-0 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">项目模板</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {fallbackWillBeUsed && (
+            <div className="flex items-center gap-3 rounded-md bg-surface-container-low px-3 py-2.5" aria-label="当前默认模板">
+              <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">description</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-on-surface" title={fallbackTemplate.name}>
+                {fallbackTemplate.name || '默认技术标模板'}
+              </span>
+              <span className="shrink-0 text-xs text-outline">{fallbackTemplate.sizeLabel || '-'}</span>
+              <span className="shrink-0 rounded-md bg-surface-container-high px-2 py-0.5 text-xs font-medium text-on-surface-variant">默认模板</span>
+            </div>
+          )}
           {!uploadedTemplateFiles.length && !fallbackWillBeUsed ? (
             <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
               未检测到项目模板，且默认模板不可用。请先上传{bidLabel}模板文件。
