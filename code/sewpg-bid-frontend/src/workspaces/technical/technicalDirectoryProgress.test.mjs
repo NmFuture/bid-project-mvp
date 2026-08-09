@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import {
   directoryDisplayPercentage,
@@ -427,17 +427,56 @@ test('maps internal directory failures to actionable user-facing reasons', () =>
   assert.equal(resultFailure.summary, '目录结果处理失败，请重新生成；如仍失败请联系管理员。')
 })
 
-test('technical directory card renders only the detail line and the runtime line', () => {
-  const pageSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
-  const visibleStatusBindings = pageSource.match(/directoryProgressSummary\.statusText/g) || []
+test('shared technical directory panel renders only the detail line and the runtime line', () => {
+  const panelSource = readFileSync(new URL('./components/TechnicalDirectoryProgressPanel.jsx', import.meta.url), 'utf8')
+  const visibleStatusBindings = panelSource.match(/summary\.statusText/g) || []
 
-  assert.doesNotMatch(pageSource, /summarizeDirectorySource|directorySourceMeta|directoryStatusLabel/)
-  assert.doesNotMatch(pageSource, /directoryProgressSummary\.steps\.map/)
-  assert.doesNotMatch(pageSource, /estimateDirectoryDisplayPercentage/)
+  assert.doesNotMatch(panelSource, /summarizeDirectorySource|directorySourceMeta|directoryStatusLabel/)
+  assert.doesNotMatch(panelSource, /summary\.steps\.map/)
+  assert.doesNotMatch(panelSource, /estimateDirectoryDisplayPercentage/)
   // 阶段序号与阶段标题不再渲染，卡片只剩「明细 + 耗时」两行
-  assert.doesNotMatch(pageSource, /directoryProgressSummary\.(title|stepText)/)
+  assert.doesNotMatch(panelSource, /summary\.(title|stepText)/)
   assert.equal(visibleStatusBindings.length, 1)
-  assert.equal((pageSource.match(/directoryProgressSummary\.summary/g) || []).length, 1)
-  assert.match(pageSource, /已运行/)
-  assert.match(pageSource, /总耗时/)
+  assert.equal((panelSource.match(/summary\.summary/g) || []).length, 1)
+  assert.match(panelSource, /已运行/)
+  assert.match(panelSource, /总耗时/)
+})
+
+test('directory generation page and regeneration modal share one progress presentation', () => {
+  const componentUrl = new URL('./components/TechnicalDirectoryProgressPanel.jsx', import.meta.url)
+  const templateSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+
+  assert.equal(existsSync(componentUrl), true, '应抽取共用的目录进度展示组件')
+  const componentSource = readFileSync(componentUrl, 'utf8')
+
+  assert.match(templateSource, /<TechnicalDirectoryProgressPanel/)
+  assert.match(outlineSource, /<TechnicalDirectoryProgressPanel/)
+  assert.doesNotMatch(outlineSource, /summary\.steps\.map/)
+  assert.doesNotMatch(outlineSource, /estimateDirectoryDisplayPercentage/)
+  assert.match(componentSource, /directoryDisplayPercentage/)
+  assert.match(componentSource, /formatDirectoryDuration/)
+  assert.match(componentSource, /已运行/)
+  assert.match(componentSource, /总耗时/)
+})
+
+test('regeneration resets stale terminal progress before opening the modal', () => {
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+  const handlerStart = outlineSource.indexOf('const handleRegenerateDirectory')
+  const handlerEnd = outlineSource.indexOf('const handleSave', handlerStart)
+  const handlerSource = outlineSource.slice(handlerStart, handlerEnd)
+  const pendingIndex = handlerSource.indexOf('setRegenerationPendingState')
+  const resetIndex = handlerSource.indexOf("status: 'queued'")
+  const openIndex = handlerSource.indexOf('setRegenerationModalOpen(true)')
+  const requestIndex = handlerSource.indexOf('technicalOutlineAPI.regenerate(id)')
+
+  assert.notEqual(pendingIndex, -1, '提交中的状态应与全局任务状态隔离')
+  assert.notEqual(resetIndex, -1, '打开弹窗前应创建新的等待中进度')
+  assert.ok(resetIndex < openIndex, '新进度必须先于弹窗展示')
+  assert.ok(openIndex < requestIndex, '弹窗应在等待接口返回期间展示新进度')
+  assert.doesNotMatch(
+    handlerSource.slice(0, requestIndex),
+    /setDirectoryState/,
+    '接口返回前不得启动全局轮询，避免读回上一轮终态',
+  )
 })
