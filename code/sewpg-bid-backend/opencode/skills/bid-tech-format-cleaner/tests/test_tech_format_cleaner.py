@@ -781,6 +781,44 @@ class TechFormatCleanerTest(unittest.TestCase):
             self.assertEqual(_toc_is_followed_by_page_break(output_docx), expected_page_break)
             current_input = output_docx
 
+    def test_fld_simple_toc_is_detected_and_used_as_page_break_anchor(self):
+        module_name = "bid_tech_format_cleaner_fld_simple_test"
+        spec = importlib.util.spec_from_file_location(module_name, RUNNER_PATH)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+            doc = Document()
+            title = doc.add_paragraph("Contents")
+            toc = doc.add_paragraph()
+            field = OxmlElement("w:fldSimple")
+            field.set(qn("w:instr"), ' TOC \\o "1-3" ')
+            field.append(OxmlElement("w:r"))
+            toc._element.append(field)
+            body = doc.add_paragraph("正文")
+
+            self.assertTrue(module.document_has_toc(doc))
+            self.assertIs(module._toc_result_anchor(doc), toc._element)
+
+            module._apply_toc_page_break(doc, True)
+
+            self.assertIs(toc._element.getnext().getnext(), body._element)
+            self.assertTrue(module._is_cleaner_toc_break(toc._element.getnext()))
+            self.assertIn(title._element, module._toc_protected_paragraph_elements(doc))
+
+            pageref_only = Document()
+            paragraph = pageref_only.add_paragraph()
+            run = OxmlElement("w:r")
+            instruction = OxmlElement("w:instrText")
+            instruction.text = " PAGEREF _Toc123456789 \\h "
+            run.append(instruction)
+            paragraph._element.append(run)
+            self.assertFalse(module.document_has_toc(pageref_only))
+        finally:
+            sys.modules.pop(module_name, None)
+
     def test_warning_counts_use_structured_scan_counts(self):
         module_name = "bid_tech_format_cleaner_warning_test"
         spec = importlib.util.spec_from_file_location(module_name, RUNNER_PATH)

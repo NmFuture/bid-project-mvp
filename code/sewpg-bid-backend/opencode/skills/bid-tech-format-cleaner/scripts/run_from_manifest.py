@@ -344,7 +344,26 @@ def _coerce_level(value: Any, default: int) -> int:
 
 
 def document_has_toc(doc: Document) -> bool:
-    return any((node.text or "").upper().find("TOC") >= 0 for node in doc.element.iter(qn("w:instrText")))
+    return bool(_toc_instruction_nodes(doc.element))
+
+
+def _is_toc_field_instruction(value: Any) -> bool:
+    return bool(re.match(r"^\s*TOC(?:\s|\\|$)", str(value or ""), flags=re.IGNORECASE))
+
+
+def _toc_instruction_nodes(element) -> list[Any]:
+    return [
+        node
+        for node in element.iter()
+        if (
+            node.tag == qn("w:instrText")
+            and _is_toc_field_instruction(node.text)
+        )
+        or (
+            node.tag == qn("w:fldSimple")
+            and _is_toc_field_instruction(node.get(qn("w:instr")))
+        )
+    ]
 
 
 def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 6) -> dict[str, Any]:
@@ -603,10 +622,7 @@ def _apply_toc_page_break(doc: Document, enabled: bool, *, adopt_unmarked: bool 
 
 def _toc_result_anchor(doc: Document):
     body = doc.element.body
-    instruction = next(
-        (node for node in body.iter(qn("w:instrText")) if _is_toc_instruction(node.text)),
-        None,
-    )
+    instruction = next(iter(_toc_instruction_nodes(body)), None)
     if instruction is None:
         return None
     toc_paragraph = None
@@ -831,7 +847,7 @@ def _toc_protected_paragraph_elements(doc: Document) -> set[Any]:
             field["paragraphs"].add(paragraph)
 
         for node in paragraph.iter():
-            if node.tag == qn("w:fldSimple") and _is_toc_instruction(node.get(qn("w:instr"))):
+            if node.tag == qn("w:fldSimple") and _is_toc_field_instruction(node.get(qn("w:instr"))):
                 protected.add(paragraph)
                 toc_instruction_paragraphs.add(paragraph)
                 continue
@@ -846,7 +862,7 @@ def _toc_protected_paragraph_elements(doc: Document) -> set[Any]:
                         protected.update(field["paragraphs"])
                 continue
 
-            if node.tag != qn("w:instrText") or not _is_toc_instruction(node.text):
+            if node.tag != qn("w:instrText") or not _is_toc_field_instruction(node.text):
                 continue
             toc_instruction_paragraphs.add(paragraph)
             if active_fields:
@@ -870,10 +886,6 @@ def _toc_protected_paragraph_elements(doc: Document) -> set[Any]:
             protected.add(title)
 
     return protected
-
-
-def _is_toc_instruction(value: Any) -> bool:
-    return bool(re.search(r"\bTOC\b", str(value or ""), flags=re.IGNORECASE))
 
 
 def _is_toc_heading_element(element, doc: Document) -> bool:
