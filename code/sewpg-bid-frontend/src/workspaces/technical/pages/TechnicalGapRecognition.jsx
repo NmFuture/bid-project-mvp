@@ -1303,6 +1303,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [expandedTocKeys, setExpandedTocKeys] = useState(() => new Set())
   // 定案项的备选区默认收起，「更换素材」临时展开；切换目录项时复位。
   const [materialSwapOpen, setMaterialSwapOpen] = useState(false)
+  // 多机型等场景下一个目录项要串行铺开多份素材：按勾选顺序提交，顺序即正文顺序。
+  const [multiPickOpen, setMultiPickOpen] = useState(false)
+  const [multiPickKeys, setMultiPickKeys] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyAction, setBusyAction] = useState('')
@@ -1668,6 +1671,12 @@ export default function TechnicalGapRecognition({ showToast }) {
   const selectedCardMaterialId = defaultSelection
     ? String(defaultSelection.material?.id || defaultSelection.material?.materialId || '').trim()
     : ''
+  // planner 可能给出多份推荐（多机型时每个机型目录各一份），都要标成系统预选。
+  const matchedMaterialIds = new Set(
+    asObjectArray(selected?.matchedMaterials)
+      .map((material) => String(material?.id || material?.materialId || '').trim())
+      .filter(Boolean),
+  )
   // 备选素材 = 统一候选池剔除已选中项；解析空副表常驻已选区，不进备选池。
   const backupEntries = (() => {
     const seen = new Set()
@@ -1688,14 +1697,36 @@ export default function TechnicalGapRecognition({ showToast }) {
       seen.add(wrapper.key)
       return true
     })
-    // 系统预选置顶（产品裁决 2026-08-04）：无论展示分高低，第一张卡永远是系统预选的那份。
-    const preselectedId = String(asObjectArray(selected?.matchedMaterials)[0]?.id || '').trim()
-    if (!preselectedId) return deduped
-    const pinned = deduped.filter((wrapper) => wrapper.key === preselectedId)
+    // 系统预选置顶（产品裁决 2026-08-04）：无论展示分高低，系统预选的那几份永远排在前面，
+    // 多机型时按 planner 给出的机型顺序。
+    if (!matchedMaterialIds.size) return deduped
+    const pinned = deduped.filter((wrapper) => matchedMaterialIds.has(wrapper.key))
     return pinned.length
-      ? [...pinned, ...deduped.filter((wrapper) => wrapper.key !== preselectedId)]
+      ? [...pinned, ...deduped.filter((wrapper) => !matchedMaterialIds.has(wrapper.key))]
       : deduped
   })()
+  const multiPickMaterialOf = (key) => {
+    const wrapper = backupEntries.find((item) => item.key === key)
+    if (!wrapper) return null
+    return wrapper.kind === 'blank' ? wrapper.entry.material : wrapper.material
+  }
+  const multiPickMaterialName = (key) => {
+    const material = multiPickMaterialOf(key)
+    return material?.name || material?.cleanedFileName || key
+  }
+  const toggleMultiPick = (key) => {
+    setMultiPickKeys((prev) => (prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]))
+  }
+  const moveMultiPick = (index, offset) => {
+    setMultiPickKeys((prev) => {
+      const target = index + offset
+      if (target < 0 || target >= prev.length) return prev
+      const next = [...prev]
+      const [moved] = next.splice(index, 1)
+      next.splice(target, 0, moved)
+      return next
+    })
+  }
   const selectedPlaceholderLabels = compactList([
     ...asArray(selectedBlankSource?.placeholderLabels),
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
@@ -2018,6 +2049,8 @@ export default function TechnicalGapRecognition({ showToast }) {
     setPreviewOpen(false)
     setAiFillModalTask(null)
     setMaterialSwapOpen(false)
+    setMultiPickOpen(false)
+    setMultiPickKeys([])
   }
 
   const toggleTocKeyExpanded = (key) => {
@@ -2149,6 +2182,25 @@ export default function TechnicalGapRecognition({ showToast }) {
       (result) => result?.artifact?.fileName
         ? `已选用素材：${result.artifact.fileName}`
         : '已选用素材',
+    )
+  }
+
+  // 一次提交多份：后端按数组顺序生成产物，顺序即正文里的铺开顺序。
+  const handleSelectMaterials = async (materials) => {
+    const payload = materials
+      .map((material) => {
+        const materialId = String(material?.id || material?.materialId || '').trim()
+        return materialId ? { ...material, id: materialId, materialId } : null
+      })
+      .filter(Boolean)
+    if (!selected || !payload.length) return null
+    return runAction(
+      `select-material:${selected.id}:multi`,
+      () => technicalGapsAPI.selectMaterial(id, selected.id, {
+        materials: payload,
+        operator: '当前用户',
+      }),
+      () => `已按顺序选用 ${payload.length} 份素材`,
     )
   }
 
@@ -3107,12 +3159,34 @@ export default function TechnicalGapRecognition({ showToast }) {
                         <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="text-xs font-semibold text-on-surface">备选素材</div>
-                            {selectedSourceRouting ? (
-                              <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
-                                规则规定
-                              </span>
-                            ) : null}
+                            <div className="flex items-center gap-2">
+                              {selectedSourceRouting ? (
+                                <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
+                                  规则规定
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setMultiPickOpen((prev) => !prev)
+                                  setMultiPickKeys([])
+                                }}
+                                className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                                  multiPickOpen
+                                    ? 'bg-primary text-on-primary'
+                                    : 'bg-surface-container-high text-on-surface-variant hover:text-primary'
+                                }`}
+                                title="一个目录项可以铺开多份素材，例如多机型各一份"
+                              >
+                                {multiPickOpen ? '退出多选' : '多选'}
+                              </button>
+                            </div>
                           </div>
+                          {multiPickOpen ? (
+                            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                              勾选顺序即正文里的铺开顺序，可在下方调整。
+                            </div>
+                          ) : null}
                           {selectedSourceRoutingSummary ? (
                             <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
                               {selectedSourceRoutingSummary}
@@ -3120,31 +3194,108 @@ export default function TechnicalGapRecognition({ showToast }) {
                           ) : null}
                           <div className="mt-2 space-y-2">
                             {/* 备选池统一只有 预览 + 选择（产品裁决 2026-07-21）：AI填写 在选用后才出现。 */}
-                            {backupEntries.map((wrapper) => (wrapper.kind === 'blank' ? (
-                              <MaterialCandidateCard
-                                key={wrapper.key}
-                                material={wrapper.entry.material}
-                                isSelected={false}
-                                busy={Boolean(busyAction)}
-                                selecting={busyAction === `select-material:${selected.id}:${wrapper.key}`}
-                                onPreview={() => handlePreviewMaterial(wrapper.entry.material)}
-                                onSelect={handleSelectMaterial}
-                                fillable
-                              />
-                            ) : (
-                              <MaterialCandidateCard
-                                key={wrapper.key}
-                                material={wrapper.material}
-                                isSelected={false}
-                                busy={Boolean(busyAction)}
-                                selecting={busyAction === `select-material:${selected.id}:${wrapper.key}`}
-                                onPreview={handlePreviewMaterial}
-                                onSelect={handleSelectMaterial}
-                                fillable={materialFillable(wrapper.material)}
-                                coverageLabel={wrapper.key && wrapper.key === String(asObjectArray(selected?.matchedMaterials)[0]?.id || '').trim() ? '系统预选' : ''}
-                              />
-                            )))}
+                            {backupEntries.map((wrapper) => {
+                              const wrapperMaterial = wrapper.kind === 'blank' ? wrapper.entry.material : wrapper.material
+                              const pickIndex = multiPickKeys.indexOf(wrapper.key)
+                              return (
+                                <MaterialCandidateCard
+                                  key={wrapper.key}
+                                  material={wrapperMaterial}
+                                  isSelected={false}
+                                  busy={Boolean(busyAction)}
+                                  selecting={busyAction === `select-material:${selected.id}:${wrapper.key}`}
+                                  onPreview={wrapper.kind === 'blank' ? () => handlePreviewMaterial(wrapperMaterial) : handlePreviewMaterial}
+                                  onSelect={multiPickOpen ? null : handleSelectMaterial}
+                                  fillable={wrapper.kind === 'blank' ? true : materialFillable(wrapperMaterial)}
+                                  coverageLabel={
+                                    wrapper.kind === 'blank' || multiPickOpen
+                                      ? ''
+                                      : (matchedMaterialIds.has(wrapper.key) ? '系统预选' : '')
+                                  }
+                                  onCardClick={multiPickOpen ? () => toggleMultiPick(wrapper.key) : null}
+                                  leading={multiPickOpen ? (
+                                    <label
+                                      className="flex shrink-0 items-center gap-1 pt-0.5"
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={pickIndex >= 0}
+                                        onChange={() => toggleMultiPick(wrapper.key)}
+                                        className="h-4 w-4 shrink-0 accent-primary"
+                                        aria-label={`勾选 ${wrapperMaterial?.name || wrapper.key}`}
+                                      />
+                                      {pickIndex >= 0 ? (
+                                        <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-on-primary">
+                                          {pickIndex + 1}
+                                        </span>
+                                      ) : null}
+                                    </label>
+                                  ) : null}
+                                />
+                              )
+                            })}
                           </div>
+                          {multiPickOpen && multiPickKeys.length ? (
+                            <div className="mt-3 rounded-md border border-surface-container-high bg-surface-container-low p-2">
+                              <div className="mb-1.5 text-[11px] font-semibold text-on-surface">
+                                将按此顺序铺开（{multiPickKeys.length} 份）
+                              </div>
+                              <ol className="space-y-1">
+                                {multiPickKeys.map((key, index) => (
+                                  <li key={key} className="flex items-center gap-2 text-[11px] text-on-surface-variant">
+                                    <span className="w-4 shrink-0 text-right font-semibold text-primary">{index + 1}</span>
+                                    <span className="min-w-0 flex-1 truncate">{multiPickMaterialName(key)}</span>
+                                    <button
+                                      type="button"
+                                      disabled={index === 0}
+                                      onClick={() => moveMultiPick(index, -1)}
+                                      className="shrink-0 rounded px-1 text-outline hover:text-primary disabled:opacity-30"
+                                      aria-label="上移"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={index === multiPickKeys.length - 1}
+                                      onClick={() => moveMultiPick(index, 1)}
+                                      className="shrink-0 rounded px-1 text-outline hover:text-primary disabled:opacity-30"
+                                      aria-label="下移"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">arrow_downward</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleMultiPick(key)}
+                                      className="shrink-0 rounded px-1 text-outline hover:text-error"
+                                      aria-label="移除"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">close</span>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ol>
+                              <div className="mt-2 flex justify-end">
+                                <Button
+                                  size="sm"
+                                  variant="primary"
+                                  disabled={Boolean(busyAction)}
+                                  onClick={async () => {
+                                    const materials = multiPickKeys.map(multiPickMaterialOf).filter(Boolean)
+                                    const result = await handleSelectMaterials(materials)
+                                    if (result) {
+                                      setMultiPickKeys([])
+                                      setMultiPickOpen(false)
+                                    }
+                                  }}
+                                >
+                                  {busyAction === `select-material:${selected.id}:multi`
+                                    ? '选用中...'
+                                    : `选用这 ${multiPickKeys.length} 份`}
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
                         </section>
                       ) : null}
 

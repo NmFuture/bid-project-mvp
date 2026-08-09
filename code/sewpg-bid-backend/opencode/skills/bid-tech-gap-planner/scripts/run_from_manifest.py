@@ -927,6 +927,71 @@ def pick_material(candidates: list[dict[str, Any]], title: str, *, usage: str = 
     return selected, alternatives
 
 
+def turbine_model_names(manifest: dict[str, Any]) -> list[str]:
+    """项目选定机型名，按机型明细的填写顺序；单机型项目回退到 projectTurbineModel。"""
+
+    models = manifest.get("projectTurbineModels")
+    names: list[str] = []
+    for model in models if isinstance(models, list) else []:
+        name = str(model.get("model") or "").strip() if isinstance(model, dict) else str(model or "").strip()
+        if name and name not in names:
+            names.append(name)
+    if names:
+        return names
+    single = manifest.get("projectTurbineModel")
+    name = str(single.get("model") or "").strip() if isinstance(single, dict) else ""
+    return [name] if name else []
+
+
+def standard_folder_turbine_model(material: dict[str, Any], model_names: list[str]) -> str:
+    """素材所属的标准文件机型目录名；非标准文件层素材返回空串。
+
+    素材库标准文件目录以机型命名（技术标/标准文件/<机型>/…），所以路径段即机型。
+    """
+    parts = [part for part in str(material.get("folderPath") or "").split("/") if part]
+    for part in parts:
+        if part in model_names:
+            return part
+    return ""
+
+
+def expand_matched_by_turbine_models(
+    primary: dict[str, Any] | None,
+    candidates: list[dict[str, Any]],
+    title: str,
+    model_names: list[str],
+) -> list[dict[str, Any]]:
+    """主素材来自某机型目录时，把其余机型目录下的同位素材一并选上。
+
+    多机型项目的同一章节要串行铺开各机型的内容，不能只留一份。返回顺序按机型明细
+    填写顺序。主素材不属于任何机型目录（客户/项目定制素材与机型无关）时原样返回。
+    """
+    if not primary:
+        return []
+    primary_model = standard_folder_turbine_model(primary, model_names)
+    if len(model_names) <= 1 or not primary_model:
+        return [primary]
+
+    usage = str(primary.get("usage") or "section_merge")
+    picked: dict[str, dict[str, Any]] = {primary_model: primary}
+    for name in model_names:
+        if name in picked:
+            continue
+        group = [
+            material
+            for material in candidates
+            if standard_folder_turbine_model(material, model_names) == name
+        ]
+        if not group:
+            continue
+        best = dict(max(group, key=lambda material: material_score(material, title)))
+        best["usage"] = usage
+        best["matchScore"] = display_match_score(best, title)
+        best["matchReason"] = f"多机型并行·{name}"
+        picked[name] = best
+    return [picked[name] for name in model_names if name in picked]
+
+
 def pick_chapter_master_material(
     candidates: list[dict[str, Any]],
     title: str,
@@ -2347,6 +2412,7 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     raw_wiki_dir = str(manifest.get("wikiDir") or "").strip()
     wiki_index = wiki_cards_by_section(Path(raw_wiki_dir) if raw_wiki_dir else None)
     project_turbine_model = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
+    project_turbine_model_names = turbine_model_names(manifest)
     indexed_materials_all = material_index_from_manifest(manifest)
     # 甲方已填附表（…/技术附表输入文件）不进正文素材匹配池，只用于附表查表替换，
     # 避免按标题打分被误挂到正文章节（如已填的「附表G.4 叶片…」挂到业绩章节）；
@@ -2780,7 +2846,10 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 status = "matched"
                 decision = "ready"
                 usage = str((matched_material or {}).get("usage") or "section_merge")
-                matched_materials = [matched_material] if matched_material else []
+                # 多机型项目：同一章节把各机型目录下的对应素材都选上，正文按机型顺序串行铺开。
+                matched_materials = expand_matched_by_turbine_models(
+                    matched_material, indexed_materials, title, project_turbine_model_names
+                )
                 # ready 态也召回片段，供 S4 合并/复核时定位证据；matched + 备选都附。
                 matched_materials = attach_recalled_segments(matched_materials, title)
                 # 金标反评 D3：备选并入同目录兄弟素材 + 弱召回现成素材（承诺函族这类
@@ -2795,8 +2864,8 @@ def build_gap_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                     + sibling_folder_materials(matched_material, indexed_materials, title)
                     + weak_ready
                 )
-                matched_id = str((matched_material or {}).get("id") or "")
-                alternative_materials = [m for m in alternative_materials if str(m.get("id") or "") != matched_id]
+                matched_ids = {str(m.get("id") or "") for m in matched_materials if isinstance(m, dict)}
+                alternative_materials = [m for m in alternative_materials if str(m.get("id") or "") not in matched_ids]
                 alternative_materials = attach_recalled_segments(alternative_materials, title)
                 alternative_materials.sort(key=lambda m: float(m.get("matchScore") or 0), reverse=True)
                 project_extras = [
