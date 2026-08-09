@@ -138,12 +138,24 @@ def _write_custom_style_toc_document(path: Path) -> None:
     custom_style = doc.styles.add_style("Project Directory Entry", WD_STYLE_TYPE.PARAGRAPH)
     custom_style.base_style = doc.styles["Normal"]
 
+    toc_begin = doc.add_paragraph()
+    begin_run = OxmlElement("w:r")
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    begin_run.append(begin)
+    toc_begin._element.append(begin_run)
+
     field = doc.add_paragraph()
     instruction_run = OxmlElement("w:r")
     instruction = OxmlElement("w:instrText")
     instruction.text = ' TOC \\o "1-3" '
     instruction_run.append(instruction)
     field._element.append(instruction_run)
+    separator_run = OxmlElement("w:r")
+    separator = OxmlElement("w:fldChar")
+    separator.set(qn("w:fldCharType"), "separate")
+    separator_run.append(separator)
+    field._element.append(separator_run)
 
     doc.add_paragraph("OLD_INHERITED_TOC_ENTRY", style=inherited_style)
     custom_entry = doc.add_paragraph(style=custom_style)
@@ -155,6 +167,28 @@ def _write_custom_style_toc_document(path: Path) -> None:
     hyperlink_run.append(hyperlink_text)
     hyperlink.append(hyperlink_run)
     custom_entry._element.append(hyperlink)
+    page_begin_run = OxmlElement("w:r")
+    page_begin = OxmlElement("w:fldChar")
+    page_begin.set(qn("w:fldCharType"), "begin")
+    page_begin_run.append(page_begin)
+    custom_entry._element.append(page_begin_run)
+    page_instruction_run = OxmlElement("w:r")
+    page_instruction = OxmlElement("w:instrText")
+    page_instruction.text = " PAGEREF _Toc123456789 \\h "
+    page_instruction_run.append(page_instruction)
+    custom_entry._element.append(page_instruction_run)
+    page_end_run = OxmlElement("w:r")
+    page_end = OxmlElement("w:fldChar")
+    page_end.set(qn("w:fldCharType"), "end")
+    page_end_run.append(page_end)
+    custom_entry._element.append(page_end_run)
+
+    toc_end = doc.add_paragraph()
+    end_run = OxmlElement("w:r")
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    end_run.append(end)
+    toc_end._element.append(end_run)
 
     page_break = doc.add_paragraph()
     page_break_run = OxmlElement("w:r")
@@ -336,6 +370,15 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
                 node for node in output.element.iter(qn("w:instrText")) if "TOC" in (node.text or "").upper()
             ]
             self.assertEqual(len(toc_instructions), 1)
+            self.assertFalse(
+                any("PAGEREF" in (node.text or "").upper() for node in output.element.iter(qn("w:instrText")))
+            )
+            field_types = [
+                node.get(qn("w:fldCharType")) for node in output.element.iter(qn("w:fldChar"))
+            ]
+            self.assertEqual(field_types.count("begin"), 1)
+            self.assertEqual(field_types.count("separate"), 1)
+            self.assertEqual(field_types.count("end"), 1)
             toc_breaks = [
                 node
                 for node in output.element.iter(qn("w:bookmarkStart"))

@@ -358,18 +358,18 @@ def _remove_existing_toc(doc: Document) -> None:
             if current.tag == qn("w:sdt"):
                 outer_sdt = current
             current = current.getparent()
-        target = outer_sdt if outer_sdt is not None else paragraph
+        field_start, field_end = _toc_field_paragraph_range(body, instruction, paragraph)
+        target = outer_sdt if outer_sdt is not None else field_start
         if target is None or target.getparent() is None:
             continue
         previous = target.getprevious()
-        field_end = _toc_field_end_paragraph(paragraph) if outer_sdt is None else None
-        range_end = field_end if field_end is not None else target
+        range_end = outer_sdt if outer_sdt is not None else field_end
         sibling = range_end.getnext()
         current = target
         while current is not None:
             next_sibling = current.getnext()
             current.getparent().remove(current)
-            if current is field_end or field_end is None:
+            if current is range_end:
                 break
             current = next_sibling
         while _is_toc_result_paragraph(sibling, toc_style_ids):
@@ -381,17 +381,31 @@ def _remove_existing_toc(doc: Document) -> None:
         _remove_toc_lead_in(previous)
 
 
-def _toc_field_end_paragraph(paragraph):
-    if paragraph is None or not any(
-        node.get(qn("w:fldCharType")) == "begin" for node in paragraph.iter(qn("w:fldChar"))
-    ):
-        return None
-    current = paragraph
-    while current is not None and current.tag == qn("w:p"):
-        if any(node.get(qn("w:fldCharType")) == "end" for node in current.iter(qn("w:fldChar"))):
-            return current
-        current = current.getnext()
-    return None
+def _toc_field_paragraph_range(body, instruction, paragraph):
+    if paragraph is None:
+        return None, None
+
+    active_fields: list[dict[str, Any]] = []
+    target_start = None
+    for current in body.iterchildren(tag=qn("w:p")):
+        for node in current.iter():
+            if node.tag == qn("w:fldChar"):
+                field_type = str(node.get(qn("w:fldCharType")) or "").lower()
+                if field_type == "begin":
+                    active_fields.append({"start": current, "contains_target": False})
+                elif field_type == "end" and active_fields:
+                    field = active_fields.pop()
+                    if field["contains_target"]:
+                        return field["start"], current
+                continue
+            if node is not instruction:
+                continue
+            if not active_fields:
+                return paragraph, paragraph
+            active_fields[-1]["contains_target"] = True
+            target_start = active_fields[-1]["start"]
+
+    return (target_start or paragraph), paragraph
 
 
 def _remove_toc_lead_in(element) -> None:
