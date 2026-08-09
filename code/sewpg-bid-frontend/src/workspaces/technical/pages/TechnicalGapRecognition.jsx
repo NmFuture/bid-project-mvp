@@ -1352,6 +1352,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factCurateReport, setFactCurateReport] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  // 生成在后台跑，弹窗允许关掉；关掉后不因为「还在运行」被重新弹出来。
+  const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
@@ -1778,7 +1780,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
   const generationCompleted = generationStatus?.status === 'completed'
-  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
 
   useEffect(() => {
     let cancelled = false
@@ -2538,6 +2539,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       return
     }
     setBusyAction('technical-generate')
+    setGenerationModalDismissed(false)
     setGenerationModalOpen(true)
     try {
       const payload = await technicalGenerateAPI.run(id)
@@ -3401,10 +3403,12 @@ export default function TechnicalGapRecognition({ showToast }) {
         />
       ) : null}
       <TechnicalGenerationProgressModal
-        open={generationModalOpen || generationRunning}
+        open={(generationModalOpen || generationRunning) && !generationModalDismissed}
         status={generationStatus}
-        progress={generationProgress}
-        onClose={() => setGenerationModalOpen(false)}
+        onClose={() => {
+          setGenerationModalDismissed(true)
+          setGenerationModalOpen(false)
+        }}
       />
       <AiFillReferenceModal
         open={Boolean(aiFillModalTask)}

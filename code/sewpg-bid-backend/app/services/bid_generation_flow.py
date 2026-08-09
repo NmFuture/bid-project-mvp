@@ -227,6 +227,11 @@ def _is_fill_generation_stale(current: dict[str, Any]) -> bool:
     parsed_output = _parse_iso_datetime(output.get("receivedAt"))
     if parsed_output:
         timestamps.append(parsed_output)
+    # 逐条组装只更新 assemblyProgress 不写 event，心跳要一并算进来，避免长组装被误判为卡死。
+    assembly_progress = current.get("assemblyProgress") if isinstance(current.get("assemblyProgress"), dict) else {}
+    parsed_assembly = _parse_iso_datetime(assembly_progress.get("updatedAt"))
+    if parsed_assembly:
+        timestamps.append(parsed_assembly)
     if not timestamps:
         return False
     age_sec = (datetime.now(UTC) - max(timestamps)).total_seconds()
@@ -366,6 +371,21 @@ def _handle_fill_progress(
                 "receivedAt": str(meta.get("receivedAt") or ""),
                 "parts": parts,
             },
+        )
+        return
+
+    if stage == "assembling_progress":
+        total = max(0, int(meta.get("total") or 0))
+        done = max(0, min(total, int(meta.get("done") or 0)))
+        if total <= 0:
+            return
+        # 组装是整条链路里最长的一段，逐条回传真实计数；不写 event——events 只留最近 20 条，
+        # 逐条写会把启动记录和阶段历史挤掉。百分比区间由前端按阶段折算。
+        _update_fill_generation(
+            project_id,
+            summary=f"正在组装{ctx['documentLabel']}，已处理目录项 {done}/{total} 项。",
+            tasks=_fill_tasks("done", "running", "pending", bid_type),
+            assembly_progress={"done": done, "total": total},
         )
         return
 

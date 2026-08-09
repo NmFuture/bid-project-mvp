@@ -1185,11 +1185,14 @@ def _run_assembler_manifest(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    return _run_local_assembler(manifest_path)
+    return _run_local_assembler(manifest_path, progress_callback=progress_callback)
 
 
-def _run_local_assembler(manifest_path: Path) -> dict[str, Any]:
-    return run_assembly_manifest(manifest_path)
+def _run_local_assembler(
+    manifest_path: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    return run_assembly_manifest(manifest_path, progress_callback=progress_callback)
 
 
 def _run_tech_format_cleaner_step(

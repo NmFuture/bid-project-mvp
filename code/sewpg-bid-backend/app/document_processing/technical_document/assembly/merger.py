@@ -33,7 +33,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -247,7 +247,10 @@ def merge(
     params: dict,
     prep_dir: Path,
     out_path: Path,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict:
+    """progress_callback(done, total)：正文遍历是整条组装里最长的一段，逐条回传真实计数，
+    让上层进度条有可核对的量化数据而不是纯时间估算。节流交给调用方。"""
     os.makedirs(os.fspath(prep_dir), exist_ok=True)
 
     # 打开母版并清空 body（只保留 sectPr）
@@ -335,6 +338,8 @@ def merge(
 
     # Step 1: 遍历正文 plan
     for i, entry in enumerate(non_cover):
+        if progress_callback:
+            progress_callback(i, len(non_cover))
         status = entry["status"]
         level = entry["level"]
         title = entry["title"]
@@ -516,6 +521,9 @@ def merge(
                 _add_body_paragraph(master_doc, f"[缺失：{title}——没有可用素材，请补充后重试]")
                 stats["inserted_placeholders"] += 1
                 warning_counts["DIRECTORY_WITHOUT_MATERIAL"] += 1
+
+    if progress_callback:
+        progress_callback(len(non_cover), len(non_cover))
 
     # Save
     strip_numPr_from_heading_styles(master_doc)

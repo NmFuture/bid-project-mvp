@@ -31,6 +31,7 @@ def default_fill_state(project: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "idle",
         "percentage": 0,
+        "startedAt": "",
         "filledAt": "",
         "runDurationSec": 0,
         "runDuration": "",

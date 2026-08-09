@@ -438,17 +438,26 @@ test('maps internal directory failures to actionable user-facing reasons', () =>
 
 test('shared technical directory panel renders only the detail line and the runtime line', () => {
   const panelSource = readFileSync(new URL('./components/TechnicalDirectoryProgressPanel.jsx', import.meta.url), 'utf8')
-  const visibleStatusBindings = panelSource.match(/summary\.statusText/g) || []
+  const sharedPanelSource = readFileSync(
+    new URL('../../components/shared/BidProgressPanel.jsx', import.meta.url),
+    'utf8',
+  )
+  const durationSource = readFileSync(new URL('../../utils/progressDuration.js', import.meta.url), 'utf8')
 
   assert.doesNotMatch(panelSource, /summarizeDirectorySource|directorySourceMeta|directoryStatusLabel/)
   assert.doesNotMatch(panelSource, /summary\.steps\.map/)
   assert.doesNotMatch(panelSource, /estimateDirectoryDisplayPercentage/)
   // 阶段序号与阶段标题不再渲染，卡片只剩「明细 + 耗时」两行
   assert.doesNotMatch(panelSource, /summary\.(title|stepText)/)
-  assert.equal(visibleStatusBindings.length, 1)
+  // 徽标只留百分比：状态词已经由图标和明细行表达，写成「生成中 · 89%」是重复
+  assert.doesNotMatch(panelSource, /summary\.statusText/)
+  assert.doesNotMatch(sharedPanelSource, /statusText/)
+  assert.match(sharedPanelSource, /\{Math\.floor\(safePercentage\)\}%/)
   assert.equal((panelSource.match(/summary\.summary/g) || []).length, 1)
-  assert.match(panelSource, /已运行/)
-  assert.match(panelSource, /总耗时/)
+  // 耗时行走五处进度条共用的实现，文案不再各写一份
+  assert.match(panelSource, /progressElapsedLine/)
+  assert.match(durationSource, /已运行/)
+  assert.match(durationSource, /总耗时/)
 })
 
 test('directory generation page and regeneration modal share one progress presentation', () => {
@@ -464,9 +473,27 @@ test('directory generation page and regeneration modal share one progress presen
   assert.doesNotMatch(outlineSource, /summary\.steps\.map/)
   assert.doesNotMatch(outlineSource, /estimateDirectoryDisplayPercentage/)
   assert.match(componentSource, /directoryDisplayPercentage/)
-  assert.match(componentSource, /formatDirectoryDuration/)
-  assert.match(componentSource, /已运行/)
-  assert.match(componentSource, /总耗时/)
+  assert.match(componentSource, /directoryElapsedSeconds/)
+  assert.match(componentSource, /BidProgressPanel/)
+})
+
+test('五处进度条共用同一张进度卡片', () => {
+  const shared = new URL('../../components/shared/BidProgressPanel.jsx', import.meta.url)
+  const consumers = [
+    './components/TechnicalDirectoryProgressPanel.jsx',
+    './components/TechnicalGenerationProgressModal.jsx',
+    '../../components/shared/MaterialMatchProgressModal.jsx',
+  ]
+
+  assert.equal(existsSync(shared), true, '应抽取共用的进度展示卡片')
+  for (const consumer of consumers) {
+    const source = readFileSync(new URL(consumer, import.meta.url), 'utf8')
+    assert.match(source, /BidProgressPanel/, `${consumer} 应复用共享进度卡片`)
+    assert.match(source, /progressElapsedLine/, `${consumer} 应展示耗时`)
+  }
+  // 素材匹配曾经写死 68%，改成按真实运行时间估算，绝不假装已完成
+  const materialSource = readFileSync(new URL('../../components/shared/MaterialMatchProgressModal.jsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(materialSource, /running \? 68/)
 })
 
 test('regeneration resets stale terminal progress before opening the modal', () => {
