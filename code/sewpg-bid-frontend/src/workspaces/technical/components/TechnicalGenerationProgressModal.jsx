@@ -6,6 +6,7 @@ import { progressElapsedLine } from '../../../utils/progressDuration'
 import {
   generationDisplayPercentage,
   generationElapsedSeconds,
+  isGenerationProgressFailed,
   isGenerationProgressRunning,
   summarizeGenerationProgress,
 } from '../technicalGenerationProgress'
@@ -36,7 +37,7 @@ export default function TechnicalGenerationProgressModal({
   if (!open) return null
 
   const completed = status?.status === 'completed'
-  const failed = status?.status === 'failed'
+  const failed = isGenerationProgressFailed(status)
   const title = running
     ? '正在生成技术标正文'
     : completed ? '技术标正文已生成' : failed ? '技术标正文生成失败' : '技术标正文生成'

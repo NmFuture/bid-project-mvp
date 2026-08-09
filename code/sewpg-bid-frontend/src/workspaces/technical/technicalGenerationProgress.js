@@ -26,7 +26,6 @@ const STAGES = {
   format_done: { start: 97, end: 100, expectedSeconds: 3 },
   done: { start: 100, end: 100, expectedSeconds: 1 },
 }
-const DEFAULT_STAGE = STAGES.bootstrap
 const ASSEMBLY_STAGE = STAGES.assembly_waiting
 
 // 没有事件流时（历史数据）按后端锚点折算，保持与阶段区间同一套刻度。
