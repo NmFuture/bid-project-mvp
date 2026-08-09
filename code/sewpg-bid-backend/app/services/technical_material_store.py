@@ -149,7 +149,13 @@ class TechnicalMaterialStore:
         await self._ensure_wiki_node(f"WIKI-{node_id:04d}" if node_id else "", "附件")
 
     async def identity_options(self) -> dict[str, Any]:
-        return await material_store.identity_options(bid_type=TECHNICAL_BID_TYPE)
+        # 技术标「项目来源」只列素材库里已成型的项目目录，不含尚未落地的解析草稿；
+        # 技术标项目目录以项目名命名，目录名即当前项目名。
+        return await material_store.identity_options(
+            bid_type=TECHNICAL_BID_TYPE,
+            include_project_store=False,
+            folder_name_as_project_name=True,
+        )
 
     async def turbine_model_options(self) -> dict[str, Any]:
         return await list_technical_turbine_model_options()
@@ -320,6 +326,23 @@ class TechnicalMaterialStore:
             allow_identity_folder=True,
         )
         return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
+
+    async def raw_copy_project_materials(
+        self,
+        *,
+        source_path: str,
+        target_path: str,
+        exclude_top_level_names: set[str] | None = None,
+        on_progress: Any = None,
+    ) -> dict[str, Any]:
+        result = await material_store.raw_copy_folder_contents(
+            source_path=self.ensure_path(source_path, "来源项目目录"),
+            target_path=self.ensure_path(target_path, "目标项目目录"),
+            bid_type=TECHNICAL_BID_TYPE,
+            exclude_top_level_names=exclude_top_level_names,
+            on_progress=on_progress,
+        )
+        return await self._refresh_index(result)
 
     async def raw_cleanup_project_folder(self, path: str, *, expected_project_id: str = "") -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")

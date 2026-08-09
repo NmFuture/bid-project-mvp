@@ -21,7 +21,7 @@ import {
   TECHNICAL_BID_TYPE,
 } from '../technicalProjectPrefill'
 
-const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 2
+const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 3
 const TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.technicalProjectWizardDraft'
 const FORM_REQUIRED_STEP = 0
 
@@ -73,8 +73,7 @@ const readDraft = (key) => {
           ? parsed.form.turbineModels.map(createTurbineModelRow)
           : normalizeTurbineModelRows(parsed.form),
       },
-      materialProjectMode: parsed.materialProjectMode === 'library' ? 'library' : 'ordinary',
-      selectedMaterialProjectId: String(parsed.selectedMaterialProjectId || ''),
+      materialSourceProjectId: String(parsed.materialSourceProjectId || ''),
     }
   } catch {
     return null
@@ -95,14 +94,8 @@ const clearDraft = (key) => {
   window.localStorage.removeItem(key)
 }
 
-const materialProjectLabel = (item) => {
-  const parts = [
-    item.projectId,
-    item.projectCode && item.projectCode !== item.projectId ? item.projectCode : '',
-    item.customerName,
-  ].filter(Boolean)
-  return `${item.name}${parts.length ? `（${parts.join(' / ')}）` : ''}`
-}
+// 不复制历史项目时的默认项：只用本次解析产物建一个空的项目目录。
+const NEW_EMPTY_PROJECT_LABEL = '新建空项目'
 
 export default function TechnicalProjectWizardModal({
   onClose,
@@ -129,12 +122,11 @@ export default function TechnicalProjectWizardModal({
     }),
     draftForm: draft?.form,
   }))
-  const [materialProjectMode, setMaterialProjectMode] = useState(
-    draft?.materialProjectMode || project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
-  )
   const [materialProjects, setMaterialProjects] = useState([])
-  const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
-    draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
+  // 素材来源项目：空串表示新建空项目。提交后由后端记入 materialSourceProjectId 并锁定。
+  const lockedSourceProjectId = String(project?.materialSourceProjectId || '')
+  const [materialSourceProjectId, setMaterialSourceProjectId] = useState(
+    lockedSourceProjectId || draft?.materialSourceProjectId || '',
   )
   // 客户 / 风机机型候选改为从技术标三级目录 JSON 索引派生（客户定制 / 标准文件），
   // 末尾固定带「其他」。见 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
@@ -150,7 +142,6 @@ export default function TechnicalProjectWizardModal({
   const [createError, setCreateError] = useState('')
 
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
-  const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
   // 「其他」恒为最后一项，合并 form 现值时要避免把它当成真实候选重复插入。
   // 客户候选只认素材库客户目录，不再回落到 STATIC_CUSTOMER_OPTIONS：静态清单里
   // 有大量素材库中不存在的客户，一旦回落用户会选到没有素材的客户，且界面毫无提示，
@@ -220,8 +211,7 @@ export default function TechnicalProjectWizardModal({
       writeDraft(draftKey, {
         step: FORM_REQUIRED_STEP,
         form,
-        materialProjectMode,
-        selectedMaterialProjectId,
+        materialSourceProjectId,
       })
     }, 250)
     return () => clearTimeout(timer)
@@ -229,8 +219,7 @@ export default function TechnicalProjectWizardModal({
     creating,
     draftKey,
     form,
-    materialProjectMode,
-    selectedMaterialProjectId,
+    materialSourceProjectId,
   ])
 
 
@@ -289,38 +278,16 @@ export default function TechnicalProjectWizardModal({
         }
         const payload = await materialsApi.identityOptions({ bidType: form.bidType })
         if (!mounted) return
-        const projects = normalizeMaterialProjects(payload?.projects || [])
-        setMaterialProjects(projects)
-        if (isUpdateMode) {
-          if (hasDraft) return
-          const selectedProject = projects.find((item) => item.id === String(project?.materialProjectId || ''))
-          if (selectedProject) {
-            setMaterialProjectMode(project?.materialProjectMode || 'library')
-            setSelectedMaterialProjectId(selectedProject.id)
-            setForm((prev) => ({
-              ...prev,
-              materialProjectName: selectedProject.name,
-              projectCode: prev.projectCode || selectedProject.projectCode,
-            }))
-          }
-          return
-        }
-        if (!hasDraft) {
-          const defaultProject = projects[0]
-          if (defaultProject) {
-            setMaterialProjectMode('library')
-            setSelectedMaterialProjectId(defaultProject.id)
-            setForm((prev) => ({
-              ...prev,
-              materialProjectName: defaultProject.name,
-              projectCode: prev.projectCode || defaultProject.projectCode,
-            }))
-          }
-        }
+        // 候选是素材库已成型的项目目录；本项目自己不能作为自己的素材来源。
+        const currentProjectId = String(project?.id || '')
+        setMaterialProjects(
+          normalizeMaterialProjects(payload?.projects || [])
+            .filter((item) => item.projectId !== currentProjectId),
+        )
       } catch (e) {
         if (!mounted) return
         setMaterialProjects([])
-        setIdentityError(e?.message || '技术标项目候选加载失败，可选择普通项目。')
+        setIdentityError(e?.message || '素材库项目清单加载失败，可先按新建空项目提交。')
       } finally {
         if (mounted) setLoadingIdentities(false)
       }
@@ -329,22 +296,20 @@ export default function TechnicalProjectWizardModal({
     return () => {
       mounted = false
     }
-  }, [form.bidType, hasDraft, isUpdateMode, materialsApi, project?.materialProjectId, project?.materialProjectMode])
+  }, [form.bidType, materialsApi, project?.id])
 
   const missingRequiredItems = useMemo(() => {
     const items = []
     if (!form.name.trim()) items.push('项目名称')
     if (!form.customerName.trim()) items.push('客户')
-    if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
     const turbineRows = cleanTurbineModelRows(form.turbineModels)
     if (requiresTurbineModel && (!turbineRows.length || turbineRows.some((row) => !row.model))) items.push('风机机型')
     if (requiresTurbineModel && turbineRows.some((row) => !isPositiveIntegerText(row.turbineCount))) items.push('风机台数')
     if (requiresTurbineModel && turbineRows.some((row) => !row.foundationType.trim())) items.push('基础形式')
-    if (!form.manager.trim()) items.push('负责人')
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
-  }, [form, materialProjectMode, requiresTurbineModel, selectedMaterialProjectId])
+  }, [form, requiresTurbineModel])
   const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
@@ -367,10 +332,9 @@ export default function TechnicalProjectWizardModal({
         customerCanonicalName: form.customerName,
         materialCustomerId: '',
         materialCustomerName: form.customerName,
-        materialProjectMode,
-        materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
-        materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
-        materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
+        // 素材身份恒为项目自身，来源项目只作为复制模板单独记录。
+        materialProjectName: form.name,
+        materialSourceProjectId,
         turbineModel: requiresTurbineModel ? primaryTurbineModel : {},
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
@@ -429,26 +393,18 @@ export default function TechnicalProjectWizardModal({
                 value={form.name}
                 onChange={(e) => updateForm('name', e.target.value)}
               />
+              <p className="mt-1.5 text-xs text-outline">
+                将作为素材库文件夹名，不可重名，不能含 \ / : * ? " &lt; &gt; |
+              </p>
             </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <FieldLabel>业务项目编号</FieldLabel>
-                <input
-                  className={FIELD_INPUT_CLASS}
-                  placeholder="例如：招标编号、项目编号"
-                  value={form.projectCode}
-                  onChange={(e) => updateForm('projectCode', e.target.value)}
-                />
-              </div>
-              <div>
-                <FieldLabel required>负责人</FieldLabel>
-                <input
-                  className={FIELD_INPUT_CLASS}
-                  placeholder="张建国"
-                  value={form.manager}
-                  onChange={(e) => updateForm('manager', e.target.value)}
-                />
-              </div>
+            <div>
+              <FieldLabel>负责人</FieldLabel>
+              <input
+                className={FIELD_INPUT_CLASS}
+                placeholder="张建国"
+                value={form.manager}
+                onChange={(e) => updateForm('manager', e.target.value)}
+              />
             </div>
             <div>
               <FieldLabel required>客户</FieldLabel>
@@ -508,74 +464,32 @@ export default function TechnicalProjectWizardModal({
               {indexOptionsError && (
                 <p className="mt-1.5 text-xs text-error">{indexOptionsError}</p>
               )}
+            </div>
+            <div>
+              <FieldLabel>项目来源</FieldLabel>
+              <select
+                className={FIELD_SELECT_CLASS}
+                value={materialSourceProjectId}
+                onChange={(e) => setMaterialSourceProjectId(e.target.value)}
+                disabled={loadingIdentities || Boolean(lockedSourceProjectId)}
+              >
+                <option value="">{NEW_EMPTY_PROJECT_LABEL}</option>
+                {materialProjects.map((item) => (
+                  <option key={item.id} value={item.projectId}>{item.name}</option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-xs text-outline">
+                {lockedSourceProjectId
+                  ? '素材已归集，如需增删请到素材库中调整。'
+                  : materialSourceProjectId
+                    ? '提交后会把该项目的素材复制进本项目文件夹（不含其附表），复制在后台进行。'
+                    : '只用本次解析产物建立项目文件夹，后续可在素材库手动上传。'}
+              </p>
               {(identityError || loadingIdentities) && (
                 <p className={`mt-1.5 text-xs ${identityError ? 'text-error' : 'text-outline'}`}>
-                  {identityError || '正在加载技术标项目...'}
+                  {identityError || '正在加载素材库项目清单...'}
                 </p>
               )}
-            </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <FieldLabel>项目来源</FieldLabel>
-                <select
-                  className={FIELD_SELECT_CLASS}
-                  value={materialProjectMode}
-                  onChange={(e) => {
-                    const nextMode = e.target.value
-                    setMaterialProjectMode(nextMode)
-                    if (nextMode === 'library') {
-                      const selected = materialProjects.find((item) => item.id === selectedMaterialProjectId) || materialProjects[0]
-                      if (selected) {
-                        setSelectedMaterialProjectId(selected.id)
-                        setForm((prev) => ({
-                          ...prev,
-                          materialProjectName: selected.name,
-                          projectCode: prev.projectCode || selected.projectCode,
-                        }))
-                      }
-                    }
-                  }}
-                  disabled={loadingIdentities}
-                >
-                  <option value="library" disabled={!materialProjects.length}>重点项目</option>
-                  <option value="ordinary">普通项目</option>
-                </select>
-              </div>
-              <div>
-                <FieldLabel required={materialProjectMode === 'library'}>
-                  {materialProjectMode === 'library' ? '重点项目' : '普通项目'}
-                </FieldLabel>
-                {materialProjectMode === 'library' && materialProjects.length > 0 ? (
-                  <select
-                    className={FIELD_SELECT_CLASS}
-                    value={selectedMaterialProjectId}
-                    onChange={(e) => {
-                      const nextId = e.target.value
-                      setSelectedMaterialProjectId(nextId)
-                      const selected = materialProjects.find((item) => item.id === nextId)
-                      if (selected) {
-                        setForm((prev) => ({
-                          ...prev,
-                          materialProjectName: selected.name,
-                          projectCode: prev.projectCode || selected.projectCode,
-                        }))
-                      }
-                    }}
-                  >
-                    <option value="">选择项目</option>
-                    {materialProjects.map((item) => (
-                      <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className={FIELD_INPUT_CLASS}
-                    placeholder="项目名称，不填则使用投标项目名称"
-                    value={form.materialProjectName}
-                    onChange={(e) => updateForm('materialProjectName', e.target.value)}
-                  />
-                )}
-              </div>
             </div>
             {requiresTurbineModel && (
               <div className="rounded-xl border border-surface-container-high bg-surface-container-low/50 p-4">
