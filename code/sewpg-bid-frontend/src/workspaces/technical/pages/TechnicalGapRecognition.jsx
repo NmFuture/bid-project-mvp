@@ -1343,7 +1343,7 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factCurateState, setFactCurateState] = useState(null)
   const factCurateNotifiedRef = useRef('')
   const factCurateRunning = ['queued', 'running'].includes(String(factCurateState?.status || ''))
-  // 正文一键填写任务状态：同样跑在后台 worker，进度靠轮询恢复，关页面不影响
+  // 一键填写（正文+附表）任务状态：同样跑在后台 worker，进度靠轮询恢复，关页面不影响
   const [bodyFillState, setBodyFillState] = useState(null)
   const bodyFillNotifiedRef = useRef('')
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
@@ -2381,7 +2381,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     return () => window.clearInterval(timer)
   }, [factCurateRunning, id, showToast])
 
-  // 正文一键填写轮询：与 AI 匹配填充同一套范式，终态按 jobId+finishedAt 去重通知，
+  // 一键填写（正文+附表）轮询：与 AI 匹配填充同一套范式，终态按 jobId+finishedAt 去重通知，
   // 完成后拉一次最新数据把产物、标签、审核队列一起刷新。
   useEffect(() => {
     if (!bodyFillRunning) return undefined
@@ -2404,7 +2404,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     return () => window.clearInterval(timer)
   }, [bodyFillRunning, id, loadData, showToast])
 
-  // 一键填写：范围取当前标签筛选后的可见目录项（没筛选就是全部待填写正文）。
+  // 一键填写：范围取当前标签筛选后的可见目录项（没筛选就是全部待填写正文/附表）。
   // 提交后立即返回，不再逐条弹预览；产物统一停在「待审核」，由人集中复核。
   const handleBodyFillAll = async () => {
     if (busyAction || bodyFillRunning) return
@@ -2713,14 +2713,19 @@ export default function TechnicalGapRecognition({ showToast }) {
         </div>
       ) : null}
 
-      {/* 正文填写条：汇总 + 一键入口 + 进度。单条填和一键填共用同一份计数；
-          附表不在这里，由另一条线负责。任务跑在后台 worker，关页面不影响。 */}
+      {/* 一键填写条（正文 + 附表）：汇总 + 一键入口 + 进度。单条填和一键填共用同一份计数。
+          任务跑在后台 worker，关页面不影响。 */}
       {isCompleted ? (
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex min-h-8 flex-wrap items-center gap-3">
-            <span className="shrink-0 text-xs font-semibold text-on-surface-variant">正文填写</span>
+            <span className="shrink-0 text-xs font-semibold text-on-surface-variant">正文/附表填写</span>
             <div className="flex shrink-0 items-center gap-3 border-r border-surface-container-high pr-3 text-xs">
-              <span className="text-on-surface-variant">待填写 <b className="text-sm font-headline tabular-nums text-primary">{bodyFillCounts.pending}</b></span>
+              <span
+                className="text-on-surface-variant"
+                title={`正文 ${bodyFillCounts.pendingBody} 条 / 附表 ${bodyFillCounts.pendingAppendix} 条`}
+              >
+                待填写 <b className="text-sm font-headline tabular-nums text-primary">{bodyFillCounts.pending}</b>
+              </span>
               <span className="text-on-surface-variant">已填写 <b className="text-sm font-headline tabular-nums text-primary">{bodyFillCounts.filled}</b></span>
               <span className={bodyFillCounts.failed ? 'text-error' : 'text-on-surface-variant'}>
                 失败 <b className="text-sm font-headline tabular-nums">{bodyFillCounts.failed}</b>
@@ -2755,8 +2760,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                 disabled={Boolean(busyAction) || bodyFillRunning || !bodyFillCounts.pending}
                 title={
                   bodyFillRunning
-                    ? '正文填写任务执行中'
-                    : `填写当前筛选出的 ${filteredItems.length} 个目录项，产物统一进入待审核`
+                    ? '一键填写任务执行中'
+                    : `填写当前筛选出的 ${filteredItems.length} 个目录项（含正文与附表），产物统一进入待审核`
                 }
                 size="sm"
                 variant="primary"

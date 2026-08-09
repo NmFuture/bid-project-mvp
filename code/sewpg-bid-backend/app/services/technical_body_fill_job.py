@@ -1,11 +1,11 @@
-"""技术标正文一键填写的后台任务化。
+"""技术标一键填写（正文 + 附表）的后台任务化。
 
-一键填写要串完一批待填写 Word，同步 HTTP 会把连接占满整批，关标签页就丢结果。挪进
+一键填写要串完一批待填写 Word/附表，同步 HTTP 会把连接占满整批，关标签页就丢结果。挪进
 Redis 任务队列：提交后立即返回，进度（第几个 / 共几个、当前在填哪条）与终态写进
 gap_state["bodyFillState"] 持久化，前端轮询即可，页面刷新、换客户端都不影响。
 
-只跑正文（bid-tech-word-placeholder-filler）任务；附表（bid-tech-table-filler）由另一条
-线负责，不在批量范围内。
+正文（bid-tech-word-placeholder-filler）与附表（bid-tech-table-filler）任务都收，
+正文在前、附表在后，同一个任务串行跑完（产品裁决 2026-08-09：附表也走一键填写）。
 """
 
 from __future__ import annotations
@@ -109,10 +109,9 @@ def body_fill_stale(gap_state: dict[str, Any], project_id: str) -> bool:
 
 
 def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """worker 执行体：并发跑完一批正文填写任务，逐条回写进度。"""
+    """worker 执行体：串行跑完一批正文/附表填写任务，逐条回写进度。"""
     # 延迟 import：worker 侧按需加载，避免与 service 层循环依赖
     from app.services.technical_gap_actions import (
-        TECHNICAL_WORD_FILL_SKILL_NAME,
         run_technical_ai_fill_for_gap,
     )
     from app.services.technical_gap_ai_fill import (
@@ -138,7 +137,7 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
                 status="succeeded",
                 total=0,
                 done=0,
-                message="没有待填写的正文任务。",
+                message="没有待填写的正文或附表任务。",
                 finishedAt=_now_iso(),
             )
         # 事实表是项目级单张表，缺清单列时整批都填不了。在这里先判一次，整批一条原因结束，
@@ -222,12 +221,16 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
 
 
 def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any] | None = None) -> list[dict[str, str]]:
-    """待填写的正文任务清单。
+    """待填写的正文 + 附表任务清单。
 
-    只收 word-placeholder-filler 任务：附表由另一条线负责。已完成的默认跳过，
+    正文（word-placeholder-filler）与附表（table-filler）任务都收，正文在前、附表在后
+    （附表填写走 opencode agent、单条更重，放后面让正文结果先落出来）。已完成的默认跳过，
     传 rerun 才重跑。gapIds 非空时只跑这些目录项（前端按当前标签筛选传入）。
     """
-    from app.services.technical_gap_actions import TECHNICAL_WORD_FILL_SKILL_NAME
+    from app.services.technical_gap_actions import (
+        TECHNICAL_TABLE_FILL_SKILL_NAME,
+        TECHNICAL_WORD_FILL_SKILL_NAME,
+    )
 
     data = dict(payload or {})
     requested = {
@@ -237,7 +240,8 @@ def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any]
     }
     rerun = bool(data.get("rerun"))
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
-    targets: list[dict[str, str]] = []
+    word_targets: list[dict[str, str]] = []
+    table_targets: list[dict[str, str]] = []
     for item in plan.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -251,18 +255,20 @@ def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any]
         for task in item.get("fillTasks") or []:
             if not isinstance(task, dict):
                 continue
-            if str(task.get("skill") or "") != TECHNICAL_WORD_FILL_SKILL_NAME:
+            skill = str(task.get("skill") or "")
+            if skill not in {TECHNICAL_WORD_FILL_SKILL_NAME, TECHNICAL_TABLE_FILL_SKILL_NAME}:
                 continue
             if str(task.get("status") or "pending") == "completed" and not rerun:
                 continue
-            targets.append(
+            bucket = word_targets if skill == TECHNICAL_WORD_FILL_SKILL_NAME else table_targets
+            bucket.append(
                 {
                     "gapId": gap_id,
                     "fillTaskId": str(task.get("id") or ""),
                     "title": str(item.get("title") or gap_id),
                 }
             )
-    return targets
+    return word_targets + table_targets
 
 
 def _record_item_failure(project_id: str, gap_id: str, fill_task_id: str, message: str) -> None:

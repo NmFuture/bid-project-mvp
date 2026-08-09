@@ -134,20 +134,28 @@ export const isStructuralItem = (item) => (
 // - 冻结/释放按目录树派生：任一「未忽略且自身有工作标签」的祖先冻结整棵子树（由父章覆盖）；
 //   「忽略」（titleOnly，父级仅保留标题）后子级释放、各自按候选派生标签，逐级递归。
 //   planner 的 coveredByParent 降级为素材继承提示，不再参与标签判定。
-// 正文填写任务的 skill 名（附表是 bid-tech-table-filler，由另一条线负责，不进正文统计）
+// 正文填写任务的 skill 名；附表是 bid-tech-table-filler。一键填写两者都覆盖（产品裁决 2026-08-09）
 export const TECHNICAL_WORD_FILL_SKILL = 'bid-tech-word-placeholder-filler'
+export const TECHNICAL_TABLE_FILL_SKILL = 'bid-tech-table-filler'
 
-// 正文填写汇总：单条填和一键填共用同一份计数，不区分本轮还是历史。
-// 待填写/已填写按「填写任务」计（一个目录项可能有多个待填写 Word），
+// 一键填写汇总（正文 + 附表）：单条填和一键填共用同一份计数，不区分本轮还是历史。
+// 待填写/已填写按「填写任务」计（一个目录项可能有多个待填写 Word/附表），
 // 失败按「目录项」计（失败原因写在目录项上，重填入口也在那里）。
+// pendingBody/pendingAppendix 是拆分提示，供 hover 说明用。
 export const technicalBodyFillCounts = (items) => {
-  const counts = { pending: 0, filled: 0, failed: 0 }
+  const counts = { pending: 0, filled: 0, failed: 0, pendingBody: 0, pendingAppendix: 0 }
   asObjectArray(items).forEach((item) => {
     if (item?.titleOnly || String(item?.decision || '') !== 'fill_required') return
     asObjectArray(item?.fillTasks).forEach((task) => {
-      if (String(task?.skill || '') !== TECHNICAL_WORD_FILL_SKILL) return
-      if (String(task?.status || 'pending') === 'completed') counts.filled += 1
-      else counts.pending += 1
+      const skill = String(task?.skill || '')
+      if (skill !== TECHNICAL_WORD_FILL_SKILL && skill !== TECHNICAL_TABLE_FILL_SKILL) return
+      if (String(task?.status || 'pending') === 'completed') {
+        counts.filled += 1
+      } else {
+        counts.pending += 1
+        if (skill === TECHNICAL_TABLE_FILL_SKILL) counts.pendingAppendix += 1
+        else counts.pendingBody += 1
+      }
     })
     if (item?.fillError) counts.failed += 1
   })
