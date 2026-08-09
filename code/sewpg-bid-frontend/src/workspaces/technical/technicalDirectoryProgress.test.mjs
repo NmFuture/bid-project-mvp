@@ -45,6 +45,15 @@ test('keeps first generation and failed retry on template page but moves complet
   assert.match(outlineSource, /DirectoryGenerationProgressModal/)
 })
 
+test('template page shows the active project or default template', () => {
+  const templateSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
+
+  assert.match(templateSource, /uploadedTemplateFiles\.map/)
+  assert.match(templateSource, /fallbackWillBeUsed\s*&&/)
+  assert.match(templateSource, /项目模板/)
+  assert.match(templateSource, /默认模板/)
+})
+
 test('starts a new directory progress epoch after a previous terminal result', () => {
   assert.equal(typeof directoryProgress.beginDirectoryProgressEpoch, 'function')
 
