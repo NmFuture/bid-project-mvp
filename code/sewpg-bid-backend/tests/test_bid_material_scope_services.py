@@ -466,15 +466,13 @@ def test_technical_gap_material_index_scopes_customer_and_project_by_identity() 
     # 项目定制/附表（空副表约定目录）不进正文素材池；
     # 技术附表输入文件（甲方已填附表）保留在索引里，供附表查表替换。
     assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT", "RAW-CLIENT-INPUT"]
-    assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件"
+    # 标准文件层按机型目录查询（素材库标准文件目录以机型命名），客户/项目层查各自根。
+    assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件/EW10.0-220上置"
+    assert raw_files.call_args_list[0].kwargs["turbine_model"]["model"] == "EW10.0-220上置"
     assert raw_files.call_args_list[1].kwargs["folder_path"] == "技术标/客户定制"
     assert raw_files.call_args_list[1].kwargs["customer_name"] == "华能集团"
     assert raw_files.call_args_list[2].kwargs["folder_path"] == "技术标/项目定制"
     assert raw_files.call_args_list[2].kwargs["project_id"] == "MATPRJ-001"
-    assert all(
-        call.kwargs["turbine_model"]["model"] == "EW10.0-220上置"
-        for call in raw_files.call_args_list
-    )
 
 
 def test_technical_material_raw_files_use_index_tags_as_source_of_truth() -> None:

@@ -76,6 +76,16 @@ def project_turbine_model(project: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def project_turbine_models(project: dict[str, Any]) -> list[dict[str, Any]]:
+    """项目选定的全部机型，按机型明细的填写顺序；回退到单机型字段。"""
+
+    models = normalize_project_turbine_models(project.get("turbineModels"))
+    if models:
+        return models
+    single = project_turbine_model(project)
+    return [single] if single else []
+
+
 def normalize_project_turbine_models(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
