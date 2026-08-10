@@ -113,10 +113,13 @@ def _summary(plan: list[dict[str, Any]], merge_result: dict[str, Any], scan: dic
     return summary, warnings
 
 
+MERGE_PROGRESS_REPORT_INTERVAL_SEC = 3.0
+
+
 def _throttled_merge_progress(
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
 ) -> Callable[[int, int], None] | None:
-    """把逐条组装计数降频成最多每秒一次上报：状态每次上报都会落库，
+    """把逐条组装计数降频成最多每三秒一次上报：状态每次上报都会落库，
     整条目录逐条写库会把耗时算到进度汇报上。收尾那次必报，避免停在 n-1。"""
     if not progress_callback:
         return None
@@ -125,7 +128,7 @@ def _throttled_merge_progress(
     def report(done: int, total: int) -> None:
         nonlocal last_reported_at
         now = time.monotonic()
-        if done < total and now - last_reported_at < 1.0:
+        if done < total and now - last_reported_at < MERGE_PROGRESS_REPORT_INTERVAL_SEC:
             return
         last_reported_at = now
         progress_callback("assembling_progress", {"done": done, "total": total})

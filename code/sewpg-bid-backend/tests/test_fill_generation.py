@@ -423,20 +423,30 @@ class FillGenerationTests(unittest.TestCase):
         _handle_fill_progress(project_id, "assembling_progress", {"done": 3, "total": 0}, bid_type=TECHNICAL_BID_TYPE)
         self.assertEqual(_fill_state_for_tests(project_id)["assemblyProgress"]["total"], 54)
 
-    def test_merge_progress_is_throttled_to_one_report_per_second(self) -> None:
+    def test_merge_progress_is_throttled_to_one_report_per_three_seconds(self) -> None:
         from app.document_processing.technical_document.assembly.runner import _throttled_merge_progress
 
         seen: list[tuple[str, dict]] = []
-        report = _throttled_merge_progress(lambda stage, details=None: seen.append((stage, details)))
+        with patch(
+            "app.document_processing.technical_document.assembly.runner.time.monotonic",
+            side_effect=[10.0, 11.0, 12.9, 13.0, 14.0],
+        ):
+            report = _throttled_merge_progress(lambda stage, details=None: seen.append((stage, details)))
+            report(0, 4)
+            report(1, 4)
+            report(2, 4)
+            report(3, 4)
+            report(4, 4)
 
-        for done in range(40):
-            report(done, 40)
-        report(40, 40)
-
-        self.assertEqual(seen[0], ("assembling_progress", {"done": 0, "total": 40}))
-        self.assertEqual(seen[-1], ("assembling_progress", {"done": 40, "total": 40}))
-        # 中间那些不到 1 秒的上报被压掉：每条都写库会把耗时算到进度汇报上
-        self.assertLessEqual(len(seen), 3)
+        self.assertEqual(
+            seen,
+            [
+                ("assembling_progress", {"done": 0, "total": 4}),
+                ("assembling_progress", {"done": 3, "total": 4}),
+                ("assembling_progress", {"done": 4, "total": 4}),
+            ],
+        )
+        # 中间那些不到 3 秒的上报被压掉：每条都写库会把耗时算到进度汇报上
         self.assertIsNone(_throttled_merge_progress(None))
 
     def test_generation_failure_before_inputs_marks_prepare_task_failed(self) -> None:

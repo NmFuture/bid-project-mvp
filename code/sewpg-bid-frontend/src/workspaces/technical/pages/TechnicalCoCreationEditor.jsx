@@ -6,6 +6,7 @@ import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
@@ -172,11 +173,14 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   useEffect(() => {
     if (!generationRunning) return undefined
-    const timer = window.setInterval(() => {
-      loadGenerationStatus()
-    }, 1200)
-    return () => window.clearInterval(timer)
-  }, [generationRunning, loadGenerationStatus])
+    return subscribeTechnicalGenerationStatus({
+      fetchStatus: () => technicalGenerateAPI.status(id),
+      onStatus: (payload) => {
+        if (payload?.status === 'running') regenerationRequestedRef.current = true
+        setGenerationStatus(payload)
+      },
+    })
+  }, [generationRunning, id])
 
   useEffect(() => {
     if (generationStatus?.status === 'failed') {

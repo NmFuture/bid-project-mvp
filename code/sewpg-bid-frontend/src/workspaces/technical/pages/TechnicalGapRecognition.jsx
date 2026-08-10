@@ -7,6 +7,7 @@ import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
@@ -2449,11 +2450,11 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   useEffect(() => {
     if (!generationRunning) return undefined
-    const timer = window.setInterval(() => {
-      loadGenerationStatus()
-    }, 1200)
-    return () => window.clearInterval(timer)
-  }, [generationRunning, loadGenerationStatus])
+    return subscribeTechnicalGenerationStatus({
+      fetchStatus: () => technicalGenerateAPI.status(id),
+      onStatus: setGenerationStatus,
+    })
+  }, [generationRunning, id])
 
   // AI 匹配填充轮询：任务在后台 worker 执行，这里只负责取进度；终态时把结果一次性落到界面。
   // 完成通知按 jobId+finishedAt 去重，避免收尾那一拍重复弹 toast。
@@ -2544,7 +2545,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     try {
       const payload = await technicalGenerateAPI.run(id)
       setGenerationStatus(payload)
-      loadGenerationStatus()
       showToast?.(payload?.message || '已开始生成技术标正文。')
     } catch (e) {
       setGenerationModalOpen(false)
