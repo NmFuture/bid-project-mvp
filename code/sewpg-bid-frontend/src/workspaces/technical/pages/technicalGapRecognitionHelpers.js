@@ -519,6 +519,25 @@ export const matchedMaterialForItem = (selected, allItems = []) => {
   }
 }
 
+// 已选区展示的推荐素材。多机型项目 planner 会给出每个机型一份，它们是同一次推荐的
+// 整体，门槛只看主素材：主素材够格进已选区，同批展开的其余机型素材跟着一起进，
+// 不按各自分数拆散（拆散会出现「机型一在已选、机型二在备选」的割裂）。
+export const recommendedSelectionsForItem = (selected, allItems = []) => {
+  const match = matchedMaterialForItem(selected, allItems)
+  if (!match?.material) return []
+  if (!match.inherited && technicalMatchScore(match.material) < TECHNICAL_GAP_READY_SCORE) return []
+  // 父章覆盖只继承一份素材，不做多机型展开。
+  if (match.inherited) {
+    return [{ kind: 'material', material: match.material, inherited: true, sourceItem: match.sourceItem }]
+  }
+  return asObjectArray(selected?.matchedMaterials).map((material) => ({
+    kind: 'material',
+    material,
+    inherited: false,
+    sourceItem: match.sourceItem,
+  }))
+}
+
 export const primaryBlankSource = (selected) => {
   const taskBlank = asObjectArray(selected?.fillTasks)
     .map((task) => task?.blankSource)

@@ -692,3 +692,69 @@ test('目录项填写失败原因用于标红与重填提示', () => {
   assert.equal(technicalHelpers.technicalGapFillError({}), '')
   assert.equal(technicalHelpers.technicalGapFillError({ fillError: 'bad' }), '')
 })
+
+// 多机型项目 planner 会给每个机型一份推荐，已选区要整批展示，不能只留第一份。
+const READY_MATERIAL = (id, folder) => ({
+  id,
+  name: '智能传感系统.docx',
+  folderPath: folder,
+  materialTier: 'standard',
+  matchScore: 0.99,
+})
+
+test('多机型推荐整批进已选区，顺序沿用 planner 给的机型顺序', () => {
+  const item = {
+    id: 'GAP-1',
+    matchedMaterials: [
+      READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题'),
+      READY_MATERIAL('M-B', '技术标/标准文件/EW10.0-230下置/专题'),
+    ],
+  }
+
+  const selections = technicalHelpers.recommendedSelectionsForItem(item, [item])
+
+  assert.deepEqual(selections.map((s) => s.material.id), ['M-A', 'M-B'])
+  assert.equal(selections.every((s) => s.inherited === false), true)
+})
+
+test('单机型推荐仍然只有一张卡', () => {
+  const item = { id: 'GAP-1', matchedMaterials: [READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题')] }
+
+  assert.deepEqual(
+    technicalHelpers.recommendedSelectionsForItem(item, [item]).map((s) => s.material.id),
+    ['M-A'],
+  )
+})
+
+test('主素材分数不到定案线时整批留在备选池', () => {
+  const item = {
+    id: 'GAP-1',
+    matchedMaterials: [
+      { ...READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题'), matchScore: 0.6 },
+      READY_MATERIAL('M-B', '技术标/标准文件/EW10.0-230下置/专题'),
+    ],
+  }
+
+  assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
+})
+
+test('父章覆盖只继承一份素材，不做多机型展开', () => {
+  const parent = {
+    id: 'GAP-P',
+    matchedMaterials: [
+      READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题'),
+      READY_MATERIAL('M-B', '技术标/标准文件/EW10.0-230下置/专题'),
+    ],
+  }
+  const child = { id: 'GAP-C', coveredByParent: 'GAP-P', matchedMaterials: [] }
+
+  const selections = technicalHelpers.recommendedSelectionsForItem(child, [parent, child])
+
+  assert.deepEqual(selections.map((s) => s.material.id), ['M-A'])
+  assert.equal(selections[0].inherited, true)
+})
+
+test('没有匹配素材时已选区为空', () => {
+  const item = { id: 'GAP-1', matchedMaterials: [] }
+  assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
+})
