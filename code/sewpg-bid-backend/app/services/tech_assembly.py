@@ -15,6 +15,7 @@ from app.document_processing.technical_document.assembly import (
     finalize_merged_output,
     run_from_manifest as run_assembly_manifest,
 )
+from app.document_processing.technical_document.assembly.parse_toc import display_chapter_no
 from app.document_processing.technical_document.formatting import run_manifest as run_format_manifest
 from app.services.bid_fill_generation_state import save_fill_generation_result_state
 from app.services.bid_project_state import project_parse_input_records
@@ -1541,7 +1542,8 @@ def _tech_format_sections_from_toc_items(items: list[Any]) -> list[dict[str, Any
         section = {
             "id": str(raw.get("itemId") or raw.get("nodeId") or raw.get("id") or f"TECH-FORMAT-{index:04d}"),
             "title": title,
-            "number": str(raw.get("number") or raw.get("tocNumber") or "").strip(),
+            # 必须与 merger 手插标题用同一套编号，否则 cleaner 按「编号+标题」匹配不上正文
+            "number": display_chapter_no(raw) or str(raw.get("number") or raw.get("tocNumber") or "").strip(),
             "level": level,
             "children": [],
         }
