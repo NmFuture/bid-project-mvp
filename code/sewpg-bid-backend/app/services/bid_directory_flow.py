@@ -31,6 +31,7 @@ from app.services.outline_generation import generate_outline_for_project_with_pr
 from app.services.url_utils import absolute_url, onlyoffice_backend_base_url
 from app.services.workspace_project_access import (
     get_any_workspace_project_runtime_state,
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
     require_workspace_project_for_update,
@@ -163,7 +164,7 @@ def _update_directory_state(project_id: str, **kwargs: Any) -> dict[str, Any]:
     with _directory_state_write_lock:
         project = _any_project_for_update(project_id)
         state = update_directory_generation_state(project, **kwargs)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "directory_state")
         return state
 
 
@@ -171,7 +172,7 @@ def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[s
     with _directory_state_write_lock:
         project = _any_project_for_update(project_id)
         state = fail_directory_generation_state(project, message=message, tasks=tasks)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "directory_state")
         return state
 
 
@@ -564,7 +565,7 @@ class BidDirectoryService:
     def start_directory_generation(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         payload = start_directory_generation_state(project)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "directory_state")
         return payload
 
     def ensure_outline_editable(self, project_id: str) -> None:
@@ -683,7 +684,7 @@ class BidDirectoryService:
         self.ensure_outline_editable(project_id)
         project = self.require_project_for_update(project_id)
         payload = save_outline_state(project, (data or {}).get("nodes") or [])
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "outline_state")
         return {**payload, "message": "目录已保存"}
 
     async def regenerate_outline(self, project_id: str) -> JSONResponse:
@@ -693,7 +694,7 @@ class BidDirectoryService:
         self.ensure_outline_editable(project_id)
         project = self.require_project_for_update(project_id)
         payload = confirm_outline_state(project)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "outline_state")
         return payload
 
     async def tender_file(self, project_id: str, file_id: str, filename: str = "") -> FileResponse:

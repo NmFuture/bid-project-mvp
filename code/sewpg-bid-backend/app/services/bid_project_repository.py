@@ -140,6 +140,27 @@ class ProjectStateRepository:
             connection.commit()
         project[PROJECT_REVISION_KEY] = next_rev
 
+    def persist_fields(self, project: dict[str, Any], fields: tuple[str, ...]) -> None:
+        """只写回指定的顶层字段，库里其余字段原样保留。
+
+        项目状态是一份大 JSONB，整份覆盖写会让「只改进度条」的操作把别人这期间写入的
+        业务数据一起顶回旧值。按字段写回后，改不同字段的操作彼此不再相干，也不必重试。
+        同一字段仍可能被多方并发修改，那种情况要另外用 `_rev` 兜。
+        """
+        if not self.uses_postgres:
+            # 内存后端下 require/persist 操作的是同一个 dict 实例，不存在覆盖问题。
+            return
+        patch = {key: project[key] for key in fields if key in project}
+        if not patch:
+            return
+        self.ensure_db()
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE projects SET payload = payload || %s, updated_at = %s WHERE id = %s",
+                (Jsonb(patch), project["updatedAt"], project["id"]),
+            )
+            connection.commit()
+
     def delete(self, project_id: str) -> None:
         if not self.uses_postgres:
             return

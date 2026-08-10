@@ -22,6 +22,7 @@ from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.peripheral import PeripheralError
 from app.services.system_settings import system_settings_service
 from app.services.workspace_project_access import (
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
 )
@@ -939,7 +940,7 @@ class OcrService:
         from app.services.bid_runtime_state import now_iso
 
         project["updatedAt"] = now_iso()
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_result")
 
 
 ocr_service = OcrService()

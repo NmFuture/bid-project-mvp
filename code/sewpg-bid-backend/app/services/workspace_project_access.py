@@ -191,6 +191,15 @@ def persist_workspace_project_state(project: dict[str, Any]) -> None:
     store.persist_project_state(project)
 
 
+def persist_workspace_project_fields(project: dict[str, Any], *fields: str) -> None:
+    """只写回本次真正改动的顶层字段。
+
+    调用方必须列全改动的字段：漏列的改动不会落库。宁可多列一个，也不要漏列。
+    `updatedAt` 由这里统一带上，不必显式传。
+    """
+    store.persist_project_fields(project, (*fields, "updatedAt"))
+
+
 def persist_workspace_project_state_checked(project: dict[str, Any]) -> None:
     """带并发校验的写回：库里版本仍是本次读到的版本才落库，否则抛冲突。"""
     store.persist_project_state_checked(project, project_revision(project))
