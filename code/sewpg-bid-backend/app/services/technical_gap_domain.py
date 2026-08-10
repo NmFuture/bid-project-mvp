@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from app.services.bid_document_flow import _add_callback_token, _add_query_param
 
 
 def technical_outline_number_and_title(
@@ -180,6 +183,9 @@ def technical_gap_artifact_onlyoffice_payload(
     project_id: str,
     artifact_id: str,
     file_name: str,
+    file_path: str = "",
+    doc_version: int | None = None,
+    editable: bool = True,
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> dict[str, Any]:
@@ -190,13 +196,29 @@ def technical_gap_artifact_onlyoffice_payload(
         if onlyoffice_base_url
         else browser_url
     )
+    version = int(doc_version or 1)
+    # documentKey 代表一次编辑会话，不跟文件 mtime/大小绑定。status=6 临时保存会改文件，
+    # 但同一编辑器必须继续使用原 key；status=2 最终保存后版本号才递增并开启下一会话。
+    callback_base = onlyoffice_base_url.rstrip("/") or browser_base_url.rstrip("/")
+    callback_url = ""
+    if editable and callback_base:
+        callback_url = _add_callback_token(
+            _add_query_param(
+                f"{callback_base}/api/technical/projects/{project_id}/gaps/artifacts/{artifact_id}/callback",
+                "oo_doc_version",
+                version,
+            )
+        )
+    session_digest = hashlib.sha256(f"{project_id}:{artifact_id}".encode("utf-8")).hexdigest()[:32]
+    document_key = f"gap-{session_digest}-v{version}"
     return {
         "status": "ready",
-        "mode": "view",
+        "mode": "edit" if editable else "view",
         "fileUrl": document_server_url,
         "browserFileUrl": browser_url,
         "documentServerFileUrl": document_server_url,
-        "documentKey": f"{project_id}-{artifact_id}",
+        "callbackUrl": callback_url,
+        "documentKey": document_key,
         "title": file_name,
     }
 
@@ -258,6 +280,9 @@ def refresh_technical_gap_plan_artifact_urls(
                     project_id=project_id,
                     artifact_id=artifact_id,
                     file_name=file_name,
+                    file_path=str(artifact.get("path") or ""),
+                    doc_version=artifact.get("ooDocVersion"),
+                    editable=str(artifact.get("source") or "") == "ai_fill",
                     browser_base_url=browser_base_url,
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
