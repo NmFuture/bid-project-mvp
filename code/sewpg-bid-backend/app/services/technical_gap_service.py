@@ -26,7 +26,6 @@ from app.services.technical_appendix_source_matrix import (
 from app.services.turbine_models import project_turbine_model
 from app.services.technical_gap_fact_table import (
     FACT_STATUS_CONFIRMED,
-    FACT_STATUS_MISSING_SOURCE,
     FACT_STATUS_NOT_APPLICABLE,
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
@@ -157,11 +156,10 @@ def appendix_source_matrix_meta(project: dict[str, Any]) -> dict[str, Any]:
         "uploadedAt": str(raw.get("uploadedAt") or ""),
     }
 
-# 逐字段确认的终态集合：全部字段进入终态后表级 status 自动升 confirmed
+# 字段了结的状态集合：全部字段了结（有值或人工标不适用）后表级 status 自动升 confirmed
 PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
     FACT_STATUS_CONFIRMED,
     FACT_STATUS_NOT_APPLICABLE,
-    FACT_STATUS_MISSING_SOURCE,
 }
 
 

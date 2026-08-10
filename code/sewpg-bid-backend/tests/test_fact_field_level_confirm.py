@@ -95,9 +95,13 @@ class FactFieldLevelConfirmTests(unittest.TestCase):
         self.assertEqual(payload["field"]["status"], "confirmed")
         self.assertEqual(payload["field"]["confirmedBy"], "测试用户")
         self.assertTrue(payload["field"]["confirmedAt"])
-        # 表级仍有大量非终态字段，不升级为 confirmed
+        # 表级仍有大量无值字段，不升级为 confirmed
         self.assertEqual(payload["status"], "draft")
-        self.assertEqual(payload["summary"]["confirmedCount"], 1)
+        # 三态下有值即 confirmed，计数含建表时就抽到值的字段，不只本次保存的这条
+        self.assertEqual(
+            payload["summary"]["confirmedCount"],
+            sum(1 for field in fields if str(field.get("value") or "").strip()),
+        )
 
         table = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
         after = {field["id"]: field for field in table["fields"]}
@@ -145,10 +149,15 @@ class FactFieldLevelConfirmTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404, response.text)
 
     def test_table_auto_confirmed_when_all_fields_terminal(self) -> None:
+        """三态下「了结」= 有值或人工标不适用；空值字段不再算了结，表级停在 draft。"""
         project_id, fields = self._create_project_with_fact_table()
         last_response = None
         for field in fields:
-            last_response = self._patch_field(project_id, field["id"], {"operator": "测试用户"})
+            # 没抽到值的字段按人工裁定「不适用」了结，否则永远停在待填写
+            body = {"operator": "测试用户"}
+            if not str(field.get("value") or "").strip():
+                body["status"] = "not_applicable"
+            last_response = self._patch_field(project_id, field["id"], body)
             self.assertEqual(last_response.status_code, 200, last_response.text)
 
         payload = last_response.json()
@@ -156,7 +165,7 @@ class FactFieldLevelConfirmTests(unittest.TestCase):
         summary = payload["summary"]
         self.assertEqual(
             summary["totalCount"],
-            summary["confirmedCount"] + summary["missingSourceCount"] + summary["notApplicableCount"],
+            summary["confirmedCount"] + summary["notApplicableCount"],
         )
 
         table = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()

@@ -6,9 +6,12 @@ from __future__ import annotations
 1. 组装 bid-tech-fact-curator skill 的 manifest（全量字段 + 招标文件解析产物路径 + 相关素材路径）；
 2. 调用 opencode 运行 skill；
 3. 回收逐字段建议并落表——硬约束：
-   - 建议值一律置 pending_confirmation，sourceRefs 追加 type=factCurator；
-   - 绝不写 confirmed；绝不覆盖已 confirmed 字段的值和状态；
+   - 建议值直接可用（状态由有无取值决定），sourceRefs 追加 type=factCurator 留痕；
+   - 绝不覆盖人工写过的字段（sourceRefs 带人工标记或已标不适用）；
    - 找不到值的字段保持 unextracted 并在 notes 写原因。
+
+产品裁决 2026-08-10：取消「AI 建议需人工点确认」这道闸门。规则抽取同样不保证准确，
+两者都是机器给的候选，一视同仁直接落值；不对由人在页面上改，改过即带人工标记。
 """
 
 import copy
@@ -32,13 +35,12 @@ from app.services.technical_fact_material_classes import (
 from app.services.technical_gap_fact_table import (
     FACT_MATERIAL_USAGE_CURATE,
     FACT_STATUS_CONFIRMED,
-    FACT_STATUS_EXTRACTED,
-    FACT_STATUS_MISSING_SOURCE,
     FACT_STATUS_NOT_APPLICABLE,
-    FACT_STATUS_PENDING_CONFIRMATION,
     FACT_STATUS_UNEXTRACTED,
     fact_label_key,
+    is_human_authored_fact_field,
     normalize_fact_source_refs,
+    normalize_fact_status,
     project_fact_material_index,
     project_fact_material_work_dir,
     summarize_project_fact_fields,
@@ -62,11 +64,10 @@ CURATE_ACTION_CONFIRM_ADVICE = "confirm-advice"
 CURATE_ACTIONS = {CURATE_ACTION_FILL, CURATE_ACTION_FIX, CURATE_ACTION_CONFIRM_ADVICE}
 
 # 与 technical_gap_service.PROJECT_FACT_FIELD_TERMINAL_STATUSES 同源：
-# 表级 confirmed 后又有字段被 curator 改回待确认时，表级状态要跟着降回 draft。
+# 字段全部了结（有值或人工标不适用）时表级才是 confirmed，否则降回 draft。
 _FACT_TERMINAL_STATUSES = {
     FACT_STATUS_CONFIRMED,
     FACT_STATUS_NOT_APPLICABLE,
-    FACT_STATUS_MISSING_SOURCE,
 }
 
 # manifest 中带给 skill 的素材清单上限：清单只有元数据（约 370B/条），正文由 skill 按
@@ -211,6 +212,20 @@ def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> li
 _NO_FILL_SOURCE_KINDS = {"template", "platform", "derived"}
 
 
+def _is_curator_readonly_field(field: dict[str, Any]) -> bool:
+    """AI 复核员不许碰的字段。
+
+    两类：人工写过的（值和口径已由人定案）；平台输入 / 模板占位 / 自动生成的
+    （取值由项目创建信息或系统推导确定，不是从文档里"抽"出来的，没有复核余地）。
+
+    三态收敛前这两类都靠 status==confirmed 一并挡住；现在规则抽取的值也是
+    confirmed，必须按来源显式区分，否则投标机型这种平台字段会被交给 AI 改。
+    """
+    if is_human_authored_fact_field(field):
+        return True
+    return str(field.get("sourceKind") or "") in _NO_FILL_SOURCE_KINDS
+
+
 def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
     """按方案 B 的三件事给字段分桶，桶内只放 fieldKey。"""
     targets: dict[str, list[str]] = {"fill": [], "fix": [], "confirmAdvice": []}
@@ -218,13 +233,18 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
         field_key = str(field.get("key") or "").strip()
         if not field_key:
             continue
-        status = str(field.get("status") or "")
+        if _is_curator_readonly_field(field):
+            continue
+        # 归一后再分桶：旧项目的 gap_state 里还留着七态，重建前也要分对
+        status = normalize_fact_status(field.get("status"), has_value=bool(str(field.get("value") or "").strip()))
         # 补抽范围：招标类 + 素材/证书类未提取字段（模板/平台/自动生成类不交 AI 填）
-        if status == FACT_STATUS_UNEXTRACTED and str(field.get("sourceKind") or "") not in _NO_FILL_SOURCE_KINDS:
+        if status == FACT_STATUS_UNEXTRACTED:
             targets["fill"].append(field_key)
-        if status == FACT_STATUS_EXTRACTED:
+        # 脏数据校验只针对从招标文件/素材抽出来的值；清单标了要核口径的走 confirmAdvice，
+        # 两个桶互斥（三态收敛前靠 pending_confirmation 状态天然分开，现在显式写出来）
+        if status == FACT_STATUS_CONFIRMED and not field.get("needsConfirmation"):
             targets["fix"].append(field_key)
-        if field.get("needsConfirmation") and status != FACT_STATUS_CONFIRMED:
+        if field.get("needsConfirmation"):
             targets["confirmAdvice"].append(field_key)
     return targets
 
@@ -450,8 +470,8 @@ def apply_fact_curator_suggestions(
         if action not in CURATE_ACTIONS:
             report["ignored"].append({"fieldKey": field_key, "reason": f"非法 action：{action or '空'}"})
             continue
-        # 硬门禁优先于目标桶校验：即使 agent 越界回传，也明确记录为已确认跳过。
-        if str(field.get("status") or "") == FACT_STATUS_CONFIRMED:
+        # 硬门禁优先于目标桶校验：即使 agent 越界回传，只读字段也不许动。
+        if _is_curator_readonly_field(field):
             report["skippedConfirmed"].append(field_key)
             continue
         target_key = str(field.get("key") or "").strip()
@@ -476,7 +496,8 @@ def apply_fact_curator_suggestions(
                 notes = str(field.get("notes") or "")
                 if origin_note not in notes:
                     field["notes"] = f"{notes}；{origin_note}" if notes else origin_note
-            field["status"] = FACT_STATUS_PENDING_CONFIRMATION
+            # 口径建议不改值，只留证据供人复核；状态按现值归一（旧态字段就地收敛）
+            field["status"] = normalize_fact_status(field.get("status"), has_value=True)
             field["updatedAt"] = saved_at
             field["updatedBy"] = operator
             report["advised"].append(field_key)
@@ -514,7 +535,7 @@ def apply_fact_curator_suggestions(
         field["value"] = value
         if suggestion["unit"]:
             field["unit"] = suggestion["unit"]
-        field["status"] = FACT_STATUS_PENDING_CONFIRMATION
+        field["status"] = FACT_STATUS_CONFIRMED
         field["confidence"] = suggestion["confidence"]
         field["updatedAt"] = saved_at
         field["updatedBy"] = operator

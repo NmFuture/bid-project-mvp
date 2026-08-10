@@ -351,72 +351,59 @@ function MaterialCandidateCard({
   )
 }
 
-const factStatusLabels = {
-  // 表级状态
+// 表级与字段级都有 confirmed，含义不同（表：全部了结 / 字段：有值可用），分成两张表
+const factTableStatusLabels = {
   empty: '待生成',
-  draft: '待确认',
-  confirmed: '已确认',
-  // 字段级七态（事实表 v2）
-  unextracted: '未提取',
-  extracted: '已自动提取',
-  pending_confirmation: '待人工确认',
-  missing_source: '缺少来源',
-  conflict: '存在冲突',
-  not_applicable: '不适用',
-  // v1 遗留（旧数据兼容展示）
-  candidate: '候选',
-  missing: '待补充',
+  draft: '待补齐',
+  confirmed: '已填满',
 }
 
-// v1 遗留 missing 按 v2 missing_source 归一处理（统计、配色、筛选统一口径，不并列 option）
+// 字段级三态（产品裁决 2026-08-10：取消人工确认闸门，有值即可用）
+const factFieldStatusLabels = {
+  confirmed: '可用',
+  unextracted: '待填写',
+  not_applicable: '不适用',
+}
+
+// 历史状态归一：extracted/pending_confirmation/conflict/candidate 都是「有值但没人看过」，
+// missing/missing_source 都是「没值」，后端已收敛成三态，这里兜住尚未重建的旧项目状态。
+const LEGACY_FACT_FIELD_STATUS = {
+  extracted: 'confirmed',
+  pending_confirmation: 'confirmed',
+  conflict: 'confirmed',
+  candidate: 'confirmed',
+  missing: 'unextracted',
+  missing_source: 'unextracted',
+}
+
 const normalizeFactFieldStatus = (status) => {
   const value = String(status || 'unextracted')
-  return value === 'missing' ? 'missing_source' : value
+  return LEGACY_FACT_FIELD_STATUS[value] || value
 }
 
-// 字段状态配色（统计 chip 与列表状态下拉共用）：confirmed 绿 / extracted 蓝 / pending_confirmation 青 /
-// missing_source 橙 / unextracted 浅琥珀 / conflict 红 / not_applicable 灰
+// 字段状态配色（统计 chip 与列表状态下拉共用）：confirmed 绿 / unextracted 浅琥珀 / not_applicable 灰
 const factFieldStatusTone = (status) => {
   switch (normalizeFactFieldStatus(status)) {
     case 'confirmed':
       return 'bg-secondary-container text-on-secondary-container'
-    case 'extracted':
-      return 'bg-primary-fixed text-on-primary-fixed-variant'
-    case 'pending_confirmation':
-      return 'bg-tertiary-fixed text-on-tertiary-fixed'
-    case 'missing_source':
-      return 'bg-orange-100 text-orange-900'
     case 'unextracted':
       return 'bg-amber-50 text-amber-800'
-    case 'conflict':
-      return 'bg-error/10 text-error'
     default:
       return 'bg-surface-container-high text-on-surface-variant'
   }
 }
 
-// 统计条七态 chip 的展示顺序
-const factStatusChipOrder = [
-  'confirmed',
-  'pending_confirmation',
-  'extracted',
-  'unextracted',
-  'missing_source',
-  'conflict',
-  'not_applicable',
-]
+// 统计条 chip 的展示顺序
+const factStatusChipOrder = ['confirmed', 'unextracted', 'not_applicable']
 
 const hasFactSpecSeq = (field) =>
   field?.specSeq !== null && field?.specSeq !== undefined && String(field.specSeq) !== ''
 
 // 清单进度分段，口径与后端 summary 的 spec*Count 一致：
-// confirmed=已确认；pending=待人工确认；unfilled=无值或未提取/缺来源；其余=已填未确认
+// confirmed=有值可用；unfilled=没值待人工填；notApplicable=人工标了不适用，不计待办
 const factSpecSegment = (field) => {
-  const status = normalizeFactFieldStatus(field?.status)
-  if (status === 'confirmed') return 'confirmed'
-  if (status === 'pending_confirmation') return 'pending'
-  if (!String(field?.value || '').trim() || status === 'unextracted' || status === 'missing_source') return 'unfilled'
-  return 'filledUnconfirmed'
+  if (normalizeFactFieldStatus(field?.status) === 'not_applicable') return 'notApplicable'
+  return String(field?.value || '').trim() ? 'confirmed' : 'unfilled'
 }
 
 // 来源素材路径展示（产品反馈 2026-08-03：事实表只保留 字段/确认值/来源路径 三列）：
@@ -512,7 +499,7 @@ const FactMaintenanceModal = ({
     const fieldStatus = normalizeFactFieldStatus(field.status)
     statusCounts[fieldStatus] = (statusCounts[fieldStatus] || 0) + 1
   })
-  const specSegments = { confirmed: 0, pending: 0, unfilled: 0, filledUnconfirmed: 0 }
+  const specSegments = { confirmed: 0, unfilled: 0, notApplicable: 0 }
   const specTotal = fields.reduce((total, field) => {
     if (!hasFactSpecSeq(field)) return total
     specSegments[factSpecSegment(field)] += 1
@@ -626,7 +613,7 @@ const FactMaintenanceModal = ({
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-lg font-headline font-bold text-on-surface">项目事实表维护</h3>
               <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${status === 'confirmed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-fixed text-on-tertiary-fixed'}`}>
-                {factStatusLabels[status] || status}
+                {factTableStatusLabels[status] || status}
               </span>
             </div>
             <Toolbar>
@@ -665,7 +652,7 @@ const FactMaintenanceModal = ({
             {factStatusChipOrder.map((statusKey) => {
               const count = statusCounts[statusKey] || 0
               const active = factFilter?.type === 'status' && factFilter.key === statusKey
-              const label = factStatusLabels[statusKey] || statusKey
+              const label = factFieldStatusLabels[statusKey] || statusKey
               return (
                 <button
                   key={statusKey}
@@ -681,15 +668,14 @@ const FactMaintenanceModal = ({
             {specTotal ? (
               <div
                 className="ml-1 flex items-center gap-2 border-l border-surface-container-high pl-3"
-                title={`清单字段共 ${specTotal} 个：已确认 ${specSegments.confirmed} · 待确认 ${specSegments.pending} · 未填 ${specSegments.unfilled} · 已填未确认 ${specSegments.filledUnconfirmed}`}
+                title={`清单字段共 ${specTotal} 个：可用 ${specSegments.confirmed} · 待填写 ${specSegments.unfilled} · 不适用 ${specSegments.notApplicable}`}
               >
                 <span className="text-xs text-on-surface-variant">清单进度</span>
                 <div className="flex h-2 w-32 overflow-hidden rounded-full bg-surface-container-high">
                   {[
                     ['confirmed', 'bg-secondary', specSegments.confirmed],
-                    ['pending', 'bg-tertiary', specSegments.pending],
-                    ['filledUnconfirmed', 'bg-primary-fixed-dim', specSegments.filledUnconfirmed],
                     ['unfilled', 'bg-amber-300', specSegments.unfilled],
+                    ['notApplicable', 'bg-surface-container-highest', specSegments.notApplicable],
                   ].map(([segmentKey, barClass, count]) =>
                     count ? (
                       <span key={segmentKey} className={barClass} style={{ width: `${(count / specTotal) * 100}%` }} />
@@ -697,7 +683,7 @@ const FactMaintenanceModal = ({
                   )}
                 </div>
                 <span className="text-xs font-semibold tabular-nums text-on-surface">
-                  {specSegments.confirmed}/{specTotal} 已确认
+                  {specSegments.confirmed}/{specTotal} 可用
                 </span>
               </div>
             ) : null}
@@ -868,7 +854,7 @@ const FactMaintenanceModal = ({
                       {visibleRows.map(({ field, index }) => {
                       const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
                       const normalizedStatus = normalizeFactFieldStatus(field.status)
-                      const isEmptyStatus = ['missing_source', 'unextracted'].includes(normalizedStatus)
+                      const isEmptyStatus = normalizedStatus === 'unextracted'
                       const fieldNames = new Set([field.label, field.reviewLabel].map((value) => String(value || '').trim()).filter(Boolean))
                       const allRefPaths = uniqueStrings(asObjectArray(field.sourceRefs).map(factRefPath))
                         .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
@@ -893,8 +879,8 @@ const FactMaintenanceModal = ({
                               <div className="flex min-w-0 items-center gap-2">
                                 <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
                                 {field.needsConfirmation ? (
-                                  <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径需人工确认'}>
-                                    待确认口径
+                                  <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径建议人工核一遍'}>
+                                    核口径
                                   </span>
                                 ) : null}
                               </div>
@@ -1954,9 +1940,8 @@ export default function TechnicalGapRecognition({ showToast }) {
         ...field,
         [key]: value,
         sourceRefs,
-        status: String(key === 'value' ? value : field.value || '').trim()
-          ? (field.status === 'confirmed' ? 'confirmed' : 'extracted')
-          : 'unextracted',
+        // 三态：有值即可用，清空即回落待填写（「不适用」只走上面的 status 分支）
+        status: String(key === 'value' ? value : field.value || '').trim() ? 'confirmed' : 'unextracted',
       }
     }))
   }
