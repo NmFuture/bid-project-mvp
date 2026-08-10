@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import platform
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, call, patch
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
+from docx import Document
+from docx.enum.text import WD_COLOR_INDEX
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from fastapi.testclient import TestClient
 from starlette.datastructures import URL as StarletteURL
 
@@ -26,6 +34,7 @@ from app.services.technical_gap_review import prepare_technical_review_document
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.technical_material_store import technical_material_store
+from app.services import technical_export_color_cleaner
 
 
 EXPECTED_TECHNICAL_CHAT_TOOLS = {
@@ -203,16 +212,226 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
 
     def test_technical_final_pdf_file_is_downloadable(self) -> None:
         project_id = self.create_project()
-        pdf_path = document_path(project_id).with_suffix(".pdf")
         pdf_bytes = b"%PDF-1.4\n% project-specific sentinel\n%%EOF\n"
-        pdf_path.write_bytes(pdf_bytes)
 
+        async def fake_convert(_source_url, _source_path, target_path):
+            target_path.write_bytes(pdf_bytes)
+            return target_path
+
+        with patch(
+            "app.services.bid_document_flow._convert_document_to_pdf_via_onlyoffice",
+            new=AsyncMock(side_effect=fake_convert),
+        ):
+            metadata_response = self.client.get(
+                f"/api/technical/projects/{project_id}/final-document/pdf?version=marked"
+            )
+
+        self.assertEqual(metadata_response.status_code, 200)
         response = self.client.get(f"/api/technical/projects/{project_id}/final-document/pdf/file")
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.headers["content-type"].startswith("application/pdf"))
         self.assertIn(".pdf", response.headers["content-disposition"].lower())
         self.assertEqual(response.content, pdf_bytes)
+
+    def test_technical_clean_final_document_removes_only_marker_colors(self) -> None:
+        project_id = self.create_project()
+        source_path = document_path(project_id)
+        document = Document()
+        yellow_run = document.add_paragraph().add_run("黄色标记")
+        yellow_run.bold = True
+        yellow_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        green_run = document.add_paragraph().add_run("绿色标记")
+        green_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+        header_run = document.sections[0].header.paragraphs[0].add_run("保留页眉高亮")
+        header_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        table = document.add_table(rows=1, cols=4)
+        for cell, text, fill in zip(
+            table.rows[0].cells,
+            ("系统黄色底纹", "保留绿色", "保留黄色", "保留蓝色"),
+            ("FFF2CC", "92D050", "FFFF00", "D9E2F3"),
+        ):
+            cell.text = text
+            shading = OxmlElement("w:shd")
+            shading.set(qn("w:fill"), fill)
+            cell._tc.get_or_add_tcPr().append(shading)
+        document.save(source_path)
+        source_bytes = source_path.read_bytes()
+
+        metadata_response = self.client.get(
+            f"/api/technical/projects/{project_id}/final-document?version=clean"
+        )
+
+        self.assertEqual(metadata_response.status_code, 200)
+        payload = metadata_response.json()
+        self.assertEqual(payload["exportVersion"], "clean")
+        self.assertIsInstance(payload["version"], int)
+        self.assertTrue(payload["fileName"].endswith("-清洁版.docx"))
+        parsed_url = urlparse(payload["fileUrl"])
+        self.assertEqual(parse_qs(parsed_url.query)["version"], ["clean"])
+
+        download_response = self.client.get(f"{parsed_url.path}?{parsed_url.query}")
+        self.assertEqual(download_response.status_code, 200)
+        cleaned = Document(BytesIO(download_response.content))
+        self.assertIsNone(cleaned.paragraphs[0].runs[0].font.highlight_color)
+        self.assertTrue(cleaned.paragraphs[0].runs[0].bold)
+        self.assertIsNone(cleaned.paragraphs[1].runs[0].font.highlight_color)
+        cleaned_cells = cleaned.tables[0].rows[0].cells
+        marker_shading = cleaned_cells[0]._tc.get_or_add_tcPr().find(qn("w:shd"))
+        self.assertTrue(marker_shading is None or marker_shading.get(qn("w:fill")) is None)
+        for index, expected_fill in ((1, "92D050"), (2, "FFFF00"), (3, "D9E2F3")):
+            business_shading = cleaned_cells[index]._tc.get_or_add_tcPr().find(qn("w:shd"))
+            self.assertIsNotNone(business_shading)
+            self.assertEqual(business_shading.get(qn("w:fill")), expected_fill)
+        self.assertEqual(
+            cleaned.sections[0].header.paragraphs[0].runs[0].font.highlight_color,
+            WD_COLOR_INDEX.YELLOW,
+        )
+        self.assertEqual(source_path.read_bytes(), source_bytes)
+
+    def test_technical_clean_document_rebuilds_when_source_signature_changes(self) -> None:
+        project_id = self.create_project()
+        source_path = document_path(project_id)
+        first_document = Document()
+        first_document.add_paragraph("旧版本")
+        first_document.save(source_path)
+
+        self.client.get(f"/api/technical/projects/{project_id}/final-document?version=clean")
+        clean_path = source_path.with_name(f"{source_path.stem}-clean.docx")
+        cached_mtime = clean_path.stat().st_mtime_ns
+
+        second_document = Document()
+        second_document.add_paragraph("新版本内容更长")
+        second_document.save(source_path)
+        os.utime(source_path, ns=(cached_mtime - 1, cached_mtime - 1))
+
+        metadata_response = self.client.get(
+            f"/api/technical/projects/{project_id}/final-document?version=clean"
+        )
+        parsed_url = urlparse(metadata_response.json()["fileUrl"])
+        download_response = self.client.get(f"{parsed_url.path}?{parsed_url.query}")
+        cleaned = Document(BytesIO(download_response.content))
+        self.assertEqual(cleaned.paragraphs[0].text, "新版本内容更长")
+
+    def test_technical_clean_document_serializes_concurrent_rebuilds(self) -> None:
+        project_id = self.create_project()
+        source_path = document_path(project_id)
+        document = Document()
+        document.add_paragraph("并发清洗")
+        document.save(source_path)
+        first_build_started = threading.Event()
+        release_build = threading.Event()
+        second_build_started = threading.Event()
+        call_count = 0
+        count_lock = threading.Lock()
+        real_build = technical_export_color_cleaner.build_clean_export_document
+
+        def controlled_build(source, target):
+            nonlocal call_count
+            with count_lock:
+                call_count += 1
+                if call_count == 1:
+                    first_build_started.set()
+                else:
+                    second_build_started.set()
+            release_build.wait(timeout=2)
+            return real_build(source, target)
+
+        with patch.object(
+            technical_export_color_cleaner,
+            "build_clean_export_document",
+            side_effect=controlled_build,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(technical_export_color_cleaner.ensure_clean_export_document, source_path)
+                self.assertTrue(first_build_started.wait(timeout=1))
+                second = executor.submit(technical_export_color_cleaner.ensure_clean_export_document, source_path)
+                try:
+                    second_entered_while_first_was_building = second_build_started.wait(timeout=0.2)
+                finally:
+                    release_build.set()
+                first.result(timeout=2)
+                second.result(timeout=2)
+
+        self.assertFalse(second_entered_while_first_was_building)
+        self.assertEqual(call_count, 1)
+
+    def test_technical_clean_pdf_uses_clean_word_source(self) -> None:
+        project_id = self.create_project()
+        self.client.get(f"/api/technical/projects/{project_id}/final-document")
+        pdf_bytes = b"%PDF-1.4\n% clean-version sentinel\n%%EOF\n"
+
+        async def fake_convert(source_url, source_path, target_path):
+            self.assertIn("version=clean", source_url)
+            self.assertTrue(source_path.name.endswith("-clean.docx"))
+            target_path.write_bytes(pdf_bytes)
+            return target_path
+
+        with patch(
+            "app.services.bid_document_flow._convert_document_to_pdf_via_onlyoffice",
+            new=AsyncMock(side_effect=fake_convert),
+        ):
+            metadata_response = self.client.get(
+                f"/api/technical/projects/{project_id}/final-document/pdf?version=clean"
+            )
+
+        self.assertEqual(metadata_response.status_code, 200)
+        payload = metadata_response.json()
+        self.assertEqual(payload["exportVersion"], "clean")
+        self.assertTrue(payload["fileName"].endswith("-清洁版.pdf"))
+        parsed_url = urlparse(payload["fileUrl"])
+        self.assertEqual(parse_qs(parsed_url.query)["version"], ["clean"])
+        download_response = self.client.get(f"{parsed_url.path}?{parsed_url.query}")
+        self.assertEqual(download_response.content, pdf_bytes)
+
+    def test_technical_pdf_retries_when_source_changes_during_conversion(self) -> None:
+        project_id = self.create_project()
+        self.client.get(f"/api/technical/projects/{project_id}/final-document/file?version=marked")
+        source_path = document_path(project_id)
+        stale_pdf = b"%PDF-1.4\n% stale source\n%%EOF\n"
+        current_pdf = b"%PDF-1.4\n% current source\n%%EOF\n"
+        conversion_count = 0
+
+        async def fake_convert(_source_url, _source_path, target_path):
+            nonlocal conversion_count
+            conversion_count += 1
+            if conversion_count == 1:
+                updated_document = Document()
+                updated_document.add_paragraph("OnlyOffice 新版本")
+                updated_document.save(source_path)
+                target_path.write_bytes(stale_pdf)
+            else:
+                target_path.write_bytes(current_pdf)
+            return target_path
+
+        with patch(
+            "app.services.bid_document_flow._convert_document_to_pdf_via_onlyoffice",
+            new=AsyncMock(side_effect=fake_convert),
+        ):
+            metadata_response = self.client.get(
+                f"/api/technical/projects/{project_id}/final-document/pdf?version=marked"
+            )
+
+        self.assertEqual(metadata_response.status_code, 200)
+        self.assertEqual(conversion_count, 2)
+        parsed_url = urlparse(metadata_response.json()["fileUrl"])
+        download_response = self.client.get(f"{parsed_url.path}?{parsed_url.query}")
+        self.assertEqual(download_response.content, current_pdf)
+
+    def test_technical_pdf_file_rejects_stale_cached_pdf(self) -> None:
+        project_id = self.create_project()
+        self.client.get(f"/api/technical/projects/{project_id}/final-document/file?version=marked")
+        doc_path = document_path(project_id)
+        pdf_path = doc_path.with_suffix(".pdf")
+        pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        stale_time = pdf_path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(doc_path, ns=(stale_time, stale_time))
+
+        response = self.client.get(
+            f"/api/technical/projects/{project_id}/final-document/pdf/file?version=marked"
+        )
+
+        self.assertEqual(response.status_code, 404)
 
     def test_technical_document_format_endpoint_uses_technical_service(self) -> None:
         project_id = self.create_project()

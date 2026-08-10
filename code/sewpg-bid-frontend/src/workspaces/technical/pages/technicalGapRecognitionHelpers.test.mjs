@@ -163,7 +163,7 @@ test('格式应用响应缺 document 时按本次请求推进本地格式状态'
   assert.deepEqual(standardDocument.technicalFormatStyleOverrides, {})
 })
 
-test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持不变', async () => {
+test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持可用', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
   const progressSource = await readFile(new URL('../components/TechnicalGenerationProgressModal.jsx', import.meta.url), 'utf8')
@@ -171,8 +171,30 @@ test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路
   assert.match(progressSource, /warningCount/)
   assert.match(gapSource, /disabled=\{Boolean\(busyAction\) \|\| !generationCompleted\}/)
   assert.match(editorSource, /technicalDocumentAPI\.technicalFormat\(id, payload\)/)
-  assert.match(editorSource, /download=\{finalData\?\.fileName \|\| data\?\.fileName \|\| defaultWordFileName\}/)
-  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
+  assert.match(editorSource, /technicalDocumentAPI\.final\(id, exportVersion\)/)
+  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id, exportVersion\)/)
+})
+
+test('共创导出使用单一版本下拉同时控制 Word 和 PDF，默认标记版', async () => {
+  const apiSource = await readFile(new URL('../../../api/index.js', import.meta.url), 'utf8')
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(editorSource, /const \[exportVersion, setExportVersion\] = useState\('marked'\)/)
+  assert.match(editorSource, /<select[\s\S]*?value=\{exportVersion\}[\s\S]*?onChange=\{\(event\) => setExportVersion\(event\.target\.value\)\}/)
+  assert.match(editorSource, /<option value="marked">标记版<\/option>/)
+  assert.match(editorSource, /<option value="clean">清洁版<\/option>/)
+  assert.match(editorSource, /technicalDocumentAPI\.final\(id, exportVersion\)/)
+  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id, exportVersion\)/)
+  assert.match(apiSource, /final:\s*\(projectId, version = 'marked'\)[\s\S]*?version=\$\{version\}/)
+  assert.match(apiSource, /finalPdf:\s*\(projectId, version = 'marked'\)[\s\S]*?version=\$\{version\}/)
+})
+
+test('PDF 每次下载都由后端校验当前文档，不复用页面内旧地址', async () => {
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(editorSource, /pdfData|setPdfData/)
+  assert.match(editorSource, /onClick=\{handlePreparePdf\}/)
+  assert.match(editorSource, /const response = await technicalDocumentAPI\.finalPdf\(id, exportVersion\)/)
 })
 
 test('重新生成正文只在共创导出页展示，并位于 Word、PDF 下载控件之后', async () => {

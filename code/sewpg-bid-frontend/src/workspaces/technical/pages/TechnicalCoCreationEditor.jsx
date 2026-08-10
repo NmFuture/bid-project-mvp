@@ -82,8 +82,9 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [onlyofficeError, setOnlyofficeError] = useState('')
   const [savingFallback, setSavingFallback] = useState(false)
   const [technicalPreviewFullscreen, setTechnicalPreviewFullscreen] = useState(false)
+  const [exportVersion, setExportVersion] = useState('marked')
+  const [wordPreparing, setWordPreparing] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
-  const [pdfData, setPdfData] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
   const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
@@ -184,7 +185,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     }
     if (generationStatus?.status !== 'completed' || !regenerationRequestedRef.current) return
     regenerationRequestedRef.current = false
-    setPdfData(null)
     loadDocument({ silent: true })
     showToast?.('技术标正文已重新生成，当前文档已刷新。')
   }, [generationStatus?.status, loadDocument, showToast])
@@ -273,12 +273,25 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     setChatMessages([])
   }
 
+  const handleDownloadWord = async () => {
+    if (wordPreparing) return
+    setWordPreparing(true)
+    try {
+      const response = await technicalDocumentAPI.final(id, exportVersion)
+      const downloaded = triggerDownload(response?.fileUrl, response?.fileName || defaultWordFileName)
+      showToast?.(downloaded ? `${exportVersion === 'clean' ? '清洁版' : '标记版'} Word 已开始下载` : 'Word 已准备完成')
+    } catch (e) {
+      showToast?.(e?.message || 'Word 下载失败', 'error')
+    } finally {
+      setWordPreparing(false)
+    }
+  }
+
   const handlePreparePdf = async () => {
     if (pdfPreparing) return
     setPdfPreparing(true)
     try {
-      const response = await technicalDocumentAPI.finalPdf(id)
-      setPdfData(response)
+      const response = await technicalDocumentAPI.finalPdf(id, exportVersion)
       const downloaded = triggerDownload(response?.fileUrl, response?.fileName || defaultPdfFileName)
       showToast?.(downloaded ? 'PDF 已生成并开始下载' : (response?.message || 'PDF 已生成'))
     } catch (e) {
@@ -604,35 +617,39 @@ export default function TechnicalCoCreationEditor({ showToast }) {
               size="sm"
               variant="quiet"
             />
+            <label className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-surface-container-high px-2.5 text-xs font-semibold text-on-surface-variant">
+              <span>版本</span>
+              <select
+                aria-label="下载版本"
+                value={exportVersion}
+                onChange={(event) => setExportVersion(event.target.value)}
+                disabled={wordPreparing || pdfPreparing}
+                className="h-6 cursor-pointer border-0 bg-transparent pr-1 text-xs font-semibold text-on-surface focus:outline-none disabled:cursor-not-allowed"
+              >
+                <option value="marked">标记版</option>
+                <option value="clean">清洁版</option>
+              </select>
+            </label>
             <Button
-              as="a"
-              href={finalData?.fileUrl || data?.fileUrl || '#'}
-              download={finalData?.fileName || data?.fileName || defaultWordFileName}
+              type="button"
+              onClick={handleDownloadWord}
+              disabled={wordPreparing}
+              icon="download"
               size="sm"
               variant="primary"
             >
-              下载Word
+              {wordPreparing ? '生成中...' : '下载Word'}
             </Button>
-            {pdfData?.fileUrl ? (
-              <Button
-                type="button"
-                onClick={() => triggerDownload(pdfData.fileUrl, pdfData.fileName || defaultPdfFileName)}
-                size="sm"
-                variant="primary"
-              >
-                下载PDF
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                onClick={handlePreparePdf}
-                disabled={pdfPreparing}
-                size="sm"
-                variant="primary"
-              >
-                {pdfPreparing ? '生成中...' : '下载PDF'}
-              </Button>
-            )}
+            <Button
+              type="button"
+              onClick={handlePreparePdf}
+              disabled={pdfPreparing}
+              icon="download"
+              size="sm"
+              variant="primary"
+            >
+              {pdfPreparing ? '生成中...' : '下载PDF'}
+            </Button>
             <Button
               type="button"
               onClick={handleRequestRegenerate}
