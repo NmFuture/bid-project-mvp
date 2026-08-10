@@ -122,6 +122,10 @@ const artifactSourceLabels = {
   ai_fill: 'AI填写',
 }
 
+const isEditableArtifactChoice = (choice) => (
+  choice?.kind === 'artifact' && String(choice?.artifact?.source || '') === 'ai_fill'
+)
+
 // 目录列表里的标签：三字工作态 / 四字旁路态（命名 v6，产品裁决 2026-08-04），hover 出提示。
 // 结构章（planner 判定的纯骨架章，如「标前概述」）天生等同忽略：显示同款「仅留标题」，
 // tip 注明来源，消除"第1章为什么没标签还放开了子级"的困惑（产品反馈 2026-08-04）。
@@ -1137,6 +1141,7 @@ function PreviewDocumentPane({
   loading,
   session,
   error,
+  mode = 'view',
 }) {
   return (
     <section className="flex min-h-[560px] min-w-0 flex-col overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest">
@@ -1148,6 +1153,11 @@ function PreviewDocumentPane({
           <div className="text-[11px] font-semibold text-primary">{eyebrow}</div>
           <h4 className="mt-0.5 truncate text-sm font-semibold text-on-surface" title={title}>{title}</h4>
         </div>
+        {mode === 'edit' ? (
+          <span className="ml-auto shrink-0 rounded bg-primary-fixed px-2 py-0.5 text-[10px] font-semibold text-primary">
+            可编辑 · 自动保存
+          </span>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 bg-surface-container-low p-2">
         {loading ? (
@@ -1160,7 +1170,7 @@ function PreviewDocumentPane({
         ) : session?.onlyoffice ? (
           <OnlyOfficeEmbed
             session={session.onlyoffice}
-            mode="view"
+            mode={mode}
             className="h-full min-h-[480px] w-full rounded-md border border-surface-container-high bg-white"
             onError={() => {}}
           />
@@ -1271,6 +1281,7 @@ function TechnicalPreviewModal({
                 loading={previewLoading}
                 session={previewSession}
                 error={previewError}
+                mode={isEditableArtifactChoice(comparison.result) ? 'edit' : 'view'}
               />
             </>
           ) : selectedPreviewChoice ? (
@@ -1281,6 +1292,7 @@ function TechnicalPreviewModal({
               loading={previewLoading}
               session={previewSession}
               error={previewError}
+              mode={isEditableArtifactChoice(selectedPreviewChoice) ? 'edit' : 'view'}
             />
           ) : (
             <div className="flex h-full min-h-[520px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
@@ -1319,6 +1331,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [previewSession, setPreviewSession] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
+  // 预览 session 的实时引用：静默轮询刷新数据后判断产物 documentKey 是否真的变了，
+  // 没变就不重载编辑器，避免打断正在进行的在线编辑。
+  const previewSessionRef = useRef(null)
   const [referencePreviewSession, setReferencePreviewSession] = useState(null)
   const [referencePreviewLoading, setReferencePreviewLoading] = useState(false)
   const [referencePreviewError, setReferencePreviewError] = useState('')
@@ -1768,6 +1783,7 @@ export default function TechnicalGapRecognition({ showToast }) {
           onlyoffice: choice.artifact?.onlyoffice,
           fileName: choice.title,
           source: 'artifact',
+          artifactId: String(choice.artifact?.id || ''),
         }
       }
       return choice.kind === 'appendix'
@@ -1801,6 +1817,17 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
 
     const loadPreviews = async () => {
+      const current = previewSessionRef.current
+      if (
+        selectedPreviewChoice?.kind === 'artifact'
+        && current?.source === 'artifact'
+        && current.artifactId === String(selectedPreviewChoice?.artifact?.id || '')
+        && current.onlyoffice?.documentKey
+        && current.onlyoffice.documentKey === selectedPreviewChoice?.artifact?.onlyoffice?.documentKey
+      ) {
+        // 同一产物同一版本（静默轮询带来的对象刷新）：不重载编辑器，避免打断在线编辑
+        return
+      }
       setPreviewSession(null)
       setPreviewLoading(false)
       setPreviewError('')
@@ -1816,6 +1843,20 @@ export default function TechnicalGapRecognition({ showToast }) {
       cancelled = true
     }
   }, [id, previewComparison, previewOpen, selectedPreviewChoice])
+
+  useEffect(() => {
+    previewSessionRef.current = previewSession
+  }, [previewSession])
+
+  // 只有 AI 填写产物可在线编辑；同一会话的阶段性保存不会改变 documentKey。
+  const artifactPreviewOpen = previewOpen && isEditableArtifactChoice(selectedPreviewChoice)
+  useEffect(() => {
+    if (!artifactPreviewOpen) return undefined
+    const timer = setInterval(() => {
+      loadData({ silent: true })
+    }, 15000)
+    return () => clearInterval(timer)
+  }, [artifactPreviewOpen, loadData])
 
   const updatePayload = (payload) => {
     const next = payload?.payload || payload

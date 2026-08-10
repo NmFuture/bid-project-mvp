@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import copy
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.config import settings
 from app.services.bid_project_repository import ProjectConcurrentUpdateError, project_revision
+from app.services.bid_document_flow import _validate_callback_token, _validate_download_url
+from app.services.onlyoffice_documents import download_document_from_onlyoffice
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
@@ -94,6 +98,43 @@ from app.services.url_utils import onlyoffice_backend_base_url
 
 
 PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
+
+_artifact_callback_locks: dict[tuple[str, str], threading.Lock] = {}
+_artifact_callback_locks_guard = threading.Lock()
+
+
+class _StaleArtifactSession(RuntimeError):
+    pass
+
+
+def _artifact_callback_lock(project_id: str, artifact_id: str) -> threading.Lock:
+    key = (project_id, artifact_id)
+    with _artifact_callback_locks_guard:
+        return _artifact_callback_locks.setdefault(key, threading.Lock())
+
+
+def _find_gap_artifact(project: dict[str, Any], artifact_id: str) -> dict[str, Any]:
+    gap_state = ensure_technical_gap_state(project)
+    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    for item in plan.get("items") or []:
+        for artifact in item.get("resolvedArtifacts") or []:
+            if isinstance(artifact, dict) and str(artifact.get("id") or "") == artifact_id:
+                return artifact
+    raise KeyError(artifact_id)
+
+
+def _validate_editable_gap_artifact(
+    artifact: dict[str, Any],
+    callback_version: int | None,
+) -> int:
+    if str(artifact.get("source") or "") != "ai_fill":
+        raise ValueError("仅 AI 填写产物支持在线编辑回写。")
+    if artifact.get("supersededAt") or artifact.get("active", True) is False:
+        raise ValueError("该产物已被新的选材或填写结果取代，不能再回写。")
+    current_version = int(artifact.get("ooDocVersion") or 1)
+    if callback_version is not None and callback_version != current_version:
+        raise _StaleArtifactSession("OnlyOffice 编辑会话已过期。")
+    return current_version
 
 
 def appendix_source_matrix_meta(project: dict[str, Any]) -> dict[str, Any]:
@@ -324,7 +365,7 @@ class TechnicalGapService:
             "projectFactTable": copy.deepcopy(gap_state.get("projectFactTable") or {}),
         }
 
-    async def detection_status(self, project_id: str) -> dict[str, Any]:
+    async def detection_status(self, project_id: str, request: Request | None = None) -> dict[str, Any]:
         try:
             # 前端轮询接口，顺带做自愈修复。命中修复时才落库，且走 CAS——
             # 轮询与后台填写并行时，无条件覆盖会把刚填好的产物盖回去。
@@ -343,6 +384,8 @@ class TechnicalGapService:
             _, payload = mutate_technical_gap_project(
                 project_id, apply, persist_when=lambda outcome: outcome[0]
             )
+            url_scope = self._url_scope(request) if request is not None else {}
+            refresh_technical_gap_plan_artifact_urls(project_id, payload["gapPlan"], **url_scope)
             return payload
         except Exception as exc:
             _raise_gap_error(exc, "Gap detection not found")
@@ -561,6 +604,109 @@ class TechnicalGapService:
             raise HTTPException(status_code=404, detail="缺口附件不存在或已被删除。")
         _ = filename
         return FileResponse(path=path, filename=str(artifact.get("fileName") or path.name))
+
+    async def artifact_callback(
+        self,
+        project_id: str,
+        artifact_id: str,
+        request: Request,
+        data: dict[str, Any] | None = None,
+    ) -> JSONResponse:
+        payload = data or {}
+        _validate_callback_token(request)
+
+        status = int(payload.get("status") or 0)
+        if status not in {2, 6} or not payload.get("url"):
+            return JSONResponse({"error": 0})
+
+        callback_version: int | None = None
+        callback_version_raw = request.query_params.get("oo_doc_version")
+        if callback_version_raw:
+            try:
+                callback_version = int(callback_version_raw)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="OnlyOffice 编辑会话版本无效。") from exc
+
+        downloaded_path: Path | None = None
+        try:
+            project = require_technical_gap_project_for_update(project_id)
+            artifact = _find_gap_artifact(project, artifact_id)
+            _validate_editable_gap_artifact(artifact, callback_version)
+            download_url = _validate_download_url(str(payload["url"]))
+            target_path = Path(str(artifact.get("path") or ""))
+            if not target_path.exists():
+                raise ValueError("缺口产物文件不存在或已被删除。")
+
+            with tempfile.NamedTemporaryFile(
+                dir=target_path.parent,
+                prefix=f".{target_path.name}.callback-",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                downloaded_path = Path(handle.name)
+            try:
+                await download_document_from_onlyoffice(
+                    download_url,
+                    downloaded_path,
+                    max_bytes=settings.onlyoffice_download_max_bytes,
+                )
+            except (httpx.HTTPError, RuntimeError) as exc:
+                return JSONResponse(status_code=502, content={"error": 1, "message": str(exc)})
+
+            edited_at = now_iso()
+            edited_by = str(
+                request.query_params.get("operator")
+                or payload.get("operator")
+                or "当前用户"
+            )
+            with _artifact_callback_lock(project_id, artifact_id):
+                latest = require_technical_gap_project_for_update(project_id)
+                latest_artifact = _find_gap_artifact(latest, artifact_id)
+                current_version = _validate_editable_gap_artifact(latest_artifact, callback_version)
+                latest_target_path = Path(str(latest_artifact.get("path") or ""))
+                if latest_target_path.resolve() != target_path.resolve():
+                    raise _StaleArtifactSession("产物文件已被替换。")
+                if not latest_target_path.exists():
+                    raise ValueError("缺口产物文件不存在或已被删除。")
+
+                with tempfile.NamedTemporaryFile(
+                    dir=latest_target_path.parent,
+                    prefix=f".{latest_target_path.name}.backup-",
+                    suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    backup_path = Path(handle.name)
+                backup_path.unlink(missing_ok=True)
+                latest_target_path.replace(backup_path)
+                downloaded_path.replace(latest_target_path)
+                try:
+                    def apply(project: dict[str, Any]) -> None:
+                        target = _find_gap_artifact(project, artifact_id)
+                        session_version = _validate_editable_gap_artifact(target, callback_version)
+                        if Path(str(target.get("path") or "")).resolve() != latest_target_path.resolve():
+                            raise _StaleArtifactSession("产物文件已被替换。")
+                        target["ooDocVersion"] = session_version + 1 if status == 2 else session_version
+                        target["ooContentRevision"] = int(target.get("ooContentRevision") or 0) + 1
+                        target["editedAt"] = edited_at
+                        target["editedBy"] = edited_by
+                        target["lastOnlyOfficeStatus"] = status
+                        project["updatedAt"] = edited_at
+
+                    mutate_technical_gap_project(project_id, apply)
+                except Exception:
+                    latest_target_path.unlink(missing_ok=True)
+                    backup_path.replace(latest_target_path)
+                    raise
+                else:
+                    backup_path.unlink(missing_ok=True)
+            return JSONResponse({"error": 0})
+        except _StaleArtifactSession:
+            return JSONResponse({"error": 0, "ignored": "stale_document_version"})
+        except Exception as exc:
+            _raise_gap_error(exc, "Gap artifact not found")
+        finally:
+            if downloaded_path is not None:
+                downloaded_path.unlink(missing_ok=True)
 
     def confirm_ai_fill_artifact(
         self,

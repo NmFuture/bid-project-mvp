@@ -322,8 +322,8 @@ async def technical_outline_tender_callback(
 
 
 @router.get("/api/technical/projects/{project_id}/gaps-detection")
-async def get_technical_gap_detection(project_id: str) -> dict[str, Any]:
-    return await technical_gap_service.detection_status(project_id)
+async def get_technical_gap_detection(project_id: str, request: Request) -> dict[str, Any]:
+    return await technical_gap_service.detection_status(project_id, request)
 
 
 @router.post("/api/technical/projects/{project_id}/gaps-detection/run")
@@ -359,6 +359,16 @@ async def get_technical_gap_artifact_content(
     filename: str,
 ) -> FileResponse:
     return await technical_gap_service.artifact_content(project_id, artifact_id, filename)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/artifacts/{artifact_id}/callback")
+async def technical_gap_artifact_callback(
+    project_id: str,
+    artifact_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> JSONResponse:
+    return await technical_gap_service.artifact_callback(project_id, artifact_id, request, data)
 
 
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/artifacts/{artifact_id}/confirm")
