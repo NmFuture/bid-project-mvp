@@ -651,6 +651,36 @@ export const technicalMaterialsAPI = {
   // 建项目弹窗只为取客户名与机型名，用完整版必然撞上 12 秒默认超时。
   indexOptions: () => request('/technical/materials/index/options'),
   setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),
+  // 规则维护：事实表清单全局一份（override 覆盖仓库默认），附表填写规则按项目维护。
+  // 下载与 raw.contentUrl 同款：拼 URL 由浏览器直接打开/下载。
+  rules: {
+    factSpecsMeta: () => request('/technical/materials/rules/fact-specs'),
+    uploadFactSpecs: (data) =>
+      request('/technical/materials/rules/fact-specs', {
+        method: 'POST',
+        body: data,
+        timeoutMs: 5 * 60 * 1000,
+        retryCount: 0,
+      }),
+    factSpecsDownloadUrl: () => joinUrl(ENV.API_BASE_URL, '/technical/materials/rules/fact-specs/download'),
+    appendixMatrixMeta: (projectId) => {
+      const qs = new URLSearchParams(cleanQuery({ projectId })).toString()
+      return request(`/technical/materials/rules/appendix-source-matrix${qs ? `?${qs}` : ''}`)
+    },
+    uploadAppendixMatrix: (projectId, data) => {
+      const qs = new URLSearchParams(cleanQuery({ projectId })).toString()
+      return request(`/technical/materials/rules/appendix-source-matrix${qs ? `?${qs}` : ''}`, {
+        method: 'POST',
+        body: data,
+        timeoutMs: 5 * 60 * 1000,
+        retryCount: 0,
+      })
+    },
+    appendixMatrixDownloadUrl: (projectId) => {
+      const qs = new URLSearchParams(cleanQuery({ projectId })).toString()
+      return joinUrl(ENV.API_BASE_URL, `/technical/materials/rules/appendix-source-matrix/download${qs ? `?${qs}` : ''}`)
+    },
+  },
   raw: {
     tree: () => request('/technical/materials/raw/tree'),
     files: (params = {}) => {

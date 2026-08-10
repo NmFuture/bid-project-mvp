@@ -29,7 +29,6 @@ import {
   primaryBlankSource,
   recommendedSelectionsForItem,
   TECHNICAL_GAP_TAG_CONFIG,
-  technicalAppendixSourceMatrixUploadMessage,
   TECHNICAL_WORD_FILL_SKILL,
   technicalBodyFillCounts,
   technicalGapDescendants,
@@ -473,7 +472,7 @@ const FactMaintenanceModal = ({
   onConfirm,
   onFieldChange,
   onAddField,
-  onUploadSpecs,
+  onGoToRules,
   onSaveMaterialPaths,
   onCurate,
 }) => {
@@ -715,8 +714,16 @@ const FactMaintenanceModal = ({
                 {specsImported ? (specsFileName || '事实表已上传') : '尚未上传事实表'}
               </span>
             </span>
-            <Button type="button" onClick={onUploadSpecs} disabled={busy} icon="upload_file" size="xs" variant="quiet">
-              {specsImported ? '重新上传' : '上传事实表'}
+            <Button
+              type="button"
+              onClick={onGoToRules}
+              disabled={busy}
+              icon="open_in_new"
+              size="xs"
+              variant="quiet"
+              title="事实表清单已迁至素材库 · 规则页统一维护"
+            >
+              去规则页维护
             </Button>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -936,31 +943,31 @@ const FactMaintenanceModal = ({
                 {specsImported ? (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      事实表「{specsFileName || '已上传'}」尚未生成字段，请重新上传后重试。
+                      事实表「{specsFileName || '已上传'}」尚未生成字段，请到素材库 · 规则页重新上传后重试。
                     </p>
                     <button
                       type="button"
-                      onClick={onUploadSpecs}
+                      onClick={onGoToRules}
                       disabled={busy}
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
-                      <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                      重新上传
+                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                      前往规则页
                     </button>
                   </>
                 ) : (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      还没有项目事实表。请先上传本项目的事实表 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
+                      还没有项目事实表。请先到素材库 · 规则页上传事实表清单 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
                     </p>
                     <button
                       type="button"
-                      onClick={onUploadSpecs}
+                      onClick={onGoToRules}
                       disabled={busy}
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
-                      <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                      上传事实表
+                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                      前往规则页上传
                     </button>
                   </>
                 )}
@@ -1335,8 +1342,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 关闭弹窗时清空，避免串到下一个附表任务。
   const [aiFillUploadedCandidates, setAiFillUploadedCandidates] = useState([])
   const [aiFillUploadBusy, setAiFillUploadBusy] = useState(false)
-  // 事实表：用户按项目上传 Excel（7 列清单），上传后后端解析字段清单作为事实表字段骨架；
-  // 未上传的项目不出字段，仅引导上传。factMaterialPaths 是用户自定义的参考资料目录。
+  // 事实表清单与附表填写规则的上传维护已迁至素材库 · 规则页（/workspace/tech/materials/rules），
+  // 本页只读 facts() 返回的元数据做状态展示；factMaterialPaths 是用户自定义的参考资料目录。
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
   const [sourceMatrixMeta, setSourceMatrixMeta] = useState({ imported: false, fileName: '' })
   const [factMaterialPaths, setFactMaterialPaths] = useState([])
@@ -1352,8 +1359,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
   const bodyFillDone = Number(bodyFillState?.done || 0)
   const bodyFillTotal = Number(bodyFillState?.total || 0)
-  const fillRuleInputRef = useRef(null)
-  const sourceMatrixInputRef = useRef(null)
 
   const loadData = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -1845,10 +1850,11 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   const ensureFactTableReady = async () => {
     if (factTable?.status === 'confirmed') return true
-    // 未上传事实表的项目不出字段：打开事实表弹窗引导上传，不再静默自动生成事实表
+    // 未上传事实表清单的项目不出字段：清单维护入口在素材库 · 规则页，引导跳转
     if (!factSpecsMeta.imported && !factFields.length) {
-      showToast?.('请先上传本项目的事实表 Excel，系统才能提取要填写的字段', 'error')
-      setFactModalOpen(true)
+      if (window.confirm('尚未上传项目事实表清单，系统无法提取要填写的字段。是否前往素材库 · 规则页上传？')) {
+        navigate('/workspace/tech/materials/rules')
+      }
       return false
     }
     if (busyAction) return false
@@ -2504,58 +2510,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
-  const handleFactSpecsUpload = async (event) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    if (!/\.xlsx$/i.test(file.name)) {
-      showToast?.('事实表仅支持 .xlsx 文件', 'error')
-      return
-    }
-    if (busyAction) return
-    if (factFields.length && !window.confirm('重新上传会按新清单重建事实表；不再属于清单且未受保留规则保护的字段可能被移除。是否继续？')) {
-      return
-    }
-    setBusyAction('fact-specs-upload')
-    let specsUploaded = false
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const payload = await technicalGapsAPI.uploadFactSpecs(id, formData)
-      setFactSpecsMeta({ imported: true, fileName: payload?.fileName || file.name })
-      specsUploaded = true
-      // 上传成功后立即按新清单重建事实表字段
-      const table = await technicalGapsAPI.buildFacts(id)
-      setFactTable(table)
-      setFactFields(asObjectArray(table?.fields))
-      setFactCurateReport(null)
-      setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      setFactModalOpen(true)
-      // 重建完直接接上 AI 填充，人不用再点一次「刷新并 AI 填充」。
-      // 提交后立即返回，进度沿用 factCurateState 轮询，关页面不影响后台任务。
-      const specTotal = payload?.specTotal ?? 0
-      try {
-        const curatePayload = await technicalGapsAPI.curateFacts(id, {})
-        setFactCurateState(curatePayload?.factCurateState || null)
-        showToast?.(`事实表已解析 ${specTotal} 个字段，正在 AI 填充`)
-      } catch (curateError) {
-        showToast?.(
-          `事实表已解析 ${specTotal} 个字段，但 AI 填充未启动：${curateError?.message || '请手动点击「刷新并 AI 填充」'}`,
-          'error',
-        )
-      }
-    } catch (e) {
-      showToast?.(
-        specsUploaded
-          ? `事实表清单已上传，但自动更新失败：${e?.message || '请重新上传后重试'}`
-          : (e?.message || '事实表上传失败'),
-        'error',
-      )
-    } finally {
-      setBusyAction('')
-    }
-  }
-
   const handleSaveMaterialPaths = async (paths) => {
     if (busyAction) return false
     setBusyAction('facts-material-sources')
@@ -2625,33 +2579,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
-  const handleSourceMatrixUpload = async (event) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    if (!/\.xlsx$/i.test(file.name)) {
-      showToast?.('附表填写规则仅支持 .xlsx 文件', 'error')
-      return
-    }
-    if (busyAction) return
-    if (sourceMatrixMeta.imported && !window.confirm('重新上传会以新文件完整覆盖当前附表填写规则；新文件未包含的旧规则及其推荐素材会被清除。是否继续？')) {
-      return
-    }
-    setBusyAction('source-matrix-upload')
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const payload = await technicalGapsAPI.uploadAppendixSourceMatrix(id, formData)
-      setSourceMatrixMeta({ imported: true, fileName: payload?.fileName || file.name })
-      showToast?.(technicalAppendixSourceMatrixUploadMessage(payload))
-      await loadData({ silent: true })
-    } catch (e) {
-      showToast?.(e?.message || '附表填写规则上传失败', 'error')
-    } finally {
-      setBusyAction('')
-    }
-  }
-
   if (loading) return <PageLoading title="正在加载素材匹配..." />
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
 
@@ -2662,39 +2589,37 @@ export default function TechnicalGapRecognition({ showToast }) {
       <PageHeader
         actions={(
           <Toolbar>
-            <input
-              ref={fillRuleInputRef}
-              type="file"
-              accept=".xlsx"
-              className="hidden"
-              onChange={handleFactSpecsUpload}
-            />
-            <input
-              ref={sourceMatrixInputRef}
-              type="file"
-              accept=".xlsx"
-              className="hidden"
-              onChange={handleSourceMatrixUpload}
-            />
+            {/* 规则维护入口已迁至素材库 · 规则页：这里只保留两个跳转入口，状态收进 tooltip。
+                「项目事实表」按钮保留——它打开的是字段维护弹窗，不是上传入口。 */}
             <Button
               type="button"
-              onClick={() => sourceMatrixInputRef.current?.click()}
-              disabled={Boolean(busyAction) || data?.status !== 'completed'}
-              title={sourceMatrixMeta.imported ? `已上传：${sourceMatrixMeta.fileName || '已上传'}，点击可重新上传` : '上传附表填写规则 Excel（客户×附表→素材来源），缺口识别时确定每张附表的取值来源'}
-              size="stage"
-              variant={sourceMatrixMeta.imported ? 'secondary' : 'quiet'}
+              onClick={() => navigate('/workspace/tech/materials/rules')}
+              title={factSpecsMeta.imported ? `事实表清单：${factSpecsMeta.fileName || '已上传'}（全局生效，到素材库 · 规则页维护）` : '尚未上传事实表清单，到素材库 · 规则页上传'}
+              size="xs"
+              variant="quiet"
+              icon="open_in_new"
             >
-              {busyAction === 'source-matrix-upload' ? '上传中...' : sourceMatrixMeta.imported ? '附表填写规则（已上传）' : '附表填写规则'}
+              事实表清单
+            </Button>
+            <Button
+              type="button"
+              onClick={() => navigate('/workspace/tech/materials/rules')}
+              title={sourceMatrixMeta.imported ? `附表填写规则：${sourceMatrixMeta.fileName || '已上传'}（到素材库 · 规则页按项目维护）` : '尚未上传附表填写规则，到素材库 · 规则页按项目上传'}
+              size="xs"
+              variant="quiet"
+              icon="open_in_new"
+            >
+              附表规则
             </Button>
             <Button
               type="button"
               onClick={() => setFactModalOpen(true)}
               disabled={Boolean(busyAction) || data?.status !== 'completed'}
-              title={factSpecsMeta.imported ? `事实表清单：${factSpecsMeta.fileName}` : '尚未上传事实表，打开后按引导上传'}
+              title={factSpecsMeta.imported ? `事实表清单：${factSpecsMeta.fileName}` : '尚未上传事实表清单，请先到素材库 · 规则页上传'}
               size="stage"
               variant={factConfirmed ? 'secondary' : 'quiet'}
             >
-              {busyAction === 'fact-specs-upload' ? '上传中...' : factConfirmed ? '项目事实表已确认' : '项目事实表'}
+              {factConfirmed ? '项目事实表已确认' : '项目事实表'}
             </Button>
             {!generationCompleted ? (
               <Button
@@ -3377,7 +3302,7 @@ export default function TechnicalGapRecognition({ showToast }) {
           open
           factTable={factTable}
           fields={factFields}
-          busy={['facts-confirm', 'fact-specs-upload', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
+          busy={['facts-confirm', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
           specsImported={factSpecsMeta.imported}
           specsFileName={factSpecsMeta.fileName}
           materialPaths={factMaterialPaths}
@@ -3391,7 +3316,7 @@ export default function TechnicalGapRecognition({ showToast }) {
           onConfirm={handleConfirmFactTable}
           onFieldChange={handleFactFieldChange}
           onAddField={handleAddFactField}
-          onUploadSpecs={() => fillRuleInputRef.current?.click()}
+          onGoToRules={() => navigate('/workspace/tech/materials/rules')}
           onSaveMaterialPaths={handleSaveMaterialPaths}
           onCurate={handleCurateFacts}
         />
