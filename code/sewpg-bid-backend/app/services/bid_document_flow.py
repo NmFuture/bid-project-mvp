@@ -77,6 +77,11 @@ def _validate_download_url(download_url: str) -> str:
     if not _allowed_host(parsed.hostname, settings.onlyoffice_download_allowed_hosts):
         allowed = ", ".join(settings.onlyoffice_download_allowed_hosts)
         raise HTTPException(status_code=400, detail=f"OnlyOffice 回写 URL 主机不在白名单内：{allowed}")
+
+    if parsed.hostname in {"127.0.0.1", "localhost"}:
+        internal_url = urlparse(settings.onlyoffice_internal_url)
+        if internal_url.scheme in {"http", "https"} and internal_url.netloc:
+            return urlunparse(parsed._replace(scheme=internal_url.scheme, netloc=internal_url.netloc))
     return download_url
 
 
@@ -360,7 +365,7 @@ class BidDocumentService:
         except (httpx.HTTPError, RuntimeError) as exc:
             return JSONResponse(status_code=502, content={"error": 1, "message": str(exc)})
 
-        force_save_document_state(project, project_id)
+        force_save_document_state(project, project_id, advance_version=status == 2)
         persist_workspace_project_state(project)
         return JSONResponse({"error": 0})
 

@@ -19,12 +19,18 @@ def save_document_content_state(project: dict[str, Any], project_id: str, conten
     return copy.deepcopy(state)
 
 
-def force_save_document_state(project: dict[str, Any], project_id: str) -> dict[str, Any]:
+def force_save_document_state(
+    project: dict[str, Any],
+    project_id: str,
+    *,
+    advance_version: bool = True,
+) -> dict[str, Any]:
     state = project["document_state"]
-    next_version = int(state["version"] or 1) + 1
-    state["version"] = next_version
+    if advance_version:
+        next_version = int(state["version"] or 1) + 1
+        state["version"] = next_version
+        state["onlyoffice"]["documentKey"] = f"{project_id}-v{next_version}"
     state["lastSavedAt"] = now_iso()
-    state["onlyoffice"]["documentKey"] = f"{project_id}-v{next_version}"
     project["updatedAt"] = state["lastSavedAt"]
     return copy.deepcopy(state)
 
