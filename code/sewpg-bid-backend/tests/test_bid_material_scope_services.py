@@ -1238,7 +1238,9 @@ def test_opencode_progress_uses_user_facing_structured_parse_message() -> None:
     visible_text = f"{progress['phaseLabel']} {progress['summary']} {latest_event}"
     assert progress["phaseLabel"] == "结构化解析中"
     assert progress["summary"] == "正在识别招标文件中的技术要求和原文依据，已执行 4 分 21 秒。"
-    assert latest_event == "结构化解析仍在执行，已执行 4 分 21 秒。"
+    # 事件写的是「推进了多少」而不是「还活着」：纯心跳不再落事件，否则 80 条事件环
+    # 会被刷满，上传/提取/附表的阶段记录全被挤掉。
+    assert latest_event == "结构化解析已返回 1 段输出，已执行 4 分 21 秒。"
     assert "AI" not in visible_text
     assert "Opencode" not in visible_text
     assert "opencode" not in visible_text

@@ -1,3 +1,5 @@
+import { formatProgressDuration } from '../../utils/progressDuration.js'
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const completedStatuses = new Set(['completed'])
@@ -31,14 +33,8 @@ const parseTime = (value) => {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-export const formatParseDuration = (value) => {
-  const seconds = Math.max(0, Math.floor(Number(value || 0)))
-  if (seconds <= 0) return ''
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  if (minutes > 0) return `${minutes} 分 ${remainingSeconds} 秒`
-  return `${seconds} 秒`
-}
+// 耗时格式与其余进度条共用一份实现，保持「x 分 y 秒」写法一致。
+export const formatParseDuration = formatProgressDuration
 
 const parseStartMs = (progress = {}) => {
   const startedAt = parseTime(progress?.startedAt)
@@ -96,6 +92,37 @@ const buildAppendixSummary = (progress = {}, summary = '') => {
     return `已提取附表 ${current}/${total} 项`
   }
   return summary
+}
+
+// 展示百分比：后端 TECHNICAL_PROGRESS_PHASES 把 0~68 分给本地提取/附表、只留 68~96 给
+// AI 结构化解析，而实测（PRJ-0003，总 475 秒）本地段只占 113 秒（23.8%）、结构化占 360 秒
+// （75.8%）——照搬后端刻度就会「四分之一时间走完三分之二的条，然后卡在 68% 好几分钟」。
+// 这里按实测耗时占比把后端刻度分段线性重映射，仍以后端百分比为唯一输入，不另造进度。
+// 后端那张表由技术标和商务标共用（BusinessParseService 继承同一套回调），所以折算放在
+// 技术标这一侧做，不动共享的后端刻度。
+const PARSE_DISPLAY_ANCHORS = [
+  [0, 0],
+  [8, 2],    // 上传 / 排队
+  [24, 10],  // 正文提取
+  [34, 14],  // 整理文档线索
+  [40, 17],  // 附表扫描
+  [62, 26],  // 附表提取
+  [68, 30],  // 结构化解析输入准备完成
+  [96, 96],  // 结构化解析完成——最长的一段拿到最宽的区间
+  [100, 100],
+]
+
+export const parseDisplayPercentage = (progress = {}) => {
+  const value = clampPercentage(progress?.percentage)
+  for (let index = 1; index < PARSE_DISPLAY_ANCHORS.length; index += 1) {
+    const [backendEnd, displayEnd] = PARSE_DISPLAY_ANCHORS[index]
+    if (value > backendEnd) continue
+    const [backendStart, displayStart] = PARSE_DISPLAY_ANCHORS[index - 1]
+    const span = backendEnd - backendStart
+    if (span <= 0) return displayEnd
+    return displayStart + ((displayEnd - displayStart) * (value - backendStart)) / span
+  }
+  return 100
 }
 
 export const mergeMonotonicParseProgress = (previous = null, incoming = null) => {

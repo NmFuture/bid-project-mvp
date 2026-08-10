@@ -2,25 +2,30 @@
 // 版式固定两行：第一行是带量化计数的进程明细，第二行是耗时；右侧徽标只留百分比——
 // 状态词由图标和明细表达，再写一遍「生成中」只是重复。
 // 本组件是纯展示层，不含任何业务判断：各流程各自把状态折算成 detail/percentage/elapsedText。
+// tone 只有四种语义色；解析链路多一个 warning（可能中断），停止态用 neutral + 自定义图标。
 export default function BidProgressPanel({
   tone = 'running',
   detail,
   elapsedText = '',
   percentage = 0,
   running = false,
+  icon = '',
   className = '',
 }) {
   const safePercentage = Math.max(0, Math.min(100, Number(percentage) || 0))
   const failed = tone === 'danger'
   const completed = tone === 'success'
+  const warning = tone === 'warning'
   const badgeClass = failed
     ? 'bg-error-container text-error'
     : completed
       ? 'bg-secondary-container text-on-secondary-container'
-      : tone === 'running'
-        ? 'bg-primary/10 text-primary'
-        : 'bg-surface-container-high text-on-surface-variant'
-  const barClass = failed ? 'bg-error' : completed ? 'bg-secondary' : 'bg-primary'
+      : warning
+        ? 'bg-tertiary-container text-on-tertiary-container'
+        : tone === 'running'
+          ? 'bg-primary/10 text-primary'
+          : 'bg-surface-container-high text-on-surface-variant'
+  const barClass = failed ? 'bg-error' : completed ? 'bg-secondary' : warning ? 'bg-tertiary' : 'bg-primary'
 
   return (
     <div className={[
@@ -40,10 +45,14 @@ export default function BidProgressPanel({
                 ? 'text-error'
                 : completed
                   ? 'text-secondary'
-                  : 'animate-spin-slow text-primary',
+                  : warning
+                    ? 'text-tertiary'
+                    : icon
+                      ? 'text-outline'
+                      : 'animate-spin-slow text-primary',
             ].join(' ')}
           >
-            {failed ? 'error' : completed ? 'check_circle' : 'progress_activity'}
+            {icon || (failed ? 'error' : completed ? 'check_circle' : 'progress_activity')}
           </span>
           <div className="min-w-0">
             <p className="text-sm font-semibold tabular-nums text-on-surface">{detail}</p>
