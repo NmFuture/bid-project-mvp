@@ -644,16 +644,45 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         and item.get("titleOnly") is True
         and str(item.get("id") or "").strip()
     }
-    for plan_index, entry in enumerate(plan):
+    by_number: dict[str, dict] = {}
+    by_numbered_title: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = str(item.get("number") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if number:
+            by_number[number] = item
+        if number and title:
+            by_numbered_title[_normalize_title(f"{number} {title}")] = item
+
+    for entry in plan:
         entry["paths"] = []
         entry["shifts"] = []
         entry["attach_modes"] = []
-        raw_toc_idx = entry.get("toc_idx", plan_index)
+        raw_toc_idx = entry.get("toc_idx")
         try:
             toc_idx = int(raw_toc_idx)
         except (TypeError, ValueError):
             toc_idx = -1
-        gap_item = items[toc_idx] if 0 <= toc_idx < len(items) and isinstance(items[toc_idx], dict) else None
+        indexed_item = items[toc_idx] if 0 <= toc_idx < len(items) and isinstance(items[toc_idx], dict) else None
+        indexed_title = str((indexed_item or {}).get("title") or "").strip()
+        try:
+            indexed_level = int((indexed_item or {}).get("level"))
+        except (TypeError, ValueError):
+            indexed_level = None
+        strict_toc_match = bool(indexed_item and indexed_title and indexed_level is not None)
+        if strict_toc_match:
+            gap_item = indexed_item
+        else:
+            # 历史 gap_plan 不保证携带完整目录位置和层级，缺字段时保留原有标题索引。
+            number_candidates = (
+                str(entry.get("chapter_no") or "").strip(),
+                str(entry.get("chapter_no_flat") or "").strip(),
+            )
+            gap_item = next((by_number[number] for number in number_candidates if number in by_number), None)
+            if gap_item is None:
+                gap_item = by_numbered_title.get(_normalize_title(str(entry.get("title") or "")))
         if not gap_item:
             if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
                 entry["status"] = STATUS_UNMATCHED
@@ -663,10 +692,11 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
             str(entry.get("title") or "")
         )
         try:
-            level_matches = int(gap_item.get("level")) == int(entry.get("level"))
+            entry_level = int(entry.get("level"))
         except (TypeError, ValueError):
-            level_matches = False
-        if not title_matches or not level_matches:
+            entry_level = None
+        level_matches = strict_toc_match and indexed_level == entry_level
+        if strict_toc_match and (not title_matches or not level_matches):
             if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
                 entry["status"] = STATUS_UNMATCHED
             entry["note"] = "目录顺序与 gap plan 的标题或层级不一致"
