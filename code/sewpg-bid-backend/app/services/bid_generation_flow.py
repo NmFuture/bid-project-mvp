@@ -511,6 +511,68 @@ def _handle_fill_progress(
             event_level="warning",
             event_step="format_failed",
         )
+        return
+
+    if stage == "calling_score_index_xref":
+        _update_fill_generation(
+            project_id,
+            percentage=97,
+            summary="正在为技术评分标准索引表建立章节交叉引用与页码域。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message="已进入评分索引表交叉引用阶段，正在按正文标题建立书签、超链接和 PAGEREF 域。",
+            event_step="score_index_xref",
+            opencode_output={
+                "execution": {
+                    "engine": "python",
+                    "pipeline": "technical-document-assembly-cleaning",
+                    "stage": "score_index_xref",
+                    "status": "running",
+                    "artifacts": {"manifestPath": str(meta.get("manifestPath") or "")},
+                }
+            },
+        )
+        return
+
+    if stage == "score_index_xref_completed":
+        summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+        linked = int(summary.get("linkedCount") or 0)
+        unresolved = int(summary.get("unresolvedCount") or 0)
+        page_hint = "" if summary.get("pageNumbersResolved") else "，页码需在 Word/WPS 中全选后按 F9 刷新"
+        _update_fill_generation(
+            project_id,
+            percentage=98,
+            summary=f"评分索引表交叉引用完成，已建立 {linked} 条引用，未匹配 {unresolved} 条{page_hint}。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"评分索引表交叉引用完成：已建立 {linked} 条引用，未匹配 {unresolved} 条{page_hint}。",
+            event_level="success",
+            event_step="score_index_xref_done",
+        )
+        return
+
+    if stage == "score_index_xref_skipped":
+        warnings = meta.get("warnings") if isinstance(meta.get("warnings"), list) else []
+        reason = str((warnings[0] or {}).get("message") or "") if warnings else ""
+        _update_fill_generation(
+            project_id,
+            percentage=98,
+            summary="未在成稿中找到技术评分标准索引表，已跳过交叉引用。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"已跳过评分索引表交叉引用：{reason or '成稿中没有可识别的评分索引表。'}",
+            event_level="warning",
+            event_step="score_index_xref_skipped",
+        )
+        return
+
+    if stage == "score_index_xref_failed":
+        _update_fill_generation(
+            project_id,
+            percentage=98,
+            summary="评分索引表交叉引用失败，已沿用格式规范化后的成稿继续输出。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"评分索引表交叉引用失败，已沿用格式规范化成稿：{meta.get('error') or '未知错误'}",
+            event_level="warning",
+            event_step="score_index_xref_failed",
+        )
 
 
 def _run_fill_generation_job(

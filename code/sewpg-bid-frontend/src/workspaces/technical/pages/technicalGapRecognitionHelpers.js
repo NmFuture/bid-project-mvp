@@ -57,11 +57,26 @@ export const technicalGenerationPresentation = (status) => {
     ? assembly.formatClean
     : (status?.formatClean && typeof status.formatClean === 'object' ? status.formatClean : {})
   const formatCleanFailed = formatClean.status === 'failed'
+  const scoreIndexXref = assembly.scoreIndexXref && typeof assembly.scoreIndexXref === 'object'
+    ? assembly.scoreIndexXref
+    : {}
+  const scoreIndexXrefDone = scoreIndexXref.status === 'completed'
+  const scoreIndexXrefPagePending = scoreIndexXrefDone
+    && scoreIndexXref.summary?.pageNumbersResolved === false
+  let scoreIndexXrefMessage = ''
+  if (scoreIndexXref.status === 'failed') {
+    scoreIndexXrefMessage = '评分索引表交叉引用失败，当前使用格式清洗稿'
+  } else if (scoreIndexXref.status === 'skipped') {
+    scoreIndexXrefMessage = '未找到技术评分标准索引表，已跳过交叉引用'
+  } else if (scoreIndexXrefPagePending) {
+    scoreIndexXrefMessage = '评分索引表已建立交叉引用，页码需在 Word/WPS 中全选后按 F9 刷新'
+  }
 
   return {
     warningCount,
     formatCleanFailed,
     formatCleanMessage: formatCleanFailed ? '格式清洗失败，当前使用组装稿' : '',
+    scoreIndexXrefMessage,
   }
 }
 

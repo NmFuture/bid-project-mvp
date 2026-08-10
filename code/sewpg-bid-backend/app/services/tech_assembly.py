@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.config import settings
+from app.core.config import BASE_DIR, settings
 from app.document_processing.technical_document.assembly import (
     finalize_merged_output,
     run_from_manifest as run_assembly_manifest,
@@ -43,6 +43,10 @@ from app.services.wiki_export import export_wiki
 
 TECH_DOCUMENT_RESOURCES_DIR = Path(__file__).resolve().parents[1] / "document_processing" / "technical_document" / "resources"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME = "bid-tech-score-index-xref"
+SCORE_INDEX_XREF_RUNNER = (
+    BASE_DIR / "opencode" / "skills" / TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME / "scripts" / "run_from_manifest.py"
+)
 
 
 def assemble_tech_bid_for_project_with_progress(
@@ -178,6 +182,16 @@ def assemble_tech_bid_for_project_with_progress(
     if not final_output_path.exists():
         final_output_path = assembled_path
 
+    score_index_xref = _run_tech_score_index_xref_step(
+        input_path=final_output_path,
+        output_path=work_dir / f"{final_output_path.stem}_xref{final_output_path.suffix}",
+        work_dir=work_dir,
+        progress_callback=progress_callback,
+    )
+    xref_output_path = Path(str(score_index_xref.get("outputFile") or ""))
+    if score_index_xref.get("status") == "completed" and xref_output_path.exists():
+        final_output_path = xref_output_path
+
     target_path = document_path(project_id)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(final_output_path, target_path)
@@ -186,8 +200,17 @@ def assemble_tech_bid_for_project_with_progress(
     run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
     filled_at = now_iso()
     format_warnings = _normalize_warnings(format_clean.get("warnings"))
-    execution_warnings = [*assembly_warnings, *format_warnings]
-    execution_status = "completed" if format_clean.get("status") == "completed" else "completed_with_fallback"
+    xref_warnings = _normalize_warnings(score_index_xref.get("warnings"))
+    execution_warnings = [*assembly_warnings, *format_warnings, *xref_warnings]
+    # 格式清洗或交叉引用降级时都沿用上一环节产物，如实标成 fallback，不报成干净完成。
+    execution_status = (
+        "completed"
+        if format_clean.get("status") == "completed" and score_index_xref.get("status") != "failed"
+        else "completed_with_fallback"
+    )
+    execution_error = " | ".join(
+        text for text in (str(format_clean.get("error") or ""), str(score_index_xref.get("error") or "")) if text
+    )
     execution = {
         "engine": "python",
         "pipeline": "technical-document-assembly-cleaning",
@@ -199,9 +222,10 @@ def assemble_tech_bid_for_project_with_progress(
             "planFile": str(plan_path),
             "rawOutputFile": str(assembled_path),
             "outputFile": str(final_output_path),
+            "scoreIndexXrefFile": str(score_index_xref.get("outputFile") or ""),
         },
         "warnings": execution_warnings,
-        "error": str(format_clean.get("error") or ""),
+        "error": execution_error,
     }
     opencode_output = {"execution": execution}
 
@@ -239,6 +263,7 @@ def assemble_tech_bid_for_project_with_progress(
             "summary": assembly_summary,
             "warnings": assembly_warnings,
             "formatClean": format_clean,
+            "scoreIndexXref": score_index_xref,
             "execution": execution,
         },
     )
@@ -1277,6 +1302,103 @@ def _run_tech_format_cleaner_step(
 
 def _run_local_tech_format_cleaner(manifest_path: Path) -> dict[str, Any]:
     return run_format_manifest(manifest_path)
+
+
+def _run_tech_score_index_xref_step(
+    *,
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    """给成稿里的技术评分标准索引表建立交叉引用与页码域。
+
+    跑在格式清洗之后：清洗会重排标题样式与文本编号，先建引用会让书签挂在被改写的段落上。
+    文档里没有评分索引表、或本步骤失败时都不阻断出稿，调用方沿用格式清洗产物。
+    """
+    manifest_path = work_dir / "tech_score_index_xref_input.json"
+    mapping_path = work_dir / "tech_score_index_xref_mapping.json"
+    manifest = {
+        "schemaVersion": "bid-tech-score-index-xref-manifest-v1",
+        "inputFile": str(input_path),
+        "outputFile": str(output_path),
+        # 容器里没有 Word，页码留占位符，靠成稿里的 updateFields 在 Word/WPS 打开时刷新。
+        "updateFieldsWithWord": False,
+        "syncTitle": False,
+        "styledLink": False,
+    }
+    if mapping_path.exists():
+        manifest["mappingFile"] = str(mapping_path)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if progress_callback:
+        progress_callback(
+            "calling_score_index_xref",
+            {"manifestPath": str(manifest_path), "inputFile": str(input_path)},
+        )
+
+    try:
+        result = _run_local_tech_score_index_xref(manifest_path)
+        status = str(result.get("status") or "completed")
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        warnings = _normalize_warnings(result.get("warnings"))
+        produced = Path(str(result.get("outputFile") or "")) if result.get("outputFile") else None
+        if status == "completed" and (produced is None or not produced.exists()):
+            raise RuntimeError(f"技术标评分索引交叉引用未生成输出文件：{produced}")
+        xref = {
+            "status": status,
+            "engine": "python",
+            "skill": TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME,
+            "manifestPath": str(manifest_path),
+            "inputFile": str(input_path),
+            "outputFile": str(produced) if produced else "",
+            "summary": summary,
+            "warnings": warnings,
+        }
+        if progress_callback:
+            progress_callback(
+                "score_index_xref_completed" if status == "completed" else "score_index_xref_skipped",
+                {"summary": summary, "outputFile": xref["outputFile"], "warnings": warnings},
+            )
+        return xref
+    except Exception as exc:  # noqa: BLE001 - 交叉引用失败不应阻断出稿
+        xref = {
+            "status": "failed",
+            "engine": "python",
+            "skill": TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME,
+            "manifestPath": str(manifest_path),
+            "inputFile": str(input_path),
+            "outputFile": "",
+            "summary": {},
+            "warnings": [
+                {
+                    "code": "score_index_xref_failed",
+                    "message": f"技术评分标准索引表交叉引用失败，已沿用格式清洗成稿：{exc}",
+                    "count": 1,
+                }
+            ],
+            "error": str(exc),
+        }
+        if progress_callback:
+            progress_callback(
+                "score_index_xref_failed",
+                {"error": str(exc), "manifestPath": str(manifest_path)},
+            )
+        return xref
+
+
+def _run_local_tech_score_index_xref(manifest_path: Path) -> dict[str, Any]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "bid_tech_score_index_xref_runner",
+        SCORE_INDEX_XREF_RUNNER,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载交叉引用脚本：{SCORE_INDEX_XREF_RUNNER}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_manifest(manifest_path)
 
 
 def _prepare_tech_format_outline(toc_json_path: Path, work_dir: Path) -> Path:

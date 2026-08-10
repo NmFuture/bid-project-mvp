@@ -12,6 +12,7 @@
 | S3 缺口处理（事实表维护） | bid-tech-fact-curator | `factcurate` | `s4_gap_workdir/fact_curate` |
 | S4 生成标书（正文组装） | bid-tech-assembler | `run_from_manifest.py` | `s7_assembly_workdir` |
 | 成稿后处理（格式清洗） | bid-tech-format-cleaner | `run_from_manifest.py` | `s5_format_switch_workdir`（目录 JSON 由 s2 产物转换） |
+| 成稿后处理（评分索引交叉引用） | bid-tech-score-index-xref | `run_from_manifest.py` | `s7_assembly_workdir/tech_score_index_xref_input.json` |
 | 素材库旁路（Wiki 索引） | bid-tech-wiki-material-builder | `run_from_manifest.py` | `_runtime/materials/technical_material_index.json` |
 | 素材库旁路（标签匹配） | bid-tech-tag-importer | 后端直接投喂 manifest | — |
 
