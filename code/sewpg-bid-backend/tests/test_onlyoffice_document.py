@@ -1059,6 +1059,51 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(downloader.await_count, 2)
         self.assertEqual(_document_state(project_id)["version"], 1)
 
+    def test_business_document_callback_rewrites_loopback_download_url(self) -> None:
+        project_id = self.create_business_project()
+        Document().save(document_path(project_id))
+        callback_url = (
+            "http://127.0.0.1/cache/files/data/session/output.docx/output.docx"
+            "?md5=signed-value&expires=1786327949&filename=output.docx"
+        )
+
+        with patch(
+            "app.services.bid_document_flow.download_document_from_onlyoffice",
+            new_callable=AsyncMock,
+        ) as downloader, patch("app.services.bid_document_flow.sync_document_to_minio"):
+            response = self.client.post(
+                f"/api/business/projects/{project_id}/document/callback",
+                json={"status": 6, "url": callback_url},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"error": 0})
+        self.assertEqual(
+            downloader.await_args.args[0],
+            callback_url.replace("http://127.0.0.1", "http://onlyoffice", 1),
+        )
+
+    def test_business_document_callback_accepts_consecutive_forcesaves(self) -> None:
+        project_id = self.create_business_project()
+        Document().save(document_path(project_id))
+
+        with patch(
+            "app.services.bid_document_flow.download_document_from_onlyoffice",
+            new_callable=AsyncMock,
+        ) as downloader, patch("app.services.bid_document_flow.sync_document_to_minio"):
+            responses = [
+                self.client.post(
+                    f"/api/business/projects/{project_id}/document/callback",
+                    params={"oo_doc_version": 1},
+                    json={"status": 6, "url": "http://onlyoffice/cache/files/data/session/output.docx"},
+                )
+                for _ in range(2)
+            ]
+
+        self.assertEqual([response.json() for response in responses], [{"error": 0}, {"error": 0}])
+        self.assertEqual(downloader.await_count, 2)
+        self.assertEqual(_document_state(project_id)["version"], 1)
+
     def test_file_routes_accept_filename_suffix_alias(self) -> None:
         project_id = self.create_project()
 
