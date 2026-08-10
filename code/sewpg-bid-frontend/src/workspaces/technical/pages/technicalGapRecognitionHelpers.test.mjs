@@ -660,7 +660,7 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
   assert.equal(state.coveredCount, 1)
 })
 
-test('正文填写汇总只数正文任务，失败按目录项计', () => {
+test('一键填写汇总覆盖正文与附表，失败按目录项计', () => {
   const items = [
     {
       id: 'G1',
@@ -668,7 +668,7 @@ test('正文填写汇总只数正文任务，失败按目录项计', () => {
       fillTasks: [
         { id: 'T1', skill: 'bid-tech-word-placeholder-filler', status: 'completed' },
         { id: 'T2', skill: 'bid-tech-word-placeholder-filler', status: 'pending' },
-        // 附表由另一条线负责，不进正文汇总
+        // 附表也进一键填写汇总，并单独拆出 pendingAppendix
         { id: 'T3', skill: 'bid-tech-table-filler', status: 'pending' },
       ],
     },
@@ -683,8 +683,8 @@ test('正文填写汇总只数正文任务，失败按目录项计', () => {
     { id: 'G4', decision: 'ready', fillTasks: [{ id: 'T6', skill: 'bid-tech-word-placeholder-filler' }] },
   ]
 
-  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 2, filled: 1, failed: 1 })
-  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 3, filled: 1, failed: 1, pendingBody: 2, pendingAppendix: 1 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0, pendingBody: 0, pendingAppendix: 0 })
 })
 
 test('目录项填写失败原因用于标红与重填提示', () => {

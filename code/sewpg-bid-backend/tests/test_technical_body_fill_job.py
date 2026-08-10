@@ -41,11 +41,14 @@ def _gap_state(*items: dict, fact_table: dict | None = None) -> dict:
 
 
 class CollectTargetsTests(unittest.TestCase):
-    def test_only_word_fill_tasks_are_batched(self) -> None:
-        # 附表由另一条线负责，一键正文不碰它
-        state = _gap_state(_item("G1", _task("T1", WORD_SKILL), _task("T2", TABLE_SKILL)))
+    def test_word_and_table_fill_tasks_are_batched_word_first(self) -> None:
+        # 一键填写同时覆盖正文与附表；正文在前、附表在后（附表单条更重，让正文结果先落出来）
+        state = _gap_state(
+            _item("G1", _task("T1", WORD_SKILL), _task("T2", TABLE_SKILL)),
+            _item("G2", _task("T3", WORD_SKILL)),
+        )
         targets = collect_body_fill_targets(state, {})
-        self.assertEqual([t["fillTaskId"] for t in targets], ["T1"])
+        self.assertEqual([t["fillTaskId"] for t in targets], ["T1", "T3", "T2"])
 
     def test_completed_tasks_skipped_unless_rerun(self) -> None:
         state = _gap_state(_item("G1", _task("T1", status="completed"), _task("T2")))
@@ -204,7 +207,7 @@ class RunBodyFillJobTests(unittest.TestCase):
         self.assertIn("填写失败", failed["fillError"]["message"])
 
     def test_empty_batch_finishes_without_running_anything(self) -> None:
-        self.project["gap_state"] = _gap_state(_item("G1", _task("T1", TABLE_SKILL)))
+        self.project["gap_state"] = _gap_state(_item("G1", _task("T1", "bid-tech-other-skill")))
         state = self._run(lambda *args, **kwargs: None)
 
         self.assertEqual(state["status"], "succeeded")

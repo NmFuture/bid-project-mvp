@@ -1363,7 +1363,7 @@ class TechnicalGapService:
             _raise_gap_error(exc, "Gap not found")
 
     def body_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        """正文一键填写：提交后台任务后立即返回，进度走 bodyFillState 轮询。"""
+        """一键填写（正文 + 附表）：提交后台任务后立即返回，进度走 bodyFillState 轮询。"""
         try:
             project = require_technical_gap_project_for_update(project_id)
             gap_state = ensure_technical_gap_state(project)
@@ -1375,11 +1375,11 @@ class TechnicalGapService:
             # 僵尸状态（worker 被重启/杀掉，状态停在 running 但队列锁已释放）不挡新任务，
             # 否则前端永远显示「填写中」，只能改库才能恢复
             if body_fill_running(gap_state) and not body_fill_stale(gap_state, project_id):
-                raise PeripheralError(409, "正文填写任务正在执行，请等待完成后再提交。", "BODY_FILL_RUNNING")
+                raise PeripheralError(409, "一键填写任务正在执行，请等待完成后再提交。", "BODY_FILL_RUNNING")
             payload = dict(data or {})
             targets = collect_body_fill_targets(gap_state, payload)
             if not targets:
-                raise ValueError("当前范围内没有待填写的正文任务。")
+                raise ValueError("当前范围内没有待填写的正文或附表任务。")
             payload["expectedTotal"] = len(targets)
             payload.update(
                 {
