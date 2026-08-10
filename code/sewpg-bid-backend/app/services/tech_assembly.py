@@ -1318,18 +1318,6 @@ def _run_tech_score_index_xref_step(
     """
     manifest_path = work_dir / "tech_score_index_xref_input.json"
     mapping_path = work_dir / "tech_score_index_xref_mapping.json"
-    manifest = {
-        "schemaVersion": "bid-tech-score-index-xref-manifest-v1",
-        "inputFile": str(input_path),
-        "outputFile": str(output_path),
-        # 容器里没有 Word，页码留占位符，靠成稿里的 updateFields 在 Word/WPS 打开时刷新。
-        "updateFieldsWithWord": False,
-        "syncTitle": False,
-        "styledLink": False,
-    }
-    if mapping_path.exists():
-        manifest["mappingFile"] = str(mapping_path)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if progress_callback:
         progress_callback(
@@ -1337,7 +1325,33 @@ def _run_tech_score_index_xref_step(
             {"manifestPath": str(manifest_path), "inputFile": str(input_path)},
         )
 
+    mapping_source = ""
+    mapping_error = ""
     try:
+        # 章节号只有正文组装完才存在，S3 的待填写填充只能在这一列留 `[待人工补充：章节索引]`。
+        # 所以先体检：还没判断章节就先让 agent 判断，判断结果落成映射再交给确定性脚本建引用。
+        probe = _probe_tech_score_index_xref(input_path, work_dir)
+        if probe.get("tableFound") and int(probe.get("pendingRowCount") or 0) > 0 and not mapping_path.exists():
+            mapping_source, mapping_error = _request_score_index_xref_mapping(
+                probe=probe,
+                mapping_path=mapping_path,
+                work_dir=work_dir,
+                progress_callback=progress_callback,
+            )
+
+        manifest = {
+            "schemaVersion": "bid-tech-score-index-xref-manifest-v1",
+            "inputFile": str(input_path),
+            "outputFile": str(output_path),
+            # 容器里没有 Word，页码留占位符，靠成稿里的 updateFields 在 Word/WPS 打开时刷新。
+            "updateFieldsWithWord": False,
+            "syncTitle": False,
+            "styledLink": False,
+        }
+        if mapping_path.exists():
+            manifest["mappingFile"] = str(mapping_path)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
         result = _run_local_tech_score_index_xref(manifest_path)
         status = str(result.get("status") or "completed")
         summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
@@ -1352,13 +1366,24 @@ def _run_tech_score_index_xref_step(
             "manifestPath": str(manifest_path),
             "inputFile": str(input_path),
             "outputFile": str(produced) if produced else "",
+            "mappingSource": mapping_source,
+            "mappingFile": str(mapping_path) if mapping_path.exists() else "",
             "summary": summary,
             "warnings": warnings,
         }
+        if mapping_error:
+            xref["warnings"] = [
+                *warnings,
+                {
+                    "code": "score_index_xref_mapping_unavailable",
+                    "message": f"章节判断未产出可用映射，本次未填章节索引列：{mapping_error}",
+                    "count": 1,
+                },
+            ]
         if progress_callback:
             progress_callback(
                 "score_index_xref_completed" if status == "completed" else "score_index_xref_skipped",
-                {"summary": summary, "outputFile": xref["outputFile"], "warnings": warnings},
+                {"summary": summary, "outputFile": xref["outputFile"], "warnings": xref["warnings"]},
             )
         return xref
     except Exception as exc:  # noqa: BLE001 - 交叉引用失败不应阻断出稿
@@ -1385,6 +1410,89 @@ def _run_tech_score_index_xref_step(
                 {"error": str(exc), "manifestPath": str(manifest_path)},
             )
         return xref
+
+
+def _probe_tech_score_index_xref(input_path: Path, work_dir: Path) -> dict[str, Any]:
+    """体检成稿：索引表在不在、章节索引列有多少行还没判断章节。"""
+    manifest_path = work_dir / "tech_score_index_xref_inspect.json"
+    manifest = {
+        "schemaVersion": "bid-tech-score-index-xref-manifest-v1",
+        "mode": "inspect",
+        "inputFile": str(input_path),
+        "outDir": str(work_dir),
+        "briefFile": str(work_dir / "tech_score_index_xref_brief.json"),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return _run_local_tech_score_index_xref(manifest_path)
+
+
+def _request_score_index_xref_mapping(
+    *,
+    probe: dict[str, Any],
+    mapping_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> tuple[str, str]:
+    """让 opencode agent 判断每个评审因素该索引哪些章节，产出映射 JSON。
+
+    返回 (mappingSource, error)。agent 不可用或返回不可用结果时不抛错：
+    映射缺席只是这一列填不上，不该让整份标书出不来。
+    """
+    if progress_callback:
+        progress_callback(
+            "score_index_xref_mapping_requested",
+            {"pendingRowCount": int(probe.get("pendingRowCount") or 0), "mappingFile": str(mapping_path)},
+        )
+    brief_path = Path(str(probe.get("briefFile") or work_dir / "tech_score_index_xref_brief.json"))
+    try:
+        result = run_technical_score_index_xref_skill(brief_path, mapping_path)
+    except Exception as exc:  # noqa: BLE001 - agent 不可用不阻断出稿
+        return "", str(exc)
+
+    inline = result.get("mapping") if isinstance(result.get("mapping"), dict) else None
+    if inline and not mapping_path.exists():
+        mapping_path.write_text(json.dumps(inline, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not mapping_path.exists():
+        return "", "agent 未落盘映射文件"
+    try:
+        payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return "", f"映射文件不是合法 JSON：{exc}"
+    if not isinstance(payload, dict) or not [key for key in payload if not str(key).startswith("_")]:
+        mapping_path.unlink(missing_ok=True)
+        return "", "映射文件为空"
+    return "opencode", ""
+
+
+def _build_score_index_xref_prompt(brief_path: Path, mapping_path: Path) -> str:
+    return f"""
+Use the {TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME} skill.
+
+你现在要为技术标成稿里的「技术评分标准索引表」判断章节索引：每个评审因素该指向正文的哪些章节。后端已经把体检简报准备好，里面有逐行的评审因素、投标响应原文、当前索引状态，以及正文完整标题树（number/title/level）。
+
+简报：{brief_path}
+
+本环境没有 read / write / edit 工具，绝对不要调用它们——读文件用 Bash（jq 或 sed -n / grep -n 取片段，简报较大不要整份 cat）。
+
+按 SKILL.md 的「章节判断方法」和 references/section_mapping.md 逐行判断，然后用 Bash heredoc 把映射写成 JSON：先写 {mapping_path}.tmp，确认 JSON 完整后再 mv -f 改名为 {mapping_path}。
+
+映射格式：{{"评审因素原文": ["章节号", "章节号", ...]}}。硬性要求：
+- 键用简报里 rows[].factor 的原文；只处理 pending 为 true 的行。
+- 值只写章节号（如 "5.8.1"、"第3章"）或无编号标题的前缀，不要手抄标题，标题由脚本从正文补全。
+- 章节号必须来自简报的 headings，不存在的号一律不写；宁可少写也不要编。
+- 每行 3~6 条，指向能独立回答该因素的最小完整章节。
+
+最后只返回小型 JSON：{{"mappingFile": "{mapping_path}", "factorCount": 数字}}，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
+
+
+def run_technical_score_index_xref_skill(brief_path: Path, mapping_path: Path) -> dict[str, Any]:
+    """opencode 调用隔离点：测试 patch 本函数即可 mock 章节判断。"""
+    from app.services.opencode_client import OpencodeClient
+
+    return OpencodeClient().run_bid_tech_score_index_xref_with_trace(
+        _build_score_index_xref_prompt(brief_path, mapping_path),
+    )
 
 
 def _run_local_tech_score_index_xref(manifest_path: Path) -> dict[str, Any]:

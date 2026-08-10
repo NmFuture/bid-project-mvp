@@ -17,13 +17,23 @@ allowed-tools: [Read, Write, Glob, Grep, Bash]
 
 阶段位置见 `../STAGES.md`：本 skill 属成稿后处理，跑在 `bid-tech-assembler`（正文组装）和 `bid-tech-format-cleaner`（格式清洗）之后。跑在格式清洗之后是必需的——清洗会重排标题样式与文本编号，先建引用会让书签挂在被改写的段落上。
 
+## 两种模式
+
+`mode: "inspect"` 体检：导出标题树与索引表原文，把逐行「评审因素 + 投标响应 + 当前索引状态」和完整标题树写进 `briefFile`，并报出 `pendingRowCount`（章节索引列还没判断章节的行数）。后端在建引用前先跑这一步，有待判断的行才去调 agent。
+
+`mode: "build"`（默认）建引用：按映射填列（可选）+ 建书签、超链接、PAGEREF 域。
+
+**关键前提**：章节号只有正文组装完才存在，所以 S3 的待填写填充只能在这一列留 `[待人工补充：章节索引]`。本 skill 把这类待填标记视同空单元格——不当成"定位不到的章节"，也不因为"单元格有内容"而拒绝填写。
+
 ## 输入
 
 manifest 字段：
 
+- `mode`：`build`（默认）或 `inspect`。
 - `inputFile`：格式清洗后的技术标 `.docx`。
 - `outputFile`：带交叉引用的 `.docx` 输出路径，不能与 `inputFile` 相同。
 - `mappingFile` / `mapping`：可选。章节索引列为空时提供 `{评审因素: [章节号或标题]}`，见下文「章节判断方法」。
+- `briefFile` / `outDir`：`inspect` 模式的简报与导出文件落点。
 - `indexHeaders` / `factorHeaders`：可选。覆盖表头识别措辞，默认见 `scripts/xref.py` 顶部常量。
 - `syncTitle`：可选，默认 false。true 时用正文真实标题覆盖索引表原有文字。
 - `styledLink`：可选，默认 false。true 时超链接用蓝色下划线样式。
@@ -55,14 +65,16 @@ python scripts/xref.py verify  "投标文件_交叉索引.docx"
 - 只改索引表的章节索引列和被引用标题上的书签，不改正文内容、不重排章节。
 - 只索引本文件内真实存在的章节；跨卷附表（如技术附表 B/C/D）默认不引，除非用户明确要求。
 - 幂等：重跑会复用已有 `_Xref_` 书签、剥掉旧的"，P123"尾巴，不会累加。
-- 索引列已填 → 直接建引用；为空且未给映射 → 报 `xref_no_entry` 警告，不猜。
+- 索引列已填 → 直接建引用；仍是待填标记且未给映射 → 报 `xref_index_column_pending`，不猜。
 - 索引表文字与正文标题不一致时按章节号建立引用，并报 `xref_title_mismatch` 让人核对。
 - 定位不到的条目保持原样，报 `xref_unresolved_entry`，绝不静默丢弃。
+- **章节号必须唯一才可用于定位。** 素材自带的「1、xxx」「2）xxx」是段内列表序号不是章节号，不参与拆号；真的撞号时该号整个不进查找表，让映射解析失败，绝不先到先得链到错章节。
+- 映射里有解析不到的章节号时不整体放弃：退回无映射重建，报 `mapping_unresolved` + `xref_index_column_pending`，成品照常产出。
 
-## 章节判断方法（仅当索引列为空）
+## 章节判断方法（索引列仍是待填标记时）
 
 三个输入：**评审因素**（要考什么）、**投标响应**（承诺了什么）、**标题树**（文件里有什么）。目标是让评委顺着索引最快找到证据。
-先跑 `inspect` 导出 `_结构.txt` 与 `_索引表.txt`，读完再写映射 JSON（**只写章节号**，标题由脚本从正文补全，避免手抄出错）：
+后端会先跑 `inspect` 把这三样写进 `briefFile`（`rows[].factor` / `rows[].response` / `rows[].pending` / `headings[]`），读完再写映射 JSON（**只写章节号**，标题由脚本从正文补全，避免手抄出错）：
 
 ```json
 {

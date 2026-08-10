@@ -533,6 +533,18 @@ def _handle_fill_progress(
         )
         return
 
+    if stage == "score_index_xref_mapping_requested":
+        pending = int(meta.get("pendingRowCount") or 0)
+        _update_fill_generation(
+            project_id,
+            percentage=97,
+            summary=f"评分索引表有 {pending} 行还未判断章节，正在调用 futurecode 判断该索引哪些章节。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"评分索引表 {pending} 行章节索引待判断，已交由 futurecode 按评审因素和投标响应原文判断。",
+            event_step="score_index_xref_mapping",
+        )
+        return
+
     if stage == "score_index_xref_completed":
         summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
         linked = int(summary.get("linkedCount") or 0)

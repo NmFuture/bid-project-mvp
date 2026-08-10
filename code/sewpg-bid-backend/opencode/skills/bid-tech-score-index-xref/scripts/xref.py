@@ -30,7 +30,7 @@ import re
 import shutil
 import sys
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from lxml import etree
 
@@ -44,6 +44,9 @@ DEFAULT_FACTOR_HEADERS = ["评审因素", "评分因素", "评审要素", "评�
 PAGE_PREFIX = "，P"
 PAGE_PLACEHOLDER = "0"
 BOOKMARK_PREFIX = "_Xref_"
+# S3 的待填写 Word 填充链路定位不到值时留下的标记。章节号要等正文组装完才存在，
+# 所以「技术评分标准索引表」的章节索引列到本环节几乎必然是这类标记而不是空单元格。
+PENDING_MARKERS = ("待人工补充", "待人工插入", "待填写", "待补充", "待确认", "待插入", "待定")
 
 
 class XrefError(Exception):
@@ -98,6 +101,17 @@ def split_entry(raw: str):
 
 def clean_title(s: str) -> str:
     return s.rstrip("：: 　")
+
+
+def is_placeholder(text: str) -> bool:
+    """非空但只是待填标记，例如 `[待人工补充：章节索引]`。"""
+    stripped = (text or "").strip()
+    return bool(stripped) and any(marker in stripped for marker in PENDING_MARKERS)
+
+
+def is_pending(text: str) -> bool:
+    """这一格还没有真正的章节条目：空的，或者只是待填标记。"""
+    return not (text or "").strip() or is_placeholder(text)
 
 
 # --------------------------------------------------------------------------
@@ -176,14 +190,21 @@ def render_number(fmt: str, counters: list, level: int) -> str:
     return s.strip()
 
 
+# 数字后面紧跟这些符号的是列表序号（"1、xxx"、"2）xxx"），不是章节号。
+ORDINAL_SEPARATOR_RE = re.compile(r"^[、。．.）)\]】：:，,]")
+
+
 def _heading_without_auto_number(p, level, title) -> Heading:
-    """没有 Word 自动编号的标题：若正文文字自带编号，拆成 number + title。
+    """没有 Word 自动编号的标题：若正文文字自带章节号，拆成 number + title。
 
     技术标成稿走「文本编号 + Heading 样式」，格式清洗还会主动抑制自动编号，
     所以正文里绝大多数标题都落到这一支；不拆的话映射只能写整条标题。
+
+    拆得保守：素材自带的「1、xxx」「2）xxx」是段内列表序号，正文里会大量重复，
+    当成章节号会让 by_num 里一个 "1" 对应几十个标题，映射写 "1" 就静默链到错章节。
     """
     num, rest, _ = split_entry(title)
-    if num:
+    if num and not ORDINAL_SEPARATOR_RE.match(rest):
         return Heading(p, level, num, rest)
     return Heading(p, level, None, title)
 
@@ -288,10 +309,16 @@ def prepare(path, index_headers, factor_headers):
 # 章节映射解析：把「章节号或标题」统一解析成正文中的真实标题
 # --------------------------------------------------------------------------
 def build_lookups(headings):
+    """章节号必须唯一才进 by_num；标题/整条则允许重名取首个。
+
+    章节号撞号说明正文里存在同号章节，先到先得会把引用挂到错的那个，
+    宁可让映射解析失败也不能静默链错；标题重名时目标内容本身相同，取首个可接受。
+    """
     by_num, by_title, by_full = {}, defaultdict(list), {}
+    number_counts = Counter(norm(h.number) for h in headings if h.number)
     for h in headings:
-        if h.number:
-            by_num.setdefault(norm(h.number), h)
+        if h.number and number_counts[norm(h.number)] == 1:
+            by_num[norm(h.number)] = h
         by_title[norm(h.title)].append(h)
         by_full.setdefault(norm(h.display), h)
     return by_num, by_title, by_full
@@ -472,7 +499,8 @@ def fill_cells(tbl, col, fac, mapping, overwrite):
         if max(col, fac) >= len(cells):
             continue
         cell = cells[col]
-        if [p for p in cell.findall(w("p")) if text_of(p).strip()] and not overwrite:
+        # 只有真条目才算「已填」；`[待人工补充：章节索引]` 视同空格子，不然映射永远填不进去
+        if [p for p in cell.findall(w("p")) if not is_pending(text_of(p))] and not overwrite:
             skipped.append(ri)
             continue
         entries = mapping.get(norm(cell_text(cells[fac])))
@@ -575,7 +603,7 @@ def update_fields_with_word(path: str) -> bool:
 # 库函数：inspect / build / verify
 # --------------------------------------------------------------------------
 def inspect_docx(docx, index_headers=None, factor_headers=None, max_level=3, outdir=None) -> dict:
-    """导出标题树与索引表原文，返回统计。"""
+    """导出标题树与索引表原文，返回统计和逐行明细（供章节判断使用）。"""
     index_headers = index_headers or DEFAULT_INDEX_HEADERS
     factor_headers = factor_headers or DEFAULT_FACTOR_HEADERS
     _, _, tbl, col, fac, headings = prepare(docx, index_headers, factor_headers)
@@ -590,7 +618,7 @@ def inspect_docx(docx, index_headers=None, factor_headers=None, max_level=3, out
                 f.write("  " * (h.level - 1) + h.display + "\n")
 
     rows = tbl.findall(w("tr"))
-    empty = 0
+    detail = []
     with open(f_rows, "w", encoding="utf-8") as f:
         for ri, row in enumerate(rows):
             if ri == 0:
@@ -598,26 +626,39 @@ def inspect_docx(docx, index_headers=None, factor_headers=None, max_level=3, out
             cells = row.findall(w("tc"))
             factor = cell_text(cells[fac]).strip() if fac is not None and fac < len(cells) else ""
             cur = cell_text(cells[col]).strip() if col < len(cells) else ""
-            if not cur:
-                empty += 1
+            others = []
             f.write(f"===== 行{ri}  评审因素：{factor}\n")
             for ci, c in enumerate(cells):
                 if ci in (fac, col):
                     continue
                 t = cell_text(c).strip()
                 if len(t) > 2:  # 跳过序号之类的短列
+                    others.append(t)
                     f.write(t + "\n")
             f.write(f"--- 现有章节索引：{cur or '（空）'}\n\n")
+            detail.append(
+                {
+                    "row": ri,
+                    "factor": factor,
+                    "response": "\n".join(others),
+                    "current": cur,
+                    "pending": is_pending(cur),
+                }
+            )
 
+    pending = [item for item in detail if item["pending"]]
     return {
         "headingCount": len(headings),
+        "numberedHeadingCount": sum(1 for h in headings if h.number),
         "maxLevel": max_level,
         "structureFile": f_struct,
         "rowsFile": f_rows,
         "rowCount": len(rows) - 1,
-        "emptyRowCount": empty,
+        "pendingRowCount": len(pending),
         "indexColumn": col,
         "factorColumn": fac,
+        "rows": detail,
+        "headings": [{"number": h.number or "", "title": h.title, "level": h.level} for h in headings],
     }
 
 
@@ -669,7 +710,7 @@ def build_xref(
             if m:
                 state["bm_seq"] = max(state["bm_seq"], int(m.group(1)))
 
-    linked, mismatch, unresolved = [], [], []
+    linked, mismatch, unresolved, placeholders = [], [], [], []
     row_count = 0
     for ri, row in enumerate(tbl.findall(w("tr"))):
         if ri == 0:
@@ -681,6 +722,10 @@ def build_xref(
         for p in cells[col].findall(w("p")):
             raw = text_of(p).strip()
             if not raw:
+                continue
+            if is_placeholder(raw):
+                # 待填标记不是条目，别当成「定位不到的章节」，否则真实状态被淹没
+                placeholders.append({"row": ri, "text": raw})
                 continue
             _, _, clean = split_entry(raw)
             h = find_heading(clean, by_num, by_title, by_full, headings)
@@ -703,6 +748,7 @@ def build_xref(
         "linked": linked,
         "mismatch": mismatch,
         "unresolved": unresolved,
+        "placeholders": placeholders,
         "bookmarksCreated": state["created"],
         "fill": fill_report,
         "pageNumbersResolved": False,
@@ -815,10 +861,10 @@ def verify_xref(docx, index_headers=None, factor_headers=None) -> dict:
 # --------------------------------------------------------------------------
 def cmd_inspect(args):
     r = inspect_docx(args.docx, args.index_header, args.factor_header, args.max_level, args.outdir)
-    print(f"标题总数 {r['headingCount']}（导出至 {r['maxLevel']} 级）-> {r['structureFile']}")
-    print(f"索引表 {r['rowCount']} 行，其中章节索引列为空的 {r['emptyRowCount']} 行 -> {r['rowsFile']}")
+    print(f"标题总数 {r['headingCount']}（其中带章节号 {r['numberedHeadingCount']}，导出至 {r['maxLevel']} 级）-> {r['structureFile']}")
+    print(f"索引表 {r['rowCount']} 行，其中章节索引列待填（空或占位符）的 {r['pendingRowCount']} 行 -> {r['rowsFile']}")
     print(f"章节索引列号={r['indexColumn']} 评审因素列号={r['factorColumn']}")
-    if r["emptyRowCount"]:
+    if r["pendingRowCount"]:
         print("\n=> 该列需要先判断章节。读上面两个文件，按 SKILL.md 的判断方法编写映射 JSON。")
     else:
         print("\n=> 该列已填写，可直接 build 建立交叉引用。")
@@ -872,6 +918,10 @@ def cmd_build(args):
     if r["unresolved"]:
         print(f"\n未能匹配 {len(r['unresolved'])} 条（保持原样，需人工处理）：")
         for item in r["unresolved"]:
+            print(f"   行{item['row']:>3}  {item['text']}")
+    if r["placeholders"]:
+        print(f"\n仍是待填标记 {len(r['placeholders'])} 条（该列还没判断章节，需提供映射）：")
+        for item in r["placeholders"]:
             print(f"   行{item['row']:>3}  {item['text']}")
 
     if r["dryRun"]:
