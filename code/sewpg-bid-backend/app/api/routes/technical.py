@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -652,23 +652,37 @@ async def apply_technical_document_format(
 
 
 @router.get("/api/technical/projects/{project_id}/final-document")
-async def get_technical_final_document(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.final_document(project_id, request)
+async def get_technical_final_document(
+    project_id: str,
+    request: Request,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> dict[str, Any]:
+    return await technical_document_service.final_document(project_id, request, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/file")
-async def download_technical_final_document_file(project_id: str) -> FileResponse:
-    return await technical_document_service.final_document_file(project_id)
+async def download_technical_final_document_file(
+    project_id: str,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> FileResponse:
+    return await technical_document_service.final_document_file(project_id, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/pdf")
-async def prepare_technical_final_document_pdf(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.final_document_pdf(project_id, request)
+async def prepare_technical_final_document_pdf(
+    project_id: str,
+    request: Request,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> dict[str, Any]:
+    return await technical_document_service.final_document_pdf(project_id, request, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/pdf/file")
-async def download_technical_final_document_pdf(project_id: str) -> FileResponse:
-    return await technical_document_service.final_document_pdf_file(project_id)
+async def download_technical_final_document_pdf(
+    project_id: str,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> FileResponse:
+    return await technical_document_service.final_document_pdf_file(project_id, version)
 
 
 @router.get("/api/technical/projects/{project_id}/export/check")

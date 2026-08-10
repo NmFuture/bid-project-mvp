@@ -638,8 +638,10 @@ export const technicalDocumentAPI = {
     request(`/technical/projects/${projectId}/document/technical-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
   technicalFormat: (projectId, data) =>
     request(`/technical/projects/${projectId}/document/technical-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
-  final: (projectId) => request(`/technical/projects/${projectId}/final-document`),
-  finalPdf: (projectId) => request(`/technical/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
+  final: (projectId, version = 'marked') =>
+    request(`/technical/projects/${projectId}/final-document?version=${version}`),
+  finalPdf: (projectId, version = 'marked') =>
+    request(`/technical/projects/${projectId}/final-document/pdf?version=${version}`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
 }
 
 export const technicalMaterialsAPI = {
