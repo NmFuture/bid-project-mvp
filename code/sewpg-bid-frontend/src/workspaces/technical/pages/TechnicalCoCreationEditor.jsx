@@ -6,6 +6,7 @@ import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
@@ -87,6 +88,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  // 生成在后台跑，弹窗允许关掉；关掉后不因为「还在运行」被重新弹出来。
+  const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
   const [regenerationStarting, setRegenerationStarting] = useState(false)
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
@@ -167,15 +170,17 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
   const generationRunning = generationStatus?.status === 'running'
-  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
 
   useEffect(() => {
     if (!generationRunning) return undefined
-    const timer = window.setInterval(() => {
-      loadGenerationStatus()
-    }, 1200)
-    return () => window.clearInterval(timer)
-  }, [generationRunning, loadGenerationStatus])
+    return subscribeTechnicalGenerationStatus({
+      fetchStatus: () => technicalGenerateAPI.status(id),
+      onStatus: (payload) => {
+        if (payload?.status === 'running') regenerationRequestedRef.current = true
+        setGenerationStatus(payload)
+      },
+    })
+  }, [generationRunning, id])
 
   useEffect(() => {
     if (generationStatus?.status === 'failed') {
@@ -310,6 +315,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     if (regenerationStarting || generationRunning) return
     setRegenerationConfirmOpen(false)
     setRegenerationStarting(true)
+    setGenerationModalDismissed(false)
     setGenerationModalOpen(true)
     regenerationRequestedRef.current = true
     try {
@@ -750,11 +756,13 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </DialogFooter>
       </Dialog>
       <TechnicalGenerationProgressModal
-        open={generationModalOpen || generationRunning}
+        open={(generationModalOpen || generationRunning) && !generationModalDismissed}
         status={generationStatus}
-        progress={generationProgress}
         completedMessage="技术标正文已重新生成，共创文档已刷新为最新版本。"
-        onClose={() => setGenerationModalOpen(false)}
+        onClose={() => {
+          setGenerationModalDismissed(true)
+          setGenerationModalOpen(false)
+        }}
       />
     </div>
   )

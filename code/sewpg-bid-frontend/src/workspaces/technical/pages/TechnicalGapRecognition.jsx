@@ -7,6 +7,7 @@ import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
@@ -1352,6 +1353,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factCurateReport, setFactCurateReport] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  // 生成在后台跑，弹窗允许关掉；关掉后不因为「还在运行」被重新弹出来。
+  const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
   // AI 填写弹窗：点素材卡上的 AI填写 打开，选参考素材后执行；null=关闭。
   const [aiFillModalTask, setAiFillModalTask] = useState(null)
@@ -1778,7 +1781,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
   const generationCompleted = generationStatus?.status === 'completed'
-  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
 
   useEffect(() => {
     let cancelled = false
@@ -2448,11 +2450,11 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   useEffect(() => {
     if (!generationRunning) return undefined
-    const timer = window.setInterval(() => {
-      loadGenerationStatus()
-    }, 1200)
-    return () => window.clearInterval(timer)
-  }, [generationRunning, loadGenerationStatus])
+    return subscribeTechnicalGenerationStatus({
+      fetchStatus: () => technicalGenerateAPI.status(id),
+      onStatus: setGenerationStatus,
+    })
+  }, [generationRunning, id])
 
   // AI 匹配填充轮询：任务在后台 worker 执行，这里只负责取进度；终态时把结果一次性落到界面。
   // 完成通知按 jobId+finishedAt 去重，避免收尾那一拍重复弹 toast。
@@ -2538,11 +2540,11 @@ export default function TechnicalGapRecognition({ showToast }) {
       return
     }
     setBusyAction('technical-generate')
+    setGenerationModalDismissed(false)
     setGenerationModalOpen(true)
     try {
       const payload = await technicalGenerateAPI.run(id)
       setGenerationStatus(payload)
-      loadGenerationStatus()
       showToast?.(payload?.message || '已开始生成技术标正文。')
     } catch (e) {
       setGenerationModalOpen(false)
@@ -3401,10 +3403,12 @@ export default function TechnicalGapRecognition({ showToast }) {
         />
       ) : null}
       <TechnicalGenerationProgressModal
-        open={generationModalOpen || generationRunning}
+        open={(generationModalOpen || generationRunning) && !generationModalDismissed}
         status={generationStatus}
-        progress={generationProgress}
-        onClose={() => setGenerationModalOpen(false)}
+        onClose={() => {
+          setGenerationModalDismissed(true)
+          setGenerationModalOpen(false)
+        }}
       />
       <AiFillReferenceModal
         open={Boolean(aiFillModalTask)}

@@ -400,6 +400,55 @@ class FillGenerationTests(unittest.TestCase):
         self.assertIn("关键参数响应", full_text)
         self.assertIn("【待填写：关键参数实测值】", full_text)
 
+    def test_assembly_progress_reports_real_counts_without_flooding_events(self) -> None:
+        from app.services.bid_generation_flow import _handle_fill_progress
+
+        project_id = self._prepare_project_for_s7()
+        _start_fill_generation_for_tests(project_id)
+        events_before = len(_fill_state_for_tests(project_id)["events"])
+
+        _handle_fill_progress(project_id, "assembling_progress", {"done": 12, "total": 54}, bid_type=TECHNICAL_BID_TYPE)
+        state = _fill_state_for_tests(project_id)
+
+        self.assertEqual(state["assemblyProgress"]["done"], 12)
+        self.assertEqual(state["assemblyProgress"]["total"], 54)
+        self.assertTrue(state["assemblyProgress"]["updatedAt"])
+        self.assertIn("12/54", state["summary"])
+        self.assertEqual(state["tasks"][1]["status"], "running")
+        # events 只保留最近 20 条，逐条组装不能写事件，否则启动记录和阶段历史会被挤掉
+        self.assertEqual(len(state["events"]), events_before)
+        self.assertTrue(state["startedAt"])
+
+        # 分母缺失时不落任何计数，避免展示层拿到 0/0
+        _handle_fill_progress(project_id, "assembling_progress", {"done": 3, "total": 0}, bid_type=TECHNICAL_BID_TYPE)
+        self.assertEqual(_fill_state_for_tests(project_id)["assemblyProgress"]["total"], 54)
+
+    def test_merge_progress_is_throttled_to_one_report_per_three_seconds(self) -> None:
+        from app.document_processing.technical_document.assembly.runner import _throttled_merge_progress
+
+        seen: list[tuple[str, dict]] = []
+        with patch(
+            "app.document_processing.technical_document.assembly.runner.time.monotonic",
+            side_effect=[10.0, 11.0, 12.9, 13.0, 14.0],
+        ):
+            report = _throttled_merge_progress(lambda stage, details=None: seen.append((stage, details)))
+            report(0, 4)
+            report(1, 4)
+            report(2, 4)
+            report(3, 4)
+            report(4, 4)
+
+        self.assertEqual(
+            seen,
+            [
+                ("assembling_progress", {"done": 0, "total": 4}),
+                ("assembling_progress", {"done": 3, "total": 4}),
+                ("assembling_progress", {"done": 4, "total": 4}),
+            ],
+        )
+        # 中间那些不到 3 秒的上报被压掉：每条都写库会把耗时算到进度汇报上
+        self.assertIsNone(_throttled_merge_progress(None))
+
     def test_generation_failure_before_inputs_marks_prepare_task_failed(self) -> None:
         from app.services.bid_generation_flow import _run_fill_generation_job
 

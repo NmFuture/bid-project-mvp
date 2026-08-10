@@ -7,6 +7,11 @@ import TechnicalDirectoryProgressPanel from '../components/TechnicalDirectoryPro
 import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import MaterialMatchProgressModal from '../../../components/shared/MaterialMatchProgressModal'
+import {
+  finishedMaterialMatchProgress,
+  idleMaterialMatchProgress,
+  startedMaterialMatchProgress,
+} from '../../../components/shared/materialMatchProgressState'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
@@ -257,11 +262,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
   const [reviewStatus, setReviewStatus] = useState('draft')
   const [currentStage, setCurrentStage] = useState(2)
-  const [materialMatchProgress, setMaterialMatchProgress] = useState({
-    open: false,
-    running: false,
-    error: '',
-  })
+  const [materialMatchProgress, setMaterialMatchProgress] = useState(idleMaterialMatchProgress)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
@@ -493,7 +494,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }
 
     setConfirming(true)
-    setMaterialMatchProgress({ open: true, running: true, error: '' })
+    setMaterialMatchProgress(startedMaterialMatchProgress())
     try {
       if (dirty) {
         const nodesToSave = renumberOutlineNodes(nodes)
@@ -506,7 +507,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       setReviewStatus('confirmed')
       showToast?.('目录确认已完成，正在执行素材匹配...')
       await technicalGapsAPI.runDetection(id)
-      setMaterialMatchProgress({ open: true, running: false, error: '' })
+      setMaterialMatchProgress((previous) => finishedMaterialMatchProgress(previous))
       const stageResult = await technicalStagesAPI.update(id, 2, { status: 'completed' })
       const nextStageId = Number(stageResult?.currentStage) || 3
       const nextRoute = getTechnicalStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
@@ -515,7 +516,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       navigate(nextRoute)
     } catch (e) {
       const message = e?.message || '目录确认或素材匹配失败，请稍后重试'
-      setMaterialMatchProgress({ open: true, running: false, error: message })
+      setMaterialMatchProgress((previous) => finishedMaterialMatchProgress(previous, message))
       showToast?.(message, 'error')
     } finally {
       setConfirming(false)
@@ -907,7 +908,10 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         open={materialMatchProgress.open}
         running={materialMatchProgress.running}
         error={materialMatchProgress.error}
-        onClose={() => setMaterialMatchProgress({ open: false, running: false, error: '' })}
+        itemCount={countNodes(nodes)}
+        startedAtMs={materialMatchProgress.startedAtMs}
+        finishedAtMs={materialMatchProgress.finishedAtMs}
+        onClose={() => setMaterialMatchProgress(idleMaterialMatchProgress())}
       />
       <DirectoryGenerationProgressModal
         open={regenerationModalOpen}
