@@ -12,7 +12,7 @@ from app.services.onlyoffice_documents import WORD_MEDIA_TYPE
 from app.services.technical_material_index import rebuild_technical_material_index_strict
 from app.services.technical_material_store import technical_material_store
 from app.services.workspace_project_access import (
-    persist_workspace_project_state,
+    persist_workspace_project_fields,
     require_workspace_project_for_update,
 )
 
@@ -38,7 +38,7 @@ def persist_technical_parse_result(project_id: str, parse_result: dict[str, Any]
     parse_storage["items"] = copy.deepcopy(parse_result.get("items") or parse_storage.get("items") or [])
     parse_storage["structured"] = copy.deepcopy(parse_result.get("structured") or {})
     payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "parse_result", "parse_storage")
     return payload
 
 
@@ -64,7 +64,7 @@ def _persist_selection(project: dict[str, Any], parse_result: dict[str, Any]) ->
     parse_storage["items"] = copy.deepcopy(parse_result.get("items") or parse_storage.get("items") or [])
     parse_storage["structured"] = copy.deepcopy(parse_result.get("structured") or {})
     payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "parse_result", "parse_storage")
     return payload
 
 

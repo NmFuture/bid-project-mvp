@@ -1933,9 +1933,10 @@ def test_services_use_public_project_state_mutation_api() -> None:
     )
     assert "def require_any_workspace_project_for_update" in workspace_access_source
     assert "require_any_workspace_project_for_update(" in service_sources[Path("app/services/ocr_service.py")]
-    assert "persist_workspace_project_state(" in service_sources[Path("app/services/ocr_service.py")]
+    # 只改自己那几页的模块走按字段写回：整份覆盖会把别人这期间写入的页顶回旧值
+    assert "persist_workspace_project_fields(" in service_sources[Path("app/services/ocr_service.py")]
     assert "from app.services.store import store" not in service_sources[Path("app/services/ocr_service.py")]
-    assert "persist_workspace_project_state(" in service_sources[Path("app/services/business_assembly.py")]
+    assert "persist_workspace_project_fields(" in service_sources[Path("app/services/business_assembly.py")]
     assert "store.persist_project_state" not in service_sources[Path("app/services/business_assembly.py")]
 
 
@@ -1976,7 +1977,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "store.get_document_state(project_id)" not in business_assembly_source
     assert "require_workspace_project_for_update(" in business_assembly_source
     assert "save_fill_generation_result_state(" in business_assembly_source
-    assert "persist_workspace_project_state(" in business_assembly_source
+    assert "persist_workspace_project_fields(" in business_assembly_source
     assert "from app.services.store import store" not in tech_assembly_source
     assert "store.get_project(" not in tech_assembly_source
     assert "store.get_outline_state(project_id)" not in tech_assembly_source
@@ -1987,7 +1988,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "project_parse_input_records(" in tech_assembly_source
     assert "require_workspace_project_for_update(" in tech_assembly_source
     assert "save_fill_generation_result_state(" in tech_assembly_source
-    assert "persist_workspace_project_state(" in tech_assembly_source
+    assert "persist_workspace_project_fields(" in tech_assembly_source
     assert "normalize_bid_type" not in technical_document_format_source
     assert "from app.services.store import store" not in technical_document_format_source
     assert "normalize_bid_type" not in business_parse_assets_source
@@ -2004,7 +2005,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "get_workspace_project_runtime_state(" in business_parse_assets_source
     assert "require_workspace_project_for_update(" in business_parse_assets_source
     assert "update_parse_result_state(" in business_parse_assets_source
-    assert "persist_workspace_project_state(" in business_parse_assets_source
+    assert "persist_workspace_project_fields(" in business_parse_assets_source
     assert "normalize_bid_type" not in project_service_source
     assert "from app.services.store import store" not in project_service_source
     assert "store.get_project_runtime_state(project_id)" not in project_service_source
@@ -2036,7 +2037,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "store.update_template_files(project_id" not in parse_service_source
     assert "self.project_service.bid_type" in parse_service_source
     assert "require_workspace_project_for_update(" in parse_service_source
-    assert "persist_workspace_project_state(" in parse_service_source
+    assert "persist_workspace_project_fields(" in parse_service_source
     assert "project_parse_input_records(" in parse_service_source
     assert "complete_parse_state(" in parse_service_source
     assert "update_parse_progress_state(" in parse_service_source
@@ -2084,7 +2085,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "store.confirm_outline(project_id)" not in directory_flow_source
     assert "require_workspace_project_for_update(" in directory_flow_source
     assert "require_any_workspace_project_for_update(" in directory_flow_source
-    assert "persist_workspace_project_state(" in directory_flow_source
+    assert "persist_workspace_project_fields(" in directory_flow_source
     assert "project_parse_input_records(" in directory_flow_source
     assert "directory_state_with_rule_evidence(" in directory_flow_source
     assert "start_directory_generation_state(project)" in directory_flow_source

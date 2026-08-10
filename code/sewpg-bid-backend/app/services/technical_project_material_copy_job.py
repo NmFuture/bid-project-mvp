@@ -13,6 +13,7 @@ from typing import Any
 from app.services.background_job_registry import start_job
 from app.services.technical_material_store import technical_material_store
 from app.services.workspace_project_access import (
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
 )
@@ -46,7 +47,7 @@ def _write_state(project_id: str, **fields: Any) -> dict[str, Any]:
     state = material_copy_state(project)
     state.update(fields)
     project["materialCopyState"] = state
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "materialCopyState")
     return copy.deepcopy(state)
 
 

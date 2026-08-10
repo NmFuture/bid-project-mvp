@@ -63,7 +63,11 @@ from app.services.parsing import (
     parse_tender_documents,
 )
 from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
-from app.services.workspace_project_access import persist_workspace_project_state, require_workspace_project_for_update
+from app.services.workspace_project_access import (
+    persist_workspace_project_fields,
+    persist_workspace_project_state,
+    require_workspace_project_for_update,
+)
 
 
 _CHUNK_SIZE = 1024 * 1024
@@ -1817,7 +1821,7 @@ class BidParseService:
                 return copy.deepcopy(parse_result)
             recovered_result, recovered_storage = recovered
             parse_result = update_parse_result_state(project, recovered_result, parse_storage=recovered_storage)
-            persist_workspace_project_state(project)
+            persist_workspace_project_fields(project, "parse_result", "parse_storage")
             parse_storage = project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
 
         structured_path = Path(str(parse_storage.get("structuredResultPath") or ""))
@@ -1846,7 +1850,7 @@ class BidParseService:
         if template_extraction_path:
             updated_storage["businessTemplateExtractionPath"] = str(template_extraction_path)
         payload = update_parse_result_state(project, refreshed, parse_storage=updated_storage)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_result", "parse_storage")
         return payload
 
     def _refresh_technical_parse_result_from_structured_file(self, project_id: str) -> dict[str, Any]:
@@ -1883,7 +1887,7 @@ class BidParseService:
         updated_storage["items"] = items
         updated_storage["structured"] = structured
         payload = update_parse_result_state(project, refreshed, parse_storage=updated_storage)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_result", "parse_storage")
         return payload
 
     def _materialize_completed_parse_result(self, project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
@@ -1912,7 +1916,7 @@ class BidParseService:
             project["stageArtifacts"] = promoted["stageArtifacts"]
         project["workspaceArtifacts"] = promoted["artifacts"]
         cleanup_parse_temp_workspace(project_id)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_result", "parse_storage", "workspaceArtifacts", "stageArtifacts")
         return copy.deepcopy(project["parse_result"])
 
     def parse_inputs(
@@ -1929,7 +1933,7 @@ class BidParseService:
         existed = isinstance(project.get("parse_progress"), dict)
         progress = parse_progress_snapshot_state(project)
         if not existed:
-            persist_workspace_project_state(project)
+            persist_workspace_project_fields(project, "parse_progress")
         return progress
 
     def bind_parse_run(self, project_id: str, run_id: str) -> None:
@@ -1937,7 +1941,7 @@ class BidParseService:
         progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
         progress["runId"] = str(run_id)
         project["parse_progress"] = progress
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_progress")
 
     def is_current_parse_run(self, project_id: str, run_id: str) -> bool:
         progress = self.parse_progress(project_id)
@@ -1961,7 +1965,7 @@ class BidParseService:
     ) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         progress = start_parse_progress_state(project, message, file_names=file_names)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_progress")
         self._progress_persist_guard[project_id] = (time.monotonic(), str(progress.get("phaseKey") or ""))
         return progress
 
@@ -2020,7 +2024,7 @@ class BidParseService:
             or (now_monotonic - last_persist[0]) >= settings.parse_progress_persist_interval_sec
         )
         if should_persist:
-            persist_workspace_project_state(project)
+            persist_workspace_project_fields(project, "parse_progress")
             if is_terminal:
                 self._progress_persist_guard.pop(project_id, None)
             else:
@@ -2050,7 +2054,7 @@ class BidParseService:
             "已请求停止解析任务。",
             opencode_output=trace,
         )
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_progress")
         return {
             **cancelled,
             "message": cancelled.get("summary") or "已请求停止解析任务。",
@@ -2085,7 +2089,7 @@ class BidParseService:
             summary=summary,
             parse_storage=parse_storage,
         )
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_result", "parse_storage", "templateFiles", "templateFileRecords", "files", "fileRecords", "currentStage")
         return parse_result
 
     def finalize_parse_progress(
@@ -2130,7 +2134,7 @@ class BidParseService:
     def update_template_files(self, project_id: str, template_files: list[dict[str, Any]]) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         payload = update_template_files_state(project, template_files)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "parse_result", "templateFiles", "templateFileRecords", "currentStage")
         return payload
 
     async def results(self, project_id: str) -> dict[str, Any]:

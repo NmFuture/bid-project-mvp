@@ -110,6 +110,68 @@ def test_persist_when_false_skips_the_write_entirely() -> None:
 
 
 @pytest.mark.integration
+def test_field_scoped_write_leaves_other_pages_alone() -> None:
+    """按字段写回的核心断言：改自己那页的操作，不会顶掉别人这期间写入的别的页。
+
+    整份覆盖时，「只想改进度条」的写入会把手里过期的 gap_state 一起拍回库里，
+    后台填写刚落库的产物就此消失——这是「AI 填了、组装却没有」的机制来源。
+    """
+    repository = ProjectStateRepository("postgres")
+    repository.ensure_db()
+    pid = "PRJ-FIELD-SCOPE"
+    raw = lambda payload: payload
+    base = {
+        "id": pid,
+        "bidType": BID_TYPE,
+        "updatedAt": "2026-08-10T00:00:00Z",
+        "gap_state": {"artifacts": []},
+        "fill_state": {"status": "idle"},
+    }
+    try:
+        repository.persist(base)
+        # 两个进程在同一时刻各读一份
+        tech = repository.load_one(pid, raw)
+        generation = repository.load_one(pid, raw)
+
+        # 技术标把 AI 填写产物写进缺口页
+        tech["gap_state"]["artifacts"].append("投标关键数据一览表_AI填写.docx")
+        repository.persist(tech, expected_rev=project_revision(tech))
+
+        # 生成模块拿着过期快照回写，但只交自己那页
+        generation["fill_state"]["status"] = "running"
+        generation["updatedAt"] = "2026-08-10T00:00:05Z"
+        repository.persist_fields(generation, ("fill_state", "updatedAt"))
+
+        final = repository.load_one(pid, raw)
+        assert final["gap_state"]["artifacts"] == ["投标关键数据一览表_AI填写.docx"]
+        assert final["fill_state"]["status"] == "running"
+    finally:
+        repository.delete(pid)
+
+
+@pytest.mark.integration
+def test_field_scoped_write_skips_unlisted_changes() -> None:
+    """漏列的字段不会落库——这是按字段写回最需要盯住的失败模式。"""
+    repository = ProjectStateRepository("postgres")
+    repository.ensure_db()
+    pid = "PRJ-FIELD-MISS"
+    raw = lambda payload: payload
+    try:
+        repository.persist({"id": pid, "bidType": BID_TYPE, "updatedAt": "2026-08-10T00:00:00Z",
+                            "fill_state": {"status": "idle"}, "gap_state": {"note": "原值"}})
+        project = repository.load_one(pid, raw)
+        project["fill_state"]["status"] = "running"
+        project["gap_state"]["note"] = "改了但没声明"
+        repository.persist_fields(project, ("fill_state", "updatedAt"))
+
+        final = repository.load_one(pid, raw)
+        assert final["fill_state"]["status"] == "running"
+        assert final["gap_state"]["note"] == "原值"
+    finally:
+        repository.delete(pid)
+
+
+@pytest.mark.integration
 def test_repository_cas_accepts_rows_written_before_versioning() -> None:
     # 存量项目的 payload 里没有 _rev 字段，第一次 CAS 写入必须照常通过，否则升级即全线写失败
     repository = ProjectStateRepository("postgres")

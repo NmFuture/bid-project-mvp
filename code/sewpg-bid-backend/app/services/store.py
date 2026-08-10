@@ -139,6 +139,10 @@ class AppStore:
         """CAS 写回：库里版本仍是 expected_rev 才落库，否则抛并发冲突。"""
         self._repository.persist(project, expected_rev=expected_rev)
 
+    def persist_project_fields(self, project: dict[str, Any], fields: tuple[str, ...]) -> None:
+        """只写回指定顶层字段，不动库里的其他字段。"""
+        self._repository.persist_fields(project, fields)
+
     def update_project(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)
         update_project_state(project, project_id, data)

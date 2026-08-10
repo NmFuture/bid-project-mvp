@@ -325,7 +325,7 @@ class ParseAsyncJobTests(unittest.TestCase):
         settings.parse_progress_persist_interval_sec = 60.0
         service = bid_parse_service.technical_parse_service
         service._progress_persist_guard.pop(project_id, None)
-        with patch("app.services.bid_parse_service.persist_workspace_project_state") as persist_mock:
+        with patch("app.services.bid_parse_service.persist_workspace_project_fields") as persist_mock:
             service.start_parse_progress(project_id)
             service.update_parse_progress(project_id, phase_key="extract", percentage=10, summary="提取中")
             service.update_parse_progress(project_id, phase_key="extract", percentage=11, summary="提取中")

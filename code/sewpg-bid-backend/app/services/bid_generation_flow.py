@@ -23,6 +23,7 @@ from app.services.technical_draft_generation import generate_technical_draft_for
 from app.services.workspace_project_access import (
     get_any_workspace_project_runtime_state,
     get_workspace_project_runtime_state,
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
     require_workspace_project_for_update,
@@ -113,14 +114,14 @@ def _fill_state(project_id: str) -> dict[str, Any]:
 def _update_fill_generation(project_id: str, **kwargs: Any) -> dict[str, Any]:
     project = _any_project_for_update(project_id)
     state = update_fill_generation_state(project, **kwargs)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "fill_state")
     return state
 
 
 def _fail_fill_generation(project_id: str, message: str, tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     project = _any_project_for_update(project_id)
     state = fail_fill_generation_state(project, message=message, tasks=tasks)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "fill_state")
     return state
 
 
@@ -629,7 +630,7 @@ class BidGenerationService:
     def start_fill_generation(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         payload = start_fill_generation_state(project)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "fill_state")
         return payload
 
     def _with_generation_urls(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:

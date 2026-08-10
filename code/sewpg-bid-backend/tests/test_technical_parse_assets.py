@@ -292,14 +292,15 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
         "app.services.technical_parse_assets.require_workspace_project_for_update",
         return_value=project,
     ), patch(
-        "app.services.technical_parse_assets.persist_workspace_project_state",
+        "app.services.technical_parse_assets.persist_workspace_project_fields",
     ) as persist_state:
         result = set_technical_appendix_asset_selected("PRJ-TECH-001", "APPX-A", selected=False)
 
     appendices = result["parseResult"]["structured"]["appendices"]
     assert [item["selectedForMaterial"] for item in appendices] == [False, True]
     assert result["selectedCount"] == 1
-    persist_state.assert_called_once_with(project)
+    persist_state.assert_called_once()
+    assert persist_state.call_args.args[0] is project
 
 
 def test_refresh_technical_parse_result_preserves_appendix_runtime_state(tmp_path: Path) -> None:
@@ -360,7 +361,7 @@ def test_refresh_technical_parse_result_preserves_appendix_runtime_state(tmp_pat
     with patch.object(service, "require_project_for_update", return_value=project), patch(
         "app.services.bid_parse_service._materialize_technical_evidence_refs",
         side_effect=lambda structured, **_kwargs: structured,
-    ), patch("app.services.bid_parse_service.persist_workspace_project_state") as persist_state:
+    ), patch("app.services.bid_parse_service.persist_workspace_project_fields") as persist_state:
         refreshed = service._refresh_technical_parse_result_from_structured_file(project["id"])
 
     appendices = refreshed["structured"]["appendices"]
@@ -373,7 +374,8 @@ def test_refresh_technical_parse_result_preserves_appendix_runtime_state(tmp_pat
     assert refreshed["structured"]["technicalAppendixMaterialSync"]["items"] == [
         {"appendixId": "APPX-A", "materialId": "RAW-A"}
     ]
-    persist_state.assert_called_once_with(project)
+    persist_state.assert_called_once()
+    assert persist_state.call_args.args[0] is project
 
 
 def test_technical_appendix_selection_only_saves_choice_and_returns_compact_payload() -> None:

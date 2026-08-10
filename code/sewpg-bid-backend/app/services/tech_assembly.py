@@ -33,6 +33,7 @@ from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_project_access import (
     get_workspace_project_runtime_state,
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_workspace_project_for_update,
 )
@@ -241,7 +242,7 @@ def assemble_tech_bid_for_project_with_progress(
             "execution": execution,
         },
     )
-    persist_workspace_project_state(project_for_update)
+    persist_workspace_project_fields(project_for_update, "document_state", "fill_state", "name")
     return payload
 
 
