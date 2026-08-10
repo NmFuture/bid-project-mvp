@@ -644,33 +644,33 @@ def apply_gap_plan(plan: list[dict], gap_plan_path: Path | None) -> list[dict]:
         and item.get("titleOnly") is True
         and str(item.get("id") or "").strip()
     }
-    by_number: dict[str, dict] = {}
-    by_numbered_title: dict[str, dict] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        number = str(item.get("number") or "").strip()
-        title = str(item.get("title") or "").strip()
-        if number:
-            by_number[number] = item
-        if number and title:
-            by_numbered_title[_normalize_title(f"{number} {title}")] = item
-
-    for entry in plan:
+    for plan_index, entry in enumerate(plan):
         entry["paths"] = []
         entry["shifts"] = []
         entry["attach_modes"] = []
-        number_candidates = (
-            str(entry.get("chapter_no") or "").strip(),
-            str(entry.get("chapter_no_flat") or "").strip(),
-        )
-        gap_item = next((by_number[number] for number in number_candidates if number in by_number), None)
-        if gap_item is None:
-            gap_item = by_numbered_title.get(_normalize_title(str(entry.get("title") or "")))
+        raw_toc_idx = entry.get("toc_idx", plan_index)
+        try:
+            toc_idx = int(raw_toc_idx)
+        except (TypeError, ValueError):
+            toc_idx = -1
+        gap_item = items[toc_idx] if 0 <= toc_idx < len(items) and isinstance(items[toc_idx], dict) else None
         if not gap_item:
             if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
                 entry["status"] = STATUS_UNMATCHED
                 entry["note"] = "gap plan 未选择素材"
+            continue
+        title_matches = _normalize_title(str(gap_item.get("title") or "")) == _normalize_title(
+            str(entry.get("title") or "")
+        )
+        try:
+            level_matches = int(gap_item.get("level")) == int(entry.get("level"))
+        except (TypeError, ValueError):
+            level_matches = False
+        if not title_matches or not level_matches:
+            if entry.get("status") in {STATUS_MATCHED, STATUS_ADAPTED}:
+                entry["status"] = STATUS_UNMATCHED
+            entry["note"] = "目录顺序与 gap plan 的标题或层级不一致"
+            entry.pop("gap_plan_item_id", None)
             continue
         coverage_role = str(
             gap_item.get("coverageRole") or gap_item.get("coverage_role") or ""
