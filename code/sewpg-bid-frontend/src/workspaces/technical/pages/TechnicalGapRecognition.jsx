@@ -27,7 +27,7 @@ import {
   matchedMaterialForItem,
   previewChoicesForItem,
   primaryBlankSource,
-  TECHNICAL_GAP_READY_SCORE,
+  recommendedSelectionsForItem,
   TECHNICAL_GAP_TAG_CONFIG,
   technicalAppendixSourceMatrixUploadMessage,
   TECHNICAL_WORD_FILL_SKILL,
@@ -1646,42 +1646,30 @@ export default function TechnicalGapRecognition({ showToast }) {
   // ——否则定案项的备选池收起后，用户看不到定的是哪份模板（产品反馈 2026-08-04）。
   // 整章模板（chapter_fill）同一份素材会同时出现在 matchedMaterials 与 fillTask.blankSource：
   // matchedMaterials 卡（带分数/层级）已在已选区时，模板空白不再重复渲染（产品反馈 2026-08-04）。
-  const matchedTopMaterialId = String(asObjectArray(selected?.matchedMaterials)[0]?.id || '').trim()
-  const topBlankEntries = fillBlankEntries.filter((entry) => {
-    if (!entry.isMaterialBlank) return true
-    if (!settledSelected) return false
-    return !matchedTopMaterialId || entry.key !== matchedTopMaterialId
-  })
-  const poolBlankEntries = fillBlankEntries.filter((entry) => entry.isMaterialBlank && !settledSelected)
-  const defaultSelection = (() => {
-    if (!selectedMaterialMatch?.material) return null
-    if (
-      selectedMaterialMatch.inherited
-      || technicalMatchScore(selectedMaterialMatch.material) >= TECHNICAL_GAP_READY_SCORE
-    ) {
-      return {
-        kind: 'material',
-        material: selectedMaterialMatch.material,
-        inherited: selectedMaterialMatch.inherited,
-        sourceItem: selectedMaterialMatch.sourceItem,
-      }
-    }
-    return null
-  })()
-  const selectedCardMaterialId = defaultSelection
-    ? String(defaultSelection.material?.id || defaultSelection.material?.materialId || '').trim()
-    : ''
   // planner 可能给出多份推荐（多机型时每个机型目录各一份），都要标成系统预选。
   const matchedMaterialIds = new Set(
     asObjectArray(selected?.matchedMaterials)
       .map((material) => String(material?.id || material?.materialId || '').trim())
       .filter(Boolean),
   )
+  const topBlankEntries = fillBlankEntries.filter((entry) => {
+    if (!entry.isMaterialBlank) return true
+    if (!settledSelected) return false
+    return !matchedMaterialIds.has(entry.key)
+  })
+  const poolBlankEntries = fillBlankEntries.filter((entry) => entry.isMaterialBlank && !settledSelected)
+  const defaultSelections = recommendedSelectionsForItem(selected, items)
+  const defaultSelection = defaultSelections[0] || null
+  const selectedCardMaterialIds = new Set(
+    defaultSelections
+      .map((selection) => String(selection.material?.id || selection.material?.materialId || '').trim())
+      .filter(Boolean),
+  )
   // 备选素材 = 统一候选池剔除已选中项；解析空副表常驻已选区，不进备选池。
   const backupEntries = (() => {
     const seen = new Set()
     topBlankEntries.forEach((entry) => seen.add(entry.key))
-    if (selectedCardMaterialId) seen.add(selectedCardMaterialId)
+    selectedCardMaterialIds.forEach((materialId) => seen.add(materialId))
     // 已并入合并清单的素材不再出现在备选（方案A：清单是唯一的已选用视图）。
     selectedMaterialIdSet.forEach((materialId) => seen.add(materialId))
     const wrappers = [
@@ -2988,28 +2976,37 @@ export default function TechnicalGapRecognition({ showToast }) {
                           - 默认只展示后端定案（文件名精确命中）或父级覆盖的素材；启发式候选一律待在备选池。
                           - 解析空副表常驻本区，带 预览 + AI填写；点「选择」选用的素材进入合并清单。
                           - 已选区内：待填写素材 预览 + AI填写，不用填写的素材只有 预览。 */}
-                      {defaultSelection || topBlankEntries.length || mergeArtifacts.length ? (
+                      {defaultSelections.length || topBlankEntries.length || mergeArtifacts.length ? (
                         <section className="rounded-md border border-surface-container-high bg-surface-container-lowest p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="text-xs font-semibold text-on-surface">
                               {mergeArtifacts.length ? '本章合并清单' : '已选中素材'}
                             </div>
+                            {!mergeArtifacts.length && defaultSelections.length > 1 ? (
+                              <span className="text-[10px] text-outline">
+                                多机型 · 按此顺序铺开 {defaultSelections.length} 份
+                              </span>
+                            ) : null}
                           </div>
-                          {!mergeArtifacts.length && defaultSelection ? (
-                            <div className="mt-2">
-                              {/* 定案/父级覆盖素材已在已选区：不再提供「选择」，待填写时才有 AI填写。 */}
-                              <MaterialCandidateCard
-                                material={defaultSelection.material}
-                                isSelected
-                                coverageLabel={defaultSelection.inherited
-                                  ? `父级覆盖 · ${defaultSelection.sourceItem?.number || defaultSelection.sourceItem?.title || '父章节'}`
-                                  : ''}
-                                busy={Boolean(busyAction)}
-                                selecting={false}
-                                onPreview={handlePreviewMaterial}
-                                onSelect={null}
-                                {...cardAiFillProps(defaultSelection.material)}
-                              />
+                          {!mergeArtifacts.length && defaultSelections.length ? (
+                            <div className="mt-2 space-y-2">
+                              {/* 定案/父级覆盖素材已在已选区：不再提供「选择」，待填写时才有 AI填写。
+                                  多机型时每个机型一张卡，顺序即 planner 按机型明细给出的顺序。 */}
+                              {defaultSelections.map((selection, index) => (
+                                <MaterialCandidateCard
+                                  key={String(selection.material?.id || selection.material?.materialId || index)}
+                                  material={selection.material}
+                                  isSelected
+                                  coverageLabel={selection.inherited
+                                    ? `父级覆盖 · ${selection.sourceItem?.number || selection.sourceItem?.title || '父章节'}`
+                                    : (defaultSelections.length > 1 ? `第 ${index + 1} 份` : '')}
+                                  busy={Boolean(busyAction)}
+                                  selecting={false}
+                                  onPreview={handlePreviewMaterial}
+                                  onSelect={null}
+                                  {...cardAiFillProps(selection.material)}
+                                />
+                              ))}
                             </div>
                           ) : null}
                           {/* 合并清单：每条产物带来源标签与直达预览。
