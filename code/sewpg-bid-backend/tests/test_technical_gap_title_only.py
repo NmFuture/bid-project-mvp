@@ -60,7 +60,11 @@ class TitleOnlyServiceTests(unittest.TestCase):
                 "app.services.technical_gap_service.require_technical_gap_project_for_update",
                 return_value=project,
             ),
-            patch("app.services.technical_gap_service.persist_technical_gap_project"),
+            # 写回走 CAS 重放封装：测试里直接把改动作用在这份 project 上
+            patch(
+                "app.services.technical_gap_service.mutate_technical_gap_project",
+                side_effect=lambda project_id, mutate, **kwargs: mutate(project),
+            ),
         ):
             return technical_gap_service.set_title_only("PRJ-TEST", gap_id, data)
 

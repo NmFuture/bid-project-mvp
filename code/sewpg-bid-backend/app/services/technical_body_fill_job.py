@@ -17,7 +17,7 @@ from typing import Any
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.local_job_executor import submit_local_job
 from app.services.technical_gap_repository import (
-    persist_technical_gap_project,
+    mutate_technical_gap_project,
     require_technical_gap_project_for_update,
 )
 from app.services.technical_gap_state import ensure_technical_gap_state
@@ -59,15 +59,68 @@ def body_fill_running(gap_state: dict[str, Any]) -> bool:
     return str(body_fill_state(gap_state).get("status") or "") in {"queued", "running"}
 
 
-def _write_state(project_id: str, **fields: Any) -> dict[str, Any]:
-    """状态写回项目：worker 与请求线程都经此落库，前端轮询读同一份。"""
-    project = require_technical_gap_project_for_update(project_id)
+def _plan_of(project: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[Any]]:
     gap_state = ensure_technical_gap_state(project)
-    state = body_fill_state(gap_state)
-    state.update(fields)
-    gap_state["bodyFillState"] = state
-    persist_technical_gap_project(project)
-    return copy.deepcopy(state)
+    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    return gap_state, plan, items
+
+
+def plan_item_snapshot(project: dict[str, Any], gap_id: str) -> dict[str, Any]:
+    """取出目录项的独立副本，用于把填写结果搬到另一份 project 状态上。"""
+    _, _, items = _plan_of(project)
+    for entry in items:
+        if isinstance(entry, dict) and str(entry.get("id") or "") == gap_id:
+            return copy.deepcopy(entry)
+    raise KeyError(gap_id)
+
+
+def apply_filled_gap_item(project: dict[str, Any], gap_id: str, filled_item: dict[str, Any]) -> None:
+    """把填写完的目录项并进给定状态，只替换这一条，其余目录项保持原值。
+
+    调用方负责落库；放在 CAS 事务里可安全重放。
+    """
+    from app.services.technical_gap_domain import summarize_technical_gap_plan
+    from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
+
+    gap_state, plan, items = _plan_of(project)
+    for index, entry in enumerate(items):
+        if isinstance(entry, dict) and str(entry.get("id") or "") == gap_id:
+            items[index] = copy.deepcopy(filled_item)
+            break
+    else:
+        raise KeyError(gap_id)
+    plan["updatedAt"] = _now_iso()
+    plan["summary"] = summarize_technical_gap_plan(plan)
+    gap_state["plan"] = plan
+    gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
+    gap_state["submittedForReview"] = False
+    gap_state["reviewConfirmed"] = False
+    gap_state["reviewedAt"] = ""
+    project["updatedAt"] = _now_iso()
+
+
+def _merge_filled_item(project_id: str, gap_id: str, filled_item: dict[str, Any]) -> None:
+    """把填写完的目录项原子并回最新状态。"""
+    mutate_technical_gap_project(
+        project_id, lambda project: apply_filled_gap_item(project, gap_id, filled_item)
+    )
+
+
+def _write_state(project_id: str, **fields: Any) -> dict[str, Any]:
+    """状态写回项目：worker 与请求线程都经此落库，前端轮询读同一份。
+
+    整份 payload 覆盖写，进度回写与用户在页面上的操作会互相盖掉，因此走 CAS 重放。
+    """
+
+    def apply(project: dict[str, Any]) -> dict[str, Any]:
+        gap_state = ensure_technical_gap_state(project)
+        state = body_fill_state(gap_state)
+        state.update(fields)
+        gap_state["bodyFillState"] = state
+        return copy.deepcopy(state)
+
+    return mutate_technical_gap_project(project_id, apply)
 
 
 def schedule_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -167,16 +220,17 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
         gap_id = target["gapId"]
         title = target["title"]
         try:
-            # 每条独立取最新项目状态：并发写同一个项目文档，取一次全局副本会互相覆盖
-            current = require_technical_gap_project_for_update(project_id)
+            # 填写在独立快照上跑完，再把这一条目录项原子并回最新状态。
+            # 读到写之间的敞口足以让页面上的操作被整份 payload 覆盖掉；分成两段后
+            # CAS 冲突只重放廉价的合并动作，不会重跑填写，也不碰其他目录项。
+            snapshot = require_technical_gap_project_for_update(project_id)
             run_technical_ai_fill_for_gap(
-                current,
+                snapshot,
                 gap_id,
                 {"fillTaskId": target["fillTaskId"], "operator": operator},
                 **url_scope,
             )
-            current["updatedAt"] = _now_iso()
-            persist_technical_gap_project(current)
+            _merge_filled_item(project_id, gap_id, plan_item_snapshot(snapshot, gap_id))
             counters["succeeded"] += 1
         except Exception as exc:  # noqa: BLE001 - 单条失败不能中断整批
             counters["failed"] += 1
@@ -197,27 +251,29 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
     for target in targets:
         fill_one(target)
 
-    latest = require_technical_gap_project_for_update(project_id)
-    latest_gap_state = ensure_technical_gap_state(latest)
-    plan = latest_gap_state.get("plan")
-    if isinstance(plan, dict):
-        recompute_technical_gap_decisions(plan)
     message = f"一键填写完成：成功 {counters['succeeded']} 条、失败 {counters['failed']} 条。"
     if counters["failed"]:
         message += "失败项已在目录树标红，可单条重填。"
-    latest_gap_state["bodyFillState"] = {
-        **body_fill_state(latest_gap_state),
-        "status": "succeeded" if not counters["failed"] else "partial",
-        "done": counters["done"],
-        "succeeded": counters["succeeded"],
-        "failed": counters["failed"],
-        "current": "",
-        "message": message,
-        "errors": errors[:20],
-        "finishedAt": _now_iso(),
-    }
-    latest["updatedAt"] = _now_iso()
-    persist_technical_gap_project(latest)
+
+    def finalize(project: dict[str, Any]) -> None:
+        gap_state = ensure_technical_gap_state(project)
+        plan = gap_state.get("plan")
+        if isinstance(plan, dict):
+            recompute_technical_gap_decisions(plan)
+        gap_state["bodyFillState"] = {
+            **body_fill_state(gap_state),
+            "status": "succeeded" if not counters["failed"] else "partial",
+            "done": counters["done"],
+            "succeeded": counters["succeeded"],
+            "failed": counters["failed"],
+            "current": "",
+            "message": message,
+            "errors": errors[:20],
+            "finishedAt": _now_iso(),
+        }
+        project["updatedAt"] = _now_iso()
+
+    mutate_technical_gap_project(project_id, finalize)
     return {"status": "succeeded", "message": message}
 
 
@@ -267,18 +323,18 @@ def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any]
 
 def _record_item_failure(project_id: str, gap_id: str, fill_task_id: str, message: str) -> None:
     """把失败原因写在目录项上，前端据此标红并给出重填入口。"""
-    try:
-        project = require_technical_gap_project_for_update(project_id)
-        gap_state = ensure_technical_gap_state(project)
-        plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
-        for item in plan.get("items") or []:
+    def apply(project: dict[str, Any]) -> None:
+        _, plan, items = _plan_of(project)
+        for item in items:
             if isinstance(item, dict) and str(item.get("id") or "") == gap_id:
                 item["fillError"] = {
                     "fillTaskId": fill_task_id,
                     "message": message[:500],
                     "failedAt": _now_iso(),
                 }
-                persist_technical_gap_project(project)
                 return
+
+    try:
+        mutate_technical_gap_project(project_id, apply)
     except Exception:  # noqa: BLE001 - 记录失败不能再抛，否则盖掉真正的填写错误
         return

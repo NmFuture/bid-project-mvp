@@ -362,6 +362,19 @@ class SelectGapMaterialTransactionTests(unittest.IsolatedAsyncioTestCase):
                 refresh_mock = Mock(side_effect=refresh_integrity)
                 persist_mock = Mock(side_effect=persist_project)
 
+                # 替身照搬 mutate_technical_gap_project 的契约：跑改动、落库，
+                # 任何一步失败都把 project 还原成读取时的样子。
+                def fake_mutate(project_id: str, mutate, **kwargs: object) -> object:
+                    snapshot = copy.deepcopy(project)
+                    try:
+                        outcome = mutate(project)
+                        persist_mock(project)
+                    except Exception:
+                        project.clear()
+                        project.update(snapshot)
+                        raise
+                    return outcome
+
                 with patch.object(
                     technical_gap_service_module,
                     "require_technical_gap_project_for_update",
@@ -388,8 +401,8 @@ class SelectGapMaterialTransactionTests(unittest.IsolatedAsyncioTestCase):
                     refresh_mock,
                 ), patch.object(
                     technical_gap_service_module,
-                    "persist_technical_gap_project",
-                    persist_mock,
+                    "mutate_technical_gap_project",
+                    side_effect=fake_mutate,
                 ):
                     with self.assertRaises(HTTPException) as raised:
                         await service.select_material("PRJ-0001", "GAP-0001", object())
@@ -431,12 +444,13 @@ class SelectGapMaterialTransactionTests(unittest.IsolatedAsyncioTestCase):
                 "_refresh_gap_integrity",
             ), patch.object(
                 technical_gap_service_module,
-                "persist_technical_gap_project",
-            ) as persist_mock:
+                "mutate_technical_gap_project",
+                side_effect=lambda project_id, mutate, **kwargs: mutate(project),
+            ) as mutate_mock:
                 payload = await service.select_material("PRJ-0001", "GAP-0001", object())
 
             self.assertEqual(payload, result)
-            persist_mock.assert_called_once_with(project)
+            mutate_mock.assert_called_once()
             self.assertTrue(batch_dir.exists())
             self.assertEqual(historical_file.read_bytes(), b"existing")
 

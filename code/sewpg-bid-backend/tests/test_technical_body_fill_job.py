@@ -151,7 +151,11 @@ class RunBodyFillJobTests(unittest.TestCase):
                 "app.services.technical_body_fill_job.require_technical_gap_project_for_update",
                 side_effect=lambda project_id: self.project,
             ),
-            mock.patch("app.services.technical_body_fill_job.persist_technical_gap_project", lambda project: None),
+            # 写回走 CAS 重放封装：测试里直接把改动作用在同一份 project 上即可
+            mock.patch(
+                "app.services.technical_body_fill_job.mutate_technical_gap_project",
+                side_effect=lambda project_id, mutate, **kwargs: mutate(self.project),
+            ),
             mock.patch(
                 "app.services.technical_body_fill_job.ensure_technical_gap_state",
                 side_effect=lambda project: project["gap_state"],

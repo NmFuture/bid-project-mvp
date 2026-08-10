@@ -13,6 +13,26 @@ from app.core.config import settings
 
 ProjectNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
 
+# 项目状态整份 JSONB 覆盖写，读与写之间往往隔着数十秒的慢操作（AI 填写、素材下载），
+# worker 与 API 是独立进程，无条件覆盖会让后写的一方整份盖掉先写方的改动。
+# `_rev` 是 payload 内的乐观锁版本号：读时带出，写时校验，不匹配即拒绝写入。
+PROJECT_REVISION_KEY = "_rev"
+
+
+class ProjectConcurrentUpdateError(RuntimeError):
+    """CAS 失败：读取快照后已有其他进程写入同一项目。"""
+
+    def __init__(self, project_id: str) -> None:
+        super().__init__(f"项目 {project_id} 已被其他操作更新，请基于最新状态重试。")
+        self.project_id = project_id
+
+
+def project_revision(project: dict[str, Any]) -> int:
+    try:
+        return int(project.get(PROJECT_REVISION_KEY) or 0)
+    except (TypeError, ValueError):
+        return 0
+
 
 class ProjectStateRepository:
     """Persistence adapter for the project JSONB state table."""
@@ -72,22 +92,53 @@ class ProjectStateRepository:
             return None
         return normalize_project(self._decode_payload(row["payload"]))
 
-    def persist(self, project: dict[str, Any]) -> None:
+    def persist(self, project: dict[str, Any], *, expected_rev: int | None = None) -> None:
+        """写回项目状态。
+
+        `expected_rev` 为 None 时保持无条件覆盖（建项目等无并发语义的路径）；
+        传入版本号时走 CAS：只有库里仍是该版本才写，否则抛
+        ``ProjectConcurrentUpdateError`` 交由调用方基于最新状态重放。
+        """
         if not self.uses_postgres:
+            # 内存后端下 require/persist 操作的是同一个 dict 实例，不存在丢更新。
             return
         self.ensure_db()
+        next_rev = project_revision(project) + 1
+        payload = dict(project)
+        payload[PROJECT_REVISION_KEY] = next_rev
         with closing(self._connect()) as connection:
-            connection.execute(
-                """
-                INSERT INTO projects (id, payload, updated_at)
-                VALUES (%s, %s, %s)
-                ON CONFLICT(id) DO UPDATE SET
-                    payload=excluded.payload,
-                    updated_at=excluded.updated_at
-                """,
-                (project["id"], Jsonb(project), project["updatedAt"]),
-            )
+            if expected_rev is None:
+                connection.execute(
+                    """
+                    INSERT INTO projects (id, payload, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT(id) DO UPDATE SET
+                        payload=excluded.payload,
+                        updated_at=excluded.updated_at
+                    """,
+                    (project["id"], Jsonb(payload), project["updatedAt"]),
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE projects SET payload=%s, updated_at=%s
+                    WHERE id=%s AND COALESCE((payload->>'_rev')::bigint, 0) = %s
+                    """,
+                    (Jsonb(payload), project["updatedAt"], project["id"], expected_rev),
+                )
+                if cursor.rowcount == 0:
+                    existing = connection.execute(
+                        "SELECT 1 FROM projects WHERE id = %s", (project["id"],)
+                    ).fetchone()
+                    if existing is not None:
+                        connection.rollback()
+                        raise ProjectConcurrentUpdateError(str(project["id"]))
+                    connection.execute(
+                        "INSERT INTO projects (id, payload, updated_at) VALUES (%s, %s, %s)",
+                        (project["id"], Jsonb(payload), project["updatedAt"]),
+                    )
             connection.commit()
+        project[PROJECT_REVISION_KEY] = next_rev
 
     def delete(self, project_id: str) -> None:
         if not self.uses_postgres:

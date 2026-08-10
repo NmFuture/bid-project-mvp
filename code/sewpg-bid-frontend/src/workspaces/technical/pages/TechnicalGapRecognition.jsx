@@ -34,6 +34,8 @@ import {
   technicalBodyFillCounts,
   technicalGapDescendants,
   technicalGapFillError,
+  technicalGapFreezerItem,
+  technicalGapOwnTag,
   technicalGapTagOf,
   technicalMatchScore,
   tenderDocumentStateForAiFill,
@@ -1719,21 +1721,37 @@ export default function TechnicalGapRecognition({ showToast }) {
     ...asArray(selectedBlankSource?.placeholderLabels),
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
   ], 10)
-  // 目录标签统计（v6 五工作态口径）：父章覆盖/仅留标题是旁路态不计入。
-  const tagCounts = useMemo(() => {
-    const counts = {
+  // 目录标签统计（v6 五工作态口径）。两套数字：
+  // counts 是「要动手的节点数」，决定筛选后列表有多少行；
+  // covered 追加该节点冻结掉的整棵子树，反映真实覆盖了多少目录项——选中一级标题配一份
+  // 素材，下面几十个三级标题跟着定案，只记 1 会让进度看着远比实际差。
+  const { tagCounts, tagCoverage } = useMemo(() => {
+    const emptyCounts = () => ({
       manual_supplement: 0,
       needs_choice: 0,
       template_ready: 0,
       template_review: 0,
       material_ready: 0,
-    }
+    })
+    const counts = emptyCounts()
+    const covered = emptyCounts()
     items.forEach((item) => {
       const tag = technicalGapTagOf(item, items)
-      if (tag in counts) counts[tag] += 1
+      if (tag in counts) {
+        counts[tag] += 1
+        covered[tag] += 1
+        return
+      }
+      if (tag !== 'parent_covered') return
+      // 被冻结的子项归到冻结源的工作态上：父章还在「待填写」，子树就不算已就绪。
+      const freezerTag = technicalGapOwnTag(technicalGapFreezerItem(item, items))
+      if (freezerTag in covered) covered[freezerTag] += 1
     })
-    return counts
+    return { tagCounts: counts, tagCoverage: covered }
   }, [items])
+  // 总览分母是全部目录项，分子只认已就绪素材（含其覆盖的子树），与标签口径一致。
+  const coverageTotal = items.length
+  const coverageSettled = tagCoverage.material_ready
   // 正文填写汇总：不区分单条填还是一键填，也不区分本轮还是历史
   const bodyFillCounts = useMemo(() => technicalBodyFillCounts(items), [items])
   const factConfirmed = factTable?.status === 'confirmed'
@@ -2104,11 +2122,12 @@ export default function TechnicalGapRecognition({ showToast }) {
     setManualPreviewChoice(null)
   }
 
-  // 批量复核通过：只收「无未填字段」的产物。有黄标的必须逐条看过再放行——
-  // 一键放过带 [待人工补充] 的产物，前面所有宁空勿错的努力就白费了。
-  const batchReviewables = useMemo(
-    () => reviewQueue.filter((item) => !Number(item?.qualityReport?.unfilledPlaceholderCount || 0)
-      && !asArray(item?.reviewNotes).length),
+  // 批量复核通过：放行与否是人的决定，带未填字段的产物同样可批量定案（产品裁决 2026-08-09）。
+  // 黄标条数仍在按钮 title 里点出来，让人知道自己在放过什么。
+  const batchReviewables = reviewQueue
+  const flaggedReviewCount = useMemo(
+    () => reviewQueue.filter((item) => Number(item?.qualityReport?.unfilledPlaceholderCount || 0)
+      || asArray(item?.reviewNotes).length).length,
     [reviewQueue],
   )
 
@@ -2730,6 +2749,18 @@ export default function TechnicalGapRecognition({ showToast }) {
               <span className="text-xs font-semibold text-on-surface-variant">目录节点</span>
               <span className="text-lg font-headline font-bold tabular-nums text-primary">{summary.totalTocItems ?? items.length}</span>
             </div>
+            {/* 总览按「已就绪素材覆盖到的目录项 / 全部目录项」算，父章覆盖的子树计入分子 */}
+            <div className="flex shrink-0 items-center gap-2 border-r border-surface-container-high pr-3">
+              <span className="text-xs font-semibold text-on-surface-variant">目录覆盖</span>
+              <span className="text-lg font-headline font-bold tabular-nums text-primary">{coverageSettled}</span>
+              <span className="text-xs tabular-nums text-outline">/ {coverageTotal}</span>
+              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-container-high">
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-300"
+                  style={{ width: `${coverageTotal ? Math.round((coverageSettled / coverageTotal) * 100) : 0}%` }}
+                />
+              </div>
+            </div>
             <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5 text-center sm:grid-cols-5">
               {['manual_supplement', 'needs_choice', 'template_ready', 'template_review', 'material_ready'].map((key) => {
                 const active = tagFilter === key
@@ -2745,6 +2776,12 @@ export default function TechnicalGapRecognition({ showToast }) {
                   >
                     <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
                     <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
+                    {/* 覆盖数只在比节点数大时出现，等值时不加噪音 */}
+                    {(tagCoverage[key] || 0) > (tagCounts[key] || 0) ? (
+                      <span className="text-[11px] tabular-nums text-outline">
+                        （覆盖 {tagCoverage[key]} 项）
+                      </span>
+                    ) : null}
                   </button>
                 )
               })}
@@ -2786,7 +2823,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                 {bodyFillState?.message || ''}
               </span>
             )}
-            {/* 一键入口只在点开「待填写」后出现：作用域天然限定，与「待审核」下的批量复核对称。
+            {/* 一键入口按当前标签切换：点开「待填写」出填写、点开「待审核」出复核，同一个位置同一套样式。
                 任务执行中在任何筛选下都要能看到进度，所以运行态按钮不受此限制。 */}
             {tagFilter === 'template_ready' || bodyFillRunning ? (
               <Button
@@ -2805,8 +2842,23 @@ export default function TechnicalGapRecognition({ showToast }) {
                   ? `填写中 ${bodyFillDone}/${bodyFillTotal}`
                   : `一键填写${bodyFillCounts.pending ? `（${bodyFillCounts.pending}）` : ''}`}
               </Button>
+            ) : tagFilter === 'template_review' && reviewQueue.length ? (
+              <Button
+                type="button"
+                onClick={handleBatchReviewPass}
+                disabled={Boolean(busyAction) || !batchReviewables.length}
+                title={
+                  flaggedReviewCount
+                    ? `复核通过 ${batchReviewables.length} 条，其中 ${flaggedReviewCount} 条仍有未填字段`
+                    : `复核通过 ${batchReviewables.length} 条，均无未填字段`
+                }
+                size="sm"
+                variant="primary"
+              >
+                批量复核通过（{batchReviewables.length}）
+              </Button>
             ) : (
-              <span className="shrink-0 text-[11px] text-outline">点开「待填写」标签发起一键填写</span>
+              <span className="shrink-0 text-[11px] text-outline">点开「待填写」或「待审核」标签发起批量操作</span>
             )}
           </div>
         </div>
@@ -2852,25 +2904,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                       {TECHNICAL_GAP_TAG_CONFIG[tagFilter]?.label}
                       <span className="material-symbols-outlined text-[13px]">close</span>
                     </button>
-                  ) : null}
-                  {/* 批量复核只在点开「待审核」后出现：作用域天然限定，也不会误点。
-                      带未填字段的产物不纳入，必须逐条看过——一键放过黄标就前功尽弃了。 */}
-                  {tagFilter === 'template_review' && reviewQueue.length ? (
-                    <Button
-                      type="button"
-                      onClick={handleBatchReviewPass}
-                      disabled={Boolean(busyAction) || !batchReviewables.length}
-                      title={
-                        batchReviewables.length < reviewQueue.length
-                          ? `其中 ${reviewQueue.length - batchReviewables.length} 条有未填字段，需逐条复核`
-                          : '全部产物无未填字段，可批量定案'
-                      }
-                      size="sm"
-                      variant="secondary"
-                      className="ml-auto"
-                    >
-                      批量复核通过（{batchReviewables.length}）
-                    </Button>
                   ) : null}
                 </div>
               </div>

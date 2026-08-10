@@ -331,6 +331,12 @@ def run_technical_gap_detection(project_id: str) -> dict[str, Any]:
     return technical_gap_service.run_detection(project_id)
 
 
+@router.get("/api/technical/projects/{project_id}/gaps/plan-export")
+def export_technical_gap_plan(project_id: str) -> dict[str, Any]:
+    """导出当前缺口清单 + 逐项的正文组装判定（排查用，页面不挂入口）。"""
+    return technical_gap_service.export_plan(project_id)
+
+
 @router.get("/api/technical/projects/{project_id}/gaps")
 async def get_technical_gaps(project_id: str, request: Request) -> dict[str, Any]:
     return await technical_gap_service.gaps(project_id, request)

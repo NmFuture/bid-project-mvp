@@ -69,7 +69,7 @@ from app.services.business_gap_fact_table import (
 )
 from app.services.technical_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
 from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
-from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
+from app.services.technical_gap_repository import mutate_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import (
     build_technical_review_document_content,
     build_technical_review_payload,
@@ -1925,7 +1925,12 @@ def test_services_use_public_project_state_mutation_api() -> None:
     assert "require_workspace_project_for_update(" in service_sources[Path("app/services/business_gap_repository.py")]
     assert "persist_workspace_project_state(" in service_sources[Path("app/services/business_gap_repository.py")]
     assert "require_workspace_project_for_update(" in service_sources[Path("app/services/technical_gap_repository.py")]
-    assert "persist_workspace_project_state(" in service_sources[Path("app/services/technical_gap_repository.py")]
+    # 技术标写回走带并发校验的公开 API：后台填写 worker 与页面操作会并发写同一项目，
+    # 无条件覆盖会静默吞掉对方的改动。
+    assert (
+        "persist_workspace_project_state_checked("
+        in service_sources[Path("app/services/technical_gap_repository.py")]
+    )
     assert "def require_any_workspace_project_for_update" in workspace_access_source
     assert "require_any_workspace_project_for_update(" in service_sources[Path("app/services/ocr_service.py")]
     assert "persist_workspace_project_state(" in service_sources[Path("app/services/ocr_service.py")]
@@ -3835,8 +3840,8 @@ def test_technical_gap_build_facts_stays_in_technical_service() -> None:
         "app.services.technical_gap_service.require_technical_gap_project_for_update",
         wraps=require_technical_gap_project_for_update,
     ) as require_project, patch(
-        "app.services.technical_gap_service.persist_technical_gap_project",
-        wraps=persist_technical_gap_project,
+        "app.services.technical_gap_service.mutate_technical_gap_project",
+        wraps=mutate_technical_gap_project,
     ) as persist_project:
         payload = asyncio.run(technical_gap_service.build_facts(project_id))
 

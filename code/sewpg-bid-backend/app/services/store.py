@@ -135,6 +135,10 @@ class AppStore:
         """Persist a project payload after a service-layer state mutation."""
         self._persist_project(project)
 
+    def persist_project_state_checked(self, project: dict[str, Any], expected_rev: int) -> None:
+        """CAS 写回：库里版本仍是 expected_rev 才落库，否则抛并发冲突。"""
+        self._repository.persist(project, expected_rev=expected_rev)
+
     def update_project(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         project = self._require(project_id)
         update_project_state(project, project_id, data)
