@@ -166,7 +166,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const bidLabel = TECHNICAL_BID_LABEL
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
-  const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
   const generationRunning = generationStatus?.status === 'running'
   const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
 
@@ -599,15 +598,57 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       <section className={`business-panel flex min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-white shadow-[0_1px_2px_rgba(13,33,55,0.05)] ${
         technicalPreviewFullscreen ? 'fixed inset-0 z-[160] rounded-none border-0' : ''
       }`}>
-        <div className="business-section-head flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="business-section-head flex flex-col gap-3 px-4 py-3">
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}正文预览</h3>
             <p className="mt-1 truncate text-xs text-outline" title={fileName}>{fileName || '未生成文档'}</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${useFallbackEditor ? 'bg-error-container text-on-error-container' : 'bg-secondary-container text-on-secondary-container'}`}>
-              {editorModeLabel}
-            </span>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <label className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-surface-container-high px-2.5 text-xs font-semibold text-on-surface-variant">
+                <span>版本：</span>
+                <select
+                  aria-label="下载版本"
+                  value={exportVersion}
+                  onChange={(event) => setExportVersion(event.target.value)}
+                  disabled={wordPreparing || pdfPreparing}
+                  className="h-6 cursor-pointer border-0 bg-transparent pr-1 text-xs font-semibold text-on-surface focus:outline-none disabled:cursor-not-allowed"
+                >
+                  <option value="marked">标记版</option>
+                  <option value="clean">清洁版</option>
+                </select>
+              </label>
+              <Button
+                type="button"
+                onClick={handleDownloadWord}
+                disabled={wordPreparing}
+                icon="download"
+                size="sm"
+                variant="primary"
+              >
+                {wordPreparing ? '生成中...' : 'Word'}
+              </Button>
+              <Button
+                type="button"
+                onClick={handlePreparePdf}
+                disabled={pdfPreparing}
+                icon="download"
+                size="sm"
+                variant="primary"
+              >
+                {pdfPreparing ? '生成中...' : 'PDF'}
+              </Button>
+              <Button
+                type="button"
+                onClick={handleRequestRegenerate}
+                disabled={regenerationStarting || generationRunning}
+                icon="refresh"
+                size="sm"
+                variant="secondary"
+              >
+                {regenerationStarting || generationRunning ? '重新生成中...' : '重新生成正文'}
+              </Button>
+            </div>
             <IconButton
               type="button"
               aria-label={technicalPreviewFullscreen ? '退出全屏' : '全屏查看'}
@@ -616,50 +657,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
               onClick={() => setTechnicalPreviewFullscreen((value) => !value)}
               size="sm"
               variant="quiet"
+              className="shrink-0"
             />
-            <label className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-surface-container-high px-2.5 text-xs font-semibold text-on-surface-variant">
-              <span>版本</span>
-              <select
-                aria-label="下载版本"
-                value={exportVersion}
-                onChange={(event) => setExportVersion(event.target.value)}
-                disabled={wordPreparing || pdfPreparing}
-                className="h-6 cursor-pointer border-0 bg-transparent pr-1 text-xs font-semibold text-on-surface focus:outline-none disabled:cursor-not-allowed"
-              >
-                <option value="marked">标记版</option>
-                <option value="clean">清洁版</option>
-              </select>
-            </label>
-            <Button
-              type="button"
-              onClick={handleDownloadWord}
-              disabled={wordPreparing}
-              icon="download"
-              size="sm"
-              variant="primary"
-            >
-              {wordPreparing ? '生成中...' : '下载Word'}
-            </Button>
-            <Button
-              type="button"
-              onClick={handlePreparePdf}
-              disabled={pdfPreparing}
-              icon="download"
-              size="sm"
-              variant="primary"
-            >
-              {pdfPreparing ? '生成中...' : '下载PDF'}
-            </Button>
-            <Button
-              type="button"
-              onClick={handleRequestRegenerate}
-              disabled={regenerationStarting || generationRunning}
-              icon="refresh"
-              size="sm"
-              variant="secondary"
-            >
-              {regenerationStarting || generationRunning ? '重新生成中...' : '重新生成正文'}
-            </Button>
           </div>
         </div>
         <div className="min-h-0 flex-1 p-4">

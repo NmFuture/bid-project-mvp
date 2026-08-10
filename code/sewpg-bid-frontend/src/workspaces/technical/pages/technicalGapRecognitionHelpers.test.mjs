@@ -200,9 +200,9 @@ test('PDF 每次下载都由后端校验当前文档，不复用页面内旧地�
 test('重新生成正文只在共创导出页展示，并位于 Word、PDF 下载控件之后', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
-  const wordIndex = editorSource.indexOf('下载Word')
-  const pdfIndex = editorSource.indexOf('下载PDF')
-  const regenerateIndex = editorSource.indexOf("'重新生成正文'")
+  const wordIndex = editorSource.indexOf('onClick={handleDownloadWord}')
+  const pdfIndex = editorSource.indexOf('onClick={handlePreparePdf}', wordIndex)
+  const regenerateIndex = editorSource.indexOf('onClick={handleRequestRegenerate}', pdfIndex)
 
   assert.doesNotMatch(gapSource, /重新生成正文/)
   assert.ok(wordIndex >= 0)
