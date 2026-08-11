@@ -23,6 +23,7 @@ from app.services.technical_draft_generation import generate_technical_draft_for
 from app.services.workspace_project_access import (
     get_any_workspace_project_runtime_state,
     get_workspace_project_runtime_state,
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_any_workspace_project_for_update,
     require_workspace_project_for_update,
@@ -113,14 +114,14 @@ def _fill_state(project_id: str) -> dict[str, Any]:
 def _update_fill_generation(project_id: str, **kwargs: Any) -> dict[str, Any]:
     project = _any_project_for_update(project_id)
     state = update_fill_generation_state(project, **kwargs)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "fill_state")
     return state
 
 
 def _fail_fill_generation(project_id: str, message: str, tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     project = _any_project_for_update(project_id)
     state = fail_fill_generation_state(project, message=message, tasks=tasks)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "fill_state")
     return state
 
 
@@ -227,6 +228,11 @@ def _is_fill_generation_stale(current: dict[str, Any]) -> bool:
     parsed_output = _parse_iso_datetime(output.get("receivedAt"))
     if parsed_output:
         timestamps.append(parsed_output)
+    # 逐条组装只更新 assemblyProgress 不写 event，心跳要一并算进来，避免长组装被误判为卡死。
+    assembly_progress = current.get("assemblyProgress") if isinstance(current.get("assemblyProgress"), dict) else {}
+    parsed_assembly = _parse_iso_datetime(assembly_progress.get("updatedAt"))
+    if parsed_assembly:
+        timestamps.append(parsed_assembly)
     if not timestamps:
         return False
     age_sec = (datetime.now(UTC) - max(timestamps)).total_seconds()
@@ -369,6 +375,21 @@ def _handle_fill_progress(
         )
         return
 
+    if stage == "assembling_progress":
+        total = max(0, int(meta.get("total") or 0))
+        done = max(0, min(total, int(meta.get("done") or 0)))
+        if total <= 0:
+            return
+        # 组装是整条链路里最长的一段，逐条回传真实计数；不写 event——events 只留最近 20 条，
+        # 逐条写会把启动记录和阶段历史挤掉。百分比区间由前端按阶段折算。
+        _update_fill_generation(
+            project_id,
+            summary=f"正在组装{ctx['documentLabel']}，已处理目录项 {done}/{total} 项。",
+            tasks=_fill_tasks("done", "running", "pending", bid_type),
+            assembly_progress={"done": done, "total": total},
+        )
+        return
+
     if stage == "assembling_result":
         section_count = int(meta.get("sectionCount") or 0)
         used_material_count = int(meta.get("usedMaterialCount") or 0)
@@ -489,6 +510,80 @@ def _handle_fill_progress(
             event_message=f"{ctx['documentLabel']}格式规范化失败，已生成降级稿：{meta.get('error') or '未知错误'}" if bid_type == TECHNICAL_BID_TYPE else f"{ctx['documentLabel']}格式规范化失败，已降级使用未格式化正文：{meta.get('error') or '未知错误'}",
             event_level="warning",
             event_step="format_failed",
+        )
+        return
+
+    if stage == "calling_score_index_xref":
+        _update_fill_generation(
+            project_id,
+            percentage=97,
+            summary="正在为技术评分标准索引表建立章节交叉引用与页码域。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message="已进入评分索引表交叉引用阶段，正在按正文标题建立书签、超链接和 PAGEREF 域。",
+            event_step="score_index_xref",
+            opencode_output={
+                "execution": {
+                    "engine": "python",
+                    "pipeline": "technical-document-assembly-cleaning",
+                    "stage": "score_index_xref",
+                    "status": "running",
+                    "artifacts": {"manifestPath": str(meta.get("manifestPath") or "")},
+                }
+            },
+        )
+        return
+
+    if stage == "score_index_xref_mapping_requested":
+        pending = int(meta.get("pendingRowCount") or 0)
+        _update_fill_generation(
+            project_id,
+            percentage=97,
+            summary=f"评分索引表有 {pending} 行还未判断章节，正在调用 futurecode 判断该索引哪些章节。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"评分索引表 {pending} 行章节索引待判断，已交由 futurecode 按评审因素和投标响应原文判断。",
+            event_step="score_index_xref_mapping",
+        )
+        return
+
+    if stage == "score_index_xref_completed":
+        summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+        linked = int(summary.get("linkedCount") or 0)
+        unresolved = int(summary.get("unresolvedCount") or 0)
+        page_hint = "" if summary.get("pageNumbersResolved") else "，页码需在 Word/WPS 中全选后按 F9 刷新"
+        _update_fill_generation(
+            project_id,
+            percentage=98,
+            summary=f"评分索引表交叉引用完成，已建立 {linked} 条引用，未匹配 {unresolved} 条{page_hint}。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"评分索引表交叉引用完成：已建立 {linked} 条引用，未匹配 {unresolved} 条{page_hint}。",
+            event_level="success",
+            event_step="score_index_xref_done",
+        )
+        return
+
+    if stage == "score_index_xref_skipped":
+        warnings = meta.get("warnings") if isinstance(meta.get("warnings"), list) else []
+        reason = str((warnings[0] or {}).get("message") or "") if warnings else ""
+        _update_fill_generation(
+            project_id,
+            percentage=98,
+            summary="未在成稿中找到技术评分标准索引表，已跳过交叉引用。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"已跳过评分索引表交叉引用：{reason or '成稿中没有可识别的评分索引表。'}",
+            event_level="warning",
+            event_step="score_index_xref_skipped",
+        )
+        return
+
+    if stage == "score_index_xref_failed":
+        _update_fill_generation(
+            project_id,
+            percentage=98,
+            summary="评分索引表交叉引用失败，已沿用格式规范化后的成稿继续输出。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"评分索引表交叉引用失败，已沿用格式规范化成稿：{meta.get('error') or '未知错误'}",
+            event_level="warning",
+            event_step="score_index_xref_failed",
         )
 
 
@@ -629,7 +724,7 @@ class BidGenerationService:
     def start_fill_generation(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         payload = start_fill_generation_state(project)
-        persist_workspace_project_state(project)
+        persist_workspace_project_fields(project, "fill_state")
         return payload
 
     def _with_generation_urls(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:

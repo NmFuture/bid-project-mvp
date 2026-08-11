@@ -332,7 +332,7 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
             [["华能", "附表Z.1 计划外附表", "", "机型参数表", ""]],
         )
 
-        real_persist = technical_gap_service.persist_technical_gap_project
+        real_mutate = technical_gap_service.mutate_technical_gap_project
         with patch(
             "app.services.technical_gap_planner._allowed_technical_material_index",
             return_value=materials,
@@ -342,8 +342,8 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
             self.assertEqual(first_response.json()["applied"]["routedItems"], 1)
             with patch.object(
                 technical_gap_service,
-                "persist_technical_gap_project",
-                wraps=real_persist,
+                "mutate_technical_gap_project",
+                wraps=real_mutate,
             ) as persist_spy:
                 response = self._upload_matrix(project_id, second, filename="第二版.xlsx")
 

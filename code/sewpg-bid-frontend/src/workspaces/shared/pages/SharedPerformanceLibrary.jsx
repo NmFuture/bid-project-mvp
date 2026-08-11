@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { performanceAPI } from '../../../api'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import MaterialsViewSwitch from '../components/SharedMaterialsViewSwitch'
+import MaterialsViewSwitch from '../components/MaterialsViewSwitch'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
 
@@ -195,14 +195,42 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const sourceMaterialsBasePath = workspaceRoute(sourceWorkspace, '/materials')
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const hasLoadedItemsRef = useRef(false)
-  const sharedPerformanceItems = useMemo(() => [
-    { key: 'raw', label: '原始素材', absolutePath: `${sourceMaterialsBasePath}/raw` },
-    { key: 'wiki', label: 'Wiki', absolutePath: `${sourceMaterialsBasePath}/wiki` },
-    ...(sourceWorkspace === 'tech'
-      ? [{ key: 'certificates', label: '证书台账', absolutePath: `${sourceMaterialsBasePath}/certificates` }]
-      : []),
-    { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
-  ], [sourceMaterialsBasePath, sourceWorkspace])
+  // 与技术标/商务标素材页一致的分组页头：本线工作组 + 共享组常驻并列
+  const materialsGroups = useMemo(() => {
+    const base = sourceMaterialsBasePath
+    const workspaceGroup = sourceWorkspace === 'tech'
+      ? {
+          key: 'tech',
+          label: '技术标',
+          icon: 'engineering',
+          items: [
+            { key: 'raw', label: '原始素材', to: `${base}/raw` },
+            { key: 'wiki', label: 'Wiki', to: `${base}/wiki` },
+            { key: 'certificates', label: '证书台账', to: `${base}/certificates` },
+            { key: 'rules', label: '规则', to: `${base}/rules` },
+          ],
+        }
+      : {
+          key: 'business',
+          label: '商务标',
+          icon: 'request_quote',
+          items: [
+            { key: 'raw', label: '原始素材', to: `${base}/raw` },
+            { key: 'wiki', label: 'Wiki', to: `${base}/wiki` },
+          ],
+        }
+    return [
+      workspaceGroup,
+      {
+        key: 'shared',
+        label: '共享',
+        icon: 'database',
+        items: [
+          { key: 'performance', label: '业绩库', to: '/workspace/shared/materials/performance' },
+        ],
+      },
+    ]
+  }, [sourceMaterialsBasePath, sourceWorkspace])
 
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
@@ -600,10 +628,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
         <MaterialsViewSwitch
           active="performance"
           title="平台共用业绩库"
-          basePath={sourceMaterialsBasePath}
-          workspaceLabel="共用"
-          workspaceIcon="database"
-          items={sharedPerformanceItems}
+          groups={materialsGroups}
         />
 
         <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">

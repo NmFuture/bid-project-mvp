@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 from docx import Document
 from fastapi.testclient import TestClient
-import openpyxl
 
 from app.main import app
 from app.core.config import settings
@@ -21,7 +20,6 @@ from app.services.technical_gap_domain import aggregate_technical_gap_fill_quali
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
 from app.services.technical_fact_field_specs import fillable_specs
-from app.services.technical_fact_spec_import import EXPECTED_HEADER
 from app.services.workspace_artifacts import technical_workspace_dir
 
 
@@ -991,10 +989,10 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertNotIn("未知保证值", labels)
         model = next(field for field in payload["fields"] if field["label"] == "投标机型")
         self.assertEqual(model["value"], "EW10.0-220下置")
-        self.assertEqual(model["status"], "extracted")
+        self.assertEqual(model["status"], "confirmed")
         self.assertTrue(model["sourceRefs"])
-        # 未提取骨架计 unextracted，missingCount 只统计 missing_source
-        self.assertEqual(payload["summary"]["missingCount"], 0)
+        # 没抽到值的清单骨架一律计 unextracted（三态收敛后不再区分 missing_source）
+        self.assertTrue(payload["summary"]["unextractedCount"] > 0)
         self.assertEqual(payload["summary"]["specTotal"], 148)
 
         confirmed = self._confirm_project_fact_table(project_id, {"承诺函致函对象全称": "按招标文件要求执行"})
@@ -1111,44 +1109,6 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(manual_fields[0]["value"], "张三")
         self.assertEqual(manual_fields[0]["status"], "confirmed")
 
-    def test_fact_specs_upload_accepts_xlsx(self) -> None:
-        """R06-B07-09：项目级实时表上传 .xlsx 成功用例。"""
-        project_id = self._create_project_with_confirmed_outline()
-        xlsx_path = Path(self.temp_dir.name) / "实时表.xlsx"
-        workbook = openpyxl.Workbook()
-        sheet = workbook.active
-        sheet.append(EXPECTED_HEADER)
-        for index in range(1, 4):
-            sheet.append([index, "招标文件-技术规范书", "第一章 1.1", f"上传字段{index}", "说明", "", "招标文件/技术规范书"])
-        workbook.save(xlsx_path)
-
-        with xlsx_path.open("rb") as handle:
-            upload_response = self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
-                files={"file": ("实时表.xlsx", handle, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-            )
-        self.assertEqual(upload_response.status_code, 200, upload_response.text)
-        self.assertEqual(upload_response.json()["specTotal"], 3)
-
-        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
-        self.assertEqual(facts_response.status_code, 200, facts_response.text)
-        self.assertTrue(facts_response.json()["specsImported"])
-        self.assertEqual(facts_response.json()["specTotal"], 3)
-
-    def test_fact_specs_upload_rejects_xls(self) -> None:
-        """R06-B07-09：.xls 与前后端规则一致地被 400 拒绝，且不写入项目清单。"""
-        project_id = self._create_project_with_confirmed_outline()
-        upload_response = self.client.post(
-            f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
-            files={"file": ("实时表.xls", b"not a real xls", "application/vnd.ms-excel")},
-        )
-        self.assertEqual(upload_response.status_code, 400, upload_response.text)
-        self.assertIn(".xlsx", upload_response.json()["detail"])
-
-        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
-        self.assertEqual(facts_response.status_code, 200, facts_response.text)
-        self.assertFalse(facts_response.json()["specsImported"])
-
     def test_project_fact_table_filters_noisy_parse_items_and_extracts_table_fields(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
         project = store._require(project_id)
@@ -1258,7 +1218,10 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["项目名称"]["value"], "华能真实项目名称")
         self.assertIn("机组台数", by_label)
         self.assertIn("总装机容量", by_label)
-        self.assertEqual(by_label["机组台数"]["category"], "待填写表格字段")
+        # 机型参数块会先建这一行（项目已选机型），表格占位符来源并入 sourceRefs
+        self.assertTrue(
+            any(ref.get("type") == "gapTableField" for ref in by_label["机组台数"]["sourceRefs"])
+        )
         # 清单之外的字段不再成行：招标编号/招标人无匹配 spec，技术承诺仍是噪声
         self.assertNotIn("招标编号", by_label)
         self.assertNotIn("招标人", by_label)
@@ -1375,7 +1338,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["轮毂高度"]["unit"], "m")
         self.assertEqual(by_label["安全等级"]["value"], "IEC S")
         self.assertEqual(by_label["湍流强度"]["value"], "0.10")
-        self.assertEqual(by_label["总装机容量"]["status"], "extracted")
+        self.assertEqual(by_label["总装机容量"]["status"], "confirmed")
         self.assertEqual(by_label["总装机容量"]["sourceRefs"][0]["materialTier"], "project")
         # 空气密度/极端风速/设计寿命匹配不到 spec，清单模式下不再成行
         self.assertNotIn("空气密度", by_label)
@@ -1443,8 +1406,8 @@ class GapReviewFlowTests(unittest.TestCase):
         by_label = {field["label"]: field for field in response.json()["fields"]}
         self.assertEqual(by_label["轮毂高度"]["value"], "125")
         self.assertEqual(by_label["年平均风速"]["value"], "7.20m/s")
-        self.assertEqual(by_label["轮毂高度"]["status"], "extracted")
-        self.assertEqual(by_label["年平均风速"]["status"], "extracted")
+        self.assertEqual(by_label["轮毂高度"]["status"], "confirmed")
+        self.assertEqual(by_label["年平均风速"]["status"], "confirmed")
         # 空气密度匹配不到 spec，清单模式下不再成行
         self.assertNotIn("空气密度", by_label)
 

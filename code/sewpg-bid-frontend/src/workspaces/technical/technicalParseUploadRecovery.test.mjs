@@ -6,6 +6,7 @@ import {
   formatParseDuration,
   isUploadAndRunTimeout,
   isParseProgressCompleted,
+  parseDisplayPercentage,
   parseElapsedSeconds,
   pollParseProgressOnce,
   shouldPollParseProgress,
@@ -317,12 +318,41 @@ test('reports total parse elapsed time and freezes it after completion', () => {
 
 test('technical parse card renders only the quantified progress line and runtime line', () => {
   const pageSource = readFileSync(new URL('./pages/TechnicalTenderReview.jsx', import.meta.url), 'utf8')
+  const durationSource = readFileSync(new URL('../../utils/progressDuration.js', import.meta.url), 'utf8')
 
   assert.doesNotMatch(pageSource, /backgroundHintParts|showBackgroundHint/)
   assert.doesNotMatch(pageSource, /progressSummary\.title/)
   assert.equal((pageSource.match(/progressSummary\.summary/g) || []).length, 1)
-  assert.match(pageSource, /已运行/)
-  assert.match(pageSource, /总耗时/)
+  // 解析卡片与其余进度条同源：共享卡片 + 共享耗时文案，不再自己拼版式
+  assert.match(pageSource, /BidProgressPanel/)
+  assert.match(pageSource, /progressElapsedLine/)
+  assert.match(pageSource, /parseDisplayPercentage/)
+  // 徽标只留百分比，状态词由图标和明细行表达
+  assert.doesNotMatch(pageSource, /progressSummary\.statusText/)
+  assert.match(durationSource, /已运行/)
+  assert.match(durationSource, /总耗时/)
+})
+
+test('解析进度按实测耗时重排区间，结构化解析拿到最宽的一段', () => {
+  // 后端刻度：本地提取/附表占 0~68，AI 结构化解析只有 68~96；
+  // 实测（PRJ-0003，总 475 秒）本地段 113 秒、结构化 360 秒，比例正好相反。
+  assert.equal(parseDisplayPercentage({ percentage: 0 }), 0)
+  assert.equal(parseDisplayPercentage({ percentage: 68 }), 30)
+  assert.equal(parseDisplayPercentage({ percentage: 96 }), 96)
+  assert.equal(parseDisplayPercentage({ percentage: 100 }), 100)
+
+  // 结构化解析这一段拿到 66 个百分点（时间占比 75.8%），本地段 30 个（23.8%）
+  const structuredSpan = parseDisplayPercentage({ percentage: 96 }) - parseDisplayPercentage({ percentage: 68 })
+  assert.equal(structuredSpan, 66)
+
+  // 单调不回退，且解析中不会提前打满
+  let previous = -1
+  for (let backend = 0; backend <= 100; backend += 1) {
+    const value = parseDisplayPercentage({ percentage: backend })
+    assert.ok(value >= previous, `后端 ${backend}% 处展示进度回退`)
+    if (backend < 96) assert.ok(value < 96, `后端 ${backend}% 处展示进度提前打满`)
+    previous = value
+  }
 })
 
 test('summarizes stale structured parse phase without internal implementation terms', () => {

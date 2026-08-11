@@ -52,6 +52,22 @@ test('生成完成提示展示 warning 数量且格式清洗失败时明确回�
   assert.equal(presentation.formatCleanMessage, '格式清洗失败，当前使用组装稿')
 })
 
+test('评分索引交叉引用的跳过、失败与待刷新页码各自给出提示', () => {
+  const present = (scoreIndexXref) => technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: { scoreIndexXref },
+  }).scoreIndexXrefMessage
+
+  assert.equal(present({ status: 'skipped' }), '未找到技术评分标准索引表，已跳过交叉引用')
+  assert.equal(present({ status: 'failed', error: 'boom' }), '评分索引表交叉引用失败，当前使用格式清洗稿')
+  assert.equal(
+    present({ status: 'completed', summary: { pageNumbersResolved: false } }),
+    '评分索引表已建立交叉引用，页码需在 Word/WPS 中全选后按 F9 刷新',
+  )
+  assert.equal(present({ status: 'completed', summary: { pageNumbersResolved: true } }), '')
+  assert.equal(present(undefined), '')
+})
+
 test('AI 填写结果优先与待填写模板形成左右对比', () => {
   const result = { key: 'artifact:A1', kind: 'artifact', artifact: { source: 'ai_fill' } }
   const material = { key: 'material:M1', kind: 'material' }
@@ -163,7 +179,7 @@ test('格式应用响应缺 document 时按本次请求推进本地格式状态'
   assert.deepEqual(standardDocument.technicalFormatStyleOverrides, {})
 })
 
-test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持不变', async () => {
+test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路径保持可用', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
   const progressSource = await readFile(new URL('../components/TechnicalGenerationProgressModal.jsx', import.meta.url), 'utf8')
@@ -171,16 +187,38 @@ test('页面 warning 不阻断进入共创，下载与 technicalFormat 调用路
   assert.match(progressSource, /warningCount/)
   assert.match(gapSource, /disabled=\{Boolean\(busyAction\) \|\| !generationCompleted\}/)
   assert.match(editorSource, /technicalDocumentAPI\.technicalFormat\(id, payload\)/)
-  assert.match(editorSource, /download=\{finalData\?\.fileName \|\| data\?\.fileName \|\| defaultWordFileName\}/)
-  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id\)/)
+  assert.match(editorSource, /technicalDocumentAPI\.final\(id, exportVersion\)/)
+  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id, exportVersion\)/)
+})
+
+test('共创导出使用单一版本下拉同时控制 Word 和 PDF，默认标记版', async () => {
+  const apiSource = await readFile(new URL('../../../api/index.js', import.meta.url), 'utf8')
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(editorSource, /const \[exportVersion, setExportVersion\] = useState\('marked'\)/)
+  assert.match(editorSource, /<select[\s\S]*?value=\{exportVersion\}[\s\S]*?onChange=\{\(event\) => setExportVersion\(event\.target\.value\)\}/)
+  assert.match(editorSource, /<option value="marked">标记版<\/option>/)
+  assert.match(editorSource, /<option value="clean">清洁版<\/option>/)
+  assert.match(editorSource, /technicalDocumentAPI\.final\(id, exportVersion\)/)
+  assert.match(editorSource, /technicalDocumentAPI\.finalPdf\(id, exportVersion\)/)
+  assert.match(apiSource, /final:\s*\(projectId, version = 'marked'\)[\s\S]*?version=\$\{version\}/)
+  assert.match(apiSource, /finalPdf:\s*\(projectId, version = 'marked'\)[\s\S]*?version=\$\{version\}/)
+})
+
+test('PDF 每次下载都由后端校验当前文档，不复用页面内旧地址', async () => {
+  const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(editorSource, /pdfData|setPdfData/)
+  assert.match(editorSource, /onClick=\{handlePreparePdf\}/)
+  assert.match(editorSource, /const response = await technicalDocumentAPI\.finalPdf\(id, exportVersion\)/)
 })
 
 test('重新生成正文只在共创导出页展示，并位于 Word、PDF 下载控件之后', async () => {
   const gapSource = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const editorSource = await readFile(new URL('./TechnicalCoCreationEditor.jsx', import.meta.url), 'utf8')
-  const wordIndex = editorSource.indexOf('下载Word')
-  const pdfIndex = editorSource.indexOf('下载PDF')
-  const regenerateIndex = editorSource.indexOf("'重新生成正文'")
+  const wordIndex = editorSource.indexOf('onClick={handleDownloadWord}')
+  const pdfIndex = editorSource.indexOf('onClick={handlePreparePdf}', wordIndex)
+  const regenerateIndex = editorSource.indexOf('onClick={handleRequestRegenerate}', pdfIndex)
 
   assert.doesNotMatch(gapSource, /重新生成正文/)
   assert.ok(wordIndex >= 0)
@@ -198,18 +236,20 @@ test('共创导出页二次确认后沿用正文生成接口并刷新最新文�
   assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })
 
-test('事实表清单和素材范围变更后自动重建，不保留手动刷新入口', async () => {
+test('素材范围变更后自动重建事实表，不保留手动刷新入口', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
-  const uploadStart = source.indexOf('const handleFactSpecsUpload')
   const scopeStart = source.indexOf('const handleSaveMaterialPaths')
   const curateStart = source.indexOf('const handleCurateFacts')
-  const uploadFlow = source.slice(uploadStart, scopeStart)
   const scopeFlow = source.slice(scopeStart, curateStart)
 
-  assert.ok(uploadStart >= 0 && scopeStart > uploadStart && curateStart > scopeStart)
-  assert.ok(uploadFlow.indexOf('uploadFactSpecs') < uploadFlow.indexOf('buildFacts'))
+  assert.ok(scopeStart >= 0 && curateStart > scopeStart)
   assert.ok(scopeFlow.indexOf('saveMaterialSources') < scopeFlow.indexOf('buildFacts'))
-  assert.doesNotMatch(source, /onBuild|刷新事实/)
+  // 没有独立的「生成/重建事实表」按钮：素材匹配完成后后端自动建一次，
+  // 之后重建走保存参考范围与「刷新并 AI 填充」两条既有流程
+  assert.doesNotMatch(source, /onBuild\b|handleBuildFacts/)
+  // 清单只有全局一份，本页没有上传入口，只跳转到素材库 · 规则页
+  assert.doesNotMatch(source, /uploadFactSpecs/)
+  assert.match(source, /workspace\/tech\/materials\/rules/)
 })
 
 test('事实表弹窗筛选时保持固定高度并只滚动表格区域', async () => {
@@ -660,7 +700,7 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
   assert.equal(state.coveredCount, 1)
 })
 
-test('正文填写汇总只数正文任务，失败按目录项计', () => {
+test('一键填写汇总覆盖正文与附表，失败按目录项计', () => {
   const items = [
     {
       id: 'G1',
@@ -668,7 +708,7 @@ test('正文填写汇总只数正文任务，失败按目录项计', () => {
       fillTasks: [
         { id: 'T1', skill: 'bid-tech-word-placeholder-filler', status: 'completed' },
         { id: 'T2', skill: 'bid-tech-word-placeholder-filler', status: 'pending' },
-        // 附表由另一条线负责，不进正文汇总
+        // 附表也进一键填写汇总，并单独拆出 pendingAppendix
         { id: 'T3', skill: 'bid-tech-table-filler', status: 'pending' },
       ],
     },
@@ -683,12 +723,78 @@ test('正文填写汇总只数正文任务，失败按目录项计', () => {
     { id: 'G4', decision: 'ready', fillTasks: [{ id: 'T6', skill: 'bid-tech-word-placeholder-filler' }] },
   ]
 
-  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 2, filled: 1, failed: 1 })
-  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(items), { pending: 3, filled: 1, failed: 1, pendingBody: 2, pendingAppendix: 1 })
+  assert.deepEqual(technicalHelpers.technicalBodyFillCounts(null), { pending: 0, filled: 0, failed: 0, pendingBody: 0, pendingAppendix: 0 })
 })
 
 test('目录项填写失败原因用于标红与重填提示', () => {
   assert.equal(technicalHelpers.technicalGapFillError({ fillError: { message: '素材缺失' } }), '素材缺失')
   assert.equal(technicalHelpers.technicalGapFillError({}), '')
   assert.equal(technicalHelpers.technicalGapFillError({ fillError: 'bad' }), '')
+})
+
+// 多机型项目 planner 会给每个机型一份推荐，已选区要整批展示，不能只留第一份。
+const READY_MATERIAL = (id, folder) => ({
+  id,
+  name: '智能传感系统.docx',
+  folderPath: folder,
+  materialTier: 'standard',
+  matchScore: 0.99,
+})
+
+test('多机型推荐整批进已选区，顺序沿用 planner 给的机型顺序', () => {
+  const item = {
+    id: 'GAP-1',
+    matchedMaterials: [
+      READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题'),
+      READY_MATERIAL('M-B', '技术标/标准文件/EW10.0-230下置/专题'),
+    ],
+  }
+
+  const selections = technicalHelpers.recommendedSelectionsForItem(item, [item])
+
+  assert.deepEqual(selections.map((s) => s.material.id), ['M-A', 'M-B'])
+  assert.equal(selections.every((s) => s.inherited === false), true)
+})
+
+test('单机型推荐仍然只有一张卡', () => {
+  const item = { id: 'GAP-1', matchedMaterials: [READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题')] }
+
+  assert.deepEqual(
+    technicalHelpers.recommendedSelectionsForItem(item, [item]).map((s) => s.material.id),
+    ['M-A'],
+  )
+})
+
+test('主素材分数不到定案线时整批留在备选池', () => {
+  const item = {
+    id: 'GAP-1',
+    matchedMaterials: [
+      { ...READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题'), matchScore: 0.6 },
+      READY_MATERIAL('M-B', '技术标/标准文件/EW10.0-230下置/专题'),
+    ],
+  }
+
+  assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
+})
+
+test('父章覆盖只继承一份素材，不做多机型展开', () => {
+  const parent = {
+    id: 'GAP-P',
+    matchedMaterials: [
+      READY_MATERIAL('M-A', '技术标/标准文件/EW8.5-220上置/专题'),
+      READY_MATERIAL('M-B', '技术标/标准文件/EW10.0-230下置/专题'),
+    ],
+  }
+  const child = { id: 'GAP-C', coveredByParent: 'GAP-P', matchedMaterials: [] }
+
+  const selections = technicalHelpers.recommendedSelectionsForItem(child, [parent, child])
+
+  assert.deepEqual(selections.map((s) => s.material.id), ['M-A'])
+  assert.equal(selections[0].inherited, true)
+})
+
+test('没有匹配素材时已选区为空', () => {
+  const item = { id: 'GAP-1', matchedMaterials: [] }
+  assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
 })

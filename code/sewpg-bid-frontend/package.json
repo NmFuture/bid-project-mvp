@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:material-pipeline": "node --test src/workspaces/technical/components/materialPipelineFailures.test.js src/workspaces/technical/technicalWikiJobPolling.test.mjs",
+    "test:technical-ui-contracts": "node --test src/workspaces/technical/pages/technicalExportToolbarContract.test.mjs",
     "check": "npm run lint && npm run build"
   },
   "dependencies": {

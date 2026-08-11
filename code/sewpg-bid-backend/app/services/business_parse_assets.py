@@ -23,7 +23,7 @@ from app.services.parsing import (
 )
 from app.services.workspace_project_access import (
     get_workspace_project_runtime_state,
-    persist_workspace_project_state,
+    persist_workspace_project_fields,
     require_workspace_project_for_update,
 )
 from app.services.workspace_artifacts import workspace_parse_dir
@@ -121,7 +121,7 @@ def _persist_business_parse_result(project_id: str, parse_result: dict[str, Any]
         parse_storage["structured"] = copy.deepcopy(parse_result.get("structured") or {})
         _update_structured_result_file(parse_storage, parse_result)
     payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
-    persist_workspace_project_state(project)
+    persist_workspace_project_fields(project, "parse_result", "parse_storage")
     return payload
 
 

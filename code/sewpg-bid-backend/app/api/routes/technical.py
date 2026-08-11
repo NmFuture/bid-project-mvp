@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -322,13 +322,19 @@ async def technical_outline_tender_callback(
 
 
 @router.get("/api/technical/projects/{project_id}/gaps-detection")
-async def get_technical_gap_detection(project_id: str) -> dict[str, Any]:
-    return await technical_gap_service.detection_status(project_id)
+async def get_technical_gap_detection(project_id: str, request: Request) -> dict[str, Any]:
+    return await technical_gap_service.detection_status(project_id, request)
 
 
 @router.post("/api/technical/projects/{project_id}/gaps-detection/run")
 def run_technical_gap_detection(project_id: str) -> dict[str, Any]:
     return technical_gap_service.run_detection(project_id)
+
+
+@router.get("/api/technical/projects/{project_id}/gaps/plan-export")
+def export_technical_gap_plan(project_id: str) -> dict[str, Any]:
+    """导出当前缺口清单 + 逐项的正文组装判定（排查用，页面不挂入口）。"""
+    return technical_gap_service.export_plan(project_id)
 
 
 @router.get("/api/technical/projects/{project_id}/gaps")
@@ -353,6 +359,16 @@ async def get_technical_gap_artifact_content(
     filename: str,
 ) -> FileResponse:
     return await technical_gap_service.artifact_content(project_id, artifact_id, filename)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/artifacts/{artifact_id}/callback")
+async def technical_gap_artifact_callback(
+    project_id: str,
+    artifact_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> JSONResponse:
+    return await technical_gap_service.artifact_callback(project_id, artifact_id, request, data)
 
 
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/artifacts/{artifact_id}/confirm")
@@ -420,17 +436,6 @@ async def technical_gap_fact_material_check(project_id: str) -> dict[str, Any]:
 @router.post("/api/technical/projects/{project_id}/gaps/facts/build")
 async def build_technical_gap_project_facts(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.build_facts(project_id)
-
-
-@router.post("/api/technical/projects/{project_id}/gaps/facts/specs-upload")
-async def upload_technical_gap_fact_specs(
-    project_id: str,
-    file: UploadFile = File(...),
-) -> dict[str, Any]:
-    """上传本项目事实表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
-    return await technical_gap_service.upload_fact_specs(
-        project_id, str(file.filename or ""), await file.read()
-    )
 
 
 @router.post("/api/technical/projects/{project_id}/appendix-source-matrix")
@@ -636,23 +641,37 @@ async def apply_technical_document_format(
 
 
 @router.get("/api/technical/projects/{project_id}/final-document")
-async def get_technical_final_document(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.final_document(project_id, request)
+async def get_technical_final_document(
+    project_id: str,
+    request: Request,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> dict[str, Any]:
+    return await technical_document_service.final_document(project_id, request, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/file")
-async def download_technical_final_document_file(project_id: str) -> FileResponse:
-    return await technical_document_service.final_document_file(project_id)
+async def download_technical_final_document_file(
+    project_id: str,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> FileResponse:
+    return await technical_document_service.final_document_file(project_id, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/pdf")
-async def prepare_technical_final_document_pdf(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.final_document_pdf(project_id, request)
+async def prepare_technical_final_document_pdf(
+    project_id: str,
+    request: Request,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> dict[str, Any]:
+    return await technical_document_service.final_document_pdf(project_id, request, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/pdf/file")
-async def download_technical_final_document_pdf(project_id: str) -> FileResponse:
-    return await technical_document_service.final_document_pdf_file(project_id)
+async def download_technical_final_document_pdf(
+    project_id: str,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> FileResponse:
+    return await technical_document_service.final_document_pdf_file(project_id, version)
 
 
 @router.get("/api/technical/projects/{project_id}/export/check")

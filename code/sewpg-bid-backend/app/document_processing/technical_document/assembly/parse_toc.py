@@ -196,6 +196,32 @@ def parse_toc_docx(docx_path: Path) -> list[dict]:
     return entries
 
 
+def display_chapter_no(entry: dict) -> str:
+    """正文标题显示用的层级编号：一级「第N章」，二级及以下「N.M」「N.M.K」。
+
+    一律以 chapter_no_flat 为准。素材内部标题也是按相对深度挂在
+    chapter_no_flat 之下（见 numbering_fixer.inject_prefix_to_headings），
+    两者同源才不会出现「目录标题 1、，其下素材标题 1.3.1」这种一棵树两套号。
+
+    chapter_no 是确认目录里的原样号，模板抄来的可能是「1、」这类段内序号；
+    它是阶段间的素材关联键，不参与正文显示。前言/附/附表没有 flat 号，
+    退回 chapter_no 保持既有形态。
+    """
+    flat = str(entry.get("chapter_no_flat") or entry.get("chapterNoFlat") or "").strip()
+    raw = str(entry.get("chapter_no") or entry.get("number") or "").strip()
+    if not flat:
+        return raw
+    # flat 顶层永远是纯整数，往下才带点，据此判断章级比 level 字段可靠
+    if not re.fullmatch(r"\d+", flat):
+        return flat
+    # 目录本来就写成「第X章」且与 flat 同号时保留原写法（中文数字章名是既有约定）；
+    # 只有对不上号才按 flat 重写，避免正文章号与素材标题前缀分家。
+    matched = _CHAPTER_CN_PATTERN.match(raw)
+    if matched and _cn_to_int(matched.group(1)) == int(flat):
+        return f"第{matched.group(1)}章"
+    return f"第{flat}章"
+
+
 def _annotation_to_tag(value: str) -> str:
     text = str(value or "").strip()
     if "新增" in text:

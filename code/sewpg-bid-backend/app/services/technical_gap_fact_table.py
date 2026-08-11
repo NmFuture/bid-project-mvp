@@ -21,52 +21,46 @@ from app.services.technical_fact_field_specs import (
     fillable_specs,
     spec_category,
 )
-from app.services.technical_fact_spec_versions import fact_specs_ref, resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_material_store import technical_material_store
-from app.services.turbine_models import project_turbine_model
+from app.services.turbine_models import project_turbine_model, project_turbine_models
 
 logger = logging.getLogger(__name__)
 
 
 PROJECT_FACT_TABLE_SCHEMA_VERSION = "bid-project-fact-table-v2"
 
-# 字段状态模型（七态，对应任务文档 §7）：
-# unextracted 未提取 → extracted 已自动提取 → pending_confirmation 待人工确认 → confirmed 已人工确认
-#   ├─ missing_source 缺少来源（登记了缺口但无值来源）
-#   ├─ conflict 存在冲突（多来源同优先级不同值，人工裁决后进 confirmed）
-#   └─ not_applicable 不适用（字段对本项目不适用，notes 注明原因）
+# 字段状态模型（三态，产品裁决 2026-08-10）：
+# unextracted 待填写（没有取值，人工在页面上补）
+# confirmed 可用（有取值即可用，不论来自规则抽取、AI 复核还是人工录入）
+# not_applicable 不适用（人工裁定本项目不需要此字段，notes 注明原因）
+#
+# 取消「人工逐条确认」这道闸门：抽出什么就是什么，不对由人直接改。原七态里的
+# extracted / pending_confirmation / conflict 都只是「有值但没人看过」的不同说法，
+# missing_source 与 unextracted 都是「没值」，对下游没有行为差异，一并收敛。
+# 多来源冲突不再占状态位：按来源优先级取值，其余候选留在 alternatives 并置
+# hasConflict 标记供页面提示，见 add_candidate。
 FACT_STATUS_UNEXTRACTED = "unextracted"
-FACT_STATUS_EXTRACTED = "extracted"
-FACT_STATUS_PENDING_CONFIRMATION = "pending_confirmation"
 FACT_STATUS_CONFIRMED = "confirmed"
-FACT_STATUS_MISSING_SOURCE = "missing_source"
-FACT_STATUS_CONFLICT = "conflict"
 FACT_STATUS_NOT_APPLICABLE = "not_applicable"
 
 FACT_FIELD_STATUSES = {
     FACT_STATUS_UNEXTRACTED,
-    FACT_STATUS_EXTRACTED,
-    FACT_STATUS_PENDING_CONFIRMATION,
     FACT_STATUS_CONFIRMED,
-    FACT_STATUS_MISSING_SOURCE,
-    FACT_STATUS_CONFLICT,
     FACT_STATUS_NOT_APPLICABLE,
-}
-
-# v1 四态 → v2 七态迁移映射
-LEGACY_FACT_STATUS_MAP = {
-    "candidate": FACT_STATUS_EXTRACTED,
-    "missing": FACT_STATUS_MISSING_SOURCE,
 }
 
 
 def normalize_fact_status(status: Any, *, has_value: bool) -> str:
-    """归一字段状态：旧四态映射为七态，非法/空值按有无取值给默认态。"""
-    text = str(status or "").strip()
-    text = LEGACY_FACT_STATUS_MAP.get(text, text)
-    if text in FACT_FIELD_STATUSES:
-        return text
-    return FACT_STATUS_EXTRACTED if has_value else FACT_STATUS_MISSING_SOURCE
+    """归一字段状态：不适用是人工裁定、与取值无关；其余一律按有无取值判定。
+
+    历史状态（v1 四态 candidate/missing，v2 七态 extracted/pending_confirmation/
+    conflict/missing_source）无需逐个映射：它们的区别只在「谁写的值」，而那个信息
+    在 sourceRefs 里，不在 status 里。旧数据读进来即被这里收敛，不需要迁移脚本。
+    """
+    if str(status or "").strip() == FACT_STATUS_NOT_APPLICABLE:
+        return FACT_STATUS_NOT_APPLICABLE
+    return FACT_STATUS_CONFIRMED if has_value else FACT_STATUS_UNEXTRACTED
 
 FACT_TABLE_HEADER_WORDS = {
     "编号",
@@ -117,6 +111,16 @@ COMMON_PROJECT_FACT_LABELS = {
     "主要部件更换率",
 }
 
+# 来源优先级（数值越大越优先），口径见 docs/20260723-项目事实表填写任务梳理.md §5：
+# 招标文件原文 > 项目创建信息 > 项目定制素材 > 客户定制素材 > 标准素材。
+# 人工值不在这里排序——它靠 sourceRefs 的人工标记直接锁定，任何来源都覆盖不了。
+FACT_SOURCE_PRIORITY_TENDER = 340
+FACT_SOURCE_PRIORITY_PROJECT = 320
+# 机型、台数、基础形式是人在「完善项目信息」里逐行选定的，不是平台侧初值，
+# 招标文件抽取覆盖不了（产品裁决 2026-08-10）。同来源的单机容量/叶轮直径/轮毂高度
+# 是机型参数表带出来的，不属于人填，仍按 FACT_SOURCE_PRIORITY_PROJECT。
+FACT_SOURCE_PRIORITY_PROJECT_TURBINE = 350
+
 FACT_MATERIAL_SOURCE_PRIORITIES = {
     "project": 300,
     "customer": 200,
@@ -133,24 +137,20 @@ def empty_fact_summary() -> dict[str, int]:
         "totalCount": 0,
         "requiredCount": 0,
         "confirmedCount": 0,
-        "extractedCount": 0,
-        "pendingConfirmationCount": 0,
         "unextractedCount": 0,
-        "missingSourceCount": 0,
-        "conflictCount": 0,
         "notApplicableCount": 0,
+        # 多来源分歧不再是状态，值已按优先级取定；这里只统计带 hasConflict 标记的行，
+        # 供页面提示「这几个字段有别的来源给了不同值，翻 alternatives 复核」
+        "conflictCount": 0,
         "specTotal": 0,
         "specBuiltTotal": 0,
-        # deprecated：旧口径"有值的 spec 行数"，保留兼容，前端展示改用下方四段确认进度
+        # deprecated：旧口径"有值的 spec 行数"，保留兼容，前端展示改用下方两段进度
         "specMatched": 0,
-        # 清单确认进度四段：互斥穷尽已构建的 spec 行，加总 == specBuiltTotal
+        # 清单进度：specConfirmedCount（有值可用）+ specUnfilledCount（待人工填）
+        # + 不适用行 == specBuiltTotal。进度分母用 specBuiltTotal 减去不适用行，
+        # 否则人工标了「不适用」的字段会让进度永远差那几条。
         "specConfirmedCount": 0,
-        "specPendingConfirmationCount": 0,
         "specUnfilledCount": 0,
-        "specFilledUnconfirmedCount": 0,
-        # v1 兼容别名：candidate=已自动提取，missing=缺少来源
-        "candidateCount": 0,
-        "missingCount": 0,
     }
 
 
@@ -169,48 +169,36 @@ def empty_project_fact_table(project_id: str) -> dict[str, Any]:
 
 
 def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int | None = None) -> dict[str, int]:
-    def count(status: str) -> int:
-        return sum(1 for field in fields if str(field.get("status") or "") == status)
+    # 按归一后的状态统计：旧项目的 gap_state 里还留着七态，重建前也要数对
+    def status_of(field: dict[str, Any]) -> str:
+        return normalize_fact_status(field.get("status"), has_value=bool(str(field.get("value") or "").strip()))
 
-    # 四段进度只统计规则骨架行；specSeq=0 也是合法序号，不能按真值过滤。
+    def count(status: str) -> int:
+        return sum(1 for field in fields if status_of(field) == status)
+
+    # 两段进度只统计规则骨架行；specSeq=0 也是合法序号，不能按真值过滤。
     spec_rows = [field for field in fields if field.get("specSeq") is not None]
-    spec_confirmed = sum(1 for field in spec_rows if str(field.get("status") or "") == FACT_STATUS_CONFIRMED)
-    spec_pending = sum(1 for field in spec_rows if str(field.get("status") or "") == FACT_STATUS_PENDING_CONFIRMATION)
-    # 「未填」：值为空，或状态仍属 unextracted/missing_source；confirmed/pending 已各自成段，不重复计
-    spec_unfilled = sum(
-        1
-        for field in spec_rows
-        if str(field.get("status") or "") not in {FACT_STATUS_CONFIRMED, FACT_STATUS_PENDING_CONFIRMATION}
-        and (
-            not str(field.get("value") or "").strip()
-            or str(field.get("status") or "") in {FACT_STATUS_UNEXTRACTED, FACT_STATUS_MISSING_SOURCE}
-        )
-    )
+    spec_confirmed = sum(1 for field in spec_rows if status_of(field) == FACT_STATUS_CONFIRMED)
     summary = empty_fact_summary()
     summary.update(
         {
             "totalCount": len(fields),
             "requiredCount": sum(1 for field in fields if field.get("required", True)),
             "confirmedCount": count(FACT_STATUS_CONFIRMED),
-            "extractedCount": count(FACT_STATUS_EXTRACTED),
-            "pendingConfirmationCount": count(FACT_STATUS_PENDING_CONFIRMATION),
             "unextractedCount": count(FACT_STATUS_UNEXTRACTED),
-            "missingSourceCount": count(FACT_STATUS_MISSING_SOURCE),
-            "conflictCount": count(FACT_STATUS_CONFLICT),
             "notApplicableCount": count(FACT_STATUS_NOT_APPLICABLE),
+            "conflictCount": sum(1 for field in fields if field.get("hasConflict")),
             # Dev 口径保持不变：已绑定规则条数是稳定分母，不能随当前建表结果波动。
             "specTotal": len(spec_rows) if spec_total is None else max(0, int(spec_total)),
             "specBuiltTotal": len(spec_rows),
             "specMatched": sum(1 for field in spec_rows if str(field.get("value") or "").strip()),
             "specConfirmedCount": spec_confirmed,
-            "specPendingConfirmationCount": spec_pending,
-            "specUnfilledCount": spec_unfilled,
-            # 剩余 spec 行（extracted/conflict 等有值但未确认）：四段加总 == specBuiltTotal
-            "specFilledUnconfirmedCount": len(spec_rows) - spec_confirmed - spec_pending - spec_unfilled,
+            # 不适用行没有值也不需要人补，归到「已了结」一侧，否则进度永远差这几条
+            "specUnfilledCount": len(spec_rows)
+            - spec_confirmed
+            - sum(1 for field in spec_rows if status_of(field) == FACT_STATUS_NOT_APPLICABLE),
         }
     )
-    summary["candidateCount"] = summary["extractedCount"]
-    summary["missingCount"] = summary["missingSourceCount"]
     return summary
 
 
@@ -253,6 +241,10 @@ def canonical_fact_label(label: Any) -> str:
     }
     if text in aliases:
         return aliases[text]
+    # 多机型展开出来的「机型N单机容量」「机型N轮毂高度」等按原文保留：下面的包含式规则
+    # 会把它们归一成全场共用的那一行，各机型的值互相覆盖。
+    if re.match(r"^机型\d+", text):
+        return text
     if "总装机容量" in text or text.startswith("总容量"):
         return "总装机容量"
     if (
@@ -302,8 +294,12 @@ def fact_label_key(label: Any) -> str:
 
 def fact_source_ref_priority(ref: dict[str, Any]) -> int:
     source_type = str(ref.get("type") or "").strip()
+    # 招标文件原文优先于项目创建信息：招标方写死的参数是投标必须对齐的口径，
+    # 项目创建时填的机型/台数只是平台侧的初值（产品裁决 2026-08-10）
+    if source_type == "parseField":
+        return FACT_SOURCE_PRIORITY_TENDER
     if source_type in {"project", "projectIdentity", "projectTurbineModel", "derived"}:
-        return 320
+        return FACT_SOURCE_PRIORITY_PROJECT
     if source_type in {"materialFact", "derivedMaterialFact"}:
         tier = str(ref.get("materialTier") or "").strip() or "standard"
         return FACT_MATERIAL_SOURCE_PRIORITIES.get(tier, 50)
@@ -335,17 +331,18 @@ def normalize_project_fact_field(
     saved_at: str,
 ) -> dict[str, Any]:
     value = str(field.get("value") or "").strip()
-    if confirm:
-        # 逐字段确认（PATCH 单字段）时保留人工标记的"不适用"，其余有值→已人工确认、无值→缺少来源
-        incoming = normalize_fact_status(field.get("status"), has_value=bool(value))
-        status = (
-            incoming
-            if incoming == FACT_STATUS_NOT_APPLICABLE
-            else (FACT_STATUS_CONFIRMED if value else FACT_STATUS_MISSING_SOURCE)
-        )
-    else:
-        status = normalize_fact_status(field.get("status"), has_value=bool(value))
-    source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
+    status = normalize_fact_status(field.get("status"), has_value=bool(value))
+    incoming_refs = field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else []
+    if confirm and not any(
+        isinstance(ref, dict) and str(ref.get("type") or "") in FACT_MANUAL_SOURCE_TYPES for ref in incoming_refs
+    ):
+        # 人在页面上保存过这一格 → 打人工标记。重建时靠它保留人工结论，
+        # 不能再用 status==confirmed 代替：规则抽出来的值现在也是 confirmed。
+        incoming_refs = [
+            {"type": "manualEdit", "title": "人工填写", "field": str(field.get("label") or "")},
+            *incoming_refs,
+        ]
+    source_refs = normalize_fact_source_refs(incoming_refs)
     source_priority = int(field.get("sourcePriority") or 0)
     if source_refs:
         source_priority = max(source_priority, fact_source_ref_priority(source_refs[0]))
@@ -366,8 +363,9 @@ def normalize_project_fact_field(
         "updatedAt": saved_at,
         "updatedBy": operator,
     }
-    # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）
-    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
+    # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）；
+    # turbineGroup/turbineModelLabel 是机型分组标记，页面保存后要跟着回写，否则分组丢失
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile", "turbineGroup", "turbineModelLabel"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
@@ -415,8 +413,7 @@ def reconcile_fact_fields_with_specs(
     - 未匹配到的 spec 生成"未提取"骨架字段，保证清单字段在事实表中齐全。
     - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
     - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
-    - specs 为 None 时回退全局 fillable_specs()；项目构建链路显式传项目级清单
-      （用户上传的事实表 Excel 解析结果）。
+    - specs 为 None 时回退 fillable_specs()（全局清单）；构建链路显式传已解析的 specs。
     """
     existing_by_key = existing_by_key or {}
     matched_field_keys: set[str] = set()
@@ -439,8 +436,8 @@ def reconcile_fact_fields_with_specs(
             # 正文填写按「待填写文件 + 占位符原文」定位字段，两列随字段下发到 manifest
             field["placeholder"] = str(spec.get("placeholder") or "")
             field["targetFile"] = str(spec.get("targetFile") or "")
-            if spec.get("needsConfirmation") and str(field.get("status") or "") == FACT_STATUS_EXTRACTED:
-                field["status"] = FACT_STATUS_PENDING_CONFIRMATION
+            # needsConfirmation 只作为「这条清单要求人工复核口径」的展示标记随字段下发，
+            # 不再改状态：有值就可用，口径对不对由人在页面上看着标记自行核。
             continue
         key = fact_label_key(spec.get("label")) or f"spec-{int(spec.get('seq') or 0):03d}"
         if key in fields_by_key:
@@ -503,15 +500,19 @@ def is_manual_fact_field(field: dict[str, Any]) -> bool:
 def is_human_authored_fact_field(field: dict[str, Any]) -> bool:
     """人工产出的值：重建时只有这些跨轮保留，AI 与规则抽取的值一律重来。
 
-    覆盖四种人工动作：新增字段（manualFact）、页面上改值（manualEdit）、
-    逐字段确认（confirmed）、标记不适用（not_applicable）。
+    只认两种人工动作：sourceRefs 里的人工标记（新增字段 manualFact / 页面上保存过
+    manualEdit），以及人工裁定的「不适用」。
+
+    不能再拿 status==confirmed 当依据：三态收敛后规则抽取和 AI 复核的值也是
+    confirmed，那样判会让整张表都被当成人工结论保留下来，重建等于不重建——
+    规则改进、清单换版、素材更新全都进不来。
     """
     refs = field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else []
     if any(
         isinstance(ref, dict) and str(ref.get("type") or "") in FACT_MANUAL_SOURCE_TYPES for ref in refs
     ):
         return True
-    return str(field.get("status") or "") in {FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE}
+    return str(field.get("status") or "") == FACT_STATUS_NOT_APPLICABLE
 
 
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
@@ -523,8 +524,12 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if isinstance(field, dict) and fact_label_key(field.get("label"))
     }
     fields_by_key: dict[str, dict[str, Any]] = {}
-    # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
-    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    # 人在「完善项目信息」里逐行选定的机型参数：归一键 → (机型序号, 组内序号)，
+    # 用于把这些行按机型分组置顶，并让它们绕过清单骨架过滤（多机型行不在清单里）。
+    turbine_group_by_key: dict[str, tuple[int, int]] = {}
+    turbine_label_by_key: dict[str, str] = {}
+    # 清单全局唯一（规则页上传），所有项目同一份；这里把生效版本固化进产物做审计
+    project_specs, fact_specs_meta = resolve_fact_specs()
     # 换了新 Excel（规则版本变更）视作从头来：连人工值一起丢弃。清单换掉后字段本就
     # 可能对不上号，继承旧值只会让上一版的结论混进新清单。同一份 Excel 刷新不受影响。
     existing_rule_id = str(
@@ -589,9 +594,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 "value": value_text,
                 "unit": str(((existing or {}).get("unit") if preserve_existing else unit) or ""),
                 "required": bool((existing or {}).get("required", required)),
-                "status": normalize_fact_status((existing or {}).get("status"), has_value=True)
-                if preserve_existing
-                else (FACT_STATUS_EXTRACTED if value_text else FACT_STATUS_MISSING_SOURCE),
+                "status": normalize_fact_status(
+                    (existing or {}).get("status") if preserve_existing else None,
+                    has_value=bool(value_text),
+                ),
                 "confidence": float(((existing or {}).get("confidence") if preserve_existing else None) or (confidence if value_text else 0) or 0),
                 "sourcePriority": int((existing or {}).get("sourcePriority") if preserve_existing else (incoming_priority if value_text else 0)),
                 # 保留旧 sourceRefs：人工标记（manualEdit/manualFact）存在这里，
@@ -613,29 +619,33 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             fields_by_key[key] = field
         elif value_text and field.get("value") and value_text != field["value"]:
             alternatives = field.setdefault("alternatives", [])
+            # 谁能覆盖谁只看「是不是人工写的」，不再看 status——三态收敛后规则抽取的值
+            # 也是 confirmed，拿 status 当锁会让本轮第一个到场的来源锁死后面更高优先级的。
+            locked = is_human_authored_fact_field(field)
             existing_rank = (int(field.get("sourcePriority") or 0), float(field.get("confidence") or 0))
             incoming_rank = (incoming_priority, float(confidence or 0))
-            if incoming_rank > existing_rank and str(field.get("status") or "") != FACT_STATUS_CONFIRMED:
+            if incoming_rank > existing_rank and not locked:
                 old_value = str(field.get("value") or "")
                 if old_value and old_value not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
                     alternatives.append({"value": old_value, "source": (field.get("sourceRefs") or [{}])[0]})
                 field["value"] = value_text
                 field["unit"] = str(unit or field.get("unit") or "")
                 field["category"] = category
-                field["status"] = FACT_STATUS_EXTRACTED
+                field["status"] = FACT_STATUS_CONFIRMED
                 field["confidence"] = float(confidence or 0)
                 field["sourcePriority"] = incoming_priority
                 if source_ref:
                     field["sourceRefs"] = [source_ref] + list(field.get("sourceRefs") or [])
                     source_ref = {}
-            elif incoming_rank == existing_rank and str(field.get("status") or "") != FACT_STATUS_CONFIRMED:
+            elif incoming_rank == existing_rank and not locked:
                 existing_material = any(
                     is_material_fact_ref(ref)
                     for ref in (field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else [])
                     if isinstance(ref, dict)
                 )
+                # 同优先级不同值：值保持先到的那个，只挂标记 + 留候选，不再拦成待人工裁决
                 if not (existing_material and is_material_fact_ref(source_ref)):
-                    field["status"] = FACT_STATUS_CONFLICT
+                    field["hasConflict"] = True
                 if value_text not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
                     alternatives.append({"value": value_text, "source": source_ref})
             elif value_text not in [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]:
@@ -643,7 +653,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         elif value_text and field.get("value") and value_text == field.get("value"):
             existing_rank = (int(field.get("sourcePriority") or 0), float(field.get("confidence") or 0))
             incoming_rank = (incoming_priority, float(confidence or 0))
-            if incoming_rank > existing_rank and str(field.get("status") or "") != FACT_STATUS_CONFIRMED:
+            if incoming_rank > existing_rank and not is_human_authored_fact_field(field):
                 field["unit"] = str(unit or field.get("unit") or "")
                 field["category"] = category
                 field["confidence"] = float(confidence or 0)
@@ -653,7 +663,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                     source_ref = {}
         elif value_text and not field.get("value"):
             field["value"] = value_text
-            field["status"] = FACT_STATUS_EXTRACTED
+            field["status"] = FACT_STATUS_CONFIRMED
             field["unit"] = str(unit or field.get("unit") or "")
             field["confidence"] = max(float(field.get("confidence") or 0), float(confidence or 0))
             field["sourcePriority"] = incoming_priority
@@ -687,7 +697,6 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             if not is_human_authored_fact_field(existing):
                 continue
             is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
-            is_confirmed = str(existing.get("status") or "") == FACT_STATUS_CONFIRMED
             has_value = bool(str(existing.get("value") or "").strip())
             field = copy.deepcopy(existing)
             for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
@@ -699,7 +708,9 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             field["sourceRefs"] = source_refs or (
                 [{"type": "manualFact", "title": "人工新增", "field": label_text}] if is_manual else []
             )
-            if is_confirmed and not is_manual:
+            # 人工改过值的清单字段没命中当前规则版本时留在表尾且不计进度；
+            # 人工新增字段本来就在清单外，不标；标了不适用的没有值，也不标。
+            if field["status"] == FACT_STATUS_CONFIRMED and not is_manual:
                 field["outOfSpec"] = True
             fields_by_key[key] = field
 
@@ -712,26 +723,103 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     identity = project.get("identity") if isinstance(project.get("identity"), dict) else {}
     owner = identity.get("owner") or identity.get("customerCanonicalName") or identity.get("customerName") or project.get("owner") or project.get("customerName")
     project_name = first_parse_value.get(fact_label_key("项目名称")) or project.get("name")
-    add_candidate("项目名称", project_name, category="项目基础信息", source_ref={"type": "project", "field": "name", "title": "项目名称"}, confidence=0.86, source_priority=320)
-    add_candidate("招标方", owner, category="项目基础信息", source_ref={"type": "projectIdentity", "field": "owner", "title": "招标方"}, confidence=0.92, source_priority=320)
-    add_candidate("招标人", owner, category="项目基础信息", source_ref={"type": "projectIdentity", "field": "owner", "title": "招标人"}, confidence=0.92, source_priority=320)
-    add_candidate("客户名称", project.get("customerName"), category="项目基础信息", source_ref={"type": "project", "field": "customerName", "title": "客户名称"}, confidence=0.9, source_priority=320)
+    add_candidate("项目名称", project_name, category="项目基础信息", source_ref={"type": "project", "field": "name", "title": "项目名称"}, confidence=0.86, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+    add_candidate("招标方", owner, category="项目基础信息", source_ref={"type": "projectIdentity", "field": "owner", "title": "招标方"}, confidence=0.92, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+    add_candidate("招标人", owner, category="项目基础信息", source_ref={"type": "projectIdentity", "field": "owner", "title": "招标人"}, confidence=0.92, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+    add_candidate("客户名称", project.get("customerName"), category="项目基础信息", source_ref={"type": "project", "field": "customerName", "title": "客户名称"}, confidence=0.9, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
     add_candidate("日期", datetime.now(UTC).strftime("%Y年%m月%d日"), category="系统字段", source_ref={"type": "system", "field": "currentDate", "title": "当前日期"}, confidence=0.62)
 
-    turbine = project_turbine_model(project)
+    turbine_models = project_turbine_models(project)
+    turbine = turbine_models[0] if turbine_models else {}
+    multi_turbine = len(turbine_models) > 1
     model = turbine.get("model") or turbine.get("turbineModel")
     hub_height = turbine.get("hubHeightM")
-    add_candidate("投标机型", model, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型"}, confidence=0.98, source_priority=320)
-    rated_kw = turbine.get("ratedPowerKw")
-    rated_mw = ""
-    if isinstance(rated_kw, (int, float)):
-        rated_mw = f"{rated_kw / 1000:g}"
-    add_candidate("单机容量", rated_mw or rated_kw, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "ratedPowerKw", "title": "单机容量"}, confidence=0.9, unit="MW" if rated_mw else "", source_priority=320)
-    add_candidate("叶轮直径", turbine.get("rotorDiameterM"), category="机型参数", source_ref={"type": "projectTurbineModel", "field": "rotorDiameterM", "title": "叶轮直径"}, confidence=0.9, unit="m", source_priority=320)
-    add_candidate("轮毂高度", hub_height, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "hubHeightM", "title": "轮毂高度"}, confidence=0.86, unit="m", source_priority=320)
+    for index, row in enumerate(turbine_models, start=1):
+        # 单机型退化成不带序号的字段名，与清单第 11/80/81/83/84 行是同一个归一键；
+        # 多机型每行独立成组，不带序号的那几行留给下面的全场口径。
+        prefix = f"机型{index}" if multi_turbine else ""
+        row_model = row.get("model") or row.get("turbineModel")
+        row_rated_kw = row.get("ratedPowerKw")
+        row_rated_mw = f"{row_rated_kw / 1000:g}" if isinstance(row_rated_kw, (int, float)) else ""
+        for order, (label, value, field_name, unit, confidence, priority) in enumerate(
+            (
+                (f"投标机型{index}" if multi_turbine else "投标机型", row_model, "model", "", 0.98, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                (f"{prefix}台数" if multi_turbine else "机组台数", row.get("turbineCount"), "turbineCount", "台", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                (f"{prefix}基础形式", row.get("foundationType"), "foundationType", "", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                (f"{prefix}单机容量", row_rated_mw or row_rated_kw, "ratedPowerKw", "MW" if row_rated_mw else "", 0.9, FACT_SOURCE_PRIORITY_PROJECT),
+                (f"{prefix}叶轮直径", row.get("rotorDiameterM"), "rotorDiameterM", "m", 0.9, FACT_SOURCE_PRIORITY_PROJECT),
+                (f"{prefix}轮毂高度", row.get("hubHeightM"), "hubHeightM", "m", 0.86, FACT_SOURCE_PRIORITY_PROJECT),
+            ),
+            start=1,
+        ):
+            key = fact_label_key(label)
+            if not key:
+                continue
+            turbine_group_by_key[key] = (index, order)
+            turbine_label_by_key[key] = str(row_model or "")
+            add_candidate(
+                label,
+                value,
+                category="机型参数",
+                source_ref={
+                    "type": "projectTurbineModel",
+                    "field": field_name,
+                    "title": label,
+                    "turbineModel": str(row_model or ""),
+                },
+                confidence=confidence,
+                unit=unit,
+                source_priority=priority,
+            )
+    if multi_turbine:
+        # 清单第 11/80/81/83/84 行带 targetFile 和占位符，正文填写靠它们取值，多机型时
+        # 不能空着：机型给全部机型的合并串，台数给各行之和，其余单机参数按第一个机型给，
+        # 来源里标明是哪个机型（各机型取值口径待正文填写支持按机型铺开后再收口）。
+        add_candidate(
+            "投标机型",
+            "、".join(str(row.get("model") or "").strip() for row in turbine_models if str(row.get("model") or "").strip()),
+            category="机型参数",
+            source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型（全部机型）"},
+            confidence=0.98,
+            source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
+        )
+        rated_kw = turbine.get("ratedPowerKw")
+        rated_mw = f"{rated_kw / 1000:g}" if isinstance(rated_kw, (int, float)) else ""
+        for label, value, field_name, unit, confidence in (
+            ("单机容量", rated_mw or rated_kw, "ratedPowerKw", "MW" if rated_mw else "", 0.9),
+            ("叶轮直径", turbine.get("rotorDiameterM"), "rotorDiameterM", "m", 0.9),
+            ("轮毂高度", hub_height, "hubHeightM", "m", 0.86),
+        ):
+            add_candidate(
+                label,
+                value,
+                category="机型参数",
+                source_ref={
+                    "type": "projectTurbineModel",
+                    "field": field_name,
+                    "title": f"{label}（机型1 {model or ''}）",
+                    "turbineModel": str(model or ""),
+                },
+                confidence=confidence,
+                unit=unit,
+                source_priority=FACT_SOURCE_PRIORITY_PROJECT,
+            )
+    # 机组台数取各机型台数之和：弹窗强制每行填正整数，任一行填不出数就不给值，
+    # 回落到招标文件与素材抽取。单机型时这个和就是那一行本身。
+    turbine_counts = [str(row.get("turbineCount") or "").strip() for row in turbine_models]
+    if multi_turbine and turbine_counts and all(count.isdigit() and int(count) > 0 for count in turbine_counts):
+        add_candidate(
+            "机组台数",
+            str(sum(int(count) for count in turbine_counts)),
+            category="机型参数",
+            source_ref={"type": "projectTurbineModel", "field": "turbineCount", "title": "机组台数（各机型之和）"},
+            confidence=0.95,
+            unit="台",
+            source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
+        )
     if model and hub_height:
-        add_candidate("投标方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=320)
-        add_candidate("方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=320)
+        add_candidate("投标方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+        add_candidate("方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
     elif model:
         add_candidate("投标方案", model, category="方案口径", source_ref={"type": "derived", "field": "model", "title": "投标方案"}, confidence=0.64, source_priority=80)
 
@@ -744,7 +832,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             confidence=float(fact.get("confidence") or 0.82),
             required=bool(fact.get("required", False)),
             unit=str(fact.get("unit") or ""),
-            source_priority=260,
+            source_priority=FACT_SOURCE_PRIORITY_TENDER,
         )
 
     for fact in project_material_fact_fields(
@@ -824,13 +912,24 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
 
     fields = list(fields_by_key.values())
+    # 分组标记在 preserve_compatible_existing_fields 之后按归一键补：那一步会用人工值
+    # 整个换掉 field dict，构建时打的标记会丢。
+    for field in fields:
+        group = turbine_group_by_key.get(str(field.get("key") or ""))
+        if group:
+            field["turbineGroup"] = group[0]
+            field["turbineModelLabel"] = turbine_label_by_key.get(str(field.get("key") or ""), "")
     if spec_mode:
         # 以清单为唯一字段骨架：匹配不到 spec 的来源字段不再单独成行，
-        # 只保留 spec 行、人工新增字段，以及旧规则下已经人工确认的兼容字段。
+        # 只保留 spec 行、人工新增字段、旧规则下已经人工确认的兼容字段，
+        # 以及按项目选定机型展开的机型参数行（多机型时这些行不在清单里）。
         fields = [
             field
             for field in fields
-            if field.get("specSeq") is not None or is_manual_fact_field(field) or bool(field.get("outOfSpec"))
+            if field.get("specSeq") is not None
+            or is_manual_fact_field(field)
+            or bool(field.get("outOfSpec"))
+            or field.get("turbineGroup")
         ]
     for field in fields:
         source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
@@ -859,6 +958,11 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     }
     fields.sort(
         key=lambda field: (
+            # 人选的机型参数按机型分组置顶：多机型时页面据此分段显示，
+            # 单机型时只有一组、组内顺序与现在的机型参数段一致。
+            0 if field.get("turbineGroup") else 1,
+            int(field.get("turbineGroup") or 0),
+            turbine_group_by_key.get(str(field.get("key") or ""), (0, 0))[1],
             # 清单模式下，人工新增和清单外历史字段追加在当前规则骨架之后。
             1 if spec_mode and field.get("specSeq") is None else 0,
             category_order.get(str(field.get("category") or ""), 9),

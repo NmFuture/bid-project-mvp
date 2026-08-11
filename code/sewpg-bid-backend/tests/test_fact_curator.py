@@ -199,17 +199,10 @@ def test_apply_summary_preserves_project_spec_total_and_tracks_built_progress() 
     # 项目规则共 10 条，当前表只构建出 4 条；两个口径不能混用。
     assert summary["specTotal"] == 10
     assert summary["specBuiltTotal"] == 4
-    assert summary["specConfirmedCount"] == 1
-    assert summary["specPendingConfirmationCount"] == 1
+    # 三态：4 条里 3 条有值即可用，1 条无值待人工填
+    assert summary["specConfirmedCount"] == 3
     assert summary["specUnfilledCount"] == 1
-    assert summary["specFilledUnconfirmedCount"] == 1
-    assert (
-        summary["specConfirmedCount"]
-        + summary["specPendingConfirmationCount"]
-        + summary["specUnfilledCount"]
-        + summary["specFilledUnconfirmedCount"]
-        == summary["specBuiltTotal"]
-    )
+    assert summary["specConfirmedCount"] + summary["specUnfilledCount"] == summary["specBuiltTotal"]
 
 
 def test_manifest_tender_sources_only_existing(workspace_dirs, monkeypatch) -> None:
@@ -267,7 +260,7 @@ def _apply(suggestions: list[dict], table: dict | None = None) -> tuple[dict, di
     )
 
 
-def test_fill_suggestion_becomes_pending_confirmation() -> None:
+def test_fill_suggestion_lands_as_usable_value() -> None:
     table, report = _apply(
         [
             {
@@ -283,13 +276,14 @@ def test_fill_suggestion_becomes_pending_confirmation() -> None:
     field = table["fields"][0]
     assert field["value"] == "10"
     assert field["unit"] == "MW"
-    assert field["status"] == "pending_confirmation"
+    assert field["status"] == "confirmed"
     ref = field["sourceRefs"][-1]
     assert ref["type"] == "factCurator"
     assert ref["action"] == "fill"
     assert ref["confidence"] == 0.92
     assert report["filled"] == ["招标单机容量出口端mw"]
-    assert table["summary"]["pendingConfirmationCount"] == 2  # 本字段 + 原 FACT-0003
+    # 4 条字段全部有值：本轮补上的 + 原有 3 条
+    assert table["summary"]["confirmedCount"] == 4
 
 
 def test_fix_suggestion_replaces_value_and_keeps_old_in_alternatives() -> None:
@@ -308,7 +302,7 @@ def test_fix_suggestion_replaces_value_and_keeps_old_in_alternatives() -> None:
     )
     field = table["fields"][1]
     assert field["value"] == "7.36"
-    assert field["status"] == "pending_confirmation"
+    assert field["status"] == "confirmed"
     assert field["alternatives"][0]["value"] == old_value
     assert field["sourceRefs"][-1]["type"] == "factCurator"
     assert report["fixed"] == ["年平均风速"]
@@ -329,7 +323,7 @@ def test_confirm_advice_keeps_existing_value() -> None:
     )
     field = table["fields"][2]
     assert field["value"] == "V2 保证值"  # 有值口径建议不改值
-    assert field["status"] == "pending_confirmation"
+    assert field["status"] == "confirmed"
     assert field["sourceRefs"][-1]["type"] == "factCurator"
     assert field["sourceRefs"][-1]["action"] == "confirm-advice"
     assert report["advised"] == ["电量承诺函版本"]
@@ -351,7 +345,7 @@ def test_confirm_advice_with_empty_suggested_value_keeps_evidence() -> None:
 
     field = table["fields"][2]
     assert field["value"] == "V2 保证值"
-    assert field["status"] == "pending_confirmation"
+    assert field["status"] == "confirmed"
     assert field["sourceRefs"][-1]["evidence"] == "现值 V2 保证值与承诺函原文口径一致"
     assert field["updatedBy"] == "测试用户"
     assert report["advised"] == ["电量承诺函版本"]
@@ -376,8 +370,8 @@ def test_confirmed_field_never_overwritten() -> None:
     assert field["status"] == "confirmed"
     assert all(ref.get("type") != "factCurator" for ref in field["sourceRefs"])
     assert report["skippedConfirmed"] == ["投标机型"]
-    # 表级 summary 也不因 AI 建议出现 confirmed 以外的变化
-    assert table["summary"]["confirmedCount"] == 1
+    # 平台输入字段被硬门禁挡住，值没被 AI 改；表内原有 3 条有值字段计数不变
+    assert table["summary"]["confirmedCount"] == 3
 
 
 def test_not_found_keeps_unextracted_and_writes_notes() -> None:
@@ -520,9 +514,9 @@ def test_real_world_key_forms_matched_by_normalization() -> None:
     )
     by_key = {field["key"]: field for field in table["fields"]}
     assert by_key["spec-090"]["value"] == "97"
-    assert by_key["spec-090"]["status"] == "pending_confirmation"
+    assert by_key["spec-090"]["status"] == "confirmed"
     assert by_key["极端工况-Mx（kNm）"]["value"] == "12500"
-    assert by_key["极端工况-Mx（kNm）"]["status"] == "pending_confirmation"
+    assert by_key["极端工况-Mx（kNm）"]["status"] == "confirmed"
     assert sorted(report["filled"]) == ["单台可利用率", "极端工况-mx（knm）"]
     assert report["ignored"] == []
 
@@ -564,7 +558,7 @@ def test_confirmed_table_downgraded_when_new_pending_field() -> None:
         ],
         table=_table(fields, status="confirmed"),
     )
-    assert table["fields"][0]["status"] == "pending_confirmation"
+    assert table["fields"][0]["status"] == "confirmed"
     assert table["status"] == "draft"  # 出现新的非终态字段，表级降回 draft 待人工
     assert table["confirmedAt"] == ""
 
@@ -800,7 +794,7 @@ class FactCurateApiTests(unittest.TestCase):
         by_key = {field["key"]: field for field in table["fields"]}
         filled = by_key[fill_target["key"]]
         self.assertEqual(filled["value"], "按招标文件要求")
-        self.assertEqual(filled["status"], "pending_confirmation")
+        self.assertEqual(filled["status"], "confirmed")
         self.assertEqual(filled["sourceRefs"][-1]["type"], "factCurator")
         confirmed = by_key[confirmed_target["key"]]
         self.assertEqual(confirmed["status"], "confirmed")
@@ -1115,8 +1109,8 @@ def test_cross_project_evidence_appends_source_note() -> None:
         cross_materials=cross_materials,
     )
     field = table["fields"][0]
-    # 落表状态规则不变：一律 pending_confirmation；notes 追加跨项目来源标注
-    assert field["status"] == "pending_confirmation"
+    # 落表状态：有值即可用；notes 追加跨项目来源标注
+    assert field["status"] == "confirmed"
     assert "跨项目来源：乙项目/乙项目风资源报告.docx" in field["notes"]
     assert report["filled"] == ["招标单机容量出口端mw"]
 

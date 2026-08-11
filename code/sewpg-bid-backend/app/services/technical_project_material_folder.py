@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.services.identity import build_project_material_scope
 from app.services.peripheral import PeripheralError
 from app.services.technical_material_store import technical_material_store
 
@@ -36,6 +35,27 @@ def _walk_tree(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+async def resolve_technical_project_folder_path(project_id: str) -> str:
+    """按项目 id 找它在「技术标/项目定制」下的目录路径，找不到返回空串。
+
+    走 identity_options 而不是 raw_tree：技术标目录树节点不带 projectId，
+    只有 identity_options 会把目录归属的项目 id 和路径对上。
+    """
+
+    target_id = str(project_id or "").strip()
+    if not target_id:
+        return ""
+    payload = await technical_material_store.identity_options()
+    for item in payload.get("projects") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("projectId") or item.get("id") or "") != target_id:
+            continue
+        path = str(item.get("folderPath") or "")
+        return path if path.startswith(f"{TECHNICAL_PROJECT_ROOT}/") else ""
+    return ""
+
+
 async def prepare_technical_project_material_folder(
     project: dict[str, Any],
     *,
@@ -44,8 +64,9 @@ async def prepare_technical_project_material_folder(
     """按项目名称准备项目目录，并保留稳定项目 ID 作为目录归属标识。"""
 
     project_name = _project_folder_name(project)
-    scope = build_project_material_scope(project)
-    material_project_id = str((scope.get("identity") or {}).get("projectId") or "").strip()
+    # 目录归属恒为项目自身 id：素材来源项目只是复制模板，不能改写本项目的素材身份，
+    # 否则下面的 owned_node 会认到来源项目的目录并把它改名（目录劫持）。
+    material_project_id = str(project.get("id") or "").strip()
     if not material_project_id:
         raise PeripheralError(400, "项目素材 ID 为空。", "PROJECT_ID_REQUIRED")
 

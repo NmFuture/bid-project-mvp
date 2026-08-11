@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { technicalMaterialsAPI } from '../../../api'
+import { technicalMaterialsAPI, technicalProjectsAPI } from '../../../api'
 import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import MaterialPipelineProgress from '../components/MaterialPipelineProgress'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
@@ -1025,6 +1025,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [tagFilterSearch, setTagFilterSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [materialCopyState, setMaterialCopyState] = useState(null)
 
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [uploadKind, setUploadKind] = useState(() => readStoredUploadKind())
@@ -1176,6 +1177,33 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   useEffect(() => {
     persistUploadKind(uploadKind)
   }, [uploadKind])
+
+  // 来源项目素材在后台复制，边复制边入库：轮询进度，跑完刷新一次目录树。
+  useEffect(() => {
+    if (!linkedProjectId) return undefined
+    let cancelled = false
+    let timer = 0
+    const poll = async () => {
+      try {
+        const detail = await technicalProjectsAPI.get(linkedProjectId)
+        if (cancelled) return
+        const state = detail?.materialCopyState || null
+        setMaterialCopyState(state)
+        if (String(state?.status || '') === 'running') {
+          timer = window.setTimeout(poll, 2000)
+        } else if (state) {
+          await loadLibrary({ silent: true })
+        }
+      } catch {
+        // 进度查询失败不打断素材库本身，下次进入页面再取
+      }
+    }
+    poll()
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [linkedProjectId, loadLibrary])
 
   useEffect(() => {
     if (!previewFullscreen) return undefined
@@ -2008,6 +2036,38 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       />
 
       <MaterialPipelineProgress />
+
+      {materialCopyState?.status && materialCopyState.status !== 'idle' && (
+        <div
+          className={`rounded-xl border p-4 text-sm ${
+            materialCopyState.status === 'failed'
+              ? 'border-error/25 bg-error-container/40 text-error'
+              : 'border-surface-container-high bg-surface-container-low/60 text-on-surface'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[18px]">
+              {materialCopyState.status === 'running' ? 'sync' : materialCopyState.status === 'failed' ? 'error' : 'check_circle'}
+            </span>
+            <span>{materialCopyState.message || '正在归集来源项目素材。'}</span>
+          </div>
+          {materialCopyState.status === 'running' && materialCopyState.total > 0 && (
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-container-high">
+              <div
+                className="h-full rounded-full bg-primary transition-[width]"
+                style={{ width: `${Math.round((materialCopyState.copied / materialCopyState.total) * 100)}%` }}
+              />
+            </div>
+          )}
+          {(materialCopyState.failed || []).length > 0 && (
+            <ul className="mt-2 list-disc pl-5 text-xs">
+              {materialCopyState.failed.map((item) => (
+                <li key={item.name}>{item.name}：{item.reason}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {linkedProjectId && (
         <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">

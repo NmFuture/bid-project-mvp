@@ -10,16 +10,18 @@ import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, workspaceRoute } from '../../../utils/workspace'
 import {
-  formatParseDuration,
   isParseProgressFailed,
   isUploadAndRunTimeout,
   mergeMonotonicParseProgress,
+  parseDisplayPercentage,
   parseElapsedSeconds,
   pollParseProgressOnce,
   recoverUploadAndRunTimeout,
   shouldPollParseProgress,
   summarizeParseProgress,
 } from '../technicalParseUploadRecovery'
+import BidProgressPanel from '../../../components/shared/BidProgressPanel'
+import { progressElapsedLine } from '../../../utils/progressDuration'
 import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
 import {
   selectTechnicalParseProjectId,
@@ -493,6 +495,7 @@ function TechnicalInterpretationView({ groups = [] }) {
 
 const TECHNICAL_STOP_PARSE_MESSAGE = '已请求停止技术标解析任务。'
 const isStoppedParseStatus = (status) => status === 'stopped' || status === 'cancelled'
+const RUNNING_PARSE_STATUSES = new Set(['running', 'processing', 'queued'])
 
 const buildStoppedParseProgress = (previous, summary) => ({
   status: previous?.status === 'cancelled' ? 'cancelled' : 'stopped',
@@ -1257,64 +1260,22 @@ export default function TechnicalTenderReview({ showToast }) {
       : parseProgress
     const progressSummary = summarizeParseProgress(progress)
     const status = progressSummary.status
-    const summary = progressSummary.summary || '正在上传并解析技术招标文件，请稍候。'
-    const badgeClass = progressSummary.tone === 'danger'
-      ? 'bg-error-container text-error'
-      : progressSummary.tone === 'warning'
-        ? 'bg-tertiary-container text-on-tertiary-container'
-        : isStoppedParseStatus(status)
-          ? 'bg-surface-container-high text-on-surface-variant'
-          : progressSummary.tone === 'success'
-            ? 'bg-primary/10 text-primary'
-            : 'bg-primary/10 text-primary'
-    const barClass = progressSummary.tone === 'danger'
-      ? 'bg-error'
-      : progressSummary.tone === 'warning'
-        ? 'bg-tertiary'
-        : 'bg-primary'
-    const elapsedDurationText = formatParseDuration(parseElapsedSeconds(progress, parseProgressClock))
-    const elapsedLineText = elapsedDurationText
-      ? `${status === 'completed' ? '总耗时' : '已运行'} ${elapsedDurationText}`
-      : ''
+    const stopped = isStoppedParseStatus(status)
+    const running = RUNNING_PARSE_STATUSES.has(status)
 
     return (
-      <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className={[
-              'material-symbols-outlined mt-0.5 text-[20px]',
-              progressSummary.tone === 'danger'
-                ? 'text-error'
-                : status === 'completed'
-                  ? 'text-secondary'
-                  : isStoppedParseStatus(status)
-                    ? 'text-outline'
-                    : 'animate-spin-slow text-primary',
-            ].join(' ')}>
-              {progressSummary.tone === 'danger'
-                ? 'error'
-                : status === 'completed'
-                  ? 'check_circle'
-                  : isStoppedParseStatus(status)
-                    ? 'stop_circle'
-                    : 'progress_activity'}
-            </span>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold tabular-nums text-on-surface">{summary}</p>
-              {elapsedLineText ? (
-                <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedLineText}</p>
-              ) : null}
-            </div>
-          </div>
-          <span className={['shrink-0 self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums', badgeClass].join(' ')}
-          >
-            {progressSummary.statusText} · {progressSummary.percentage}%
-          </span>
-        </div>
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-          <div className={['h-full rounded-full transition-all', barClass].join(' ')} style={{ width: `${progressSummary.percentage}%` }} />
-        </div>
-      </div>
+      <BidProgressPanel
+        className="mt-4 rounded-md border-x border-y"
+        tone={stopped && progressSummary.tone !== 'danger' ? 'neutral' : progressSummary.tone}
+        icon={stopped && progressSummary.tone !== 'danger' ? 'stop_circle' : ''}
+        detail={progressSummary.summary || '正在上传并解析技术招标文件，请稍候。'}
+        elapsedText={progressElapsedLine(
+          parseElapsedSeconds(progress, parseProgressClock),
+          { finished: status === 'completed' || isParseProgressFailed(progress) },
+        )}
+        percentage={parseDisplayPercentage(progress)}
+        running={running && !stopped}
+      />
     )
   }
 

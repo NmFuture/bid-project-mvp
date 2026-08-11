@@ -161,8 +161,8 @@ class _ChapterDecisionAggregator:
             pass
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
-# 注入 S2 manifest 的事实表状态：已确认/已抽取/待人工确认的值可信可用；
-# 未提取/缺来源/冲突/不适用于不注入。
+# 注入 S2 manifest 的事实表状态：有值即可用（confirmed）；未提取与不适用不注入。
+# 历史值 extracted/pending_confirmation 一并保留，旧项目状态未重建时仍能注入。
 MANIFEST_FACT_VALUE_STATUSES = {"confirmed", "extracted", "pending_confirmation"}
 
 
@@ -653,6 +653,7 @@ def _run_parallel_outline_chapters(
             }
             if appendix_items:
                 futures[executor.submit(run_appendix)] = ("appendix", None)
+            chapter_failures: list[tuple[str, BaseException]] = []
             for future in as_completed(futures):
                 kind, target = futures[future]
                 if kind == "appendix":
@@ -665,9 +666,25 @@ def _run_parallel_outline_chapters(
                             exc,
                         )
                     continue
-                chapter_id, session_id = future.result()
+                # 章节失败不当场掀桌：先把其余章节收完，再统一决定怎么降级。
+                try:
+                    chapter_id, session_id = future.result()
+                except (Exception, SystemExit) as exc:
+                    failed_id = str((target or {}).get("chapter_id") or "")
+                    chapter_failures.append((failed_id, exc))
+                    logger.warning("S2 章节决策失败：%s：%s", failed_id, exc)
+                    continue
                 session_ids[chapter_id] = session_id
                 aggregator.mark_done(chapter_id)
+
+        # 合并要求每章判完（decision_workflow.merge_chapter_decisions），部分合并会把
+        # 半成品写进主状态，所以这里不做部分合并，直接降级到调用方已有的串行接力：
+        # 主 work_dir 未被并行阶段写过，串行会从头把所有判断补齐。
+        if chapter_failures:
+            failed_ids = "、".join(chapter_id or "未知章节" for chapter_id, _ in chapter_failures)
+            raise _ChapterParallelUnsupported(
+                f"S2 章节并行决策有 {len(chapter_failures)} 章未完成（{failed_ids}），改用串行接力"
+            ) from chapter_failures[0][1]
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         work_dir = Path(str(manifest.get("workDir") or manifest_path.parent)).expanduser()

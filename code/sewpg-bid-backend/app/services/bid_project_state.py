@@ -60,6 +60,7 @@ def normalize_project_identity_state(project: dict[str, Any]) -> dict[str, Any]:
     project["materialProjectCode"] = identity.get("projectCode") or ""
     project["materialProjectName"] = identity.get("projectName") or ""
     project["materialProjectMode"] = identity.get("materialProjectMode") or project.get("materialProjectMode") or ""
+    project["materialSourceProjectId"] = str(project.get("materialSourceProjectId") or "")
     turbine = project_turbine_model(project)
     turbine_models = normalize_project_turbine_models(project.get("turbineModels"))
     if not turbine_models and turbine:
@@ -93,6 +94,7 @@ def project_summary_state(project: dict[str, Any]) -> dict[str, Any]:
         "materialProjectCode": project.get("materialProjectCode") or identity.get("projectCode") or "",
         "materialProjectName": project.get("materialProjectName") or identity.get("projectName") or "",
         "materialProjectMode": project.get("materialProjectMode") or identity.get("materialProjectMode") or "",
+        "materialSourceProjectId": str(project.get("materialSourceProjectId") or ""),
         "turbineModel": copy.deepcopy(turbine),
         "selectedTurbineModel": copy.deepcopy(turbine),
         "turbineModels": copy.deepcopy(project.get("turbineModels") or ([] if not turbine else [turbine])),
@@ -126,6 +128,7 @@ def project_detail_state(project: dict[str, Any]) -> dict[str, Any]:
         "isKeyAccount": project["isKeyAccount"],
         "keyAccountId": project["keyAccountId"],
         "reviewComment": str(project.get("reviewComment") or ""),
+        "materialCopyState": copy.deepcopy(project.get("materialCopyState") or {}),
     }
 
 
@@ -310,6 +313,7 @@ def create_project_state(project_id: str, data: dict[str, Any]) -> dict[str, Any
         "materialProjectId": str(data.get("materialProjectId") or ""),
         "materialProjectCode": str(data.get("materialProjectCode") or ""),
         "materialProjectName": str(data.get("materialProjectName") or data.get("name") or ""),
+        "materialSourceProjectId": str(data.get("materialSourceProjectId") or ""),
         "owner": str(data.get("owner") or data.get("customerName") or ""),
         "manager": str(data.get("manager") or ""),
         "startDate": str(data.get("startDate") or ""),
@@ -368,6 +372,7 @@ def update_project_state(project: dict[str, Any], project_id: str, data: dict[st
         "materialProjectId",
         "materialProjectCode",
         "materialProjectName",
+        "materialSourceProjectId",
         "owner",
         "manager",
         "startDate",

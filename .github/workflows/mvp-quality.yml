@@ -40,6 +40,9 @@ jobs:
       - name: Test material pipeline helpers
         run: npm run test:material-pipeline
 
+      - name: Test technical UI contracts
+        run: npm run test:technical-ui-contracts
+
       - name: Build
         run: npm run build
 
