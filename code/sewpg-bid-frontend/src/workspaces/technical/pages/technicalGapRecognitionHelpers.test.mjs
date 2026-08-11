@@ -236,18 +236,20 @@ test('共创导出页二次确认后沿用正文生成接口并刷新最新文�
   assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })
 
-test('事实表清单和素材范围变更后自动重建，不保留手动刷新入口', async () => {
+test('素材范围变更后自动重建事实表，不保留手动刷新入口', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
-  const uploadStart = source.indexOf('const handleFactSpecsUpload')
   const scopeStart = source.indexOf('const handleSaveMaterialPaths')
   const curateStart = source.indexOf('const handleCurateFacts')
-  const uploadFlow = source.slice(uploadStart, scopeStart)
   const scopeFlow = source.slice(scopeStart, curateStart)
 
-  assert.ok(uploadStart >= 0 && scopeStart > uploadStart && curateStart > scopeStart)
-  assert.ok(uploadFlow.indexOf('uploadFactSpecs') < uploadFlow.indexOf('buildFacts'))
+  assert.ok(scopeStart >= 0 && curateStart > scopeStart)
   assert.ok(scopeFlow.indexOf('saveMaterialSources') < scopeFlow.indexOf('buildFacts'))
-  assert.doesNotMatch(source, /onBuild|刷新事实/)
+  // 没有独立的「生成/重建事实表」按钮：素材匹配完成后后端自动建一次，
+  // 之后重建走保存参考范围与「刷新并 AI 填充」两条既有流程
+  assert.doesNotMatch(source, /onBuild\b|handleBuildFacts/)
+  // 清单只有全局一份，本页没有上传入口，只跳转到素材库 · 规则页
+  assert.doesNotMatch(source, /uploadFactSpecs/)
+  assert.match(source, /workspace\/tech\/materials\/rules/)
 })
 
 test('事实表弹窗筛选时保持固定高度并只滚动表格区域', async () => {

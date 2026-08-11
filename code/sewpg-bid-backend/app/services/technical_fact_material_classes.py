@@ -20,7 +20,7 @@ from typing import Any
 
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.technical_fact_field_specs import fillable_specs
-from app.services.technical_fact_spec_versions import FACT_SPECS_SOURCE_PROJECT, resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_fact_table import (
     material_is_fill_template,
     project_fact_material_index,
@@ -151,11 +151,9 @@ def build_fact_material_check(project: dict[str, Any], gap_state: dict[str, Any]
 
     同步重活（素材索引内部经 run_awaitable_sync 桥接异步），调用方须放工作线程。
     """
-    # 规则按项目绑定版本取（R06-B04-02）；项目未上传实时表时回落系统默认清单
-    project_specs, specs_meta = resolve_project_specs(gap_state)
-    required = required_material_classes(
-        project_specs if specs_meta.get("source") == FACT_SPECS_SOURCE_PROJECT else None
-    )
+    # 清单全局唯一，所有项目同一份；尚未上传时为空，required 也就是空
+    project_specs, _specs_meta = resolve_fact_specs()
+    required = required_material_classes(project_specs)
     materials = project_fact_material_index(project, gap_state)
     project_name = str(project.get("name") or "")
     matched_by_class: dict[str, list[dict[str, Any]]] = {key: [] for key in required}

@@ -25,7 +25,7 @@ from uuid import uuid4
 
 from app.core.config import BASE_DIR, settings
 from app.services.opencode_client import OpencodeClient
-from app.services.technical_fact_spec_versions import resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_fact_material_classes import (
     build_fact_material_check,
     classify_material,
@@ -279,7 +279,7 @@ def build_fact_curator_manifest(
     # 按项目绑定的规则版本关联 spec 补 referenceFile/materialClass（R06-B04-02：
     # 不再读系统公共清单；项目无绑定时 resolve_project_specs 回落系统默认），
     # 供 skill 按字段 materialClass 定向找素材、按 referenceFile 分辨招标文件字段
-    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    project_specs, fact_specs_meta = resolve_fact_specs()
     spec_by_key, spec_by_seq = _spec_reference_maps(project_specs)
     for field in fields:
         spec = spec_by_key.get(str(field.get("specKey") or ""))

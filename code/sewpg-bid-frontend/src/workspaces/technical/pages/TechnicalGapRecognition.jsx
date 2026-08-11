@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
@@ -519,6 +519,105 @@ const FactMaintenanceModal = ({
     .map((field, index) => ({ field, index }))
     .filter(({ field }) => matchesFactFilter(field))
 
+  // 多机型项目按机型分段成块显示（后端已把这些行按 turbineGroup 排到表首）。
+  // 单机型只有一组，不分块，表现与改动前一致。
+  const turbineGroupCount = new Set(
+    fields.map((field) => Number(field.turbineGroup) || 0).filter(Boolean),
+  ).size
+  // 连续同组的行归成一段：机型段渲染成带边框的小块，其余段平铺
+  const factRowSections = []
+  visibleRows.forEach((row) => {
+    const group = turbineGroupCount > 1 ? Number(row.field.turbineGroup) || 0 : 0
+    const last = factRowSections[factRowSections.length - 1]
+    if (last && last.group === group) {
+      last.rows.push(row)
+      return
+    }
+    factRowSections.push({
+      group,
+      // 组内各行的机型名相同，取第一行的即可
+      modelLabel: String(row.field.turbineModelLabel || '').trim(),
+      rows: [row],
+    })
+  })
+  // 机型块标题右侧的摘要：台数与基础形式已在块内成行，这里只做一眼可辨的概览
+  const factGroupSummary = (rows) => {
+    const valueOf = (suffix) =>
+      String(rows.find(({ field }) => String(field.label || '').endsWith(suffix))?.field.value || '').trim()
+    const count = valueOf('台数')
+    const foundation = valueOf('基础形式')
+    return [count ? `${count} 台` : '', foundation].filter(Boolean).join(' · ')
+  }
+
+  // index 是 factFields 里的原始下标，onFieldChange 按它回写，分段渲染不能改
+  const renderFactRow = ({ field, index }) => {
+    const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+    const isEmptyStatus = normalizeFactFieldStatus(field.status) === 'unextracted'
+    const fieldNames = new Set([field.label, field.reviewLabel].map((value) => String(value || '').trim()).filter(Boolean))
+    const allRefPaths = uniqueStrings(asObjectArray(field.sourceRefs).map(factRefPath))
+      .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
+    const refPaths = allRefPaths.slice(0, 2)
+    const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
+    return (
+      <div
+        key={field.id || `${field.label}-${index}`}
+        className="grid min-h-[60px] items-center transition-colors hover:bg-surface-container-low/60"
+        style={factRowGridStyle}
+        role="row"
+      >
+        <div className="min-w-0 px-4 py-3" role="cell">
+          {isManualField ? (
+            <input
+              value={field.label || ''}
+              onChange={(event) => onFieldChange(index, 'label', event.target.value)}
+              placeholder="字段名称"
+              className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-3 text-sm font-semibold text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+            />
+          ) : (
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
+              {field.needsConfirmation ? (
+                <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径建议人工核一遍'}>
+                  核口径
+                </span>
+              ) : null}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3" role="cell">
+          <input
+            value={field.value || ''}
+            onChange={(event) => onFieldChange(index, 'value', event.target.value)}
+            placeholder="待填写"
+            aria-label={`${field.label || '字段'}的事实值`}
+            className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
+              isEmptyStatus
+                ? 'border-tertiary bg-tertiary-fixed/35'
+                : 'border-surface-container-high bg-surface'
+            }`}
+          />
+        </div>
+        <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
+          {refPaths.length ? (
+            <div className="space-y-1">
+              {refPaths.map((refPath) => (
+                <div key={refPath} className="flex min-w-0 items-center gap-1.5" title={refPath}>
+                  <span className="material-symbols-outlined shrink-0 text-[15px] text-outline">description</span>
+                  <span className="truncate">{factRefFileName(refPath)}</span>
+                </div>
+              ))}
+              {hiddenRefCount ? (
+                <div className="pl-[21px] text-[11px] text-outline">另有 {hiddenRefCount} 份素材</div>
+              ) : null}
+            </div>
+          ) : (
+            <span className="text-outline">暂无匹配素材</span>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   const factFilterChipClass = (active, tone, count) =>
     `rounded-md px-2.5 py-1 text-xs font-semibold ${tone} ${
       active ? 'ring-2 ring-primary/70' : 'hover:brightness-95'
@@ -850,77 +949,50 @@ const FactMaintenanceModal = ({
                       <div className="px-4 py-2.5" role="columnheader">事实值</div>
                       <div className="px-4 py-2.5" role="columnheader">来源素材</div>
                     </div>
-                    <div className="divide-y divide-surface-container-high" role="rowgroup">
-                      {visibleRows.map(({ field, index }) => {
-                      const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
-                      const normalizedStatus = normalizeFactFieldStatus(field.status)
-                      const isEmptyStatus = normalizedStatus === 'unextracted'
-                      const fieldNames = new Set([field.label, field.reviewLabel].map((value) => String(value || '').trim()).filter(Boolean))
-                      const allRefPaths = uniqueStrings(asObjectArray(field.sourceRefs).map(factRefPath))
-                        .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
-                      const refPaths = allRefPaths.slice(0, 2)
-                      const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
-                      return (
-                        <div
-                          key={field.id || `${field.label}-${index}`}
-                          className="grid min-h-[60px] items-center transition-colors hover:bg-surface-container-low/60"
-                          style={factRowGridStyle}
-                          role="row"
-                        >
-                          <div className="min-w-0 px-4 py-3" role="cell">
-                            {isManualField ? (
-                              <input
-                                value={field.label || ''}
-                                onChange={(event) => onFieldChange(index, 'label', event.target.value)}
-                                placeholder="字段名称"
-                                className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-3 text-sm font-semibold text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-                              />
-                            ) : (
-                              <div className="flex min-w-0 items-center gap-2">
-                                <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
-                                {field.needsConfirmation ? (
-                                  <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径建议人工核一遍'}>
-                                    核口径
+                    <div>
+                      {factRowSections.map((section) => {
+                        const summary = section.group ? factGroupSummary(section.rows) : ''
+                        const rows = (
+                          <div className="divide-y divide-surface-container-high" role="rowgroup">
+                            {section.rows.map(renderFactRow)}
+                          </div>
+                        )
+                        if (!section.group) {
+                          return (
+                            <Fragment key={`fact-section-shared-${section.rows[0].index}`}>
+                              {turbineGroupCount > 1 ? (
+                                <div className="flex items-center gap-1.5 border-y border-surface-container-high bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant">
+                                  <span className="material-symbols-outlined text-[15px] text-outline">public</span>
+                                  全场共用
+                                </div>
+                              ) : null}
+                              {rows}
+                            </Fragment>
+                          )
+                        }
+                        return (
+                          <div key={`fact-section-turbine-${section.group}`} className="px-3 pb-1 pt-3">
+                            <div className="overflow-hidden rounded-lg border border-primary/30 shadow-sm">
+                              <div className="flex items-center gap-2 border-b border-primary/20 bg-primary/[0.08] px-3 py-2">
+                                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold leading-none text-on-primary">
+                                  {section.group}
+                                </span>
+                                <span className="truncate text-sm font-semibold text-on-surface" title={section.modelLabel}>
+                                  {section.modelLabel || `机型${section.group}`}
+                                </span>
+                                {summary ? (
+                                  <span className="ml-auto shrink-0 rounded-md bg-surface px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
+                                    {summary}
                                   </span>
                                 ) : null}
                               </div>
-                            )}
+                              {rows}
+                            </div>
                           </div>
-                          <div className="px-4 py-3" role="cell">
-                            <input
-                              value={field.value || ''}
-                              onChange={(event) => onFieldChange(index, 'value', event.target.value)}
-                              placeholder="待填写"
-                              aria-label={`${field.label || '字段'}的事实值`}
-                              className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
-                                isEmptyStatus
-                                  ? 'border-tertiary bg-tertiary-fixed/35'
-                                  : 'border-surface-container-high bg-surface'
-                              }`}
-                            />
-                          </div>
-                          <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
-                            {refPaths.length ? (
-                              <div className="space-y-1">
-                                {refPaths.map((refPath) => (
-                                  <div key={refPath} className="flex min-w-0 items-center gap-1.5" title={refPath}>
-                                    <span className="material-symbols-outlined shrink-0 text-[15px] text-outline">description</span>
-                                    <span className="truncate">{factRefFileName(refPath)}</span>
-                                  </div>
-                                ))}
-                                {hiddenRefCount ? (
-                                  <div className="pl-[21px] text-[11px] text-outline">另有 {hiddenRefCount} 份素材</div>
-                                ) : null}
-                              </div>
-                            ) : (
-                              <span className="text-outline">暂无匹配素材</span>
-                            )}
-                          </div>
-                        </div>
-                      )
+                        )
                       })}
                       {!visibleRows.length ? (
-                        <div className="px-4 py-10 text-center text-xs text-outline" role="row">
+                        <div className="px-4 py-10 text-center text-xs text-outline">
                           没有符合「{factFilter?.label}」筛选条件的字段
                         </div>
                       ) : null}
@@ -1897,9 +1969,9 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   const ensureFactTableReady = async () => {
     if (factTable?.status === 'confirmed') return true
-    // 未上传事实表清单的项目不出字段：清单维护入口在素材库 · 规则页，引导跳转
+    // 清单全局唯一且尚未上传时不出字段：维护入口在素材库 · 规则页，引导跳转
     if (!factSpecsMeta.imported && !factFields.length) {
-      if (window.confirm('尚未上传项目事实表清单，系统无法提取要填写的字段。是否前往素材库 · 规则页上传？')) {
+      if (window.confirm('尚未上传事实表清单，系统无法提取要填写的字段。是否前往素材库 · 规则页上传？')) {
         navigate('/workspace/tech/materials/rules')
       }
       return false

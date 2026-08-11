@@ -246,7 +246,7 @@ class EnrichFactTableTests(unittest.TestCase):
         self.specs = [
             {"key": "投标机型", "placeholder": "[投标机型，待填写]", "targetFile": "客户定制/华能/待填写-x.docx"},
         ]
-        patch = mock.patch.object(module, "resolve_project_specs", side_effect=lambda gap_state: (self.specs, {}))
+        patch = mock.patch.object(module, "resolve_fact_specs", side_effect=lambda: (self.specs, {}))
         patch.start()
         self.addCleanup(patch.stop)
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-"""填表规则版本化与项目绑定（R06-B04-02）测试。
+"""填表规则（事实表字段清单）全局唯一 + 版本化测试。
 
-覆盖验收标准：
-- 项目 A/B 交错上传与运行互不污染（各自 build 始终用自己的规则版本）；
-- B 上传新版本不改变 A 的绑定；
+清单与项目无关：规则页上传一份，所有项目按同一张表去各自的招标文件与素材里找值。
+覆盖：
+
+- 多个项目共用同一份清单，各自 build 的字段骨架一致；
+- 上传新版本后所有项目重建都用新版（不再存在项目各自绑定的旧快照）；
 - 每次上传生成不可变版本文件（ruleId/版本号/上传人/时间/sha256），重启后可从数据卷读回；
-- 无绑定项目回落系统默认规则；
-- AI 维护（curator）manifest 按项目绑定版本关联 spec。
+- 尚未上传清单时事实表建不出来，并提示去规则页上传；
+- AI 维护（curator）manifest 按当前生效的全局清单关联 spec。
 """
 
 import hashlib
@@ -22,15 +24,21 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services import technical_fact_curator as curator
+from app.services.auth_service import current_user
 from app.services.store import store
-from app.services.technical_fact_field_specs import load_specs
+from app.services.technical_fact_field_specs import clear_specs_cache, load_specs
+from app.services.technical_fact_spec_global import (
+    GLOBAL_FACT_SPECS_PROJECT_ID,
+    resolve_fact_specs,
+)
 from app.services.technical_fact_spec_import import EXPECTED_HEADER
 from app.services.technical_fact_spec_versions import (
-    FACT_SPECS_SOURCE_DEFAULT,
-    FACT_SPECS_SOURCE_PROJECT,
+    FACT_SPECS_SOURCE_GLOBAL,
     load_fact_spec_version,
-    resolve_project_specs,
 )
+
+TEST_USER = {"id": "u-specs", "name": "清单测试用户"}
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _build_xlsx(path: Path, labels: list[str]) -> Path:
@@ -43,7 +51,7 @@ def _build_xlsx(path: Path, labels: list[str]) -> Path:
     return path
 
 
-class ProjectFactSpecVersionsTests(unittest.TestCase):
+class GlobalFactSpecVersionsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         base = Path(self.temp_dir.name)
@@ -51,25 +59,33 @@ class ProjectFactSpecVersionsTests(unittest.TestCase):
             settings.uploads_dir,
             settings.documents_dir,
             settings.parsed_dir,
+            settings.fact_specs_override_path,
             settings.fact_specs_versions_dir,
         )
         settings.uploads_dir = base / "uploads"
         settings.documents_dir = base / "documents"
         settings.parsed_dir = base / "parsed"
+        # conftest 的 autouse 夹具装了一份 148 条清单；这里要从「没有清单」起步
+        settings.fact_specs_override_path = base / "documents" / "technical_fact_field_specs.override.json"
         settings.fact_specs_versions_dir = base / "fact_spec_versions"
         settings.ensure_dirs()
+        clear_specs_cache()
 
         store.reset_for_tests()
+        app.dependency_overrides[current_user] = lambda: dict(TEST_USER)
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
 
     def tearDown(self) -> None:
         self.client.close()
+        app.dependency_overrides.pop(current_user, None)
         (
             settings.uploads_dir,
             settings.documents_dir,
             settings.parsed_dir,
+            settings.fact_specs_override_path,
             settings.fact_specs_versions_dir,
         ) = self._orig_dirs
+        clear_specs_cache()
         self.temp_dir.cleanup()
 
     def _create_project(self, name: str) -> str:
@@ -97,17 +113,11 @@ class ProjectFactSpecVersionsTests(unittest.TestCase):
         store._persist_project(project)
         return project_id
 
-    def _upload_specs(self, project_id: str, path: Path, filename: str = "实时表.xlsx"):
+    def _upload_specs(self, path: Path, filename: str = "事实表清单.xlsx"):
         with path.open("rb") as handle:
             return self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
-                files={
-                    "file": (
-                        filename,
-                        handle,
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                },
+                "/api/technical/materials/rules/fact-specs",
+                files={"file": (filename, handle, XLSX_MIME)},
             )
 
     def _build_facts(self, project_id: str) -> dict:
@@ -115,164 +125,102 @@ class ProjectFactSpecVersionsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    def test_interleaved_uploads_and_builds_stay_isolated(self) -> None:
+    def test_all_projects_share_one_global_list(self) -> None:
         project_a = self._create_project("项目A")
         project_b = self._create_project("项目B")
         base = Path(self.temp_dir.name)
 
-        rules_a = _build_xlsx(base / "规则A.xlsx", ["招标编号", "总装机容量"])
-        rules_b1 = _build_xlsx(base / "规则B1.xlsx", ["叶片产能"])
-        rules_b2 = _build_xlsx(base / "规则B2.xlsx", ["叶片产能", "塔架重量"])
+        upload = self._upload_specs(_build_xlsx(base / "v1.xlsx", ["招标编号", "总装机容量"]), "v1.xlsx")
+        self.assertEqual(upload.status_code, 200, upload.text)
 
-        upload_a = self._upload_specs(project_a, rules_a, "规则A.xlsx")
-        self.assertEqual(upload_a.status_code, 200, upload_a.text)
-        upload_b1 = self._upload_specs(project_b, rules_b1, "规则B1.xlsx")
-        self.assertEqual(upload_b1.status_code, 200, upload_b1.text)
-        rule_a = upload_a.json()["ruleId"]
-        rule_b = upload_b1.json()["ruleId"]
-        self.assertNotEqual(rule_a, rule_b)
-        self.assertEqual(upload_a.json()["version"], 1)
-        self.assertEqual(upload_b1.json()["version"], 1)
-
-        # A 构建事实表：骨架只含规则 A 字段，且固化规则版本快照
         table_a = self._build_facts(project_a)
-        labels_a = [field["label"] for field in table_a["fields"]]
-        self.assertIn("招标编号", labels_a)
-        self.assertIn("总装机容量", labels_a)
-        self.assertNotIn("叶片产能", labels_a)
-        self.assertEqual(table_a["factSpecsRef"]["ruleId"], rule_a)
-        self.assertEqual(table_a["factSpecsRef"]["version"], 1)
-        self.assertEqual(table_a["factSpecsRef"]["source"], FACT_SPECS_SOURCE_PROJECT)
-
-        # B 上传新版本（v2），交错运行：A 再构建仍用规则 A v1
-        upload_b2 = self._upload_specs(project_b, rules_b2, "规则B2.xlsx")
-        self.assertEqual(upload_b2.status_code, 200, upload_b2.text)
-        self.assertEqual(upload_b2.json()["version"], 2)
-        self.assertNotEqual(upload_b2.json()["ruleId"], rule_b)
-
-        table_a2 = self._build_facts(project_a)
-        labels_a2 = [field["label"] for field in table_a2["fields"]]
-        self.assertIn("招标编号", labels_a2)
-        self.assertNotIn("叶片产能", labels_a2)
-        self.assertNotIn("塔架重量", labels_a2)
-        self.assertEqual(table_a2["factSpecsRef"]["ruleId"], rule_a)
-        self.assertEqual(table_a2["factSpecsRef"]["version"], 1)
-
-        # B 构建用自己的 v2
         table_b = self._build_facts(project_b)
-        labels_b = [field["label"] for field in table_b["fields"]]
-        self.assertIn("叶片产能", labels_b)
-        self.assertIn("塔架重量", labels_b)
-        self.assertNotIn("招标编号", labels_b)
-        self.assertEqual(table_b["factSpecsRef"]["version"], 2)
+        spec_labels_a = [field["label"] for field in table_a["fields"] if field.get("specSeq")]
+        spec_labels_b = [field["label"] for field in table_b["fields"] if field.get("specSeq")]
+        self.assertEqual(spec_labels_a, ["招标编号", "总装机容量"])
+        # 骨架同一份；值各找各的，所以只比字段名
+        self.assertEqual(spec_labels_a, spec_labels_b)
+        self.assertEqual(table_a["factSpecsRef"]["source"], FACT_SPECS_SOURCE_GLOBAL)
+        self.assertEqual(table_a["factSpecsRef"]["ruleId"], table_b["factSpecsRef"]["ruleId"])
 
-        # 绑定元数据经 facts 元信息可查（审计入口）
-        facts_a = self.client.get(f"/api/technical/projects/{project_a}/gaps/facts")
-        self.assertEqual(facts_a.status_code, 200, facts_a.text)
-        self.assertEqual(facts_a.json()["specsRuleId"], rule_a)
-        self.assertEqual(facts_a.json()["specsVersion"], 1)
-        self.assertTrue(facts_a.json()["specsSha256"])
+    def test_new_upload_applies_to_every_project(self) -> None:
+        project_id = self._create_project("换版项目")
+        base = Path(self.temp_dir.name)
+
+        self._upload_specs(_build_xlsx(base / "v1.xlsx", ["招标编号"]), "v1.xlsx")
+        first = self._build_facts(project_id)
+        self.assertEqual([f["label"] for f in first["fields"] if f.get("specSeq")], ["招标编号"])
+
+        self._upload_specs(_build_xlsx(base / "v2.xlsx", ["塔架重量"]), "v2.xlsx")
+        second = self._build_facts(project_id)
+        # 换版即换骨架，不存在"项目还留着旧快照"
+        self.assertEqual([f["label"] for f in second["fields"] if f.get("specSeq")], ["塔架重量"])
+        self.assertNotEqual(second["factSpecsRef"]["ruleId"], first["factSpecsRef"]["ruleId"])
+        self.assertEqual(second["factSpecsRef"]["version"], 2)
 
     def test_upload_persists_immutable_version_files(self) -> None:
-        project_id = self._create_project("版本审计项目")
         base = Path(self.temp_dir.name)
         v1_path = _build_xlsx(base / "v1.xlsx", ["招标编号"])
         v2_path = _build_xlsx(base / "v2.xlsx", ["塔架重量"])
 
-        upload_v1 = self._upload_specs(project_id, v1_path, "v1.xlsx").json()
-        upload_v2 = self._upload_specs(project_id, v2_path, "v2.xlsx").json()
+        upload_v1 = self._upload_specs(v1_path, "v1.xlsx")
+        self.assertEqual(upload_v1.status_code, 200, upload_v1.text)
+        upload_v2 = self._upload_specs(v2_path, "v2.xlsx")
+        self.assertEqual(upload_v2.status_code, 200, upload_v2.text)
 
-        # 两版各自落盘，文件互不相同
-        project_dir = settings.fact_specs_versions_dir / project_id
-        version_files = sorted(project_dir.glob("*.json"))
-        self.assertEqual(len(version_files), 2)
+        version_dir = settings.fact_specs_versions_dir / GLOBAL_FACT_SPECS_PROJECT_ID
+        self.assertEqual(len(sorted(version_dir.glob("*.json"))), 2)
 
-        # 历史版本可从数据卷读回（重启后绑定不丢的持久化层），且内容不可变：
-        # v2 上传后 v1 仍是旧规则快照
-        record_v1 = load_fact_spec_version(project_id, upload_v1["ruleId"])
-        self.assertIsNotNone(record_v1)
-        self.assertEqual(record_v1["version"], 1)
-        self.assertEqual(record_v1["projectId"], project_id)
-        self.assertTrue(record_v1["uploadedBy"])
-        self.assertTrue(record_v1["uploadedAt"])
-        self.assertEqual(
-            record_v1["sha256"], hashlib.sha256(v1_path.read_bytes()).hexdigest()
+        _, ref_v2 = resolve_fact_specs()
+        self.assertEqual(ref_v2["version"], 2)
+        record_v2 = load_fact_spec_version(GLOBAL_FACT_SPECS_PROJECT_ID, ref_v2["ruleId"])
+        self.assertIsNotNone(record_v2)
+        self.assertEqual([spec["label"] for spec in record_v2["specs"]], ["塔架重量"])
+        self.assertEqual(record_v2["sha256"], hashlib.sha256(v2_path.read_bytes()).hexdigest())
+        self.assertTrue(record_v2["uploadedBy"])
+
+        # v1 的版本文件不因 v2 上传而改动
+        v1_files = [
+            path
+            for path in version_dir.glob("v0001-*.json")
+            if path.is_file()
+        ]
+        self.assertEqual(len(v1_files), 1)
+        record_v1 = load_fact_spec_version(
+            GLOBAL_FACT_SPECS_PROJECT_ID, v1_files[0].stem.split("-", 1)[1]
         )
         self.assertEqual([spec["label"] for spec in record_v1["specs"]], ["招标编号"])
+        self.assertEqual(record_v1["version"], 1)
 
-        record_v2 = load_fact_spec_version(project_id, upload_v2["ruleId"])
-        self.assertEqual(record_v2["version"], 2)
-        self.assertEqual([spec["label"] for spec in record_v2["specs"]], ["塔架重量"])
+    def test_build_is_blocked_until_global_list_uploaded(self) -> None:
+        project_id = self._create_project("无清单项目")
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("规则页", response.json()["detail"])
 
-        # 项目绑定随 gap_state 持久化，重新 require 仍在
-        binding = store._require(project_id)["gap_state"]["factSpecs"]
-        self.assertEqual(binding["ruleId"], upload_v2["ruleId"])
-        self.assertEqual(binding["version"], 2)
+        facts = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
+        self.assertEqual(facts.status_code, 200, facts.text)
+        self.assertFalse(facts.json()["specsImported"])
+        self.assertEqual(facts.json()["specTotal"], 0)
 
-    def test_unbound_project_falls_back_to_default_specs(self) -> None:
-        specs, meta = resolve_project_specs({})
-        self.assertEqual(meta["source"], FACT_SPECS_SOURCE_DEFAULT)
-        self.assertEqual(len(specs), len(load_specs()))
-        self.assertGreater(len(specs), 0)
+    def test_facts_metadata_reports_global_list(self) -> None:
+        project_id = self._create_project("审计项目")
+        base = Path(self.temp_dir.name)
+        self._upload_specs(_build_xlsx(base / "v1.xlsx", ["招标编号"]), "审计用清单.xlsx")
 
-    def test_curator_manifest_uses_bound_project_specs(self) -> None:
-        binding_specs = [
-            {
-                "seq": 1,
-                "key": "P-001",
-                "label": "项目专属字段",
-                "reviewLabel": "",
-                "sourceKind": "material",
-                "referenceFile": "项目定制/专属材料.xlsx",
-                "valueRequired": True,
-                "needsConfirmation": False,
-            }
-        ]
-        gap_state = {
-            "factSpecs": {
-                "ruleId": "fsr-testa12345",
-                "version": 3,
-                "fileName": "项目专属实时表.xlsx",
-                "uploadedAt": "2026-07-28T00:00:00Z",
-                "uploadedBy": "测试人",
-                "sha256": "ab" * 32,
-                "specs": binding_specs,
-            },
-            "projectFactTable": {
-                "schemaVersion": "bid-project-fact-table-v2",
-                "fields": [
-                    {
-                        "id": "FACT-0001",
-                        "key": "项目专属字段",
-                        "label": "项目专属字段",
-                        "value": "",
-                        "status": "unextracted",
-                        "specKey": "P-001",
-                        "specSeq": 1,
-                        "sourceRefs": [],
-                        "notes": "",
-                    }
-                ],
-            },
-        }
-        project = {"id": "P-BIND", "name": "绑定项目", "parse_storage": {}}
-        with (
-            patch.object(curator, "_curator_materials", lambda project, gap_state: []),
-            patch.object(curator, "_curator_work_dir", lambda project: Path(self.temp_dir.name)),
-        ):
-            manifest, _ = curator.build_fact_curator_manifest(project, gap_state, {})
+        facts = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
+        self.assertTrue(facts["specsImported"])
+        self.assertEqual(facts["specsFileName"], "审计用清单.xlsx")
+        self.assertEqual(facts["specTotal"], 1)
+        self.assertEqual(facts["specsVersion"], 1)
+        self.assertTrue(facts["specsRuleId"])
+        self.assertTrue(facts["specsSha256"])
 
-        # referenceFile 来自项目绑定版本，不是系统公共清单
-        self.assertEqual(
-            manifest["projectFactTable"]["fields"][0]["referenceFile"], "项目定制/专属材料.xlsx"
-        )
-        self.assertEqual(manifest["factSpecsRef"]["ruleId"], "fsr-testa12345")
-        self.assertEqual(manifest["factSpecsRef"]["version"], 3)
-
-    def test_curator_manifest_falls_back_to_default_specs(self) -> None:
-        global_specs = load_specs()
-        self.assertTrue(global_specs)
-        first = next(spec for spec in global_specs if spec.get("key"))
+    def test_curator_manifest_uses_global_specs(self) -> None:
+        base = Path(self.temp_dir.name)
+        self._upload_specs(_build_xlsx(base / "v1.xlsx", ["项目专属字段"]), "v1.xlsx")
+        specs = load_specs()
+        first = specs[0]
         gap_state = {
             "projectFactTable": {
                 "schemaVersion": "bid-project-fact-table-v2",
@@ -291,14 +239,14 @@ class ProjectFactSpecVersionsTests(unittest.TestCase):
                 ],
             },
         }
-        project = {"id": "P-DEFAULT", "name": "默认回落项目", "parse_storage": {}}
+        project = {"id": "P-GLOBAL", "name": "全局清单项目", "parse_storage": {}}
         with (
             patch.object(curator, "_curator_materials", lambda project, gap_state: []),
             patch.object(curator, "_curator_work_dir", lambda project: Path(self.temp_dir.name)),
         ):
             manifest, _ = curator.build_fact_curator_manifest(project, gap_state, {})
 
-        self.assertEqual(manifest["factSpecsRef"]["source"], FACT_SPECS_SOURCE_DEFAULT)
+        self.assertEqual(manifest["factSpecsRef"]["source"], FACT_SPECS_SOURCE_GLOBAL)
         self.assertEqual(
             manifest["projectFactTable"]["fields"][0]["referenceFile"],
             str(first.get("referenceFile") or ""),

@@ -17,7 +17,7 @@ from app.services.outline_generation import (
 )
 from app.services.technical_gap_planner import (
     _allowed_technical_material_index,
-    _fact_table_turbine_model,
+    _fact_table_turbine_models,
     _filter_material_index_by_fact_table,
 )
 
@@ -187,8 +187,15 @@ def test_filter_material_index_by_fact_table_unit() -> None:
     assert [item["id"] for item in filtered] == ["RAW-MATCH", "RAW-CUST-GENERIC"]
 
 
-def test_fact_table_turbine_model_reads_value_and_tolerates_missing() -> None:
-    assert _fact_table_turbine_model({"projectFactTable": _fact_table()})["model"] == "EW10.0-220"
-    assert _fact_table_turbine_model(None) == {}
-    assert _fact_table_turbine_model({}) == {}
-    assert _fact_table_turbine_model({"projectFactTable": {"fields": [{"label": "投标机型", "value": ""}]}}) == {}
+def test_fact_table_turbine_models_reads_value_and_tolerates_missing() -> None:
+    assert [m["model"] for m in _fact_table_turbine_models({"projectFactTable": _fact_table()})] == ["EW10.0-220"]
+    assert _fact_table_turbine_models(None) == []
+    assert _fact_table_turbine_models({}) == []
+    assert _fact_table_turbine_models({"projectFactTable": {"fields": [{"label": "投标机型", "value": ""}]}}) == []
+
+
+def test_fact_table_turbine_models_splits_multi_model_value() -> None:
+    """多机型时「投标机型」是合并串，不拆开会拿一个不存在的型号去过滤。"""
+
+    gap_state = {"projectFactTable": {"fields": [{"label": "投标机型", "value": "EW10.0-220、EW8.5-230"}]}}
+    assert [m["model"] for m in _fact_table_turbine_models(gap_state)] == ["EW10.0-220", "EW8.5-230"]

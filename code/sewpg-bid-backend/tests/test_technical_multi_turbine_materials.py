@@ -146,6 +146,19 @@ class PlannerMultiTurbineTests(unittest.TestCase):
         narrowed = _filter_material_index_by_fact_table(items, gap_state, [{"model": MODEL_B}])
         self.assertEqual([item["id"] for item in narrowed], ["M-A"])
 
+    def test_fact_table_filter_handles_merged_multi_model_value(self) -> None:
+        """多机型时事实表「投标机型」是合并串，按整串过滤会把标准档素材全部剔除。"""
+
+        from app.services.technical_gap_planner import _filter_material_index_by_fact_table
+
+        items = [_material("M-A", MODEL_A), _material("M-B", MODEL_B)]
+        gap_state = {"projectFactTable": {"fields": [{"label": "投标机型", "value": f"{MODEL_A}、{MODEL_B}"}]}}
+
+        kept = _filter_material_index_by_fact_table(
+            items, gap_state, [{"model": MODEL_A}, {"model": MODEL_B}]
+        )
+        self.assertEqual([item["id"] for item in kept], ["M-A", "M-B"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,9 +21,9 @@ from app.services.technical_fact_field_specs import (
     fillable_specs,
     spec_category,
 )
-from app.services.technical_fact_spec_versions import fact_specs_ref, resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_material_store import technical_material_store
-from app.services.turbine_models import project_turbine_model
+from app.services.turbine_models import project_turbine_model, project_turbine_models
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,10 @@ COMMON_PROJECT_FACT_LABELS = {
 # 人工值不在这里排序——它靠 sourceRefs 的人工标记直接锁定，任何来源都覆盖不了。
 FACT_SOURCE_PRIORITY_TENDER = 340
 FACT_SOURCE_PRIORITY_PROJECT = 320
+# 机型、台数、基础形式是人在「完善项目信息」里逐行选定的，不是平台侧初值，
+# 招标文件抽取覆盖不了（产品裁决 2026-08-10）。同来源的单机容量/叶轮直径/轮毂高度
+# 是机型参数表带出来的，不属于人填，仍按 FACT_SOURCE_PRIORITY_PROJECT。
+FACT_SOURCE_PRIORITY_PROJECT_TURBINE = 350
 
 FACT_MATERIAL_SOURCE_PRIORITIES = {
     "project": 300,
@@ -237,6 +241,10 @@ def canonical_fact_label(label: Any) -> str:
     }
     if text in aliases:
         return aliases[text]
+    # 多机型展开出来的「机型N单机容量」「机型N轮毂高度」等按原文保留：下面的包含式规则
+    # 会把它们归一成全场共用的那一行，各机型的值互相覆盖。
+    if re.match(r"^机型\d+", text):
+        return text
     if "总装机容量" in text or text.startswith("总容量"):
         return "总装机容量"
     if (
@@ -355,8 +363,9 @@ def normalize_project_fact_field(
         "updatedAt": saved_at,
         "updatedBy": operator,
     }
-    # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）
-    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
+    # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）；
+    # turbineGroup/turbineModelLabel 是机型分组标记，页面保存后要跟着回写，否则分组丢失
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile", "turbineGroup", "turbineModelLabel"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
@@ -404,8 +413,7 @@ def reconcile_fact_fields_with_specs(
     - 未匹配到的 spec 生成"未提取"骨架字段，保证清单字段在事实表中齐全。
     - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
     - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
-    - specs 为 None 时回退全局 fillable_specs()；项目构建链路显式传项目级清单
-      （用户上传的事实表 Excel 解析结果）。
+    - specs 为 None 时回退 fillable_specs()（全局清单）；构建链路显式传已解析的 specs。
     """
     existing_by_key = existing_by_key or {}
     matched_field_keys: set[str] = set()
@@ -516,8 +524,12 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if isinstance(field, dict) and fact_label_key(field.get("label"))
     }
     fields_by_key: dict[str, dict[str, Any]] = {}
-    # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
-    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    # 人在「完善项目信息」里逐行选定的机型参数：归一键 → (机型序号, 组内序号)，
+    # 用于把这些行按机型分组置顶，并让它们绕过清单骨架过滤（多机型行不在清单里）。
+    turbine_group_by_key: dict[str, tuple[int, int]] = {}
+    turbine_label_by_key: dict[str, str] = {}
+    # 清单全局唯一（规则页上传），所有项目同一份；这里把生效版本固化进产物做审计
+    project_specs, fact_specs_meta = resolve_fact_specs()
     # 换了新 Excel（规则版本变更）视作从头来：连人工值一起丢弃。清单换掉后字段本就
     # 可能对不上号，继承旧值只会让上一版的结论混进新清单。同一份 Excel 刷新不受影响。
     existing_rule_id = str(
@@ -717,17 +729,94 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     add_candidate("客户名称", project.get("customerName"), category="项目基础信息", source_ref={"type": "project", "field": "customerName", "title": "客户名称"}, confidence=0.9, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
     add_candidate("日期", datetime.now(UTC).strftime("%Y年%m月%d日"), category="系统字段", source_ref={"type": "system", "field": "currentDate", "title": "当前日期"}, confidence=0.62)
 
-    turbine = project_turbine_model(project)
+    turbine_models = project_turbine_models(project)
+    turbine = turbine_models[0] if turbine_models else {}
+    multi_turbine = len(turbine_models) > 1
     model = turbine.get("model") or turbine.get("turbineModel")
     hub_height = turbine.get("hubHeightM")
-    add_candidate("投标机型", model, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型"}, confidence=0.98, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-    rated_kw = turbine.get("ratedPowerKw")
-    rated_mw = ""
-    if isinstance(rated_kw, (int, float)):
-        rated_mw = f"{rated_kw / 1000:g}"
-    add_candidate("单机容量", rated_mw or rated_kw, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "ratedPowerKw", "title": "单机容量"}, confidence=0.9, unit="MW" if rated_mw else "", source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-    add_candidate("叶轮直径", turbine.get("rotorDiameterM"), category="机型参数", source_ref={"type": "projectTurbineModel", "field": "rotorDiameterM", "title": "叶轮直径"}, confidence=0.9, unit="m", source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-    add_candidate("轮毂高度", hub_height, category="机型参数", source_ref={"type": "projectTurbineModel", "field": "hubHeightM", "title": "轮毂高度"}, confidence=0.86, unit="m", source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+    for index, row in enumerate(turbine_models, start=1):
+        # 单机型退化成不带序号的字段名，与清单第 11/80/81/83/84 行是同一个归一键；
+        # 多机型每行独立成组，不带序号的那几行留给下面的全场口径。
+        prefix = f"机型{index}" if multi_turbine else ""
+        row_model = row.get("model") or row.get("turbineModel")
+        row_rated_kw = row.get("ratedPowerKw")
+        row_rated_mw = f"{row_rated_kw / 1000:g}" if isinstance(row_rated_kw, (int, float)) else ""
+        for order, (label, value, field_name, unit, confidence, priority) in enumerate(
+            (
+                (f"投标机型{index}" if multi_turbine else "投标机型", row_model, "model", "", 0.98, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                (f"{prefix}台数" if multi_turbine else "机组台数", row.get("turbineCount"), "turbineCount", "台", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                (f"{prefix}基础形式", row.get("foundationType"), "foundationType", "", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                (f"{prefix}单机容量", row_rated_mw or row_rated_kw, "ratedPowerKw", "MW" if row_rated_mw else "", 0.9, FACT_SOURCE_PRIORITY_PROJECT),
+                (f"{prefix}叶轮直径", row.get("rotorDiameterM"), "rotorDiameterM", "m", 0.9, FACT_SOURCE_PRIORITY_PROJECT),
+                (f"{prefix}轮毂高度", row.get("hubHeightM"), "hubHeightM", "m", 0.86, FACT_SOURCE_PRIORITY_PROJECT),
+            ),
+            start=1,
+        ):
+            key = fact_label_key(label)
+            if not key:
+                continue
+            turbine_group_by_key[key] = (index, order)
+            turbine_label_by_key[key] = str(row_model or "")
+            add_candidate(
+                label,
+                value,
+                category="机型参数",
+                source_ref={
+                    "type": "projectTurbineModel",
+                    "field": field_name,
+                    "title": label,
+                    "turbineModel": str(row_model or ""),
+                },
+                confidence=confidence,
+                unit=unit,
+                source_priority=priority,
+            )
+    if multi_turbine:
+        # 清单第 11/80/81/83/84 行带 targetFile 和占位符，正文填写靠它们取值，多机型时
+        # 不能空着：机型给全部机型的合并串，台数给各行之和，其余单机参数按第一个机型给，
+        # 来源里标明是哪个机型（各机型取值口径待正文填写支持按机型铺开后再收口）。
+        add_candidate(
+            "投标机型",
+            "、".join(str(row.get("model") or "").strip() for row in turbine_models if str(row.get("model") or "").strip()),
+            category="机型参数",
+            source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型（全部机型）"},
+            confidence=0.98,
+            source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
+        )
+        rated_kw = turbine.get("ratedPowerKw")
+        rated_mw = f"{rated_kw / 1000:g}" if isinstance(rated_kw, (int, float)) else ""
+        for label, value, field_name, unit, confidence in (
+            ("单机容量", rated_mw or rated_kw, "ratedPowerKw", "MW" if rated_mw else "", 0.9),
+            ("叶轮直径", turbine.get("rotorDiameterM"), "rotorDiameterM", "m", 0.9),
+            ("轮毂高度", hub_height, "hubHeightM", "m", 0.86),
+        ):
+            add_candidate(
+                label,
+                value,
+                category="机型参数",
+                source_ref={
+                    "type": "projectTurbineModel",
+                    "field": field_name,
+                    "title": f"{label}（机型1 {model or ''}）",
+                    "turbineModel": str(model or ""),
+                },
+                confidence=confidence,
+                unit=unit,
+                source_priority=FACT_SOURCE_PRIORITY_PROJECT,
+            )
+    # 机组台数取各机型台数之和：弹窗强制每行填正整数，任一行填不出数就不给值，
+    # 回落到招标文件与素材抽取。单机型时这个和就是那一行本身。
+    turbine_counts = [str(row.get("turbineCount") or "").strip() for row in turbine_models]
+    if multi_turbine and turbine_counts and all(count.isdigit() and int(count) > 0 for count in turbine_counts):
+        add_candidate(
+            "机组台数",
+            str(sum(int(count) for count in turbine_counts)),
+            category="机型参数",
+            source_ref={"type": "projectTurbineModel", "field": "turbineCount", "title": "机组台数（各机型之和）"},
+            confidence=0.95,
+            unit="台",
+            source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
+        )
     if model and hub_height:
         add_candidate("投标方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
         add_candidate("方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
@@ -823,13 +912,24 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     reconcile_fact_fields_with_specs(fields_by_key, existing_by_key, project_specs)
 
     fields = list(fields_by_key.values())
+    # 分组标记在 preserve_compatible_existing_fields 之后按归一键补：那一步会用人工值
+    # 整个换掉 field dict，构建时打的标记会丢。
+    for field in fields:
+        group = turbine_group_by_key.get(str(field.get("key") or ""))
+        if group:
+            field["turbineGroup"] = group[0]
+            field["turbineModelLabel"] = turbine_label_by_key.get(str(field.get("key") or ""), "")
     if spec_mode:
         # 以清单为唯一字段骨架：匹配不到 spec 的来源字段不再单独成行，
-        # 只保留 spec 行、人工新增字段，以及旧规则下已经人工确认的兼容字段。
+        # 只保留 spec 行、人工新增字段、旧规则下已经人工确认的兼容字段，
+        # 以及按项目选定机型展开的机型参数行（多机型时这些行不在清单里）。
         fields = [
             field
             for field in fields
-            if field.get("specSeq") is not None or is_manual_fact_field(field) or bool(field.get("outOfSpec"))
+            if field.get("specSeq") is not None
+            or is_manual_fact_field(field)
+            or bool(field.get("outOfSpec"))
+            or field.get("turbineGroup")
         ]
     for field in fields:
         source_refs = normalize_fact_source_refs(field.get("sourceRefs"))
@@ -858,6 +958,11 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     }
     fields.sort(
         key=lambda field: (
+            # 人选的机型参数按机型分组置顶：多机型时页面据此分段显示，
+            # 单机型时只有一组、组内顺序与现在的机型参数段一致。
+            0 if field.get("turbineGroup") else 1,
+            int(field.get("turbineGroup") or 0),
+            turbine_group_by_key.get(str(field.get("key") or ""), (0, 0))[1],
             # 清单模式下，人工新增和清单外历史字段追加在当前规则骨架之后。
             1 if spec_mode and field.get("specSeq") is None else 0,
             category_order.get(str(field.get("category") or ""), 9),
