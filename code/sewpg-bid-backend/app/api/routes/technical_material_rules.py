@@ -132,8 +132,9 @@ async def upload_global_fact_specs(
 
 @router.get("/api/technical/materials/rules/fact-specs")
 async def get_global_fact_specs(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    """全局清单当前来源：SQL 已有记录返回 override 元数据，否则回落仓库默认清单。
+    """全局清单当前来源：SQL 已有记录返回 override 元数据，否则按历史 sidecar 展示。
 
+    仓库不再自带默认清单（上游 283381f 收敛）：都没上传过时返回 source=none。
     历史 override（本次改造前上传、尚未入库）按原 sidecar 元数据展示。
     """
     specs = await list_fact_spec_rows()
@@ -149,7 +150,7 @@ async def get_global_fact_specs(_: dict[str, Any] = Depends(current_user)) -> di
     meta = load_global_fact_specs_meta()
     if meta:
         return {"source": "override", **meta}
-    return {"source": "repo-default", "specTotal": len(load_specs())}
+    return {"source": "none", "specTotal": 0}
 
 
 @router.get("/api/technical/materials/rules/fact-specs/rows")

@@ -83,8 +83,7 @@ from app.services.technical_body_fill_job import (
     schedule_body_fill_job,
 )
 from app.services.technical_fact_material_classes import build_fact_material_check
-from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
-from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_spec_version
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_repository import (
     get_technical_gap_project_runtime_state,
     mutate_technical_gap_project,
@@ -464,10 +463,40 @@ class TechnicalGapService:
             payload = mutate_technical_gap_project(project_id, apply)
         except Exception as exc:
             _raise_gap_error(exc, "Gap detection not found")
+        self._autobuild_facts_after_detection(project_id)
         return {
             **payload,
             "message": f"缺口识别完成，共识别 {payload['summary']['totalTocItems']} 个目录项。",
         }
+
+    def _autobuild_facts_after_detection(self, project_id: str) -> None:
+        """素材匹配跑完后自动把事实表的值找一遍，人点开事实表直接看到真值。
+
+        只在第一次自动建：已经有表就不动，避免每次重跑素材匹配都把 AI 填的值冲掉；
+        之后要重建走页面上的「刷新并 AI 填充」。清单没上传、建表失败都不影响素材匹配
+        本身的结果，只记日志——事实表建不出来时页面会给出去规则页上传的引导。
+        """
+        try:
+            specs, _ = resolve_fact_specs()
+            if not specs:
+                logger.info("项目 %s 尚未上传事实表清单，跳过自动建表", project_id)
+                return
+            snapshot = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(snapshot)
+            existing = gap_state.get("projectFactTable")
+            if isinstance(existing, dict) and existing.get("fields"):
+                return
+            # run_detection 是同步路由，FastAPI 已把它放在工作线程里，
+            # 这里可以直接调用内部走 run_awaitable_sync 桥接的重活。
+            table = build_project_fact_table(snapshot, gap_state)
+
+            def apply(project: dict[str, Any]) -> None:
+                ensure_technical_gap_state(project)["projectFactTable"] = copy.deepcopy(table)
+                project["updatedAt"] = now_iso()
+
+            mutate_technical_gap_project(project_id, apply)
+        except Exception:
+            logger.exception("项目 %s 素材匹配后自动构建事实表失败，可在事实表页手动刷新", project_id)
 
     async def gaps(self, project_id: str, request: Request) -> dict[str, Any]:
         try:
@@ -1009,21 +1038,20 @@ class TechnicalGapService:
     async def facts(self, project_id: str) -> dict[str, Any]:
         project = require_technical_gap_project_for_update(project_id)
         gap_state = ensure_technical_gap_state(project)
-        fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-        specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+        specs, specs_ref = resolve_fact_specs()
         table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
         if table.get("schemaVersion") == PROJECT_FACT_TABLE_SCHEMA_VERSION:
             payload = copy.deepcopy(table)
         else:
             payload = empty_project_fact_table(project_id)
-        # 项目级事实表上传状态：前端据此决定空态引导还是展示字段
+        # 全局清单是否已上传：前端据此决定空态引导（去规则页）还是展示字段
         payload["specsImported"] = bool(specs)
-        payload["specsFileName"] = str(fact_specs.get("fileName") or "")
+        payload["specsFileName"] = str(specs_ref.get("fileName") or "")
         payload["specTotal"] = len(specs)
-        # 规则版本元数据（R06-B04-02）：审计当前绑定的是哪一版规则
-        payload["specsRuleId"] = str(fact_specs.get("ruleId") or "")
-        payload["specsVersion"] = int(fact_specs.get("version") or 0)
-        payload["specsSha256"] = str(fact_specs.get("sha256") or "")
+        # 规则版本元数据：审计当前生效的是哪一版全局清单
+        payload["specsRuleId"] = str(specs_ref.get("ruleId") or "")
+        payload["specsVersion"] = int(specs_ref.get("version") or 0)
+        payload["specsSha256"] = str(specs_ref.get("sha256") or "")
         # 用户自定义的参考资料目录（素材库虚拟路径），事实表匹配时并入扫描
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
         payload["materialPaths"] = [str(path) for path in custom_paths if str(path or "").strip()]
@@ -1258,58 +1286,6 @@ class TechnicalGapService:
                 summary["projects"].append({"projectId": project_id, "error": str(exc)})
         return summary
 
-    async def upload_fact_specs(
-        self, project_id: str, filename: str, content: bytes, operator: str = "当前用户"
-    ) -> dict[str, Any]:
-        """项目级事实表 Excel 上传：固化为不可变规则版本并绑定到本项目（R06-B04-02）。
-
-        每次上传生成独立版本（ruleId/版本号/上传人/时间/sha256 落数据卷），
-        gap_state["factSpecs"] 只更新本项目的绑定与 specs 快照，不影响其他项目。
-        """
-        if not filename.lower().endswith(".xlsx"):
-            raise HTTPException(status_code=400, detail="事实表必须是 .xlsx 文件。")
-        if not content:
-            raise HTTPException(status_code=400, detail="上传文件为空。")
-        tmp_upload: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
-                handle.write(content)
-                tmp_upload = Path(handle.name)
-            specs = import_specs(tmp_upload)
-        except FactSpecImportError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        finally:
-            if tmp_upload is not None:
-                tmp_upload.unlink(missing_ok=True)
-
-        snapshot = require_technical_gap_project_for_update(project_id)
-        snapshot_state = ensure_technical_gap_state(snapshot)
-        previous = snapshot_state.get("factSpecs") if isinstance(snapshot_state.get("factSpecs"), dict) else {}
-        # 版本落盘会递增版本号，不能放进可重放的 mutate 里，否则一次冲突多出一个版本
-        binding = save_fact_spec_version(
-            project_id,
-            specs,
-            file_name=filename,
-            uploaded_by=operator,
-            content=content,
-            previous_version=int(previous.get("version") or 0),
-        )
-
-        def apply(project: dict[str, Any]) -> None:
-            gap_state = ensure_technical_gap_state(project)
-            gap_state["factSpecs"] = copy.deepcopy(binding)
-            project["updatedAt"] = binding["uploadedAt"]
-
-        mutate_technical_gap_project(project_id, apply)
-        ref = fact_specs_ref(binding)
-        return {
-            "specTotal": len(specs),
-            "fileName": filename,
-            "uploadedAt": binding["uploadedAt"],
-            "ruleId": ref["ruleId"],
-            "version": ref["version"],
-            "sha256": ref["sha256"],
-        }
 
     async def build_facts(self, project_id: str) -> dict[str, Any]:
         try:
@@ -1317,9 +1293,9 @@ class TechnicalGapService:
             gap_state = ensure_technical_gap_state(snapshot)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别，再维护项目事实表。")
-            fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-            if not fact_specs.get("specs"):
-                raise ValueError("请先上传本项目的事实表 Excel，再生成项目事实表。")
+            specs, _ = resolve_fact_specs()
+            if not specs:
+                raise ValueError("尚未上传事实表清单，请先到素材库 · 规则页上传后再生成。")
             # 同步构建放到工作线程：内部素材查询经 run_awaitable_sync 桥接异步，
             # 在事件循环线程内直接调用会被拒并降级为空素材（字段全部 unextracted）。
             # 构建是重活，跑完再原子写回，重放只重放赋值。
@@ -1355,8 +1331,7 @@ class TechnicalGapService:
             current = gap_state.get("projectFactTable")
             if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
                 current = await asyncio.to_thread(build_project_fact_table, snapshot, gap_state)
-            fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-            specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+            specs, specs_ref = resolve_fact_specs()
             incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
             confirm = bool(payload.get("confirm") or payload.get("confirmed"))
             operator = str(payload.get("operator") or "当前用户")
@@ -1381,7 +1356,7 @@ class TechnicalGapService:
                 "summary": summarize_project_fact_fields(fields, spec_total=len(specs)),
                 "factSpecsRef": copy.deepcopy(current.get("factSpecsRef"))
                 if isinstance(current.get("factSpecsRef"), dict)
-                else fact_specs_ref(fact_specs),
+                else copy.deepcopy(specs_ref),
             }
             def apply(project: dict[str, Any]) -> None:
                 ensure_technical_gap_state(project)["projectFactTable"] = copy.deepcopy(table)
@@ -1436,8 +1411,7 @@ class TechnicalGapService:
                     saved_at=saved_at,
                 )
                 fields[target_index] = normalized
-                fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-                specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+                specs, _ = resolve_fact_specs()
                 summary = summarize_project_fact_fields(fields, spec_total=len(specs))
                 all_terminal = bool(fields) and all(
                     str(field.get("status") or "") in PROJECT_FACT_FIELD_TERMINAL_STATUSES for field in fields

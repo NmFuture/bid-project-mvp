@@ -212,13 +212,14 @@ class MaterialRulesFactSpecsTests(_MaterialRulesTestBase):
         self.assertFalse(settings.fact_specs_override_path.exists())
         self.assertFalse(global_fact_specs_archive_path().exists())
 
-    def test_get_without_override_reports_repo_default(self) -> None:
+    def test_get_without_override_reports_none(self) -> None:
         response = self.client.get("/api/technical/materials/rules/fact-specs")
 
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
-        self.assertEqual(payload["source"], "repo-default")
-        self.assertEqual(payload["specTotal"], len(load_specs()))
+        # 仓库不再自带默认清单：未上传时 source=none、specTotal=0
+        self.assertEqual(payload["source"], "none")
+        self.assertEqual(payload["specTotal"], 0)
 
     def test_get_with_override_reports_meta(self) -> None:
         xlsx_path = _build_specs_xlsx(
@@ -251,12 +252,26 @@ class MaterialRulesFactSpecsTests(_MaterialRulesTestBase):
         self.assertEqual(response.content, xlsx_path.read_bytes())
         self.assertIn("attachment", response.headers.get("content-disposition", ""))
 
-    def test_rows_fallback_to_repo_default_when_db_empty(self) -> None:
+    def test_rows_empty_when_db_empty_and_no_override(self) -> None:
+        response = self.client.get("/api/technical/materials/rules/fact-specs/rows")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["specs"], [])
+
+    def test_rows_fallback_to_legacy_override_when_db_empty(self) -> None:
+        # SQL 改造前上传的清单只有 override JSON：rows 接口要回落到它，保证老数据可编辑
+        legacy = [_spec(1, "招标编号"), _spec(2, "总装机容量", "项目定制/工程量清单")]
+        settings.fact_specs_override_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.fact_specs_override_path.write_text(
+            json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+        )
+        clear_specs_cache()
+
         response = self.client.get("/api/technical/materials/rules/fact-specs/rows")
 
         self.assertEqual(response.status_code, 200, response.text)
         specs = response.json()["specs"]
-        self.assertEqual(len(specs), len(load_specs()))
+        self.assertEqual(len(specs), 2)
         self.assertTrue(specs[0]["key"])
         self.assertTrue(specs[0]["label"])
 

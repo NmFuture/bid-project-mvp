@@ -15,8 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
-from app.services.technical_fact_field_specs import clear_specs_cache
-from app.services.technical_fact_spec_versions import save_fact_spec_version
+from app.services.technical_fact_field_specs import (
+    clear_specs_cache,
+    load_specs,
+    normalize_spec_source_kind,
+)
+from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_spec_version
 
 # 全局清单的版本挂在固定 projectId「_global」下，与项目级版本同目录结构
 GLOBAL_FACT_SPECS_PROJECT_ID = "_global"
@@ -70,6 +74,16 @@ def load_global_fact_specs_meta() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def resolve_fact_specs() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """当前生效的全局清单，返回 (specs, ref)；尚未上传清单时 specs 为空列表。
+
+    清单与项目无关：所有项目拿同一份 specs，各自去自己的招标文件与素材里找值。
+    ref 固化进事实表与任务产物，事后可审计正式标书用的是哪一版清单。
+    """
+    specs = [normalize_spec_source_kind(spec) for spec in load_specs()]
+    return specs, fact_specs_ref(load_global_fact_specs_meta() or {}, spec_total=len(specs))
+
+
 def _global_previous_version() -> int:
     """_global 目录下已有版本文件数即当前版本号（版本号按目录自增）。"""
     version_dir = Path(settings.fact_specs_versions_dir) / GLOBAL_FACT_SPECS_PROJECT_ID
@@ -97,6 +111,9 @@ def save_global_fact_specs(
     )
     _atomic_write_bytes(global_fact_specs_archive_path(), content)
     meta = {
+        # ruleId/version 随 sidecar 一起存：事实表靠它判断清单是否换版（换版要从头重建）
+        "ruleId": binding["ruleId"],
+        "version": binding["version"],
         "fileName": file_name,
         "uploadedAt": binding["uploadedAt"],
         "uploadedBy": uploaded_by,

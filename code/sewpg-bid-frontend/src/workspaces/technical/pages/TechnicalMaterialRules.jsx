@@ -19,7 +19,7 @@ const formatDateTime = (value) => {
 
 const FACT_SPECS_SOURCE_LABELS = {
   override: '全局上传',
-  'repo-default': '系统默认',
+  none: '尚未上传',
 }
 
 const SELECT_CLASS =

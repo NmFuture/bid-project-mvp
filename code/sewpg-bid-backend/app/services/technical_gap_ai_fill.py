@@ -22,7 +22,7 @@ from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
-from app.services.technical_fact_spec_versions import resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -183,7 +183,7 @@ def enrich_fact_table_with_spec_columns(
     fields = fact_table.get("fields")
     if not isinstance(fields, list) or not fields:
         return fact_table
-    specs, _meta = resolve_project_specs(gap_state)
+    specs, _meta = resolve_fact_specs()
     specs_by_key = {str(spec.get("key") or ""): spec for spec in specs if isinstance(spec, dict) and spec.get("key")}
     if not specs_by_key:
         return fact_table
