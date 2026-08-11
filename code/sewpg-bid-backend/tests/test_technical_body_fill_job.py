@@ -9,8 +9,10 @@ from unittest import mock
 
 from app.core.config import settings
 from app.services.technical_body_fill_job import (
+    apply_filled_gap_item,
     body_fill_running,
     body_fill_state,
+    collect_body_fill_skips,
     collect_body_fill_targets,
     empty_body_fill_state,
 )
@@ -104,6 +106,43 @@ class CollectTargetsTests(unittest.TestCase):
             _item("G3", _task("T3")),
         )
         self.assertEqual([t["gapId"] for t in collect_body_fill_targets(state, {})], ["G3"])
+
+
+class SourceRoutingSkipTests(unittest.TestCase):
+    """#228：manual_required / missing_source 的附表任务不进一键填写清单，原因在 skips 可见。"""
+
+    @staticmethod
+    def _routing_item(gap_id: str, task_id: str, status: str) -> dict:
+        item = _item(gap_id, _task(task_id, TABLE_SKILL))
+        item["appendixTasks"] = [
+            {"id": f"APP-{gap_id}", "sourceRouting": {"source": "appendix_source_matrix", "status": status}}
+        ]
+        return item
+
+    def test_manual_required_and_missing_source_excluded_with_reason(self) -> None:
+        state = _gap_state(
+            self._routing_item("G1", "T1", "manual_required"),
+            self._routing_item("G2", "T2", "missing_source"),
+            _item("G3", _task("T3", TABLE_SKILL)),
+        )
+        targets = collect_body_fill_targets(state, {})
+        self.assertEqual([t["fillTaskId"] for t in targets], ["T3"])
+        skips = collect_body_fill_skips(state, {})
+        self.assertEqual([s["fillTaskId"] for s in skips], ["T1", "T2"])
+        self.assertTrue(all(s["reason"] for s in skips))
+
+    def test_tender_parse_fields_and_matched_not_skipped(self) -> None:
+        state = _gap_state(
+            self._routing_item("G1", "T1", "tender_parse_fields"),
+            self._routing_item("G2", "T2", "matched"),
+        )
+        self.assertEqual([t["fillTaskId"] for t in collect_body_fill_targets(state, {})], ["T1", "T2"])
+        self.assertEqual(collect_body_fill_skips(state, {}), [])
+
+    def test_word_fill_tasks_never_skipped_by_routing(self) -> None:
+        state = _gap_state(self._routing_item("G1", "T1", "manual_required"), _item("G2", _task("T2", WORD_SKILL)))
+        # 附表任务被拦，同项/其他项的正文任务不受影响
+        self.assertEqual([t["fillTaskId"] for t in collect_body_fill_targets(state, {})], ["T2"])
 
 
 class StateTests(unittest.TestCase):
@@ -263,6 +302,21 @@ class RunBodyFillJobTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(state["total"], 0)
         self.assertIn("没有待填写", state["message"])
+
+    def test_all_skipped_by_source_rules_reports_pending_materials(self) -> None:
+        # 全部被来源规则预过滤：不跑任何填写，状态里能看到「待补资料」原因
+        item = _item("G1", _task("T1", TABLE_SKILL))
+        item["appendixTasks"] = [
+            {"id": "APP-G1", "sourceRouting": {"source": "appendix_source_matrix", "status": "manual_required"}}
+        ]
+        self.project["gap_state"] = _gap_state(item)
+        state = self._run(lambda *args, **kwargs: self.fail("被预过滤的任务不应进入填写"))
+
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(state["total"], 0)
+        self.assertIn("待补资料", state["message"])
+        self.assertEqual([s["fillTaskId"] for s in state["skipped"]], ["T1"])
+        self.assertTrue(state["skipped"][0]["reason"])
 
     def test_fact_table_without_spec_columns_fails_the_whole_batch_upfront(self) -> None:
         # 事实表是项目级单张表：缺清单列时整批一条原因结束，不逐条跑、不逐条标红
@@ -489,6 +543,93 @@ class RunAsyncThreadingTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             _run_async(boom())
+
+
+class ApplyFilledGapItemMergeTests(unittest.TestCase):
+    """#229：apply_filled_gap_item 改为 fillTask/产物级合并，同项其他字段的并发新值不丢。"""
+
+    def _project(self, latest_item: dict) -> dict:
+        return {"gap_state": _gap_state(latest_item)}
+
+    def test_merge_preserves_concurrent_changes_on_same_item(self) -> None:
+        latest = _item(
+            "G1",
+            {"id": "T1", "skill": TABLE_SKILL, "status": "pending"},
+            {"id": "T2", "skill": TABLE_SKILL, "status": "running", "note": "并发改动"},
+            usage="concurrent_new",
+            reviewNotes=["并发新增备注"],
+            resolvedArtifacts=[
+                {"id": "ART-OTHER", "fillTaskId": "T2", "skill": TABLE_SKILL, "fileName": "other.docx"}
+            ],
+        )
+        # 填写开始时的旧快照：T1 已完成，其他字段都是旧值
+        filled = _item(
+            "G1",
+            {
+                "id": "T1",
+                "skill": TABLE_SKILL,
+                "status": "completed",
+                "outputArtifactId": "ART-1",
+                "completedAt": "2026-08-11T00:00:00Z",
+            },
+            {"id": "T2", "skill": TABLE_SKILL, "status": "pending"},
+            status="resolved",
+            qualityStatus="passed",
+            qualityReport={"status": "passed"},
+            resolvedAt="2026-08-11T00:00:00Z",
+            resolvedSource="G1_AI填写.docx",
+            usage="old_value",
+            reviewNotes=["AI 填写仍有未填字段：1 项"],
+            resolvedArtifacts=[{"id": "ART-1", "fillTaskId": "T1", "skill": TABLE_SKILL, "fileName": "G1_AI填写.docx"}],
+        )
+        project = self._project(latest)
+
+        apply_filled_gap_item(project, "G1", filled, fill_task_id="T1")
+
+        merged = project["gap_state"]["plan"]["items"][0]
+        # 本次填写写的字段取结果值
+        self.assertEqual(merged["status"], "resolved")
+        self.assertEqual(merged["qualityStatus"], "passed")
+        tasks = {task["id"]: task for task in merged["fillTasks"]}
+        self.assertEqual(tasks["T1"]["status"], "completed")
+        self.assertEqual(tasks["T1"]["outputArtifactId"], "ART-1")
+        # 同项其他字段/任务的并发新值保留
+        self.assertEqual(merged["usage"], "concurrent_new")
+        self.assertEqual(tasks["T2"]["status"], "running")
+        self.assertEqual(tasks["T2"]["note"], "并发改动")
+        # 产物按任务合并：其他任务的产物保留，本次产物追加
+        artifact_ids = [artifact["id"] for artifact in merged["resolvedArtifacts"]]
+        self.assertEqual(artifact_ids, ["ART-OTHER", "ART-1"])
+        # 备注追加合并：并发新增与本次新加都在
+        self.assertEqual(merged["reviewNotes"], ["并发新增备注", "AI 填写仍有未填字段：1 项"])
+
+    def test_merge_without_task_id_falls_back_to_resolved_at(self) -> None:
+        latest = _item("G1", {"id": "T1", "skill": TABLE_SKILL, "status": "pending"})
+        filled = _item(
+            "G1",
+            {
+                "id": "T1",
+                "skill": TABLE_SKILL,
+                "status": "completed",
+                "outputArtifactId": "ART-1",
+                "completedAt": "2026-08-11T00:00:00Z",
+            },
+            status="resolved",
+            resolvedAt="2026-08-11T00:00:00Z",
+            resolvedArtifacts=[{"id": "ART-1", "fillTaskId": "T1", "skill": TABLE_SKILL, "fileName": "x.docx"}],
+        )
+        project = self._project(latest)
+
+        apply_filled_gap_item(project, "G1", filled)
+
+        merged = project["gap_state"]["plan"]["items"][0]
+        self.assertEqual(merged["fillTasks"][0]["status"], "completed")
+        self.assertEqual([a["id"] for a in merged["resolvedArtifacts"]], ["ART-1"])
+
+    def test_unknown_gap_raises(self) -> None:
+        project = self._project(_item("G1", _task("T1")))
+        with self.assertRaises(KeyError):
+            apply_filled_gap_item(project, "G9", _item("G9", _task("T9")), fill_task_id="T9")
 
 
 if __name__ == "__main__":

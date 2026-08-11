@@ -196,6 +196,39 @@ def is_generation_locked(job_type: str, project_id: str) -> bool:
         return False
 
 
+def ai_fill_lock_key(project_id: str, gap_id: str) -> str:
+    """单条 AI 填写的 (project, gap) 互斥锁键，与任务队列锁同前缀。"""
+    return f"{LOCK_KEY_PREFIX}technical_ai_fill:{project_id}:{gap_id}"
+
+
+def acquire_ai_fill_lock(project_id: str, gap_id: str, owner: str, ttl_sec: int | None = None) -> bool | None:
+    """SET NX EX 抢占单条填写锁：True 拿到 / False 冲突 / None Redis 不可用（调用方本地降级）。
+
+    单条填写在请求里同步执行、没有 worker 续期，TTL 只作进程崩溃后的兜底回收；
+    正常路径在 finally 里按 owner 释放，失败/取消后立即可重试。
+    """
+    client = get_redis_client()
+    if client is None:
+        return None
+    resolved_ttl = max(1, int(ttl_sec if ttl_sec is not None else settings.redis_job_lock_ttl_sec))
+    try:
+        return bool(client.set(ai_fill_lock_key(project_id, gap_id), owner, nx=True, ex=resolved_ttl))
+    except RedisError as exc:
+        logger.warning("Failed to acquire AI fill lock: %s", exc)
+        return None
+
+
+def release_ai_fill_lock(project_id: str, gap_id: str, owner: str) -> None:
+    """按 owner 校验释放，不误删同一 gap 后来任务刚拿到的锁。"""
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.eval(_DELETE_IF_OWNER_SCRIPT, 1, ai_fill_lock_key(project_id, gap_id), owner)
+    except RedisError as exc:
+        logger.warning("Failed to release AI fill lock: %s", exc)
+
+
 def enqueue_generation_job(
     job_type: str,
     project_id: str,
