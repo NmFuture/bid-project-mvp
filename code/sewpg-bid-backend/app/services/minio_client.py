@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
+import threading
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
@@ -115,7 +117,9 @@ class MinioClient:
         resp = self.client.get_object(bucket, key)
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = target.with_suffix(f"{target.suffix}.download")
+        # 临时名带 pid/线程 id：共享素材缓存下多个线程可能同时下载同一文件，
+        # 固定 .download 后缀会互相踩出半截文件；原子 replace 保证读者只见到完整文件。
+        temp_path = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.download")
         try:
             with temp_path.open("wb") as handle:
                 for chunk in resp.stream(64 * 1024):
@@ -123,6 +127,9 @@ class MinioClient:
                         handle.write(chunk)
             temp_path.replace(target)
             return target
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
         finally:
             resp.close()
             resp.release_conn()

@@ -5,15 +5,17 @@ Redis 任务队列：提交后立即返回，进度（第几个 / 共几个、�
 gap_state["bodyFillState"] 持久化，前端轮询即可，页面刷新、换客户端都不影响。
 
 正文（bid-tech-word-placeholder-filler）与附表（bid-tech-table-filler）任务都收，
-正文在前、附表在后，同一个任务串行跑完（产品裁决 2026-08-09：附表也走一键填写）。
+正文在前、附表在后，同一个任务并发跑完（产品裁决 2026-08-09：附表也走一键填写）。
 """
 
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import settings
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.local_job_executor import submit_local_job
 from app.services.technical_gap_repository import (
@@ -24,10 +26,15 @@ from app.services.technical_gap_state import ensure_technical_gap_state
 
 BODY_FILL_JOB_TYPE = "technical_body_fill"
 
-# 串行执行，不做并发。清单驱动后单条只要约 1 秒（实测 manifest 落盘到产物生成 1 秒），
-# 一批 20 多条也就 20 多秒，并发省不下什么；而落库链路里的 persist 走 asyncio.run，
-# asyncpg 连接池绑定 event loop，多线程各开新 loop 复用同一个池会直接卡死——
-# 实测并发 4 时脚本 1 秒跑完、任务却在写回处挂了 12 分钟不动。
+# 计算并行、写回 CAS。#218 后 persist 是同步 psycopg、每次调用独立连接并带 `_rev`
+# 乐观锁（冲突抛 ProjectConcurrentUpdateError 由 mutate 重放）；素材库的异步下载
+# 全部经 technical_gap_ai_fill._run_async 提交到同一个常驻事件循环——不能在线程里
+# 各开 asyncio.run，共享 AsyncEngine 的 asyncpg 连接跨 loop 等待会永久挂起（实测）。
+# 因此每条任务在线程池里跑 compute（慢：备素材/OCR/agent 填写，默认 4 并发），
+# 主线程按完成顺序收口，经 mutate_technical_gap_project 把结果包纯状态写回——
+# CAS 冲突只重放廉价的 apply，不重跑填写，也不碰其他目录项。
+# 并发度上限 8：附表填写走 opencode agent，再往上对本地模型服务只是排队。
+_BODY_FILL_MAX_CONCURRENCY = 8
 
 
 def _now_iso() -> str:
@@ -100,13 +107,6 @@ def apply_filled_gap_item(project: dict[str, Any], gap_id: str, filled_item: dic
     project["updatedAt"] = _now_iso()
 
 
-def _merge_filled_item(project_id: str, gap_id: str, filled_item: dict[str, Any]) -> None:
-    """把填写完的目录项原子并回最新状态。"""
-    mutate_technical_gap_project(
-        project_id, lambda project: apply_filled_gap_item(project, gap_id, filled_item)
-    )
-
-
 def _write_state(project_id: str, **fields: Any) -> dict[str, Any]:
     """状态写回项目：worker 与请求线程都经此落库，前端轮询读同一份。
 
@@ -162,12 +162,11 @@ def body_fill_stale(gap_state: dict[str, Any], project_id: str) -> bool:
 
 
 def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-    """worker 执行体：串行跑完一批正文/附表填写任务，逐条回写进度。"""
+    """worker 执行体：线程池并发跑一批正文/附表填写，主线程按完成顺序 CAS 收口。"""
     # 延迟 import：worker 侧按需加载，避免与 service 层循环依赖
-    from app.services.technical_gap_actions import (
-        run_technical_ai_fill_for_gap,
-    )
     from app.services.technical_gap_ai_fill import (
+        apply_technical_ai_fill_result,
+        compute_technical_ai_fill,
         enrich_fact_table_with_spec_columns,
         require_spec_driven_fact_table,
     )
@@ -214,27 +213,35 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
 
     counters = {"done": 0, "succeeded": 0, "failed": 0}
     errors: list[dict[str, str]] = []
+    workers = max(1, min(_BODY_FILL_MAX_CONCURRENCY, int(settings.body_fill_concurrency or 1)))
 
-    def fill_one(target: dict[str, str]) -> None:
+    def compute_one(target: dict[str, str]) -> dict[str, Any]:
+        # 慢计算在私有深拷贝快照上跑完，不写任何共享状态；写回由主线程统一 CAS 收口。
+        # require 在内存后端返回的是 store 里的同一个 dict，必须深拷贝后才是线程私有的。
+        snapshot = copy.deepcopy(require_technical_gap_project_for_update(project_id))
+        return compute_technical_ai_fill(
+            snapshot,
+            target["gapId"],
+            {"fillTaskId": target["fillTaskId"], "operator": operator},
+            **url_scope,
+        )
+
+    def collect_one(target: dict[str, str], fill_result: dict[str, Any] | None, exc: BaseException | None) -> None:
+        """主线程收口：成功则 CAS 写回结果包，失败则经 mutate 把原因写到目录项上。"""
         gap_id = target["gapId"]
         title = target["title"]
         try:
-            # 填写在独立快照上跑完，再把这一条目录项原子并回最新状态。
-            # 读到写之间的敞口足以让页面上的操作被整份 payload 覆盖掉；分成两段后
-            # CAS 冲突只重放廉价的合并动作，不会重跑填写，也不碰其他目录项。
-            snapshot = require_technical_gap_project_for_update(project_id)
-            run_technical_ai_fill_for_gap(
-                snapshot,
-                gap_id,
-                {"fillTaskId": target["fillTaskId"], "operator": operator},
-                **url_scope,
+            if exc is not None:
+                raise exc
+            mutate_technical_gap_project(
+                project_id,
+                lambda project, _result=fill_result: apply_technical_ai_fill_result(project, _result),
             )
-            _merge_filled_item(project_id, gap_id, plan_item_snapshot(snapshot, gap_id))
             counters["succeeded"] += 1
-        except Exception as exc:  # noqa: BLE001 - 单条失败不能中断整批
+        except Exception as item_exc:  # noqa: BLE001 - 单条失败不能中断整批
             counters["failed"] += 1
-            errors.append({"gapId": gap_id, "title": title, "message": str(exc) or "填写失败"})
-            _record_item_failure(project_id, gap_id, target["fillTaskId"], str(exc))
+            errors.append({"gapId": gap_id, "title": title, "message": str(item_exc) or "填写失败"})
+            _record_item_failure(project_id, gap_id, target["fillTaskId"], str(item_exc))
         finally:
             counters["done"] += 1
             _write_state(
@@ -247,8 +254,16 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
                 errors=errors[:20],
             )
 
-    for target in targets:
-        fill_one(target)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="body-fill") as pool:
+        futures = {pool.submit(compute_one, target): target for target in targets}
+        for future in as_completed(futures):
+            target = futures[future]
+            try:
+                fill_result = future.result()
+            except Exception as exc:  # noqa: BLE001 - 计算失败的异常走同一条单条失败路径
+                collect_one(target, None, exc)
+            else:
+                collect_one(target, fill_result, None)
 
     message = f"一键填写完成：成功 {counters['succeeded']} 条、失败 {counters['failed']} 条。"
     if counters["failed"]:

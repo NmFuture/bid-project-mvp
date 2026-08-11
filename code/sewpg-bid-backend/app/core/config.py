@@ -140,6 +140,7 @@ class Settings:
     s1_parse_opencode_enabled: bool
     s1_parse_technical_shard_enabled: bool
     s1_parse_shard_concurrency: int
+    body_fill_concurrency: int
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
@@ -237,6 +238,9 @@ settings = Settings(
     s1_parse_technical_shard_enabled=_bool_env("S1_PARSE_TECHNICAL_SHARD_ENABLED", True),
     # projectBasics 与 6 个清单分片共 7 个独立会话，默认全部并发执行。
     s1_parse_shard_concurrency=_int_env("S1_PARSE_SHARD_CONCURRENCY", 7),
+    # 一键填写（正文+附表）的 compute 并发度；本地安全默认值，5090 实测取值只写
+    # docker-compose.5090.yml。使用处另有 1~8 的 clamp 兜底。
+    body_fill_concurrency=_int_env("BODY_FILL_CONCURRENCY", 4),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",
