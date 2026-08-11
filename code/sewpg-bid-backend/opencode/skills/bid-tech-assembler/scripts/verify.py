@@ -45,12 +45,12 @@ PLACEHOLDER_PATTERNS = [
 ALLOWED_H1_PATTERNS = [
     re.compile(r"^封面$"),
     re.compile(r"^前言(\s|$)"),
-    re.compile(r"^第[一二三四五六七八九十]+章(\s|$)"),
+    re.compile(r"^第[一二三四五六七八九十\d]+章(\s|$)"),  # 一级标题由组装写成"第N章"，阿拉伯数字同样合法
     re.compile(r"^附表"),
     re.compile(r"^目录$"),  # finalize 插入的 TOC 标题
 ]
 
-# 幽灵编号：Heading text 里出现"第 X 章"X > 6 或 > 10 的数字（真正章节最多 6）
+# 幽灵编号：Heading text **中间**出现"第 X 章"且 X > 6（标题开头的第N章是组装写入的正式章号）
 GHOST_CHAPTER = re.compile(r"第\s*(\d+)\s*章")
 # Heading text 是否以合法编号开头：前言 / 封面 / 第X章 / 数字.数字.. / 附
 VALID_HEADING_START = re.compile(r"^(?:封面|前言|第[一二三四五六七八九十\d]+章|\d+(?:\.\d+){0,6}(?:\s|$)|附|附表|目录)")
@@ -183,8 +183,10 @@ def scan_docx(docx_path: Path) -> dict:
                     dup_alerts.append(f"L{lvl} 相邻重复：{text}")
                 prev_heading = (lvl, text)
 
+                # 一级标题本身就以"第N章"开头（组装写入），不是幽灵编号；
+                # 只有出现在标题文字中间的章节引用才可能是素材漏进来的
                 gm = GHOST_CHAPTER.search(text)
-                if gm and int(gm.group(1)) > 6:
+                if gm and gm.start() > 0 and int(gm.group(1)) > 6:
                     ghost_chapters.append(f"L{lvl} {text!r}")
 
                 if lvl == 1 and text:

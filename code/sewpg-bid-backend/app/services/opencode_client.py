@@ -543,6 +543,35 @@ class OpencodeClient:
             "opencodeOutput": self._build_output_trace(session_id, response),
         }
 
+    def run_bid_tech_score_index_xref_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        early_tool_command: str = "",
+    ) -> dict[str, Any]:
+        session = self.create_session("S4 技术标评分索引章节判断")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_tool_command=early_tool_command,
+        )
+        parsed = self._extract_score_index_mapping_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
     def run_bid_tech_fact_curator_with_trace(
         self,
         prompt_text: str,
@@ -920,6 +949,18 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
             raise RuntimeError("futurecode 返回的 AI 填写 JSON 结构不正确。")
+        return parsed
+
+    def _extract_score_index_mapping_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回评分索引章节判断结果。",
+            repair_kind="gap_plan",
+        )
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("mappingFile"), str) and not isinstance(parsed.get("mapping"), dict)
+        ):
+            raise RuntimeError("futurecode 返回的评分索引章节判断 JSON 结构不正确。")
         return parsed
 
     def _extract_fact_curator_json(self, response: dict[str, Any]) -> dict[str, Any]:

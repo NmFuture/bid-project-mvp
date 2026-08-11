@@ -52,6 +52,22 @@ test('生成完成提示展示 warning 数量且格式清洗失败时明确回�
   assert.equal(presentation.formatCleanMessage, '格式清洗失败，当前使用组装稿')
 })
 
+test('评分索引交叉引用的跳过、失败与待刷新页码各自给出提示', () => {
+  const present = (scoreIndexXref) => technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: { scoreIndexXref },
+  }).scoreIndexXrefMessage
+
+  assert.equal(present({ status: 'skipped' }), '未找到技术评分标准索引表，已跳过交叉引用')
+  assert.equal(present({ status: 'failed', error: 'boom' }), '评分索引表交叉引用失败，当前使用格式清洗稿')
+  assert.equal(
+    present({ status: 'completed', summary: { pageNumbersResolved: false } }),
+    '评分索引表已建立交叉引用，页码需在 Word/WPS 中全选后按 F9 刷新',
+  )
+  assert.equal(present({ status: 'completed', summary: { pageNumbersResolved: true } }), '')
+  assert.equal(present(undefined), '')
+})
+
 test('AI 填写结果优先与待填写模板形成左右对比', () => {
   const result = { key: 'artifact:A1', kind: 'artifact', artifact: { source: 'ai_fill' } }
   const material = { key: 'material:M1', kind: 'material' }

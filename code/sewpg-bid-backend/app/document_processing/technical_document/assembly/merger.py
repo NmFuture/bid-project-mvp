@@ -4,7 +4,8 @@ merger v2（方案 B）：按 assembly_plan.json 合并素材到技术标母版�
 
 关键特性：
 - 使用 docxcompose 做 section 级合并（媒体/样式自动处理）
-- 手插 toc heading：text="{chapter_no}  {title}"，样式=Heading N
+- 手插 toc heading：text="{层级编号}  {title}"，样式=Heading N
+  层级编号由 chapter_no_flat 推导：一级"第N章"，二级及以下"N.M"/"N.M.K"
 - 素材内部 Heading 按父章节相对映射为 3/4 级标题，保留正文结构
 - 素材首 Heading 若匹配 toc_title 则去重（物理移除）
 - 前言段特殊：style=Heading 1，text="前言  投标说明函"
@@ -43,6 +44,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from copy import deepcopy
 
+from .parse_toc import display_chapter_no
 from .preprocess import preprocess
 from .numbering_fixer import (
     enforce_no_auto_numbering_on_numbered_headings,
@@ -364,7 +366,10 @@ def merge(
             heading_text = None
             heading_level = level
         else:
-            heading_text = f"{chapter_no}  {title}" if chapter_no else title
+            # 正文标题编号统一由 chapter_no_flat 推导（一级「第N章」，其下「N.M」），
+            # 与素材内部标题的父前缀同源；目录原样号只作素材关联键，不进正文。
+            display_no = display_chapter_no(entry)
+            heading_text = f"{display_no}  {title}" if display_no else title
             heading_level = level
 
         if status == "STRUCTURAL":
