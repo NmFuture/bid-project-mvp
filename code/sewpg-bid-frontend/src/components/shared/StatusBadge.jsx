@@ -29,11 +29,12 @@ export default function StatusBadge({
   const isRunning = variant === 'running'
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${cls} ${className}`}
+      className={`inline-flex min-h-6 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium tabular-nums ${cls} ${className}`}
     >
       {ico && (
         <span
           className={`material-symbols-outlined text-[14px] ${spin || isRunning ? 'animate-spin-slow' : ''}`}
+          aria-hidden="true"
           style={{ fontVariationSettings: variant === 'done' ? "'FILL' 1" : "'FILL' 0" }}
         >
           {ico}

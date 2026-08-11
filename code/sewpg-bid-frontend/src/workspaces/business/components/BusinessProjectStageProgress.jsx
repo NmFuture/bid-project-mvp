@@ -6,6 +6,7 @@ import { getStrictStageLockReason } from '../../../utils/stageLocking'
 import { projectRoute } from '../../../utils/workspace'
 
 const BUSINESS_WORKSPACE = 'business'
+const businessStageCache = new Map()
 
 const BUSINESS_COMPACT_STAGE_GROUPS = [
   { id: 1, name: '目录生成', stageIds: [1], pendingRouteStageId: 1, completedRouteStageId: 1 },
@@ -121,12 +122,14 @@ const businessStageRoute = (projectId, stage) => {
 
 export default function BusinessProjectStageProgress({
   projectId,
+  refreshKey = '',
   showToast,
   onStageSixClick,
 }) {
   const navigate = useNavigate()
-  const [stages, setStages] = useState([])
-  const [loading, setLoading] = useState(true)
+  const cachedStages = projectId ? businessStageCache.get(projectId) || [] : []
+  const [stages, setStages] = useState(cachedStages)
+  const [loading, setLoading] = useState(() => cachedStages.length === 0)
   const [error, setError] = useState('')
 
   const loadStages = useCallback(async () => {
@@ -134,11 +137,20 @@ export default function BusinessProjectStageProgress({
       setLoading(false)
       return
     }
-    setLoading(true)
+    const cached = businessStageCache.get(projectId) || []
+    if (cached.length) {
+      setStages(cached)
+      setLoading(false)
+    } else {
+      setStages([])
+      setLoading(true)
+    }
     setError('')
     try {
       const payload = await businessStagesAPI.list(projectId)
-      setStages(compactProjectStages(payload))
+      const nextStages = compactProjectStages(payload)
+      businessStageCache.set(projectId, nextStages)
+      setStages(nextStages)
     } catch (e) {
       setError(e?.message || '进度加载失败')
     } finally {
@@ -147,11 +159,12 @@ export default function BusinessProjectStageProgress({
   }, [projectId])
 
   useEffect(() => {
+    void refreshKey
     const timer = setTimeout(() => {
       loadStages()
     }, 0)
     return () => clearTimeout(timer)
-  }, [loadStages])
+  }, [loadStages, refreshKey])
 
   const getStageLockReason = useCallback(
     (targetStageId) => getStrictStageLockReason(stages, targetStageId),
@@ -185,20 +198,21 @@ export default function BusinessProjectStageProgress({
 
   if (loading) {
     return (
-      <section className="bg-white px-0 py-2">
-        <div className="animate-shimmer h-10 w-full"></div>
+      <section className="bg-transparent px-0 py-2" aria-label="阶段进度">
+        <div role="status" aria-label="正在加载阶段进度" className="animate-shimmer h-10 w-full" />
       </section>
     )
   }
 
   if (error) {
     return (
-      <section className="bg-white px-0 py-2">
+      <section className="bg-transparent px-0 py-2" aria-label="阶段进度">
         <div className="flex flex-wrap items-center justify-between gap-3 border border-error/20 bg-error-container/20 px-4 py-3">
-          <div className="text-sm text-error">阶段进度加载失败：{error}</div>
+          <div role="alert" className="text-sm text-error">阶段进度加载失败：{error}</div>
           <button
+            type="button"
             onClick={loadStages}
-            className="rounded-lg bg-error px-3 py-1.5 text-xs font-medium text-on-error"
+            className="min-h-10 rounded-md bg-error px-4 text-sm font-medium text-on-error"
           >
             重试
           </button>

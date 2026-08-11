@@ -6,7 +6,6 @@ import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
-import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
@@ -264,7 +263,7 @@ function MaterialCandidateCard({
   return (
     <div
       onClick={onCardClick || undefined}
-      className={`rounded-lg border px-3 py-2.5 text-xs transition-all ${
+      className={`rounded-lg border px-3 py-2.5 text-xs transition-[background-color,border-color,box-shadow,color] ${
         isSelected ? 'border-secondary bg-secondary-container/40' : 'border-surface-container-high bg-surface-container-lowest hover:border-primary/30 hover:shadow-sm'
       }${onCardClick ? ' cursor-pointer' : ''}`}
     >
@@ -698,21 +697,21 @@ const FactMaintenanceModal = ({
   return (
     // 点弹窗外空白关闭（仅点遮罩本身生效，点弹窗内容不误关，产品反馈 2026-08-03）
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
     >
-      <div className="flex h-[calc(100vh-64px)] max-h-[860px] w-full max-w-[1180px] flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
-        <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-3.5">
+      <div role="dialog" aria-modal="true" aria-labelledby="technical-fact-modal-title" className="flex h-[calc(100dvh-1rem)] max-h-[860px] w-full max-w-[1180px] flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:h-[calc(100dvh-2rem)]">
+        <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-3.5 sm:px-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-lg font-headline font-bold text-on-surface">项目事实表维护</h3>
+              <h3 id="technical-fact-modal-title" className="text-lg font-headline font-bold text-on-surface">项目事实表维护</h3>
               <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${status === 'confirmed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-fixed text-on-tertiary-fixed'}`}>
                 {factTableStatusLabels[status] || status}
               </span>
             </div>
-            <Toolbar>
+            <Toolbar className="w-full sm:w-auto">
               <Button
                 type="button"
                 onClick={onCurate}
@@ -1066,11 +1065,11 @@ function AiFillReferenceModal({
   const missingTenderDocument = Boolean(tenderDocumentState?.missingSource)
   const tenderDocumentNames = asArray(tenderDocumentState?.documentNames)
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
-        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="technical-ai-fill-modal-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-4xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
+        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-4 sm:px-5">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">AI 填写</h3>
+            <h3 id="technical-ai-fill-modal-title" className="text-lg font-headline font-bold text-on-surface">AI 填写</h3>
             <p className="mt-1 truncate text-xs text-on-surface-variant" title={blankTitle}>
               待填写对象：{blankTitle || '待填写空表/Word'}
             </p>
@@ -1146,7 +1145,7 @@ function AiFillReferenceModal({
           </div>
           {onUpload ? (
             <div className="mt-3 rounded-md border border-dashed border-surface-container-high bg-surface-container-low/50 px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-on-surface">上传补充素材</div>
                   <div className="mt-0.5 text-[11px] text-outline">
@@ -1173,7 +1172,7 @@ function AiFillReferenceModal({
             </div>
           ) : null}
         </div>
-        <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+        <div className="flex flex-col gap-3 border-t border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="flex flex-wrap gap-1.5">
             <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
               已选 {referenceIds.length} 份参考素材
@@ -1184,7 +1183,7 @@ function AiFillReferenceModal({
               </span>
             ) : null}
           </div>
-          <div className="flex gap-2">
+          <div className="flex w-full gap-2 sm:w-auto">
             <Button type="button" onClick={onClose} disabled={busy} variant="quiet">取消</Button>
             <Button type="button" onClick={onConfirm} disabled={busy || missingTenderDocument} variant="primary">
               {busy ? '处理中...' : missingTenderDocument ? '缺少招标文件' : '开始 AI 填写'}
@@ -1207,7 +1206,7 @@ function PreviewDocumentPane({
   mode = 'view',
 }) {
   return (
-    <section className="flex min-h-[560px] min-w-0 flex-col overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest">
+    <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest lg:min-h-[35rem]">
       <div className="flex min-h-[64px] shrink-0 items-center gap-3 border-b border-surface-container-high px-4 py-3">
         <span className="material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-fixed text-[20px] text-primary">
           {icon}
@@ -1224,7 +1223,7 @@ function PreviewDocumentPane({
       </div>
       <div className="min-h-0 flex-1 bg-surface-container-low p-2">
         {loading ? (
-          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md bg-surface-container-lowest px-6 text-center">
+          <div className="flex h-full min-h-[20rem] items-center justify-center rounded-md bg-surface-container-lowest px-4 text-center lg:min-h-[30rem] lg:px-6">
             <div>
               <span className="material-symbols-outlined text-3xl text-primary">hourglass_empty</span>
               <p className="mt-2 text-sm text-on-surface-variant">正在加载预览...</p>
@@ -1275,11 +1274,11 @@ function TechnicalPreviewModal({
   const showQueue = comparing && queue.length > 1
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-3 py-4">
-      <section className="flex h-[min(94vh,980px)] w-[min(96vw,1800px)] flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
-        <div className="flex min-h-[68px] shrink-0 items-center justify-between gap-4 border-b border-surface-container-high bg-surface px-5 py-3">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-2 sm:p-4">
+      <section role="dialog" aria-modal="true" aria-labelledby="technical-preview-modal-title" className="flex h-[calc(100dvh-1rem)] w-full max-w-[1800px] flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:h-[min(94dvh,980px)] sm:w-[min(96vw,1800px)]">
+        <div className="flex min-h-[68px] shrink-0 flex-col gap-3 border-b border-surface-container-high bg-surface px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold text-on-surface">
+            <h3 id="technical-preview-modal-title" className="truncate text-base font-semibold text-on-surface">
               {comparing ? 'AI 填写结果对比' : (selectedPreviewChoice?.title || '文档预览')}
             </h3>
             <p className="mt-1 truncate text-xs text-outline" title={sectionTitle || selectedPreviewChoice?.subtitle || ''}>
@@ -1288,7 +1287,7 @@ function TechnicalPreviewModal({
                 : `${previewKindLabels[selectedPreviewChoice?.kind] || '预览'} · ${selectedPreviewChoice?.subtitle || '-'}`}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             {showQueue ? (
               <div className="flex items-center gap-1 rounded-md bg-surface-container-low px-1 py-0.5">
                 <IconButton
@@ -2691,12 +2690,11 @@ export default function TechnicalGapRecognition({ showToast }) {
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
 
   return (
-    <div className="business-ui-shell flex flex-col gap-6">
-      <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
-
+    <div className="business-ui-shell flex flex-col gap-4 sm:gap-6">
       <PageHeader
+        actionsClassName="w-full sm:w-auto"
         actions={(
-          <Toolbar>
+          <Toolbar className="w-full sm:w-auto">
             {/* 规则维护入口已迁至素材库 · 规则页：附表规则按客户维护，保留一个跳转入口，
                 样式与工具栏其他按钮（项目事实表等）一致。事实表清单入口已移除。
                 「项目事实表」按钮保留——它打开的是字段维护弹窗，不是上传入口。 */}
@@ -2706,6 +2704,7 @@ export default function TechnicalGapRecognition({ showToast }) {
               title={sourceMatrixMeta.imported ? `附表填写规则：${sourceMatrixMeta.fileName || '已维护'}（按客户${sourceMatrixMeta.customerName ? `「${sourceMatrixMeta.customerName}」` : ''}维护，到素材库 · 规则页维护）` : '该客户尚未维护附表填写规则，到素材库 · 规则页维护'}
               size="stage"
               variant="quiet"
+              icon="open_in_new"
             >
               附表规则
             </Button>
@@ -2899,8 +2898,8 @@ export default function TechnicalGapRecognition({ showToast }) {
             </Button>
           </div>
         ) : (
-          <div className="grid h-[min(78vh,900px)] min-h-[520px] gap-4 overflow-hidden p-3 xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
-            <div className="min-h-0 flex flex-col overflow-hidden">
+          <div className="grid gap-4 p-3 xl:h-[clamp(34rem,calc(100dvh-15rem),56rem)] xl:min-h-[32rem] xl:overflow-hidden xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
+            <div className="flex min-h-0 flex-col overflow-hidden">
               <div className="h-12 shrink-0 px-2 py-3">
                 <div className="flex items-center gap-2 text-xs font-semibold text-on-surface">
                   <span>目录项 · {filteredItems.length}/{items.length}</span>
@@ -2917,7 +2916,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                   ) : null}
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto">
+              <div className="max-h-[44dvh] min-h-0 flex-1 overflow-auto xl:max-h-none">
                 <div>
                   {/* 可折叠目录树（产品裁决 2026-08-04）：默认只展开一级章，第一波先定章级；
                       被冻结的子级灰显、可点开查看、操作禁用；列表行纯展示，

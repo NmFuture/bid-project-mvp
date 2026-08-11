@@ -7,20 +7,20 @@ const VARIANTS = {
   warn: 'bg-tertiary-container text-on-tertiary-container',
   error: 'bg-error/10 text-error',
   info: 'bg-ai-accent-light text-on-tertiary-container',
-  amber: 'bg-amber-100 text-amber-800',
-  purple: 'bg-violet-100 text-violet-700',
-  cyan: 'bg-cyan-100 text-cyan-700',
-  muted: 'bg-surface-container-high text-outline',
+  amber: 'bg-tertiary-container text-on-tertiary-container',
+  purple: 'bg-primary-fixed text-on-primary-fixed-variant',
+  cyan: 'bg-ai-accent-light text-on-tertiary-container',
+  muted: 'bg-surface-container-high text-on-surface-variant',
 }
 
 const SHAPES = {
   pill: 'rounded-full',
-  square: 'rounded-md',
+  square: 'rounded',
 }
 
 const SIZES = {
-  xs: 'px-2 py-0.5 text-[11px]',
-  sm: 'px-2.5 py-1 text-xs',
+  xs: 'min-h-5 px-2 py-0.5 text-xs',
+  sm: 'min-h-6 px-2.5 py-0.5 text-xs',
 }
 
 export default function Badge({

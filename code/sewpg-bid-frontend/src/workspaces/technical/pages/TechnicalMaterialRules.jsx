@@ -211,7 +211,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null
 
   return (
-    <div className="flex flex-col gap-3 animate-fade-in">
+    <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="rules"
         title="技术标素材库"
@@ -224,7 +224,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
             <h2 className="text-sm font-headline font-bold text-on-surface">项目事实表清单（全局生效）</h2>
             <p className="mt-1 text-xs text-outline">全局一份，所有技术标项目共用；缺口识别时用这份清单提取事实表字段。</p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <input
               ref={factSpecsInputRef}
               type="file"
@@ -290,7 +290,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
             <h2 className="text-sm font-headline font-bold text-on-surface">附表填写规则（按客户）</h2>
             <p className="mt-1 text-xs text-outline">客户×附表→素材来源，缺口识别时确定每张附表的取值来源。每个客户一份，项目自动套用其所属客户的规则；客户未维护规则时按无规则处理。</p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <input
               ref={matrixInputRef}
               type="file"
@@ -373,7 +373,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
             <h2 className="text-sm font-headline font-bold text-on-surface">项目工作区入口</h2>
             <p className="mt-1 text-xs text-outline">维护完规则后直接进入所选项目的素材匹配页，无需返回项目列表查找。</p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <select
               value={selectedProjectId}
               onChange={(event) => setSelectedProjectId(event.target.value)}

@@ -241,7 +241,7 @@ function ProjectBasicsTable({ title, fields = [] }) {
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full table-fixed text-sm min-w-[720px]">
           <colgroup>
             <col className="w-44" />
@@ -285,7 +285,7 @@ function QualificationRequirementsTable({ title, rows = [] }) {
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
         <span className="text-xs text-outline">{rows.length} 条</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full table-fixed text-sm min-w-[920px]">
           <colgroup>
             <col className="w-20" />
@@ -343,7 +343,7 @@ function BidderInstructionsTable({ title, rows = [] }) {
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
         <span className="text-xs text-outline">{rows.length} 行</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full text-sm min-w-[900px]">
           <thead>
             <tr className="border-b border-surface-container-high">
@@ -394,7 +394,7 @@ function CommercialRejectionClausesTable({ title, rows = [] }) {
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
         <span className="text-xs text-outline">{rows.length} 条</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full table-fixed text-sm min-w-[900px]">
           <colgroup>
             <col className="w-28" />
@@ -472,7 +472,7 @@ function ScoringCriteriaTable({
           {headerAction}
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className={`business-scoring-table w-full table-fixed text-sm ${showSourceColumns ? 'min-w-[980px]' : 'min-w-[860px]'}`}>
           <colgroup>
             <col className="w-16" />
@@ -542,7 +542,7 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full text-sm min-w-[860px]">
           <thead>
             <tr className="border-b border-surface-container-high">
@@ -588,7 +588,7 @@ function CommitmentClueTable({ clues = [], showEvidenceLocationColumn = true }) 
         <h4 className="text-sm font-semibold text-on-surface">待确认承诺线索</h4>
         <span className="text-xs text-outline">{clues.length} 个</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label="待确认承诺线索，可横向滚动" tabIndex={0}>
         <table className="w-full text-sm min-w-[1040px]">
           <thead>
             <tr className="border-b border-surface-container-high">
@@ -1414,10 +1414,12 @@ export default function BusinessTenderReview({ showToast }) {
             <span className="text-sm text-on-surface flex-1 truncate" title={file.name}>{file.name}</span>
             <span className="text-xs text-outline">{fileSizeLabel(file.size)}</span>
             <button
+              type="button"
+              aria-label={`移除文件 ${file.name}`}
               onClick={() => removePickedFile(index)}
-              className="text-error hover:bg-error-container/30 w-6 h-6 flex items-center justify-center"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-error hover:bg-error-container/30"
             >
-              <span className="material-symbols-outlined text-sm">close</span>
+              <span aria-hidden="true" className="material-symbols-outlined text-sm">close</span>
             </button>
           </div>
         ))}
@@ -1453,7 +1455,7 @@ export default function BusinessTenderReview({ showToast }) {
           </span>
         </div>
         <div className="h-2 bg-surface-container-high overflow-hidden">
-          <div className="h-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+          <div className="h-full bg-primary transition-[width]" style={{ width: `${percentage}%` }} />
         </div>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="rounded-md border border-surface-container-high bg-[#f7f7f7] p-3">
@@ -1545,7 +1547,7 @@ export default function BusinessTenderReview({ showToast }) {
           </span>
         </div>
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percentage}%` }} />
+          <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${percentage}%` }} />
         </div>
       </div>
     )
@@ -1629,24 +1631,29 @@ export default function BusinessTenderReview({ showToast }) {
 
   if (showBusinessCompactUpload) {
     return (
-      <div className="review-page business-ui-shell flex flex-col gap-6 animate-fade-in max-w-none">
-        <DataCard className="mt-6 w-full max-w-[760px] !p-0 overflow-hidden self-center">
-          <div className="business-section-head flex items-center px-5 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-xl font-headline font-bold text-[#0067B6]">商务标解析</h3>
+      <div className="review-page business-ui-shell flex w-full max-w-none flex-col gap-4 animate-fade-in">
+        <PageHeader
+          variant="panel"
+          title="商务标解析"
+          description="上传商务招标文件，系统将自动完成结构化解析。"
+        />
+        <DataCard className="w-full overflow-hidden !p-0">
+          <div className="business-section-head flex items-center px-4 py-4 sm:px-5">
+            <div className="flex w-full flex-wrap items-center justify-between gap-3">
+              <h2 className="text-base font-headline font-semibold text-on-surface">上传招标文件</h2>
               <span className="text-xs text-outline">上传招标文件后自动解析</span>
             </div>
           </div>
 
-          <div className="px-5 py-5">
+          <div className="mx-auto w-full max-w-[960px] px-4 py-4 sm:px-5 sm:py-5">
             <label
               htmlFor="business-review-tender-upload"
               className={[
-                'business-dropzone flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-6 py-8 text-center transition-colors',
+                'business-dropzone flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-4 py-6 text-center transition-colors sm:min-h-[160px] sm:px-6 sm:py-8',
                 uploading || reviewDecision === 'abandon' ? 'pointer-events-none opacity-60' : 'hover:border-primary hover:bg-primary/5',
               ].join(' ')}
             >
-              <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
+              <span aria-hidden="true" className="material-symbols-outlined text-2xl text-primary">upload_file</span>
               <span className="mt-2 text-sm font-semibold text-on-surface">选择商务招标文件</span>
               <span className="mt-1 text-xs text-outline">支持 Word、PDF、Excel 等招标附件</span>
             </label>
@@ -1662,13 +1669,14 @@ export default function BusinessTenderReview({ showToast }) {
             <div className="mt-3">
               {renderPickedFiles()}
             </div>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
               <Button
                 type="button"
                 onClick={handleUploadAndParse}
                 disabled={uploading || reviewDecision === 'abandon'}
                 size="stage"
                 variant="primary"
+                className="!h-11 w-full sm:!h-10 sm:w-auto"
               >
                 {uploading ? '上传解析中...' : '上传并解析'}
               </Button>
@@ -1679,6 +1687,7 @@ export default function BusinessTenderReview({ showToast }) {
                   size="stage"
                   variant="dangerQuiet"
                   icon="stop_circle"
+                  className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   停止解析
                 </Button>
@@ -1691,18 +1700,19 @@ export default function BusinessTenderReview({ showToast }) {
                   size="stage"
                   variant="quiet"
                   icon="refresh"
+                  className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   重新解析
                 </Button>
               )}
             </div>
             {uploadError && (
-              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+              <div role="alert" className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
                 {uploadError}
               </div>
             )}
             {uploading && (
-              <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+              <div role="status" className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
                 正在上传并解析商务招标文件，请稍候。
               </div>
             )}
@@ -1714,11 +1724,12 @@ export default function BusinessTenderReview({ showToast }) {
   }
 
   return (
-    <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
+    <div className="review-page flex max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
       <PageHeader
+        variant="panel"
         title={reviewConfig.pageTitle}
         description={isParseCompleted ? '' : reviewConfig.pageDescription}
-        actionsClassName="stage-header-actions"
+        actionsClassName="stage-header-actions w-full sm:w-auto"
         actions={(
           <>
             <Button
@@ -1726,6 +1737,7 @@ export default function BusinessTenderReview({ showToast }) {
               disabled={creatingReview}
               size="lg"
               variant="primary"
+              className="!h-11 w-full sm:!h-10 sm:w-auto"
             >
               {creatingReview ? '准备中...' : reviewConfig.createButtonLabel}
             </Button>
@@ -1735,7 +1747,7 @@ export default function BusinessTenderReview({ showToast }) {
                   loadProjects()
                   loadCurrentProject()
                 }}
-                className="px-5 py-2.5 bg-surface-container-high text-on-surface-variant font-medium rounded-lg hover:bg-surface-dim transition-colors text-sm"
+                className="h-10 w-full rounded-md bg-surface-container-high px-5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-dim sm:w-auto"
               >
                 刷新
               </button>
@@ -1745,7 +1757,7 @@ export default function BusinessTenderReview({ showToast }) {
       />
 
       {!isParseCompleted ? (
-        <DataCard className="!p-6 flex flex-col gap-5">
+        <DataCard className="flex flex-col gap-5 !p-4 sm:!p-6">
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
             <div className="xl:col-span-8 rounded-md bg-[#f7f7f7] border border-surface-container-high px-4 py-3">
               <p className="text-xs text-outline mb-1">{reviewConfig.currentProjectLabel}</p>
@@ -1761,17 +1773,18 @@ export default function BusinessTenderReview({ showToast }) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="text-sm font-semibold text-on-surface">{reviewConfig.uploadSectionTitle}</h3>
               <p className="text-xs text-outline mt-1">{reviewConfig.uploadSectionDescription}</p>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
               <Button
                 onClick={handleUploadAndParse}
                 disabled={uploading || reviewDecision === 'abandon'}
                 size="lg"
                 variant="primary"
+                className="!h-11 w-full sm:!h-10 sm:w-auto"
               >
                 {uploading ? '上传并解析中...' : '上传并解析'}
               </Button>
@@ -1781,6 +1794,7 @@ export default function BusinessTenderReview({ showToast }) {
                   size="lg"
                   variant="dangerQuiet"
                   icon="stop_circle"
+                  className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   停止解析
                 </Button>
@@ -1794,8 +1808,9 @@ export default function BusinessTenderReview({ showToast }) {
               <span className="text-xs px-2 py-0.5 rounded-md bg-error-container/30 text-error">必选</span>
             </div>
             <button
+              type="button"
               onClick={() => document.getElementById('review-tender-upload')?.click()}
-              className="stage-action-btn h-9 px-4 border border-dashed border-outline-variant hover:border-primary hover:bg-primary/5 transition-colors text-sm text-on-surface"
+              className="stage-action-btn h-10 px-4 border border-dashed border-outline-variant hover:border-primary hover:bg-primary/5 transition-colors text-sm text-on-surface"
             >
               选择招标文件
             </button>
@@ -1811,7 +1826,7 @@ export default function BusinessTenderReview({ showToast }) {
           </div>
 
           {uploadError && (
-            <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+            <div role="alert" className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
               {uploadError}
             </div>
           )}
@@ -1908,10 +1923,10 @@ export default function BusinessTenderReview({ showToast }) {
                   showEvidenceLocationColumn={reviewConfig.showEvidenceLocationColumn !== false}
                 />
               )}
-              <div className="border border-surface-container-high rounded-md overflow-hidden">
-                  <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+              <div className="overflow-hidden rounded-md border border-surface-container-high">
+                  <div className="flex flex-col gap-2 border-b border-surface-container-high bg-surface-container-low px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                     <h4 className="text-sm font-semibold text-on-surface">八、商务文档预览</h4>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {activeBusinessDocumentIsCommitment && reviewConfig.showApproveCommitmentLetters && commitmentLetters.length ? (
                         <>
                           <button
@@ -1957,9 +1972,9 @@ export default function BusinessTenderReview({ showToast }) {
                   </div>
                   {businessDocumentCount ? (
                     <OnlyOfficeWorkspace
-                      className="m-4 appendix-preview-workspace"
+                      className="appendix-preview-workspace m-2 !h-[clamp(32rem,72dvh,48rem)] sm:m-4 sm:!h-[clamp(40rem,76dvh,48.75rem)]"
                       heightClass="appendix-preview-shell"
-                      gridClassName="grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
+                      gridClassName="grid-rows-[minmax(14rem,38%)_minmax(0,1fr)] lg:grid-rows-none lg:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
                       sidebarClassName="appendix-preview-aside"
                       documentAreaClassName="appendix-preview-document"
                       documentTitle={selectedBusinessDocumentTitle}
@@ -2049,7 +2064,7 @@ export default function BusinessTenderReview({ showToast }) {
             {reviewConfig.showEvidenceDetails !== false && (
               <details className="rounded-md border border-surface-container-high bg-white">
                 <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">证据明细</summary>
-                <div className="overflow-x-auto border-t border-surface-container-high">
+                <div className="overflow-x-auto border-t border-surface-container-high" role="region" aria-label="证据明细，可横向滚动" tabIndex={0}>
                   <table className="w-full text-sm min-w-[1120px]">
                     <thead>
                       <tr className="bg-surface-container-low border-b border-surface-container-high">
@@ -2092,6 +2107,7 @@ export default function BusinessTenderReview({ showToast }) {
             disabled={Boolean(deciding)}
             size="stage"
             variant="quiet"
+            className="!h-11 w-full sm:!h-10 sm:w-auto"
           >
             {deciding === 'abandon' ? '提交中...' : '不参与该项目'}
           </Button>
@@ -2100,6 +2116,7 @@ export default function BusinessTenderReview({ showToast }) {
             disabled={Boolean(deciding) || !isParseCompleted}
             size="stage"
             variant="primary"
+            className="!h-11 w-full sm:!h-10 sm:w-auto"
           >
             {deciding === 'participate' ? '提交中...' : '参与该项目并进入工作区'}
           </Button>

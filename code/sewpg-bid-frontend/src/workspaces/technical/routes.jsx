@@ -12,6 +12,7 @@ import TechnicalMaterialWiki from './pages/TechnicalMaterialWiki'
 import TechnicalCertificateLedger from './pages/TechnicalCertificateLedger'
 import TechnicalMaterialRules from './pages/TechnicalMaterialRules'
 import AuditLogCenter from '../shared/pages/AuditLogCenter'
+import TechnicalProjectStageLayout from './components/TechnicalProjectStageLayout'
 
 const WORKSPACE = 'tech'
 
@@ -38,24 +39,14 @@ export function renderTechnicalRoutes({ user, showToast }) {
       />
       <Route
         path="/workspace/tech/projects/:id"
-        element={withAccess(user, <TechnicalProjectEntryRedirect />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/template-directory"
-        element={withAccess(user, <TechnicalParseResult showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/outline"
-        element={withAccess(user, <TechnicalOutlineReview showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/gaps"
-        element={withAccess(user, <TechnicalGapRecognition showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/tech/projects/:id/editor"
-        element={withAccess(user, <TechnicalCoCreationEditor showToast={showToast} />)}
-      />
+        element={withAccess(user, <TechnicalProjectStageLayout showToast={showToast} />)}
+      >
+        <Route index element={<TechnicalProjectEntryRedirect />} />
+        <Route path="template-directory" element={<TechnicalParseResult showToast={showToast} />} />
+        <Route path="outline" element={<TechnicalOutlineReview showToast={showToast} />} />
+        <Route path="gaps" element={<TechnicalGapRecognition showToast={showToast} />} />
+        <Route path="editor" element={<TechnicalCoCreationEditor showToast={showToast} />} />
+      </Route>
       <Route
         path="/workspace/tech/materials/raw"
         element={withAccess(user, <TechnicalMaterialDB showToast={showToast} />)}

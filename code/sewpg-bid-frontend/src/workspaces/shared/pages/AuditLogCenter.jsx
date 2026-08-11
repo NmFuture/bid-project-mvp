@@ -6,7 +6,9 @@ import {
   technicalEventsAPI,
 } from '../../../api'
 import AuditDetailModal from '../../../components/modals/AuditDetailModal'
+import PageHeader from '../../../components/shared/PageHeader'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
+import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, useWorkspaceSlug } from '../../../utils/workspace'
 
 const PAGE_SIZE = 20
@@ -61,9 +63,9 @@ const eventStatusMeta = {
 
 const filterLabelClass = 'mb-1.5 block text-xs font-semibold text-outline'
 const filterControlClass =
-  'h-9 w-full rounded-md border border-transparent bg-surface-container-low px-3 text-sm text-on-surface transition-colors focus:border-primary/30 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/10'
+  'h-11 w-full rounded-md border border-outline-variant bg-white px-3 text-base text-on-surface transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 sm:h-10 sm:text-sm'
 const cardClass =
-  'rounded-xl border border-outline-variant/50 bg-white shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]'
+  'rounded-lg border border-outline-variant bg-white'
 
 const safeMessage = (error, fallback) => error?.payload?.detail || error?.message || fallback
 
@@ -139,7 +141,7 @@ function EventStatusBadge({ status }) {
 function Pagination({ page, total, onChange }) {
   const totalPages = Math.max(1, Math.ceil((total || 0) / PAGE_SIZE))
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
       <span className="text-xs text-outline">
         第 {page} / {totalPages} 页 · 共 {total || 0} 条
       </span>
@@ -147,7 +149,7 @@ function Pagination({ page, total, onChange }) {
         type="button"
         onClick={() => onChange(page - 1)}
         disabled={page <= 1}
-        className="inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
       >
         上一页
       </button>
@@ -155,7 +157,7 @@ function Pagination({ page, total, onChange }) {
         type="button"
         onClick={() => onChange(page + 1)}
         disabled={page >= totalPages}
-        className="inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
       >
         下一页
       </button>
@@ -168,7 +170,8 @@ function ModeTab({ active, onClick, children }) {
     <button
       type="button"
       onClick={onClick}
-      className={`h-8 rounded-md px-3 text-sm font-medium transition-colors ${
+      aria-pressed={active}
+      className={`min-h-11 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-9 ${
         active ? 'bg-white text-primary shadow-sm' : 'text-on-surface-variant hover:text-on-surface'
       }`}
     >
@@ -278,7 +281,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
   }
 
   if (loading && !data) {
-    return <PageLoading title="正在加载日志..." description="正在同步最新操作记录。" />
+    return <PageLoading title="正在加载日志…" description="正在同步最新操作记录。" />
   }
 
   if (error && !data) {
@@ -288,31 +291,34 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
   return (
     <>
       <div className={`${cardClass} p-4`}>
-        <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm text-on-surface-variant">
+        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-on-surface-variant">
             <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
               {total} 条
             </span>
             {(refreshing || error) && (
               <span className={`text-xs ${error ? 'text-error' : 'text-outline'}`}>
-                {error || '正在刷新数据...'}
+                {error || '正在刷新数据…'}
               </span>
             )}
           </div>
-          <button
+          <Button
             type="button"
             onClick={handleExportCsv}
             disabled={exporting}
-            className="command-button command-button-primary h-9 min-h-9 whitespace-nowrap px-4 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full whitespace-nowrap sm:w-28"
+            icon="download"
+            size="md"
+            variant="primary"
           >
-            <span className="material-symbols-outlined text-[17px]">download</span>
-            {exporting ? '导出中...' : '导出 CSV'}
-          </button>
+            {exporting ? '导出中…' : '导出 CSV'}
+          </Button>
         </div>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(16rem,1.4fr)_repeat(4,minmax(8rem,1fr))]">
           <div>
             <label className={filterLabelClass}>关键字</label>
             <input
+              aria-label="关键字"
               value={draftFilters.keyword}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, keyword: event.target.value }))}
               placeholder="搜索用户、动作、目标"
@@ -323,6 +329,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
           <div>
             <label className={filterLabelClass}>用户</label>
             <select
+              aria-label="用户"
               value={draftFilters.user}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, user: event.target.value }))}
               className={`${filterControlClass} cursor-pointer`}
@@ -337,13 +344,14 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
           <div>
             <label className={filterLabelClass}>项目/模块</label>
             <select
+              aria-label="项目或模块"
               value={draftFilters.module}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, module: event.target.value }))}
               className={`${filterControlClass} cursor-pointer`}
             >
               <option value="">所有模块</option>
-              {filterOptions.modules.map((item) => (
-                <option key={item.id} value={item.id}>{item.label}</option>
+              {filterOptions.modules.map((item, index) => (
+                <option key={`${item.id}-${index}`} value={item.id}>{item.label}</option>
               ))}
             </select>
           </div>
@@ -351,13 +359,14 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
           <div>
             <label className={filterLabelClass}>动作类型</label>
             <select
+              aria-label="动作类型"
               value={draftFilters.action}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, action: event.target.value }))}
               className={`${filterControlClass} cursor-pointer`}
             >
               <option value="">所有动作</option>
-              {filterOptions.actions.map((item) => (
-                <option key={item.id} value={item.id}>{item.label}</option>
+              {filterOptions.actions.map((item, index) => (
+                <option key={`${item.id}-${index}`} value={item.id}>{item.label}</option>
               ))}
             </select>
           </div>
@@ -365,6 +374,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
           <div>
             <label className={filterLabelClass}>状态</label>
             <select
+              aria-label="状态"
               value={draftFilters.status}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, status: event.target.value }))}
               className={`${filterControlClass} cursor-pointer`}
@@ -380,16 +390,18 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(20rem,1fr)_auto] lg:items-end">
           <div>
             <label className={filterLabelClass}>时间范围</label>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+            <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
               <input
                 type="date"
+                aria-label="开始日期"
                 value={draftFilters.startDate}
                 onChange={(event) => setDraftFilters((prev) => ({ ...prev, startDate: event.target.value }))}
                 className={filterControlClass}
               />
-              <span className="text-outline">-</span>
+              <span className="hidden text-outline sm:inline" aria-hidden="true">-</span>
               <input
                 type="date"
+                aria-label="结束日期"
                 value={draftFilters.endDate}
                 onChange={(event) => setDraftFilters((prev) => ({ ...prev, endDate: event.target.value }))}
                 className={filterControlClass}
@@ -397,22 +409,26 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
             </div>
           </div>
 
-          <div className="flex justify-end gap-2">
-            <button
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+            <Button
               type="button"
               onClick={handleResetFilters}
-              className="command-button command-button-secondary h-9 min-h-9 px-4 text-sm"
+              className="w-full sm:w-24"
+              size="md"
+              variant="secondary"
             >
               重置
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleApplyFilters}
-              className="command-button command-button-primary h-9 min-h-9 px-4 text-sm"
+              className="w-full sm:w-28"
+              icon="tune"
+              size="md"
+              variant="primary"
             >
-              <span className="material-symbols-outlined text-[17px]">tune</span>
               应用筛选
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -426,12 +442,12 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
         />
       ) : (
         <div className={`${cardClass} overflow-hidden`}>
-          <div className="max-h-[calc(100vh-22rem)] min-h-[420px] overflow-auto">
+          <div className="max-h-[70dvh] min-h-[20rem] overflow-auto overscroll-contain">
             <table className="w-full min-w-[980px] text-sm">
               <thead className="sticky top-0 z-[1]">
                 <tr className="border-b border-surface-container-high bg-surface-container-lowest/95 backdrop-blur">
                   {['时间戳', '用户', '动作', '目标/模块', '状态', '操作'].map((header) => (
-                    <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
+                    <th key={header} scope="col" className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
                       {header}
                     </th>
                   ))}
@@ -458,7 +474,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center gap-1 text-xs font-medium ${log.status === '成功' ? 'text-secondary' : 'text-error'}`}>
-                        <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+                        <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }} aria-hidden="true">
                           {log.status === '成功' ? 'check_circle' : 'error'}
                         </span>
                         {log.status || '-'}
@@ -468,7 +484,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
                       <button
                         type="button"
                         onClick={() => setDetailAuditId(log.id)}
-                        className="inline-flex h-7 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10"
+                        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
                       >
                         查看
                       </button>
@@ -478,14 +494,14 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
               </tbody>
             </table>
           </div>
-          <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
             <Pagination page={page} total={total} onChange={setPage} />
             <button
               type="button"
               onClick={() => loadData(queryFilters, { silent: true })}
-              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10"
+              className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
             >
-              <span className="material-symbols-outlined text-[16px]">refresh</span>
+              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">refresh</span>
               刷新
             </button>
           </div>
@@ -579,6 +595,7 @@ function EventList({ eventsAPI, showToast }) {
           <div>
             <label className={filterLabelClass}>事件类型</label>
             <select
+              aria-label="事件类型"
               value={draftFilters.eventType}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, eventType: event.target.value }))}
               className={`${filterControlClass} cursor-pointer`}
@@ -593,6 +610,7 @@ function EventList({ eventsAPI, showToast }) {
           <div>
             <label className={filterLabelClass}>用户</label>
             <input
+              aria-label="用户"
               value={draftFilters.user}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, user: event.target.value }))}
               placeholder="用户名"
@@ -603,6 +621,7 @@ function EventList({ eventsAPI, showToast }) {
           <div>
             <label className={filterLabelClass}>会话 ID</label>
             <input
+              aria-label="会话 ID"
               value={draftFilters.sessionId}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, sessionId: event.target.value }))}
               placeholder="sessionId"
@@ -613,6 +632,7 @@ function EventList({ eventsAPI, showToast }) {
           <div>
             <label className={filterLabelClass}>关键字</label>
             <input
+              aria-label="关键字"
               value={draftFilters.keyword}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, keyword: event.target.value }))}
               placeholder="搜索路由、目标"
@@ -624,16 +644,18 @@ function EventList({ eventsAPI, showToast }) {
         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(20rem,1fr)_auto] lg:items-end">
           <div>
             <label className={filterLabelClass}>时间范围</label>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+            <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
               <input
                 type="date"
+                aria-label="开始日期"
                 value={draftFilters.startDate}
                 onChange={(event) => setDraftFilters((prev) => ({ ...prev, startDate: event.target.value }))}
                 className={filterControlClass}
               />
-              <span className="text-outline">-</span>
+              <span className="hidden text-outline sm:inline" aria-hidden="true">-</span>
               <input
                 type="date"
+                aria-label="结束日期"
                 value={draftFilters.endDate}
                 onChange={(event) => setDraftFilters((prev) => ({ ...prev, endDate: event.target.value }))}
                 className={filterControlClass}
@@ -641,40 +663,44 @@ function EventList({ eventsAPI, showToast }) {
             </div>
           </div>
 
-          <div className="flex justify-end gap-2">
-            <button
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+            <Button
               type="button"
               onClick={handleResetFilters}
-              className="command-button command-button-secondary h-9 min-h-9 px-4 text-sm"
+              className="w-full sm:w-24"
+              size="md"
+              variant="secondary"
             >
               重置
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleApplyFilters}
-              className="command-button command-button-primary h-9 min-h-9 px-4 text-sm"
+              className="w-full sm:w-28"
+              icon="tune"
+              size="md"
+              variant="primary"
             >
-              <span className="material-symbols-outlined text-[17px]">tune</span>
               应用筛选
-            </button>
+            </Button>
           </div>
         </div>
       </div>
 
       {loading && !data ? (
-        <PageLoading title="正在加载事件..." description="正在同步用户行为事件。" />
+        <PageLoading title="正在加载事件…" description="正在同步用户行为事件。" />
       ) : error && !data ? (
         <PageError title="事件加载失败" description={error} onRetry={() => loadData(queryFilters, page)} />
       ) : !items.length ? (
         <PageEmpty title="暂无事件" description="当前筛选条件下暂无可展示的行为事件。" />
       ) : (
         <div className={`${cardClass} overflow-hidden`}>
-          <div className="max-h-[calc(100vh-22rem)] min-h-[420px] overflow-auto">
+          <div className="max-h-[70dvh] min-h-[20rem] overflow-auto overscroll-contain">
             <table className="w-full min-w-[1080px] text-sm">
               <thead className="sticky top-0 z-[1]">
                 <tr className="border-b border-surface-container-high bg-surface-container-lowest/95 backdrop-blur">
                   {['时间', '用户', '类型', '页面路由', '动作目标', '结果', '操作'].map((header) => (
-                    <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
+                    <th key={header} scope="col" className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
                       {header}
                     </th>
                   ))}
@@ -712,7 +738,7 @@ function EventList({ eventsAPI, showToast }) {
                       <button
                         type="button"
                         onClick={() => setMetaEvent(event)}
-                        className="inline-flex h-7 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10"
+                        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
                       >
                         查看
                       </button>
@@ -722,14 +748,14 @@ function EventList({ eventsAPI, showToast }) {
               </tbody>
             </table>
           </div>
-          <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
             <Pagination page={page} total={total} onChange={setPage} />
             <button
               type="button"
               onClick={() => loadData(queryFilters, page)}
-              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10"
+              className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
             >
-              <span className="material-symbols-outlined text-[16px]">refresh</span>
+              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">refresh</span>
               刷新
             </button>
           </div>
@@ -811,6 +837,7 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
           <div>
             <label className={filterLabelClass}>用户</label>
             <input
+              aria-label="用户"
               value={draftFilters.user}
               onChange={(event) => setDraftFilters((prev) => ({ ...prev, user: event.target.value }))}
               placeholder="用户名"
@@ -820,16 +847,18 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
 
           <div>
             <label className={filterLabelClass}>时间范围</label>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+            <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
               <input
                 type="date"
+                aria-label="开始日期"
                 value={draftFilters.startDate}
                 onChange={(event) => setDraftFilters((prev) => ({ ...prev, startDate: event.target.value }))}
                 className={filterControlClass}
               />
-              <span className="text-outline">-</span>
+              <span className="hidden text-outline sm:inline" aria-hidden="true">-</span>
               <input
                 type="date"
+                aria-label="结束日期"
                 value={draftFilters.endDate}
                 onChange={(event) => setDraftFilters((prev) => ({ ...prev, endDate: event.target.value }))}
                 className={filterControlClass}
@@ -837,40 +866,44 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
             </div>
           </div>
 
-          <div className="flex justify-end gap-2">
-            <button
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+            <Button
               type="button"
               onClick={handleResetFilters}
-              className="command-button command-button-secondary h-9 min-h-9 px-4 text-sm"
+              className="w-full sm:w-24"
+              size="md"
+              variant="secondary"
             >
               重置
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleApplyFilters}
-              className="command-button command-button-primary h-9 min-h-9 px-4 text-sm"
+              className="w-full sm:w-28"
+              icon="tune"
+              size="md"
+              variant="primary"
             >
-              <span className="material-symbols-outlined text-[17px]">tune</span>
               应用筛选
-            </button>
+            </Button>
           </div>
         </div>
       </div>
 
       {loading && !data ? (
-        <PageLoading title="正在加载会话..." description="正在汇总用户行为会话。" />
+        <PageLoading title="正在加载会话…" description="正在汇总用户行为会话。" />
       ) : error && !data ? (
         <PageError title="会话加载失败" description={error} onRetry={() => loadData(queryFilters, page)} />
       ) : !items.length ? (
         <PageEmpty title="暂无会话" description="当前筛选条件下暂无可回放的行为会话。" />
       ) : (
         <div className={`${cardClass} overflow-hidden`}>
-          <div className="max-h-[calc(100vh-22rem)] min-h-[420px] overflow-auto">
+          <div className="max-h-[70dvh] min-h-[20rem] overflow-auto overscroll-contain">
             <table className="w-full min-w-[980px] text-sm">
               <thead className="sticky top-0 z-[1]">
                 <tr className="border-b border-surface-container-high bg-surface-container-lowest/95 backdrop-blur">
                   {['会话 ID', '用户', '开始时间', '结束时间', '事件数', '错误数', '操作'].map((header) => (
-                    <th key={header} className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
+                    <th key={header} scope="col" className="px-4 py-3 text-left text-xs font-semibold text-on-surface-variant">
                       {header}
                     </th>
                   ))}
@@ -903,7 +936,7 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
                       <button
                         type="button"
                         onClick={() => onReplay(session.sessionId)}
-                        className="inline-flex h-7 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10"
+                        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
                       >
                         回放
                       </button>
@@ -913,14 +946,14 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
               </tbody>
             </table>
           </div>
-          <div className="flex items-center justify-between border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-surface-container-high bg-surface-container-lowest px-4 py-3 text-sm text-outline">
             <Pagination page={page} total={total} onChange={setPage} />
             <button
               type="button"
               onClick={() => loadData(queryFilters, page)}
-              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10"
+              className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
             >
-              <span className="material-symbols-outlined text-[16px]">refresh</span>
+              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">refresh</span>
               刷新
             </button>
           </div>
@@ -977,7 +1010,7 @@ function SessionTimeline({ eventsAPI, sessionId, onBack }) {
   const errorCount = items.filter((item) => item.status === 'error' || item.eventType === 'error').length
 
   if (loading) {
-    return <PageLoading title="正在加载会话回放..." description="正在还原该会话的操作时间线。" />
+    return <PageLoading title="正在加载会话回放…" description="正在还原该会话的操作时间线。" />
   }
 
   if (error) {
@@ -989,8 +1022,7 @@ function SessionTimeline({ eventsAPI, sessionId, onBack }) {
       <div className="flex flex-col gap-2 border-b border-surface-container-high px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span aria-hidden="true" className="h-5 w-1 rounded-full bg-primary" />
-            <h2 className="text-base font-headline font-bold text-on-surface">会话回放</h2>
+            <h2 className="text-base font-headline font-semibold text-on-surface">会话回放</h2>
             <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
               {items.length} 个事件
             </span>
@@ -1004,17 +1036,19 @@ function SessionTimeline({ eventsAPI, sessionId, onBack }) {
             {sessionId} · {userName}
           </p>
         </div>
-        <button
+        <Button
           type="button"
           onClick={onBack}
-          className="command-button command-button-secondary h-9 min-h-9 whitespace-nowrap px-4 text-sm"
+          className="w-full whitespace-nowrap sm:w-36"
+          icon="arrow_back"
+          size="md"
+          variant="secondary"
         >
-          <span className="material-symbols-outlined text-[17px]">arrow_back</span>
           返回会话列表
-        </button>
+        </Button>
       </div>
 
-      <div className="max-h-[calc(100vh-20rem)] min-h-[420px] overflow-auto px-5 py-4">
+      <div className="max-h-[70dvh] min-h-[20rem] overflow-auto overscroll-contain px-4 py-4 sm:px-5">
         {!items.length ? (
           <p className="py-8 text-center text-sm text-outline">该会话暂无事件记录。</p>
         ) : (
@@ -1027,6 +1061,7 @@ function SessionTimeline({ eventsAPI, sessionId, onBack }) {
                     className={`absolute -left-[7px] top-1 h-3 w-3 rounded-full border-2 border-white ${
                       isError ? 'bg-error' : 'bg-primary'
                     }`}
+                    aria-hidden="true"
                   />
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-xs text-on-surface-variant">
@@ -1067,8 +1102,8 @@ function BehaviorFlow({ eventsAPI, showToast }) {
 
   return (
     <>
-      <div className="flex items-center gap-2">
-        <div className="inline-flex rounded-lg bg-surface-container-low p-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-lg bg-surface-container-low p-1" role="group" aria-label="行为流视图">
           <ModeTab active={view === 'events'} onClick={() => setView('events')}>
             事件列表
           </ModeTab>
@@ -1095,23 +1130,15 @@ export default function AuditLogCenter({ showToast = () => {} }) {
   const [mode, setMode] = useState('audit')
 
   return (
-    <div className="flex flex-col gap-3 animate-fade-in">
-      <div className="overflow-hidden rounded-xl border border-outline-variant/55 bg-white shadow-[0_12px_28px_-24px_rgba(13,33,55,0.35)]">
-        <div className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span aria-hidden="true" className="h-5 w-1 rounded-full bg-primary" />
-              <h1 className="text-xl font-headline font-bold text-on-surface">
-                {lockedBidType ? `${lockedBidType}日志` : '日志'}
-              </h1>
-            </div>
-            <p className="mt-1 text-sm text-on-surface-variant">
-              {mode === 'audit'
-                ? '支持筛选、diff 查看与 CSV 导出，满足联调追踪需求。'
-                : '按事件与会话维度还原用户操作行为，辅助问题定位。'}
-            </p>
-          </div>
-          <div className="inline-flex self-start rounded-lg bg-surface-container-low p-1 lg:self-auto">
+    <div className="flex w-full flex-col gap-3 animate-fade-in">
+      <PageHeader
+        variant="panel"
+        title={lockedBidType ? `${lockedBidType}日志` : '日志'}
+        description={mode === 'audit'
+          ? '支持筛选、diff 查看与 CSV 导出，满足联调追踪需求。'
+          : '按事件与会话维度还原用户操作行为，辅助问题定位。'}
+        actions={(
+          <div className="inline-flex self-start rounded-lg bg-surface-container-low p-1 lg:self-auto" role="group" aria-label="日志视图">
             <ModeTab active={mode === 'audit'} onClick={() => setMode('audit')}>
               审计概览
             </ModeTab>
@@ -1119,8 +1146,8 @@ export default function AuditLogCenter({ showToast = () => {} }) {
               行为流
             </ModeTab>
           </div>
-        </div>
-      </div>
+        )}
+      />
 
       {mode === 'audit' ? (
         <AuditOverview auditAPI={auditAPI} lockedBidType={lockedBidType} showToast={showToast} />

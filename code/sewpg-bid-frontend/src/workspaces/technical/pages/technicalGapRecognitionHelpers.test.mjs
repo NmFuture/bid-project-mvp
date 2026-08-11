@@ -258,10 +258,11 @@ test('素材范围变更后自动重建事实表，不保留手动刷新入口',
   assert.match(source, /workspace\/tech\/materials\/rules/)
 })
 
-test('事实表弹窗筛选时保持固定高度并只滚动表格区域', async () => {
+test('事实表弹窗使用动态视口高度并只滚动表格区域', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
 
-  assert.match(source, /h-\[calc\(100vh-64px\)\] max-h-\[860px\]/)
+  assert.match(source, /h-\[calc\(100dvh-1rem\)\] max-h-\[860px\]/)
+  assert.match(source, /sm:h-\[calc\(100dvh-2rem\)\]/)
   assert.match(source, /mb-2 flex h-6 shrink-0 items-center/)
   assert.match(source, /h-full overflow-auto \[scrollbar-gutter:stable\]/)
   assert.match(source, /sticky top-0 z-10 grid items-center/)
