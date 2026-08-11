@@ -1,13 +1,12 @@
-"""技术标附表 AI 填写 LLM 模式（S4_TABLE_FILL_MODE=llm）后端接线单测。
+"""技术标附表 AI 填写（LLM 判断为唯一模式）后端接线单测。
 
 覆盖：
-1. 默认 script 模式行为完全不变：prompt 仍是单次 s4fill，early_tool_command="s4fill"，
-   回退不标注 fallbackReason。
-2. llm 模式：prompt 走 prepare→plan→apply 流程，不传 early_tool_command（等会话自然
-   结束），OpencodeClient 用 S4_LLM_FILL_TIMEOUT_SEC（缺省沿用 opencode_timeout_sec）。
-3. llm 模式回退显式化：会话异常 / outputFile 不存在 → 落回本地脚本路径并在
-   opencodeOutput 标注 fallbackReason。
-OpenCode 与本地脚本执行全部 mock，不依赖外部服务。
+1. 始终走 LLM 模式：prompt 走 prepare→plan→apply 流程，不传 early_tool_command
+   （等会话自然结束），OpencodeClient 用 S4_LLM_FILL_TIMEOUT_SEC（缺省沿用
+   opencode_timeout_sec）。
+2. 失败显式化：会话异常 / outputFile 不存在 → 直接 raise（错误信息保留原因），
+   由上层记 fillError 标红目录项，不再回退任何脚本路径。
+OpenCode 全部 mock，不依赖外部服务。
 """
 from __future__ import annotations
 
@@ -38,7 +37,7 @@ class _FakeOpencodeClient:
         return dict(_FakeOpencodeClient.result)
 
 
-class TableFillerLlmModeTests(unittest.TestCase):
+class TableFillerLlmOnlyTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.base = Path(self._tmp.name)
@@ -51,37 +50,18 @@ class TableFillerLlmModeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _run(self, *, mode: str, timeout_sec=None, local_result=None) -> dict:
-        local_result = local_result or {"outputFile": "local.docx", "opencodeOutput": {"status": "received"}}
+    def _run(self, *, timeout_sec=None) -> dict:
         with (
-            patch.object(ai_fill.settings, "s4_table_fill_mode", mode),
             patch.object(ai_fill.settings, "s4_llm_fill_timeout_sec", timeout_sec),
             patch.object(ai_fill, "OpencodeClient", _FakeOpencodeClient),
-            patch.object(ai_fill, "_run_local_skill_runner", return_value=local_result) as local_runner,
         ):
-            result = ai_fill.run_technical_table_filler_skill(self.manifest_path)
-        self.local_runner = local_runner
-        return result
+            return ai_fill.run_technical_table_filler_skill(self.manifest_path)
 
-    def test_script_mode_is_default_and_unchanged(self) -> None:
-        # settings 缺省值必须是 script（本地安全默认）
-        self.assertEqual(ai_fill.settings.s4_table_fill_mode, "script")
-        result = self._run(mode="script")
-        self.assertEqual(result["outputFile"], "unused")
-        client = _FakeOpencodeClient.instances[0]
-        # script 模式不覆盖超时（timeout_ms 由 client 默认逻辑取）
-        self.assertNotIn("timeout_ms", client.kwargs)
-        call = client.calls[0]
-        self.assertEqual(call["early_tool_command"], "s4fill")
-        self.assertIn(f"s4fill {self.manifest_path}", call["prompt"])
-        self.assertNotIn("s4fill-prepare", call["prompt"])
-        self.local_runner.assert_not_called()
-
-    def test_llm_mode_prompt_and_no_early_tool_command(self) -> None:
+    def test_llm_prompt_and_no_early_tool_command(self) -> None:
         output = self.base / "filled.docx"
         output.write_bytes(b"docx")
         _FakeOpencodeClient.result = {"outputFile": str(output)}
-        result = self._run(mode="llm", timeout_sec=3600.0)
+        result = self._run(timeout_sec=3600.0)
         self.assertEqual(result["outputFile"], str(output))
         client = _FakeOpencodeClient.instances[0]
         # LLM 会话明显变长：独立超时生效
@@ -92,38 +72,33 @@ class TableFillerLlmModeTests(unittest.TestCase):
         prompt = call["prompt"]
         self.assertIn(f"s4fill-prepare {self.manifest_path}", prompt)
         self.assertIn(f"s4fill-apply {self.manifest_path}", prompt)
-        self.local_runner.assert_not_called()
 
-    def test_llm_mode_timeout_defaults_to_opencode_timeout(self) -> None:
+    def test_llm_timeout_defaults_to_opencode_timeout(self) -> None:
         output = self.base / "filled.docx"
         output.write_bytes(b"docx")
         _FakeOpencodeClient.result = {"outputFile": str(output)}
-        self._run(mode="llm", timeout_sec=None)
+        self._run(timeout_sec=None)
         client = _FakeOpencodeClient.instances[0]
         self.assertEqual(
             client.kwargs.get("timeout_ms"),
             int(ai_fill.settings.opencode_timeout_sec * 1000),
         )
 
-    def test_llm_mode_session_failure_falls_back_with_reason(self) -> None:
+    def test_session_failure_raises_with_reason(self) -> None:
         _FakeOpencodeClient.error = RuntimeError("connection refused")
-        result = self._run(mode="llm")
-        # 落回本地脚本路径，opencodeOutput 显式标注回退原因，不再静默
-        self.assertEqual(result["outputFile"], "local.docx")
-        self.assertIn("connection refused", result["opencodeOutput"]["fallbackReason"])
-        self.local_runner.assert_called_once()
+        # LLM 会话失败显式抛出（保留原因），由上层记 fillError，不再回退脚本
+        with self.assertRaisesRegex(RuntimeError, "LLM 附表填写会话失败.*connection refused"):
+            self._run()
 
-    def test_llm_mode_missing_output_file_falls_back_with_reason(self) -> None:
+    def test_missing_output_file_raises_with_reason(self) -> None:
         _FakeOpencodeClient.result = {"outputFile": str(self.base / "not_written.docx")}
-        result = self._run(mode="llm")
-        self.assertEqual(result["outputFile"], "local.docx")
-        self.assertIn("未产出有效输出文件", result["opencodeOutput"]["fallbackReason"])
+        with self.assertRaisesRegex(RuntimeError, "未产出有效输出文件"):
+            self._run()
 
-    def test_script_mode_fallback_has_no_fallback_reason(self) -> None:
-        _FakeOpencodeClient.error = RuntimeError("connection refused")
-        result = self._run(mode="script")
-        self.assertEqual(result["outputFile"], "local.docx")
-        self.assertNotIn("fallbackReason", result["opencodeOutput"])
+    def test_empty_output_file_raises_with_reason(self) -> None:
+        _FakeOpencodeClient.result = {"outputFile": ""}
+        with self.assertRaisesRegex(RuntimeError, "未产出有效输出文件"):
+            self._run()
 
 
 if __name__ == "__main__":

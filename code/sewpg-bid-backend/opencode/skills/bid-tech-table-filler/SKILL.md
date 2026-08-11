@@ -80,6 +80,6 @@ s4fill-prepare /data/documents/<projectId>/technical-workspace/s4_gap_workdir/ai
 
 ## 规则细则的适用范围
 
-`references/rules.md` 的完整细则中：**结构规则依然适用且由脚本保证**——S1 越界表剔除（第二个编号不同的附表标题之后不填）、清单型一行多列写回、单位口径与换算、`[待人工补充]` 黄高亮（FFF2CC）、fill_report sidecar。词典/概念打分细则只适用于纯脚本回退路径（后端直接跑 `s4fill` 时使用），你在 LLM 模式下不需要关心匹配打分，只需按铁律取值并给出原文证据。
+`references/rules.md` 的完整细则中：**结构规则依然适用且由脚本保证**——S1 越界表剔除（第二个编号不同的附表标题之后不填）、清单型一行多列写回、单位口径与换算、`[待人工补充]` 黄高亮（FFF2CC）、fill_report sidecar。词典/概念打分只用于脚本侧的冲突降级与值守门，你不需要关心匹配打分，只需按铁律取值并给出原文证据。
 
 `requiresFill` 的正文/占位符模板不在本 Skill 范围，由 `bid-tech-word-placeholder-filler` 处理。

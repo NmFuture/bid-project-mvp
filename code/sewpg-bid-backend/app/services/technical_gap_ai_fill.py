@@ -33,7 +33,6 @@ TABLE_FILL_SCHEMA_VERSION = "bid-tech-table-fill-v1"
 WORD_FILL_SCHEMA_VERSION = "bid-tech-word-placeholder-fill-v1"
 TECHNICAL_TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
 TECHNICAL_WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
-TABLE_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_TABLE_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
 WORD_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_WORD_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
@@ -1001,22 +1000,6 @@ def _run_local_skill_runner(runner: Path, manifest_path: Path, schema_version: s
     return payload
 
 
-def _build_table_filler_prompt(manifest_path: Path) -> str:
-    return f"""
-Use the {TECHNICAL_TABLE_FILL_SKILL_NAME} skill.
-
-你现在在做技术标缺口项 AI 填写。后端已经准备好 manifest，其中包含待填写空表/Word、人工指定的参考素材、解析字段和输出路径。
-
-manifest：{manifest_path}
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
-
-s4fill {manifest_path}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-""".strip()
-
-
 def _build_table_filler_llm_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {TECHNICAL_TABLE_FILL_SKILL_NAME} skill.
@@ -1050,17 +1033,11 @@ def _run_table_filler_llm(
 
     不传 early_tool_command——「脚本完成/文件落地」不代表终稿，提前收口会回收
     中间态并把会话孤儿化；等会话自然结束（对齐 factcurate 不提前返回的先例）。
-    会话或回收校验失败时显式回退纯脚本路径，并在 opencodeOutput 标注
-    fallbackReason，不再静默。
+    LLM 判断是附表填写的唯一模式，会话失败或产物缺失时显式抛出，由上层记录
+    失败原因并标红目录项，不再回退任何脚本路径。
     """
     prompt = _build_table_filler_llm_prompt(manifest_path)
     timeout_sec = settings.s4_llm_fill_timeout_sec or settings.opencode_timeout_sec
-
-    def fallback(reason: str) -> dict[str, Any]:
-        result = _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
-        opencode_output = result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {}
-        result["opencodeOutput"] = {**opencode_output, "fallbackReason": reason}
-        return result
 
     try:
         result = OpencodeClient(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
@@ -1073,11 +1050,11 @@ def _run_table_filler_llm(
             early_tool_command="",
         )
     except Exception as exc:
-        return fallback(f"LLM 填写会话失败，回退纯脚本路径：{exc}")
+        raise RuntimeError(f"LLM 附表填写会话失败：{exc}") from exc
     # 回收校验：stdout 摘要过 _extract_table_fill_json 后，outputFile 必须真实存在
     output_file = str(result.get("outputFile") or "").strip()
     if not output_file or not Path(output_file).exists():
-        return fallback(f"LLM 填写未产出有效输出文件（outputFile={output_file or '缺失'}），回退纯脚本路径。")
+        raise RuntimeError(f"LLM 附表填写未产出有效输出文件（outputFile={output_file or '缺失'}）。")
     return result
 
 
@@ -1085,21 +1062,8 @@ def run_technical_table_filler_skill(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    if settings.s4_table_fill_mode == "llm":
-        return _run_table_filler_llm(manifest_path, progress_callback)
-    prompt = _build_table_filler_prompt(manifest_path)
-    try:
-        return OpencodeClient().run_bid_tech_table_filler_with_trace(
-            prompt,
-            stream_callback=(
-                (lambda details: progress_callback("table_filler_delta", details))
-                if progress_callback
-                else None
-            ),
-            early_tool_command="s4fill",
-        )
-    except Exception:
-        return _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
+    """附表填写只走 LLM 判断模式；失败直接抛出，由上层记 fillError 显式暴露。"""
+    return _run_table_filler_llm(manifest_path, progress_callback)
 
 
 def run_technical_word_placeholder_filler_skill(manifest_path: Path) -> dict[str, Any]:
