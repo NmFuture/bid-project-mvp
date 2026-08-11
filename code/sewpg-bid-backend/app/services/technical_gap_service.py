@@ -16,12 +16,15 @@ from app.services.bid_project_repository import ProjectConcurrentUpdateError, pr
 from app.services.bid_document_flow import _validate_callback_token, _validate_download_url
 from app.services.onlyoffice_documents import download_document_from_onlyoffice
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.identity import build_project_material_scope
+from app.services.identity import build_project_identity, build_project_material_scope, canonical_customer
 from app.services.material_folder_scope import project_material_root_path
 from app.services.technical_appendix_source_matrix import (
     apply_appendix_source_matrix_to_plan,
-    load_appendix_source_matrix_for_project,
     parse_appendix_source_matrix,
+)
+from app.services.technical_rules_store import (
+    load_appendix_matrix_for_customer,
+    replace_appendix_rules,
 )
 from app.services.turbine_models import project_turbine_model
 from app.services.technical_gap_fact_table import (
@@ -134,26 +137,6 @@ def _validate_editable_gap_artifact(
         raise _StaleArtifactSession("OnlyOffice 编辑会话已过期。")
     return current_version
 
-
-def appendix_source_matrix_meta(project: dict[str, Any]) -> dict[str, Any]:
-    """项目级附表来源矩阵元数据：无绑定时返回空 dict，前端据此切换按钮空态/已上传态。"""
-    raw = project.get("technicalAppendixSourceMatrix")
-    if not isinstance(raw, dict):
-        raw = {}
-    path = str(
-        raw.get("path")
-        or project.get("technicalAppendixSourceMatrixPath")
-        or project.get("appendixSourceMatrixPath")
-        or ""
-    ).strip()
-    if not path:
-        return {}
-    return {
-        "path": path,
-        "fileName": str(raw.get("fileName") or ""),
-        "rowCount": int(raw.get("rowCount") or 0),
-        "uploadedAt": str(raw.get("uploadedAt") or ""),
-    }
 
 # 字段了结的状态集合：全部字段了结（有值或人工标不适用）后表级 status 自动升 confirmed
 PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
@@ -1054,9 +1037,28 @@ class TechnicalGapService:
         payload["materialPaths"] = [str(path) for path in custom_paths if str(path or "").strip()]
         # 默认生效的素材范围：与 AI 匹配填充实际扫描的三层口径一致，供前端如实展示
         payload["materialScopes"] = default_fact_material_scopes(project)
-        # 附表来源矩阵绑定状态：前端「附表填写规则」按钮的空态/已上传态
-        payload["appendixSourceMatrix"] = appendix_source_matrix_meta(project)
+        # 附表来源矩阵绑定状态：按客户读取（规则按客户维护，项目套用所属客户那份）
+        payload["appendixSourceMatrix"] = await self._appendix_source_matrix_meta_for_project(project)
         return payload
+
+    async def _appendix_source_matrix_meta_for_project(self, project: dict[str, Any]) -> dict[str, Any]:
+        """项目所属客户的附表规则元数据；无规则或身份解析失败返回空 dict。"""
+        try:
+            identity = build_project_identity(project)
+        except Exception:
+            return {}
+        customer_id = str(identity.get("customerId") or "")
+        if not customer_id:
+            return {}
+        from app.services.technical_rules_store import appendix_rules_meta
+
+        meta = await appendix_rules_meta(customer_id)
+        if not meta:
+            return {}
+        return {
+            **meta,
+            "customerName": str(identity.get("customerCanonicalName") or identity.get("customerName") or ""),
+        }
 
     async def save_fact_material_sources(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         """保存本项目的参考资料目录：素材库虚拟路径列表（如 技术标/项目定制/其他项目）。
@@ -1117,8 +1119,9 @@ class TechnicalGapService:
     ) -> dict[str, Any]:
         """项目级附表来源矩阵上传（《填写文件来源》Excel：客户 × 附表 → 项目定制/标准文件/其他来源）。
 
-        绑定到 project["technicalAppendixSourceMatrix"]，resolve_appendix_source_matrix_path
-        以该路径为最高优先级，下次缺口识别时经 manifest 传给 gap-planner 定 sourceRouting。
+        规则已改为按客户维护：本端点保留兼容（项目不存在 404、xlsx 留盘、绑定元数据），
+        同时把文件中属于本项目客户的规则行透写到客户规则库（全量替换该客户规则），
+        消费链统一从客户规则库读取，项目级文件不再独立生效。
         """
         if not filename.lower().endswith((".xlsx", ".xlsm")):
             raise HTTPException(status_code=400, detail="附表填写规则必须是 .xlsx 文件。")
@@ -1140,6 +1143,17 @@ class TechnicalGapService:
                 detail="未解析到有效规则行，请检查表头（客户/表格/项目定制/标准文件/其他）。",
             )
 
+        snapshot = require_technical_gap_project_for_update(project_id)
+        identity = build_project_identity(snapshot)
+        customer_id = str(identity.get("customerId") or "")
+        customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+        own_rows = [
+            row
+            for row in rows
+            if customer_id
+            and str(canonical_customer(row.get("customer")).get("customerId") or "") == customer_id
+        ]
+
         target_dir = settings.documents_dir / project_id / "technical-workspace"
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / "appendix-source-matrix.xlsx"
@@ -1156,10 +1170,15 @@ class TechnicalGapService:
             project["updatedAt"] = uploaded_at
 
         mutate_technical_gap_project(project_id, bind_matrix)
+        # 透写客户规则库：只取属于本项目客户的行，全量替换该客户规则
+        if own_rows:
+            await replace_appendix_rules(
+                customer_id, customer_name, own_rows, "项目级上传", file_name=filename
+            )
         applied = await self._apply_appendix_source_matrix_to_plan(project_id)
         return {
             "fileName": filename,
-            "rowCount": len(rows),
+            "rowCount": len(own_rows) if own_rows else len(rows),
             "uploadedAt": uploaded_at,
             "applied": applied,
         }
@@ -1177,7 +1196,11 @@ class TechnicalGapService:
             return {}
         from app.services.technical_gap_planner import _allowed_technical_material_index
 
-        matrix = load_appendix_source_matrix_for_project(snapshot)
+        # 规则按客户维护：项目套用所属客户的规则库（SQL 为唯一事实来源）
+        identity = build_project_identity(snapshot)
+        matrix = await load_appendix_matrix_for_customer(
+            str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+        )
         material_scope = build_project_material_scope(snapshot)
         turbine_model = project_turbine_model(snapshot)
         # 素材索引构建内部经 run_awaitable_sync 桥接，与 build_facts 同模式放工作线程
@@ -1210,6 +1233,39 @@ class TechnicalGapService:
 
         mutate_technical_gap_project(project_id, apply, persist_when=lambda changed: changed)
         return stats
+
+    async def replay_appendix_source_matrix_for_customer(self, customer_name: str) -> dict[str, Any]:
+        """客户规则保存/导入后，重放到该客户名下「缺口识别已完成」的技术标项目。
+
+        按 build_project_identity 匹配项目清单逐个重放，单项目失败不阻塞其他项目。
+        """
+        customer_id = str(canonical_customer(customer_name).get("customerId") or "")
+        summary: dict[str, Any] = {"replayed": 0, "failed": 0, "projects": []}
+        if not customer_id:
+            return summary
+        from app.services.store import store
+
+        listing = store.list_projects(bid_type=TECHNICAL_BID_TYPE, page=1, page_size=10000)
+        for item in listing.get("items") or []:
+            project_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+            if not project_id:
+                continue
+            try:
+                project = get_technical_gap_project_runtime_state(project_id)
+                identity = build_project_identity(project)
+                if str(identity.get("customerId") or "") != customer_id:
+                    continue
+                gap_state = ensure_technical_gap_state(project)
+                if gap_state.get("recognitionStatus") != "completed":
+                    continue
+                stats = await self._apply_appendix_source_matrix_to_plan(project_id)
+                summary["replayed"] += 1
+                summary["projects"].append({"projectId": project_id, "applied": stats})
+            except Exception as exc:  # 单项目失败不阻塞其他项目
+                summary["failed"] += 1
+                summary["projects"].append({"projectId": project_id, "error": str(exc)})
+        return summary
+
 
     async def build_facts(self, project_id: str) -> dict[str, Any]:
         try:
