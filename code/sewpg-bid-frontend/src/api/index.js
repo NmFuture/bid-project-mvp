@@ -560,8 +560,6 @@ export const technicalGapsAPI = {
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
   buildFacts: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
-  uploadAppendixSourceMatrix: (projectId, data) =>
-    request(`/technical/projects/${projectId}/appendix-source-matrix`, { method: 'POST', body: data }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
   // 提交后台任务，立即返回；执行进度经 curateFactsStatus 轮询

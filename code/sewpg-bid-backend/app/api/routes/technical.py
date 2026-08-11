@@ -443,7 +443,8 @@ async def upload_technical_appendix_source_matrix(
     project_id: str,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    """上传本项目附表填写规则 Excel（客户×附表→素材来源矩阵），下次缺口识别时确定每张附表的取值来源。"""
+    """上传附表填写规则 Excel（客户×附表→素材来源矩阵）：规则按客户入库（透写客户规则库），
+    该客户名下项目缺口识别时确定每张附表的取值来源。"""
     return await technical_gap_service.upload_appendix_source_matrix(
         project_id, str(file.filename or ""), await file.read()
     )

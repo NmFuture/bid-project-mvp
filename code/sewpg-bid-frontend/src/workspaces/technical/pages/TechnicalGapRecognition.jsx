@@ -1479,7 +1479,6 @@ export default function TechnicalGapRecognition({ showToast }) {
         // 附表规则已改按客户维护：meta 为 {rowCount, fileName, customerName,...}，无规则时是空 dict
         imported: Number(matrixMeta?.rowCount) > 0 || Boolean(matrixMeta?.path),
         fileName: String(matrixMeta?.fileName || ''),
-        rowCount: Number(matrixMeta?.rowCount) || 0,
         customerName: String(matrixMeta?.customerName || ''),
       })
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))

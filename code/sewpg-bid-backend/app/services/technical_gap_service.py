@@ -138,26 +138,6 @@ def _validate_editable_gap_artifact(
     return current_version
 
 
-def appendix_source_matrix_meta(project: dict[str, Any]) -> dict[str, Any]:
-    """项目级附表来源矩阵元数据：无绑定时返回空 dict，前端据此切换按钮空态/已上传态。"""
-    raw = project.get("technicalAppendixSourceMatrix")
-    if not isinstance(raw, dict):
-        raw = {}
-    path = str(
-        raw.get("path")
-        or project.get("technicalAppendixSourceMatrixPath")
-        or project.get("appendixSourceMatrixPath")
-        or ""
-    ).strip()
-    if not path:
-        return {}
-    return {
-        "path": path,
-        "fileName": str(raw.get("fileName") or ""),
-        "rowCount": int(raw.get("rowCount") or 0),
-        "uploadedAt": str(raw.get("uploadedAt") or ""),
-    }
-
 # 字段了结的状态集合：全部字段了结（有值或人工标不适用）后表级 status 自动升 confirmed
 PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
     FACT_STATUS_CONFIRMED,
