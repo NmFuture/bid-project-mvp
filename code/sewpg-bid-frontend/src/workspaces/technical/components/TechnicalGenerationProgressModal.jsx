@@ -46,7 +46,13 @@ export default function TechnicalGenerationProgressModal({
     generationElapsedSeconds(status || {}, nowMs),
     { finished: completed || failed },
   )
-  const { warningCount, formatCleanFailed, formatCleanMessage, scoreIndexXrefMessage } = technicalGenerationPresentation(status)
+  const {
+    warningCount,
+    formatCleanFailed,
+    formatCleanMessage,
+    captionNumberMessage,
+    scoreIndexXrefMessage,
+  } = technicalGenerationPresentation(status)
 
   return (
     <Dialog open={open} onClose={onClose} size="sm">
@@ -77,6 +83,11 @@ export default function TechnicalGenerationProgressModal({
         {completed && formatCleanFailed ? (
           <div className="border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm font-semibold text-on-tertiary-fixed-variant">
             {formatCleanMessage}
+          </div>
+        ) : null}
+        {completed && captionNumberMessage ? (
+          <div className="border border-tertiary/25 bg-tertiary-fixed/40 px-3 py-2 text-sm text-on-tertiary-fixed-variant">
+            {captionNumberMessage}
           </div>
         ) : null}
         {completed && scoreIndexXrefMessage ? (

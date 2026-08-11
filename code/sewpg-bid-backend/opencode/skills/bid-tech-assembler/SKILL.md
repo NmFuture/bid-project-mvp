@@ -181,7 +181,7 @@ manifest 会指定：
 - **缺口素材契约**：S7 只消费 `matchedMaterials` 与 S7-ready `resolvedArtifacts`，不擅自用 `candidateMaterials`；候选未确认 / AI 填写未完成时写出显式占位提示
 - **"前言"段**：无编号 Heading 1
 - **（新增）/（适配）标签**：parse 阶段提取为 metadata，最终 docx 里剥除
-- **图表题注不重编号**、**纸张方向由素材决定**（skill 不自动纠正）
+- **图表题注不在本 skill 编号**（本 skill 只保留素材原样；编号由下游后端模块 `app/document_processing/technical_document/captioning/` 统一做，链路顺序见 `../STAGES.md`）、**纸张方向由素材决定**（skill 不自动纠正）
 - **素材库纯 docx**：`投标资料库-通用/` 和 `投标资料库-定制/` 下只允许 `.docx`
 - **`references/heading_style.json` 是共享契约**：format-cleaner 和后端两处 service 直接消费，移动/改名前必须同步全部消费方
 

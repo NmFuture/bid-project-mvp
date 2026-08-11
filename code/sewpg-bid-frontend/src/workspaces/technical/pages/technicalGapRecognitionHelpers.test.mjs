@@ -74,6 +74,18 @@ test('评分索引交叉引用的跳过、失败与待刷新页码各自给出�
   assert.equal(present(undefined), '')
 })
 
+test('图表题注编号的跳过与失败各自给出提示', () => {
+  const present = (captionNumber) => technicalHelpers.technicalGenerationPresentation({
+    status: 'completed',
+    assembly: { captionNumber },
+  }).captionNumberMessage
+
+  assert.equal(present({ status: 'skipped' }), '正文中没有需要编号的图片或表格，已跳过图表题注编号')
+  assert.equal(present({ status: 'failed', error: 'boom' }), '图表题注编号失败，当前使用未编号的组装稿')
+  assert.equal(present({ status: 'completed', summary: { captionCount: 12 } }), '')
+  assert.equal(present(undefined), '')
+})
+
 test('AI 填写结果优先与待填写模板形成左右对比', () => {
   const result = { key: 'artifact:A1', kind: 'artifact', artifact: { source: 'ai_fill' } }
   const material = { key: 'material:M1', kind: 'material' }
