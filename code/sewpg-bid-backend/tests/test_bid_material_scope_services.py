@@ -170,6 +170,14 @@ def _seed_technical_gap_project(plan: dict) -> str:
     project = store.create_project({"name": "技术标服务拆分测试项目", "customerName": "测试业主", "bidType": "技术标"})
     project_id = project["id"]
     record = store._require(project_id)
+    # 素材匹配启动前要求目录已确认（R11-B07-03），seed 一个已确认的非空目录
+    record["outline_state"] = {
+        "outlineVersion": 1,
+        "reviewStatus": "confirmed",
+        "generatedAt": now_iso(),
+        "summary": {"totalNodeCount": 1},
+        "nodes": [{"id": "OL-1", "title": "总体方案", "level": 1, "children": []}],
+    }
     record["gap_state"].update(
         {
             "recognitionStatus": "completed",
