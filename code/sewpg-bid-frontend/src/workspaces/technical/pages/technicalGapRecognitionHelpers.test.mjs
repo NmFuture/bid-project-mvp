@@ -8,7 +8,13 @@ import {
   defaultAiFillReferenceMaterialIds,
   isFillTemplateMaterial,
   tenderDocumentStateForAiFill,
+  technicalBodyFillCounts,
+  technicalGapProgressCounts,
+  technicalGapTagBucketOf,
   technicalGapTagOf,
+  technicalGapTaskCount,
+  TECHNICAL_TABLE_FILL_SKILL,
+  TECHNICAL_WORD_FILL_SKILL,
 } from './technicalGapRecognitionHelpers.js'
 
 import * as technicalHelpers from './technicalGapRecognitionHelpers.js'
@@ -587,9 +593,9 @@ test('目录标签v6：树状冻结——未忽略的活动祖先冻结整棵子
   const leaf = { id: 'C2', number: '3.1.1', level: 3, candidateMaterials: [{ id: 'M3', matchScore: 0.5 }] }
   const items = [chapter, mid, leaf]
 
-  // 结构项与空骨架无标签。
-  assert.equal(technicalGapTagOf({ id: 'S1', usage: 'structural', decision: 'ready' }), '')
-  assert.equal(technicalGapTagOf({ id: 'S2', decision: 'ready' }), '')
+  // 无下级的结构项与空骨架：系统判定本节不需要素材，直接已就绪（2026-08-11 口径）。
+  assert.equal(technicalGapTagOf({ id: 'S1', usage: 'structural', decision: 'ready' }), 'material_ready')
+  assert.equal(technicalGapTagOf({ id: 'S2', decision: 'ready' }), 'material_ready')
   // 父章活动（无论已定还是待确认还是缺素材）：所有后代冻结。
   assert.equal(technicalGapTagOf(chapter, items), 'material_ready')
   assert.equal(technicalGapTagOf(mid, items), 'parent_covered')
@@ -620,6 +626,164 @@ test('目录标签v6：忽略（仅留标题）释放子级，逐级递归', () 
   const structuralRoot = { id: 'P9', number: '第9章', level: 1, usage: 'structural', decision: 'ready' }
   const structuralChild = { id: 'C9', number: '9.1', level: 2, candidateMaterials: [{ id: 'M9', matchScore: 0.6 }] }
   assert.equal(technicalGapTagOf(structuralChild, [structuralRoot, structuralChild]), 'needs_choice')
+})
+
+test('仅留标题三条来源等价：人工忽略、骨架章、历史 ignored 同标签', () => {
+  const child = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] }
+  const cases = [
+    { id: 'P1', number: '第3章', level: 1, titleOnly: true },
+    { id: 'P1', number: '第3章', level: 1, usage: 'structural', decision: 'ready' },
+    { id: 'P1', number: '第3章', level: 1, status: 'ignored' },
+  ]
+  cases.forEach((chapter) => {
+    const items = [chapter, child]
+    assert.equal(technicalGapTagOf(chapter, items), 'title_only')
+    // 三者都不冻结子级：内容由下级各自承接。
+    assert.equal(technicalGapTagOf(child, items), 'needs_choice')
+    // 都不产生任务，但各占一个目录格子（归已就绪桶）。
+    assert.equal(technicalGapTaskCount(chapter, items), 1)
+  })
+})
+
+test('统计不变量：五桶目录数求和恒等于目录总行数', () => {
+  const items = [
+    // 骨架章：放开子级，自己占一格
+    { id: 'P1', number: '第1章', level: 1, usage: 'structural', decision: 'ready' },
+    { id: 'C1', number: '1.1', level: 2, decision: 'material_required' },
+    { id: 'C2', number: '1.2', level: 2, candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] },
+    // 配了整章素材的父章：冻结整棵子树
+    { id: 'P2', number: '第2章', level: 1, matchedMaterials: [{ id: 'M2', matchScore: 0.99 }] },
+    { id: 'C3', number: '2.1', level: 2, candidateMaterials: [{ id: 'M3', matchScore: 0.5 }] },
+    { id: 'C4', number: '2.1.1', level: 3, candidateMaterials: [{ id: 'M4', matchScore: 0.5 }] },
+    // 人工忽略章 + 释放出来的子级
+    { id: 'P3', number: '第3章', level: 1, titleOnly: true },
+    { id: 'C5', number: '3.1', level: 2, appendixTasks: [{ id: 'APPX-1' }] },
+    // 空骨架叶子：系统判定不需要素材
+    { id: 'L1', number: '4', level: 1, decision: 'ready' },
+  ]
+  const { tasks, tocs } = technicalGapProgressCounts(items)
+  const tocSum = Object.values(tocs).reduce((total, count) => total + count, 0)
+  assert.equal(tocSum, items.length, '目录数求和必须等于总行数，否则进度到不了 100%')
+
+  // 第2章 1 个任务盖住自己 + 2.1 + 2.1.1 共 3 行
+  assert.equal(tasks.material_ready, 4) // 第2章、第1章骨架、第3章忽略、空骨架叶子
+  assert.equal(tocs.material_ready, 6) // 上述 4 行 + 被第2章冻结的 2 行
+  assert.equal(tasks.manual_supplement, 1)
+  assert.equal(tasks.needs_choice, 1)
+  assert.equal(tasks.template_ready, 1)
+})
+
+test('一键填写待填数与「待填写」标签同口径：冻结行和待确认行不算', () => {
+  // 父章用整章素材定案（自己已就绪，不占待填），从而冻结 5.1。
+  const chapter = { id: 'P1', number: '第5章', level: 1, matchedMaterials: [{ id: 'M0', matchScore: 0.99 }] }
+  const frozen = {
+    id: 'C1',
+    number: '5.1',
+    level: 2,
+    decision: 'fill_required',
+    fillTasks: [{ id: 'F1', skill: TECHNICAL_WORD_FILL_SKILL, status: 'pending' }],
+  }
+  const unconfirmed = {
+    id: 'C2',
+    number: '6.1',
+    level: 1,
+    decision: 'fill_required',
+    candidateMaterials: [{ id: 'M1', matchScore: 0.6 }],
+    fillTasks: [{ id: 'F2', skill: TECHNICAL_WORD_FILL_SKILL, status: 'pending' }],
+  }
+  const fillable = {
+    id: 'C3',
+    number: '7.1',
+    level: 1,
+    decision: 'fill_required',
+    appendixTasks: [{ id: 'APPX-1' }],
+    fillTasks: [{ id: 'F3', skill: TECHNICAL_TABLE_FILL_SKILL, status: 'pending' }],
+  }
+  const items = [chapter, frozen, unconfirmed, fillable]
+
+  // 5.1 被第5章冻结（页面只读），6.1 素材还没确认，都不进一键填写范围。
+  assert.equal(technicalGapTagOf(frozen, items), 'parent_covered')
+  assert.equal(technicalGapTagOf(unconfirmed, items), 'needs_choice')
+  assert.equal(technicalGapTagOf(fillable, items), 'template_ready')
+
+  const counts = technicalBodyFillCounts(items)
+  const tagTasks = items.reduce(
+    (sum, item) => sum + (technicalGapTagOf(item, items) === 'template_ready' ? technicalGapTaskCount(item, items) : 0),
+    0,
+  )
+  assert.equal(counts.pending, 1, '只有 7.1 该填')
+  assert.equal(counts.pending, tagTasks, '一键填写数字必须等于「待填写」标签上的任务数')
+})
+
+test('筛选桶与统计桶同源：点「已就绪」能筛出归入该桶的仅留标题行', () => {
+  const items = [
+    { id: 'P1', number: '第1章', level: 1, usage: 'structural', decision: 'ready' },
+    { id: 'C1', number: '1.1', level: 2, matchedMaterials: [{ id: 'M1', matchScore: 0.99 }] },
+    { id: 'P2', number: '第2章', level: 1, titleOnly: true },
+    { id: 'C2', number: '2.1', level: 2, decision: 'material_required' },
+  ]
+  const { tasks } = technicalGapProgressCounts(items)
+  // 页面筛选口径：按统计桶比对，而不是按行级标签。
+  const filtered = items.filter(
+    (item) => technicalGapTagBucketOf(technicalGapTagOf(item, items)) === 'material_ready',
+  )
+  assert.equal(filtered.length, 3, '两个仅留标题 + 一个已就绪')
+  assert.equal(
+    tasks.material_ready,
+    filtered.length,
+    '标签上的任务数必须等于点开后的行数，否则数字对不上账',
+  )
+})
+
+test('任务数按待处理对象计：一行挂多个待填对象就是多个任务', () => {
+  const item = {
+    id: 'G1',
+    decision: 'fill_required',
+    appendixTasks: [{ id: 'APPX-1' }],
+    fillTasks: [
+      { id: 'F1', skill: TECHNICAL_WORD_FILL_SKILL, status: 'pending' },
+      { id: 'F2', skill: TECHNICAL_WORD_FILL_SKILL, status: 'pending' },
+      { id: 'F3', skill: TECHNICAL_TABLE_FILL_SKILL, status: 'pending' },
+      { id: 'F4', skill: TECHNICAL_TABLE_FILL_SKILL, status: 'completed' },
+      { id: 'F5', skill: 'bid-tech-other', status: 'pending' },
+    ],
+  }
+  const items = [item]
+  assert.equal(technicalGapTagOf(item, items), 'template_ready')
+  // 已完成的和非填写类 skill 都不算，剩 3 个待填对象。
+  assert.equal(technicalGapTaskCount(item, items), 3)
+  // 目录数仍然只有 1 行。
+  assert.equal(technicalGapProgressCounts(items).tocs.template_ready, 1)
+})
+
+test('待审核任务数按 AI 产出份数计，已取代的产物不算', () => {
+  const item = {
+    id: 'G1',
+    resolvedArtifacts: [
+      { id: 'A1', source: 'ai_fill' },
+      { id: 'A2', source: 'ai_fill' },
+      { id: 'A3', source: 'ai_fill', supersededAt: '2026-08-11T00:00:00Z' },
+      { id: 'A4', source: 'manual_upload' },
+    ],
+  }
+  const items = [item]
+  assert.equal(technicalGapTagOf(item, items), 'template_review')
+  assert.equal(technicalGapTaskCount(item, items), 2)
+})
+
+test('被父章冻结的子树不产生任务，只把目录格子记到冻结源所在的桶', () => {
+  const chapter = { id: 'P1', number: '第3章', level: 1, appendixTasks: [{ id: 'APPX-1' }] }
+  const mid = { id: 'C1', number: '3.1', level: 2, candidateMaterials: [{ id: 'M1', matchScore: 0.6 }] }
+  const leaf = { id: 'C2', number: '3.1.1', level: 3, candidateMaterials: [{ id: 'M2', matchScore: 0.6 }] }
+  const items = [chapter, mid, leaf]
+
+  assert.equal(technicalGapTaskCount(mid, items), 0)
+  assert.equal(technicalGapTaskCount(leaf, items), 0)
+  const { tasks, tocs } = technicalGapProgressCounts(items)
+  // 父章还在「待填写」，整棵子树就都不算已就绪。
+  assert.equal(tasks.template_ready, 1)
+  assert.equal(tocs.template_ready, 3)
+  assert.equal(tocs.material_ready, 0)
 })
 
 test('目录标签v6：附表按 level 归入技术附表根，冻结/忽略同样适用（产品反馈 2026-08-04）', () => {
@@ -702,9 +866,11 @@ test('父章节覆盖：本节点没素材时不可设置，设置后可撤销',
 
 test('一键填写汇总覆盖正文与附表，失败按目录项计', () => {
   const items = [
+    // 待填数只认「待填写」标签，模板须已定案，这里用解析空表来源（appendixTasks）满足。
     {
       id: 'G1',
       decision: 'fill_required',
+      appendixTasks: [{ id: 'APPX-1' }],
       fillTasks: [
         { id: 'T1', skill: 'bid-tech-word-placeholder-filler', status: 'completed' },
         { id: 'T2', skill: 'bid-tech-word-placeholder-filler', status: 'pending' },
@@ -715,6 +881,7 @@ test('一键填写汇总覆盖正文与附表，失败按目录项计', () => {
     {
       id: 'G2',
       decision: 'fill_required',
+      appendixTasks: [{ id: 'APPX-2' }],
       fillTasks: [{ id: 'T4', skill: 'bid-tech-word-placeholder-filler', status: 'pending' }],
       fillError: { message: 'MinIO 取件失败' },
     },

@@ -34,8 +34,8 @@ import {
   technicalBodyFillCounts,
   technicalGapDescendants,
   technicalGapFillError,
-  technicalGapFreezerItem,
-  technicalGapOwnTag,
+  technicalGapProgressCounts,
+  technicalGapTagBucketOf,
   technicalGapTagOf,
   technicalMatchScore,
   tenderDocumentStateForAiFill,
@@ -127,18 +127,15 @@ const isEditableArtifactChoice = (choice) => (
 )
 
 // 目录列表里的标签：三字工作态 / 四字旁路态（命名 v6，产品裁决 2026-08-04），hover 出提示。
-// 结构章（planner 判定的纯骨架章，如「标前概述」）天生等同忽略：显示同款「仅留标题」，
-// tip 注明来源，消除"第1章为什么没标签还放开了子级"的困惑（产品反馈 2026-08-04）。
+// 「仅留标题」的三条来源已在 technicalGapOwnTag 收口为同一个标签，这里只按来源区分 tip，
+// 消除"第1章为什么没标签还放开了子级"的困惑（产品反馈 2026-08-04）。
 function TechnicalTocActionBadge({ item, items }) {
   const tag = technicalGapTagOf(item, items)
-  let config = TECHNICAL_GAP_TAG_CONFIG[tag]
-  let tip = config?.tip
-  if (!config && isStructuralItem(item) && technicalGapDescendants(item, items).length) {
-    config = TECHNICAL_GAP_TAG_CONFIG.title_only
-    tip = '未找到整章素材，内容由下级承接'
-  }
-  // 其余无标签项（空骨架叶子）保持无提示（产品意见 2026-07-17：删除「空章节」等冗余提示）。
+  const config = TECHNICAL_GAP_TAG_CONFIG[tag]
   if (!config) return null
+  const tip = tag === 'title_only' && !item?.titleOnly
+    ? '未找到整章素材，内容由下级承接'
+    : config.tip
   return (
     <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant} title={tip}>
       {config.label}
@@ -1508,8 +1505,11 @@ export default function TechnicalGapRecognition({ showToast }) {
   }, [loadData, loadGenerationStatus])
 
   const items = useMemo(() => normalizeItems(data), [data])
+  // 筛选按统计桶比对，与标签上的数字同源：点「已就绪」要能筛出归入该桶的仅留标题行。
   const filteredItems = useMemo(() => (
-    tagFilter ? items.filter((item) => technicalGapTagOf(item, items) === tagFilter) : items
+    tagFilter
+      ? items.filter((item) => technicalGapTagBucketOf(technicalGapTagOf(item, items)) === tagFilter)
+      : items
   ), [items, tagFilter])
   // 目录树（产品裁决 2026-08-04，v6.1 改 level 栈）：按计划顺序 + level 字段构建可折叠树，
   // 附表（编号不成链）同样归入「技术附表」根；默认只展开一级章；
@@ -1558,7 +1558,6 @@ export default function TechnicalGapRecognition({ showToast }) {
     () => filteredItems.find((item) => item.id === effectiveSelectedId) || null,
     [effectiveSelectedId, filteredItems],
   )
-  const summary = useMemo(() => data?.gapPlan?.summary || data?.summary || {}, [data])
   const isCompleted = data?.status === 'completed'
   // 当前选中项的派生态：冻结项操作全禁用（只读查看），定案项备选区默认收起。
   const selectedTag = selected ? technicalGapTagOf(selected, items) : ''
@@ -1804,39 +1803,27 @@ export default function TechnicalGapRecognition({ showToast }) {
     ...asArray(selectedBlankSource?.placeholderLabels),
     ...selectedCandidateMaterials.flatMap((item) => asArray(item?.placeholderLabels)),
   ], 10)
-  // 目录标签统计（v6 五工作态口径）。两套数字：
-  // counts 是「要动手的节点数」，决定筛选后列表有多少行；
-  // covered 追加该节点冻结掉的整棵子树，反映真实覆盖了多少目录项——选中一级标题配一份
-  // 素材，下面几十个三级标题跟着定案，只记 1 会让进度看着远比实际差。
-  const { tagCounts, tagCoverage } = useMemo(() => {
-    const emptyCounts = () => ({
-      manual_supplement: 0,
-      needs_choice: 0,
-      template_ready: 0,
-      template_review: 0,
-      material_ready: 0,
-    })
-    const counts = emptyCounts()
-    const covered = emptyCounts()
-    items.forEach((item) => {
-      const tag = technicalGapTagOf(item, items)
-      if (tag in counts) {
-        counts[tag] += 1
-        covered[tag] += 1
-        return
-      }
-      if (tag !== 'parent_covered') return
-      // 被冻结的子项归到冻结源的工作态上：父章还在「待填写」，子树就不算已就绪。
-      const freezerTag = technicalGapOwnTag(technicalGapFreezerItem(item, items))
-      if (freezerTag in covered) covered[freezerTag] += 1
-    })
-    return { tagCounts: counts, tagCoverage: covered }
-  }, [items])
-  // 总览分母是全部目录项，分子只认已就绪素材（含其覆盖的子树），与标签口径一致。
+  // 目录标签统计：每个标签两个数——任务数（人要动手的次数）+ 目录数（这些决策盖住多少行）。
+  // 口径与不变量见 technicalGapProgressCounts。
+  const { tasks: tagTasks, tocs: tagTocs } = useMemo(() => technicalGapProgressCounts(items), [items])
+  // 目录数五桶求和恒等于目录总行数，所以「已就绪目录数 / 总行数」必然能走到 100%。
   const coverageTotal = items.length
-  const coverageSettled = tagCoverage.material_ready
+  const coverageSettled = tagTocs.material_ready
+  // 剩余活儿 = 前四个未定案标签的任务数之和，不受骨架章数量影响。
+  const remainingTasks = tagTasks.manual_supplement
+    + tagTasks.needs_choice
+    + tagTasks.template_ready
+    + tagTasks.template_review
   // 正文填写汇总：不区分单条填还是一键填，也不区分本轮还是历史
   const bodyFillCounts = useMemo(() => technicalBodyFillCounts(items), [items])
+  // 填写条平时不占位：待填数已由上方标签栏表达，这条只承载批量入口、运行进度和失败提示。
+  // 失败必须能在未筛选时看见——失败的项停在「待填写」标签里，不提示就得靠人自己点进去发现。
+  const showBodyFillBar = isCompleted && (
+    tagFilter === 'template_ready'
+    || tagFilter === 'template_review'
+    || bodyFillRunning
+    || Boolean(bodyFillCounts.failed)
+  )
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -2763,10 +2750,10 @@ export default function TechnicalGapRecognition({ showToast }) {
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex min-h-7 flex-wrap items-center gap-3">
             <div className="flex shrink-0 items-center gap-2 border-r border-surface-container-high pr-3">
-              <span className="text-xs font-semibold text-on-surface-variant">目录节点</span>
-              <span className="text-lg font-headline font-bold tabular-nums text-primary">{summary.totalTocItems ?? items.length}</span>
+              <span className="text-xs font-semibold text-on-surface-variant">剩余任务</span>
+              <span className="text-lg font-headline font-bold tabular-nums text-primary">{remainingTasks}</span>
             </div>
-            {/* 总览按「已就绪素材覆盖到的目录项 / 全部目录项」算，父章覆盖的子树计入分子 */}
+            {/* 已就绪目录数 / 目录总行数：五桶目录数求和恒等于总行数，干完必然是 100% */}
             <div className="flex shrink-0 items-center gap-2 border-r border-surface-container-high pr-3">
               <span className="text-xs font-semibold text-on-surface-variant">目录覆盖</span>
               <span className="text-lg font-headline font-bold tabular-nums text-primary">{coverageSettled}</span>
@@ -2778,27 +2765,27 @@ export default function TechnicalGapRecognition({ showToast }) {
                 />
               </div>
             </div>
+            {/* 每个标签两个数：任务数（人要动手几次）+ 括号里的目录数（盖住几行目录）。
+                父章配一份整章素材＝1 个任务盖整棵子树，两个数就此拉开。 */}
             <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5 text-center sm:grid-cols-5">
               {['manual_supplement', 'needs_choice', 'template_ready', 'template_review', 'material_ready'].map((key) => {
                 const active = tagFilter === key
+                const label = TECHNICAL_GAP_TAG_CONFIG[key].label
                 return (
                   <button
                     key={key}
                     type="button"
                     onClick={() => setTagFilter(active ? '' : key)}
-                    title={active ? '再点一次取消筛选' : `只看「${TECHNICAL_GAP_TAG_CONFIG[key].label}」目录项`}
+                    title={active
+                      ? '再点一次取消筛选'
+                      : `只看「${label}」：${tagTasks[key] || 0} 个任务，覆盖 ${tagTocs[key] || 0} 行目录`}
                     className={`flex min-h-7 items-center justify-center gap-1 rounded-md px-2 py-0.5 transition-colors ${
                       active ? 'bg-primary-fixed ring-1 ring-primary' : 'bg-surface-container-low hover:bg-surface-container-high'
                     }`}
                   >
-                    <span className="text-[11px] text-on-surface-variant">{TECHNICAL_GAP_TAG_CONFIG[key].label}</span>
-                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagCounts[key] || 0}</span>
-                    {/* 覆盖数只在比节点数大时出现，等值时不加噪音 */}
-                    {(tagCoverage[key] || 0) > (tagCounts[key] || 0) ? (
-                      <span className="text-[11px] tabular-nums text-outline">
-                        （覆盖 {tagCoverage[key]} 项）
-                      </span>
-                    ) : null}
+                    <span className="text-[11px] text-on-surface-variant">{label}</span>
+                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagTasks[key] || 0}</span>
+                    <span className="text-[11px] tabular-nums text-outline">（{tagTocs[key] || 0}）</span>
                   </button>
                 )
               })}
@@ -2807,24 +2794,24 @@ export default function TechnicalGapRecognition({ showToast }) {
         </div>
       ) : null}
 
-      {/* 一键填写条（正文 + 附表）：汇总 + 一键入口 + 进度。单条填和一键填共用同一份计数。
+      {/* 一键填写条（正文 + 附表）：批量入口 + 运行进度 + 失败提示，按 showBodyFillBar 出现。
           任务跑在后台 worker，关页面不影响。 */}
-      {isCompleted ? (
+      {showBodyFillBar ? (
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex min-h-8 flex-wrap items-center gap-3">
-            <span className="shrink-0 text-xs font-semibold text-on-surface-variant">正文/附表填写</span>
-            <div className="flex shrink-0 items-center gap-3 border-r border-surface-container-high pr-3 text-xs">
-              <span
-                className="text-on-surface-variant"
-                title={`正文 ${bodyFillCounts.pendingBody} 条 / 附表 ${bodyFillCounts.pendingAppendix} 条`}
-              >
-                待填写 <b className="text-sm font-headline tabular-nums text-primary">{bodyFillCounts.pending}</b>
-              </span>
-              <span className="text-on-surface-variant">已填写 <b className="text-sm font-headline tabular-nums text-primary">{bodyFillCounts.filled}</b></span>
-              <span className={bodyFillCounts.failed ? 'text-error' : 'text-on-surface-variant'}>
+            <span
+              className="shrink-0 text-xs font-semibold text-on-surface-variant"
+              title={`待填写 ${bodyFillCounts.pending} 个：正文 ${bodyFillCounts.pendingBody} / 附表 ${bodyFillCounts.pendingAppendix}`}
+            >
+              正文/附表填写
+            </span>
+            {/* 待填写/已填写数字已由上方标签栏统一表达，此处不再重复；
+                失败数标签栏看不出来（失败的项停在「待填写」），有才显示。 */}
+            {bodyFillCounts.failed ? (
+              <span className="shrink-0 border-r border-surface-container-high pr-3 text-xs text-error">
                 失败 <b className="text-sm font-headline tabular-nums">{bodyFillCounts.failed}</b>
               </span>
-            </div>
+            ) : null}
             {bodyFillRunning ? (
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <div className="h-1.5 min-w-24 flex-1 overflow-hidden rounded-full bg-surface-container-high">
@@ -2879,9 +2866,10 @@ export default function TechnicalGapRecognition({ showToast }) {
               >
                 批量复核通过（{batchReviewables.length}）
               </Button>
-            ) : (
-              <span className="shrink-0 text-[11px] text-outline">点开「待填写」或「待审核」标签发起批量操作</span>
-            )}
+            ) : bodyFillCounts.failed ? (
+              // 走到这里只剩「有失败但没筛选」一种：失败的项停在「待填写」里，给出去处。
+              <span className="shrink-0 text-[11px] text-outline">点开「待填写」标签重试失败项</span>
+            ) : null}
           </div>
         </div>
       ) : null}
