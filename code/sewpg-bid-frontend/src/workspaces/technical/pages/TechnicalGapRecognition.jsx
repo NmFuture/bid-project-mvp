@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
+import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalOutlineAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
@@ -1420,6 +1420,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 本页只读 facts() 返回的元数据做状态展示；factMaterialPaths 是用户自定义的参考资料目录。
   const [factSpecsMeta, setFactSpecsMeta] = useState({ imported: false, fileName: '' })
   const [sourceMatrixMeta, setSourceMatrixMeta] = useState({ imported: false, fileName: '' })
+  // 目录前置守卫（R11-B07-03）：未生成/未确认/空目录时阻断素材匹配页，null 表示未加载（不阻断）
+  const [outlineGuard, setOutlineGuard] = useState(null)
   const [factMaterialPaths, setFactMaterialPaths] = useState([])
   // 默认生效的素材范围（标准文件/客户定制/项目定制三层），由后端按项目身份给出
   const [factMaterialScopes, setFactMaterialScopes] = useState([])
@@ -1458,6 +1460,13 @@ export default function TechnicalGapRecognition({ showToast }) {
       setFactMaterialPaths(Array.isArray(factsPayload?.materialPaths) ? factsPayload.materialPaths : [])
       setFactMaterialScopes(Array.isArray(factsPayload?.materialScopes) ? factsPayload.materialScopes : [])
       // 页面刷新/重新进入时恢复任务状态：后台还在跑就继续轮询，跑完了直接看到结果
+      // 目录前置守卫：拉目录状态用于阻断未确认目录的项目；拉取失败不阻断，由后端 run 接口兜底拦截
+      try {
+        const outlinePayload = await technicalOutlineAPI.get(id)
+        setOutlineGuard(outlinePayload || null)
+      } catch {
+        setOutlineGuard(null)
+      }
       try {
         const curateStatus = await technicalGapsAPI.curateFactsStatus(id)
         setFactCurateState(curateStatus?.factCurateState || null)
@@ -2688,6 +2697,46 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   if (loading) return <PageLoading title="正在加载素材匹配..." />
   if (error) return <PageError title="素材匹配加载失败" description={error} onRetry={loadData} />
+
+  // 目录前置守卫（R11-B07-03）：目录未生成/未确认/为空时不进入素材匹配工作区，
+  // 给出去目录页和返回项目的出口；outlineGuard 拉取失败（null）不阻断，由后端 run 接口兜底。
+  const outlineBlocked = outlineGuard
+    ? String(outlineGuard?.reviewStatus || '') !== 'confirmed' ||
+      Number(outlineGuard?.summary?.totalNodeCount || 0) < 1
+    : false
+
+  if (outlineBlocked) {
+    return (
+      <div className="business-ui-shell flex flex-col gap-6">
+        <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
+        <DataCard className="flex flex-col items-center px-6 py-12 text-center">
+          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-container-high">
+            <span className="material-symbols-outlined text-3xl text-primary">account_tree</span>
+          </div>
+          <h4 className="mb-2 font-headline text-lg font-bold text-on-surface">请先生成并确认投标目录</h4>
+          <p className="max-w-xl text-sm leading-relaxed text-on-surface-variant">
+            素材匹配基于已确认的投标目录运行。当前项目尚未生成目录、目录未确认或目录为空，请先完成目录生成与确认。
+          </p>
+          <div className="mt-5 flex items-center gap-2">
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => navigate(projectRoute(id, '', workspaceSlug))}
+            >
+              返回项目
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => navigate(projectRoute(id, '/outline', workspaceSlug))}
+            >
+              前往生成目录
+            </Button>
+          </div>
+        </DataCard>
+      </div>
+    )
+  }
 
   return (
     <div className="business-ui-shell flex flex-col gap-4 sm:gap-6">

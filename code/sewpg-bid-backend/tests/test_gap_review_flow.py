@@ -371,6 +371,51 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(confirm_response.json()["status"], "confirmed")
         return confirm_response.json()
 
+    def _create_project_without_outline(self) -> str:
+        response = self.client.post(
+            "/api/technical/projects",
+            json={"name": "目录前置校验项目", "customerName": "测试业主"},
+        )
+        response.raise_for_status()
+        return response.json()["id"]
+
+    def test_gap_detection_rejects_project_without_generated_outline(self) -> None:
+        project_id = self._create_project_without_outline()
+
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("请先生成并确认投标目录", response.json()["detail"])
+
+    def test_gap_detection_rejects_unconfirmed_outline(self) -> None:
+        project_id = self._create_project_without_outline()
+        _save_generated_outline_for_tests(
+            project_id=project_id,
+            nodes=[{"id": "OL-1", "title": "第1章 标前概述", "children": []}],
+            generated_at=now_iso(),
+            summary="目录已生成。",
+        )
+
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("请先生成并确认投标目录", response.json()["detail"])
+
+    def test_gap_detection_rejects_empty_confirmed_outline(self) -> None:
+        project_id = self._create_project_without_outline()
+        _save_generated_outline_for_tests(
+            project_id=project_id,
+            nodes=[],
+            generated_at=now_iso(),
+            summary="目录已生成。",
+        )
+        _confirm_outline_for_tests(project_id)
+
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("投标目录为空", response.json()["detail"])
+
     def test_gap_detection_creates_real_gap_plan_from_directory_material_refs_and_parse_appendices(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
 

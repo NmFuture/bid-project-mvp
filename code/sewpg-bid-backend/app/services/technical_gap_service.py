@@ -42,7 +42,7 @@ from app.services.project_fact_materials import (
     project_fact_material_cached_path,
 )
 from app.services.peripheral import PeripheralError
-from app.services.bid_runtime_state import now_iso
+from app.services.bid_runtime_state import count_outline_nodes, now_iso
 from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
     TECHNICAL_WORD_FILL_SKILL_NAME,
@@ -411,10 +411,25 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap detection not found")
 
+    @staticmethod
+    def _require_confirmed_outline(project: dict[str, Any]) -> None:
+        """素材匹配的前置闸门：目录必须已生成、已确认且至少有一个节点。
+
+        与商务标 business_gap_service.run_detection 的校验对齐；
+        ValueError 由 _raise_gap_error 映射为 400。
+        """
+        outline_state = project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {}
+        nodes = outline_state.get("nodes") if isinstance(outline_state.get("nodes"), list) else []
+        if str(outline_state.get("reviewStatus") or "") != "confirmed" or not outline_state.get("generatedAt"):
+            raise ValueError("请先生成并确认投标目录，再启动素材匹配。")
+        if count_outline_nodes(nodes) < 1:
+            raise ValueError("投标目录为空，请先在目录审核页补充至少一个目录节点。")
+
     def run_detection(self, project_id: str) -> dict[str, Any]:
         try:
             # planner 是重活，先在快照上算完计划，再把结果原子写回最新状态
             snapshot = require_technical_gap_project_for_update(project_id)
+            self._require_confirmed_outline(snapshot)
             plan = build_technical_gap_plan_for_project(snapshot)
             items = legacy_technical_gap_items_from_plan(plan)
             recognized_at = now_iso()

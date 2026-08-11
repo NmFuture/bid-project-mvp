@@ -209,6 +209,8 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
   const matrixImported = Boolean(matrixMeta?.fileName) || Number(matrixMeta?.rowCount) > 0
   const matrixUpdatedAt = matrixMeta?.uploadedAt || matrixMeta?.updatedAt
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null
+  // 目录确认后后端会把项目阶段顶到 >=3（素材匹配及以后），未确认目录的项目不允许进入素材匹配（R11-B07-03）
+  const selectedProjectOutlineReady = Number(selectedProject?.currentStage) >= 3
 
   return (
     <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
@@ -397,8 +399,14 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
             <Button
               type="button"
               onClick={() => navigate(`/workspace/tech/projects/${selectedProjectId}/gaps`)}
-              disabled={!selectedProjectId}
-              title={selectedProject ? `进入「${selectedProject.name || selectedProject.id}」的素材匹配页` : '进入项目工作区'}
+              disabled={!selectedProjectId || !selectedProjectOutlineReady}
+              title={
+                !selectedProject
+                  ? '进入项目工作区'
+                  : !selectedProjectOutlineReady
+                    ? '该项目尚未生成并确认投标目录，请先完成目录生成与确认'
+                    : `进入「${selectedProject.name || selectedProject.id}」的素材匹配页`
+              }
               icon="arrow_forward"
               size="sm"
               variant="primary"
@@ -407,6 +415,11 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
             </Button>
           </div>
         </div>
+        {selectedProject && !selectedProjectOutlineReady ? (
+          <p className="mt-2 text-xs text-amber-600">
+            该项目尚未生成并确认投标目录，暂不能进入素材匹配；请先在项目中生成并确认目录。
+          </p>
+        ) : null}
       </section>
 
       {factSpecsEditOpen ? (
