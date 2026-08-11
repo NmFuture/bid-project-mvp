@@ -1816,6 +1816,14 @@ export default function TechnicalGapRecognition({ showToast }) {
     + tagTasks.template_review
   // 正文填写汇总：不区分单条填还是一键填，也不区分本轮还是历史
   const bodyFillCounts = useMemo(() => technicalBodyFillCounts(items), [items])
+  // 填写条平时不占位：待填数已由上方标签栏表达，这条只承载批量入口、运行进度和失败提示。
+  // 失败必须能在未筛选时看见——失败的项停在「待填写」标签里，不提示就得靠人自己点进去发现。
+  const showBodyFillBar = isCompleted && (
+    tagFilter === 'template_ready'
+    || tagFilter === 'template_review'
+    || bodyFillRunning
+    || Boolean(bodyFillCounts.failed)
+  )
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
@@ -2786,9 +2794,9 @@ export default function TechnicalGapRecognition({ showToast }) {
         </div>
       ) : null}
 
-      {/* 一键填写条（正文 + 附表）：汇总 + 一键入口 + 进度。单条填和一键填共用同一份计数。
+      {/* 一键填写条（正文 + 附表）：批量入口 + 运行进度 + 失败提示，按 showBodyFillBar 出现。
           任务跑在后台 worker，关页面不影响。 */}
-      {isCompleted ? (
+      {showBodyFillBar ? (
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           <div className="flex min-h-8 flex-wrap items-center gap-3">
             <span
@@ -2858,9 +2866,10 @@ export default function TechnicalGapRecognition({ showToast }) {
               >
                 批量复核通过（{batchReviewables.length}）
               </Button>
-            ) : (
-              <span className="shrink-0 text-[11px] text-outline">点开「待填写」或「待审核」标签发起批量操作</span>
-            )}
+            ) : bodyFillCounts.failed ? (
+              // 走到这里只剩「有失败但没筛选」一种：失败的项停在「待填写」里，给出去处。
+              <span className="shrink-0 text-[11px] text-outline">点开「待填写」标签重试失败项</span>
+            ) : null}
           </div>
         </div>
       ) : null}
