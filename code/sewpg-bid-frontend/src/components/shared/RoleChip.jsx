@@ -17,9 +17,9 @@ export default function RoleChip({ role, showLabel = true, className = '' }) {
   if (!role) return null
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${STYLE[role] || STYLE.T} ${className}`}
+      className={`inline-flex min-h-6 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${STYLE[role] || STYLE.T} ${className}`}
     >
-      <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+      <span aria-hidden="true" className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
         {ICON[role] || 'person'}
       </span>
       {showLabel ? ROLE_LABEL[role] || role : role}

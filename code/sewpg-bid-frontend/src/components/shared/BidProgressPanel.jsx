@@ -28,7 +28,7 @@ export default function BidProgressPanel({
   const barClass = failed ? 'bg-error' : completed ? 'bg-secondary' : warning ? 'bg-tertiary' : 'bg-primary'
 
   return (
-    <div className={[
+    <div aria-live="polite" aria-busy={running} className={[
       'w-full border-y px-4 py-4',
       failed
         ? 'border-error/30 bg-error-container/10'
@@ -57,7 +57,7 @@ export default function BidProgressPanel({
           <div className="min-w-0">
             <p className="text-sm font-semibold tabular-nums text-on-surface">{detail}</p>
             {elapsedText ? (
-              <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedText}</p>
+              <p className="mt-1 text-xs leading-5 tabular-nums text-on-surface-variant">{elapsedText}</p>
             ) : null}
           </div>
         </div>
@@ -75,10 +75,11 @@ export default function BidProgressPanel({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.floor(safePercentage)}
+        aria-label={detail || '任务进度'}
       >
         <div
           className={[
-            'h-full rounded-full transition-all duration-1000 ease-linear',
+            'h-full rounded-full transition-[width] duration-1000 ease-linear',
             barClass,
             running ? 'bg-stripes' : '',
           ].join(' ')}

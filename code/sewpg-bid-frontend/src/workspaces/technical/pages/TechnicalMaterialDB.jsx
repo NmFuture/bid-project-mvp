@@ -702,7 +702,7 @@ function TreeNode({
             ? 'bg-primary/15 text-primary ring-1 ring-primary/40'
             :
           selected
-            ? 'bg-primary/10 text-primary font-semibold shadow-[inset_3px_0_0_rgba(0,113,206,0.72)]'
+            ? 'bg-surface-container-low text-on-surface font-semibold ring-1 ring-inset ring-outline-variant/80'
             : 'text-on-surface-variant hover:bg-surface-container-low'
         }`}
       >
@@ -1908,7 +1908,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const materialToolbar = (
     <div className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-3 py-3">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-        <div className="grid min-w-0 w-full grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] md:w-1/2 md:max-w-[36rem] xl:flex-none">
+        <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] xl:w-1/2 xl:max-w-[36rem] xl:flex-none">
           <label>
             <span className="sr-only">文件标题</span>
             <input
@@ -2027,7 +2027,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-h-0 flex-col gap-3">
       <MaterialsViewSwitch
         active="raw"
         title="技术标素材库"
@@ -2039,7 +2039,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {materialCopyState?.status && materialCopyState.status !== 'idle' && (
         <div
-          className={`rounded-xl border p-4 text-sm ${
+          className={`rounded-lg border p-4 text-sm ${
             materialCopyState.status === 'failed'
               ? 'border-error/25 bg-error-container/40 text-error'
               : 'border-surface-container-high bg-surface-container-low/60 text-on-surface'
@@ -2070,7 +2070,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       )}
 
       {linkedProjectId && (
-        <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high p-4">
           <div className="flex min-w-0 items-center gap-2">
             <span className="material-symbols-outlined text-primary">folder_special</span>
             <span className="text-sm text-on-surface">
@@ -2097,7 +2097,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       )}
 
       {parseStatus && (
-        <div className="rounded-xl border border-surface-container-high p-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-surface-container-high p-4">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-primary">sync</span>
             <span className="text-sm text-on-surface">后台解析联动状态</span>
@@ -2113,9 +2113,9 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {materialToolbar}
 
-      <div className="grid min-h-[680px] grid-cols-1 gap-3 xl:h-[calc(100vh-12rem)] xl:grid-cols-[minmax(30rem,40rem)_minmax(0,1fr)]">
+      <div className="grid min-h-0 grid-cols-1 gap-3 xl:h-[clamp(36rem,calc(100dvh-14rem),54rem)] xl:grid-cols-[minmax(20rem,38rem)_minmax(0,1fr)]">
         {loading ? (
-          <div className="col-span-full flex min-h-[680px] items-center justify-center rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-[calc(100vh-12rem)]">
+          <div className="col-span-full flex min-h-[28rem] items-center justify-center rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-0">
             <PageLoading
               title="正在加载原始材料库..."
               description="正在同步目录树、权限和文件列表。"
@@ -2252,7 +2252,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {showUploadModal && (
         <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="wizard-modal-surface w-full max-w-2xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col overflow-hidden animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label={`上传${activeBidType}原始素材`} className="wizard-modal-surface flex h-[calc(100dvh-1.5rem)] max-h-[46rem] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in sm:h-[calc(100dvh-2rem)]">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <h2 className="text-lg font-headline font-bold text-on-surface">上传{activeBidType}原始素材</h2>
               <button onClick={closeUploadModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
@@ -2402,7 +2402,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {conflictContext && (
         <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="wizard-modal-surface w-full max-w-md bg-surface-container-lowest rounded-xl border border-surface-container-high animate-float-in">
+          <div role="alertdialog" aria-modal="true" aria-label="发现命名冲突" className="wizard-modal-surface w-full max-w-md rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="px-6 py-4 border-b border-surface-container-high">
               <h3 className="text-lg font-semibold text-on-surface">发现命名冲突</h3>
             </div>
@@ -2438,7 +2438,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {tagEditorItem && (
         <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="wizard-modal-surface w-full max-w-lg bg-surface-container-lowest rounded-xl border border-surface-container-high animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="编辑素材标签" className="wizard-modal-surface w-full max-w-lg rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="px-6 py-4 border-b border-surface-container-high flex items-center justify-between">
               <div className="min-w-0">
                 <h3 className="text-lg font-semibold text-on-surface">编辑素材标签</h3>
@@ -2503,7 +2503,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {bulkTagEditorOpen && (
         <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="wizard-modal-surface w-full max-w-lg animate-float-in rounded-xl border border-surface-container-high bg-surface-container-lowest">
+          <div role="dialog" aria-modal="true" aria-label="批量设置标签" className="wizard-modal-surface w-full max-w-lg animate-float-in rounded-lg border border-surface-container-high bg-surface-container-lowest">
             <div className="flex items-center justify-between border-b border-surface-container-high px-6 py-4">
               <div>
                 <h3 className="text-lg font-semibold text-on-surface">批量设置标签</h3>
@@ -2579,7 +2579,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
 
       {splitModalOpen && (
         <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
-          <div className="wizard-modal-surface w-full max-w-5xl h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] bg-surface-container-lowest rounded-xl border border-surface-container-high flex flex-col overflow-hidden animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="技术素材切分审核" className="wizard-modal-surface flex h-[calc(100dvh-1.5rem)] max-h-[60rem] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in sm:h-[calc(100dvh-2rem)]">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <div className="min-w-0">
                 <h2 className="text-lg font-headline font-bold text-on-surface">技术素材切分审核</h2>

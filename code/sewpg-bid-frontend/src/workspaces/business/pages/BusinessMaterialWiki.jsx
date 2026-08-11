@@ -168,20 +168,22 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
             style={{ paddingLeft: `${12 + level * 18}px` }}
             className={`group flex items-center gap-2 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
               selected
-                ? 'bg-primary/10 border-primary/20 text-primary'
+                ? 'border-outline-variant bg-surface-container-low text-on-surface'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
             }`}
             onClick={() => handleRowClick(node)}
           >
             {folder ? (
               <button
+                type="button"
+                aria-label={expanded ? `收起 ${node.title}` : `展开 ${node.title}`}
                 onClick={(event) => {
                   event.stopPropagation()
                   toggleExpand(node)
                 }}
                 className="w-5 h-5 rounded flex items-center justify-center hover:text-on-surface"
               >
-                <span className="material-symbols-outlined text-[16px] text-outline">
+                <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-outline">
                   {expanded ? 'expand_more' : 'chevron_right'}
                 </span>
               </button>
@@ -191,7 +193,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
             <span className={`material-symbols-outlined text-[16px] ${folder ? 'text-primary' : 'text-outline'}`}>
               {folder ? 'folder' : 'article'}
             </span>
-            <span className={`truncate ${selected ? 'font-semibold text-primary' : ''}`}>
+            <span className={`truncate ${selected ? 'font-semibold text-on-surface' : ''}`}>
               {node.title}
             </span>
           </div>
@@ -216,22 +218,13 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
     )
   }
 
-  if (!selectedNode && !tree.length) {
-    return (
-      <PageEmpty
-        title="Wiki 暂无节点"
-        description="当前还没有可展示的 Wiki 内容。"
-      />
-    )
-  }
-
   return (
-    <div className="flex flex-col gap-3 animate-fade-in">
+    <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
         title={`${activeBidType} Wiki`}
         actions={(
-          <div className="flex flex-nowrap gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <button
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
@@ -250,8 +243,14 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         )}
         basePath={materialsBasePath}
       />
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12 xl:items-stretch">
-        <div className="xl:col-span-3 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex flex-col max-h-[420px] xl:min-h-[720px] xl:max-h-[720px] overflow-hidden">
+      {!selectedNode && !tree.length ? (
+        <PageEmpty
+          title="Wiki 暂无节点"
+          description="当前还没有可展示的 Wiki 内容。"
+        />
+      ) : (
+      <div className="grid min-h-0 grid-cols-1 gap-3 xl:h-[clamp(32rem,calc(100dvh-14rem),52rem)] xl:grid-cols-12 xl:items-stretch">
+        <div className="flex min-h-[20rem] max-h-[24rem] flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:col-span-3 xl:min-h-0 xl:max-h-none">
           <div className="px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
@@ -259,16 +258,16 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
               </div>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1">{renderTree(tree)}</div>
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain p-3">{renderTree(tree)}</div>
         </div>
 
         <div className="xl:col-span-9 flex min-w-0 flex-col">
-          <div className="flex min-h-[520px] max-h-[720px] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
-            <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
+          <div className="flex min-h-[24rem] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-0">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-white p-4 sm:p-5">
               {selectedNode?.markdownContent ? (
                 <MarkdownLite content={selectedNode.markdownContent} compact />
               ) : (
-                <div className="flex min-h-[440px] items-center justify-center text-center">
+                <div className="flex min-h-[20rem] items-center justify-center text-center xl:h-full xl:min-h-0">
                   <div>
                     <span className="material-symbols-outlined text-4xl text-outline/60">description</span>
                     <p className="mt-2 text-sm text-on-surface-variant">暂无内容</p>
@@ -279,6 +278,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
           </div>
         </div>
       </div>
+      )}
     </div>
   )
 }
