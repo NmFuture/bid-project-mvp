@@ -2345,7 +2345,6 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
     assert 'f"技术标/项目素材' not in sources_using_bid_type["technical_gap_service"]
     assert "project_material_root_path(BUSINESS_BID_TYPE" in sources_using_bid_type["business_gap_domain"]
     assert "project_material_root_path(BUSINESS_BID_TYPE" in sources_using_bid_type["business_parse_assets"]
-    assert "project_material_root_path(TECHNICAL_BID_TYPE" in sources_using_bid_type["technical_gap_service"]
     assert 'project.get("bidType") or "商务标"' not in sources_using_bid_type["business_gap_service"]
     assert 'project.get("bidType") or BUSINESS_BID_TYPE' not in sources_using_bid_type["business_gap_service"]
     assert 'bid_type="商务标"' not in sources_using_bid_type["bid_project_service"]

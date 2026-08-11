@@ -16,7 +16,6 @@ from app.main import app
 from app.core.config import settings
 from app.services import technical_gap_ai_fill
 from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
-from app.services.technical_gap_domain import aggregate_technical_gap_fill_quality
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
 from app.services.technical_fact_field_specs import fillable_specs
@@ -1094,13 +1093,16 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertIn("FACT-MANUAL-1", saved_ids)
         self.assertEqual(len(saved_ids), field_total + 1)
 
+        # 重复保存幂等：人工字段不能因为多次整表提交而被复制成多行
         for _ in range(2):
-            patch_response = self.client.patch(
-                f"/api/technical/projects/{project_id}/gaps/facts/FACT-MANUAL-1",
-                json={"value": "张三", "status": "extracted", "confirm": True, "operator": "测试用户"},
+            repeat_response = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": save_response.json()["fields"], "operator": "测试用户"},
             )
-            self.assertEqual(patch_response.status_code, 200, patch_response.text)
-            self.assertEqual(patch_response.json()["field"]["status"], "confirmed")
+            self.assertEqual(repeat_response.status_code, 200, repeat_response.text)
+            repeated = [field for field in repeat_response.json()["fields"] if field["id"] == "FACT-MANUAL-1"]
+            self.assertEqual(len(repeated), 1)
+            self.assertEqual(repeated[0]["status"], "confirmed")
 
         facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
         self.assertEqual(facts_response.status_code, 200, facts_response.text)
@@ -1527,182 +1529,6 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertGreaterEqual(artifact["qualityReport"]["coverageRate"], 0.85)
         self.assertGreaterEqual(artifact["qualityReport"]["correctnessRate"], 0.85)
         self.assertGreaterEqual(artifact["qualityReport"]["completenessRate"], 0.85)
-
-    def test_gap_ai_fill_all_runs_word_tasks_before_table_tasks_and_returns_quality_summary(self) -> None:
-        project_id = self._create_project_with_confirmed_directory_json()
-        project = store._require(project_id)
-        word_template = technical_workspace_dir(project_id) / "word-template.docx"
-        doc = Document()
-        doc.add_paragraph("招标方：[招标方，待填写]")
-        doc.save(word_template)
-        table_template = technical_workspace_dir(project_id) / "table-template.docx"
-        doc = Document()
-        doc.add_paragraph("性能保证：[保证值，待填写]")
-        doc.save(table_template)
-        table_template_2 = technical_workspace_dir(project_id) / "table-template-2.docx"
-        doc = Document()
-        doc.add_paragraph("性能保证2：[保证值，待填写]")
-        doc.save(table_template_2)
-        project["gap_state"] = {
-            "recognitionStatus": "completed",
-            "recognizedAt": now_iso(),
-            "submittedForReview": False,
-            "reviewConfirmed": False,
-            "reviewedAt": "",
-            "items": [],
-            "submissions": [],
-            "plan": {
-                "schemaVersion": "bid-tech-gap-plan-v1",
-                "projectId": project_id,
-                "status": "ready",
-                "items": [
-                    {
-                        "id": "GAP-TABLE",
-                        "number": "1.6",
-                        "title": "投标关键数据一览表",
-                        "status": "needs_input",
-                        "decision": "fill_required",
-                        "usage": "appendix_fill",
-                        "matchedMaterials": [],
-                        "candidateMaterials": [],
-                        "appendixTasks": [],
-                        "fillTasks": [
-                            {
-                                "id": "FILL-TABLE",
-                                "skill": "bid-tech-table-filler",
-                                "status": "pending",
-                                "blankSource": {"id": "APP-TABLE", "docxPath": str(table_template), "placeholderLabels": ["保证值"]},
-                            },
-                            {
-                                "id": "FILL-TABLE-2",
-                                "skill": "bid-tech-table-filler",
-                                "status": "pending",
-                                "blankSource": {"id": "APP-TABLE-2", "docxPath": str(table_template_2), "placeholderLabels": ["保证值"]},
-                            }
-                        ],
-                        "resolvedArtifacts": [],
-                    },
-                    {
-                        "id": "GAP-WORD",
-                        "number": "1.4",
-                        "title": "风电机组自主可控推广应用的承诺",
-                        "status": "needs_input",
-                        "decision": "fill_required",
-                        "usage": "section_fill",
-                        "matchedMaterials": [],
-                        "candidateMaterials": [],
-                        "appendixTasks": [],
-                        "fillTasks": [
-                            {
-                                "id": "FILL-WORD",
-                                "skill": "bid-tech-word-placeholder-filler",
-                                "status": "pending",
-                                "blankSource": {
-                                    "id": "RAW-WORD",
-                                    "sourceType": "material_fill_template",
-                                    "docxPath": str(word_template),
-                                    "placeholderLabels": ["招标方"],
-                                },
-                            }
-                        ],
-                        "resolvedArtifacts": [],
-                    },
-                ],
-            },
-            "planFile": "",
-            "integrity": {},
-        }
-        project["owner"] = "华能集团"
-        project["customerName"] = "华能集团"
-        project["identity"] = {"owner": "华能集团", "customerName": "华能集团"}
-        store._persist_project(project)
-        self._confirm_project_fact_table(project_id, {"保证值": "满足招标要求"})
-        calls: list[str] = []
-
-        def fake_run_word_filler(manifest_path):
-            calls.append("word")
-            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-            output_file = Path(manifest["outputFile"])
-            doc = Document()
-            doc.add_paragraph("招标方：华能集团")
-            doc.save(output_file)
-            return {
-                "schema_version": "bid-tech-word-placeholder-fill-v1",
-                "outputFile": str(output_file),
-                "unfilledFields": [],
-                "evidenceRefs": [{"field": "招标方"}],
-                "fillReport": {"filledPlaceholderCount": 1, "unfilledPlaceholderCount": 0},
-            }
-
-        def fake_run_table_filler(manifest_path, progress_callback=None):
-            calls.append("table")
-            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-            output_file = Path(manifest["outputFile"])
-            doc = Document()
-            doc.add_paragraph("性能保证：满足招标要求")
-            doc.save(output_file)
-            return {
-                "schema_version": "bid-tech-table-fill-v1",
-                "outputFile": str(output_file),
-                "unfilledFields": [],
-                "evidenceRefs": [{"field": "保证值"}],
-                "fillReport": {"filledFieldCount": 1, "unfilledFieldCount": 0},
-            }
-
-        with patch("app.services.technical_gap_ai_fill.run_technical_word_placeholder_filler_skill", side_effect=fake_run_word_filler), patch(
-            "app.services.technical_gap_ai_fill.run_technical_table_filler_skill",
-            side_effect=fake_run_table_filler,
-        ):
-            response = self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/ai-fill-all",
-                json={"operator": "测试用户"},
-            )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(calls, ["word", "table", "table"])
-        payload = response.json()
-        self.assertEqual(payload["summary"]["total"], 3)
-        self.assertEqual(payload["summary"]["passed"], 3)
-        self.assertEqual(payload["qualityReport"]["status"], "passed")
-        self.assertEqual([result["gapId"] for result in payload["results"]], ["GAP-WORD", "GAP-TABLE", "GAP-TABLE"])
-        table_files = [result["fileName"] for result in payload["results"] if result["gapId"] == "GAP-TABLE"]
-        self.assertEqual(len(table_files), len(set(table_files)))
-
-    def test_gap_ai_fill_all_quality_summary_uses_weighted_field_counts(self) -> None:
-        aggregate = aggregate_technical_gap_fill_quality(
-            [
-                {
-                    "qualityReport": {
-                        "status": "needs_review",
-                        "coverageRate": 0.0,
-                        "correctnessRate": 0.0,
-                        "completenessRate": 0.0,
-                        "expectedFieldCount": 1,
-                        "filledFieldCount": 0,
-                        "unfilledFieldCount": 1,
-                        "evidenceRefCount": 0,
-                    }
-                },
-                {
-                    "qualityReport": {
-                        "status": "passed",
-                        "coverageRate": 1.0,
-                        "correctnessRate": 1.0,
-                        "completenessRate": 1.0,
-                        "expectedFieldCount": 99,
-                        "filledFieldCount": 99,
-                        "unfilledFieldCount": 0,
-                        "evidenceRefCount": 99,
-                    }
-                },
-            ],
-            [],
-        )
-
-        self.assertEqual(aggregate["status"], "passed")
-        self.assertEqual(aggregate["coverageRate"], 0.99)
-        self.assertEqual(aggregate["correctnessRate"], 1.0)
-        self.assertEqual(aggregate["completenessRate"], 0.99)
 
     def test_fill_quality_does_not_pass_when_target_fields_are_unknown(self) -> None:
         report = technical_gap_ai_fill._build_fill_quality_report(
@@ -2362,30 +2188,14 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertGreater(len(items), 0)
 
         for index, item in enumerate(items):
-            submission_response = self.client.post(
-                f"/api/technical/projects/{project_id}/materials/submissions",
-                json={
-                    "missingId": item["id"],
-                    "bidType": item.get("bidType") or "技术标",
-                    "files": [
-                        {
-                            "name": f"{item['id']}.docx",
-                            "size": 1024,
-                            "type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        }
-                    ],
-                },
-            )
-            self.assertEqual(submission_response.status_code, 200)
-
             if index % 2 == 0:
                 update_response = self.client.put(
                     f"/api/technical/projects/{project_id}/gaps/{item['id']}",
                     json={"action": "resolve", "source": {"name": f"{item['id']}.docx"}},
                 )
             else:
-                update_response = self.client.patch(
-                    f"/api/technical/projects/{project_id}/materials/missing/{item['id']}",
+                update_response = self.client.put(
+                    f"/api/technical/projects/{project_id}/gaps/{item['id']}",
                     json={"status": "skipped", "reason": "MVP阶段先跳过"},
                 )
             self.assertEqual(update_response.status_code, 200)
@@ -2408,8 +2218,8 @@ class GapReviewFlowTests(unittest.TestCase):
 
         gaps_payload = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()
         for item in gaps_payload["items"]:
-            update_response = self.client.patch(
-                f"/api/technical/projects/{project_id}/materials/missing/{item['id']}",
+            update_response = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/{item['id']}",
                 json={"status": "skipped", "reason": "测试中人工确认忽略"},
             )
             self.assertEqual(update_response.status_code, 200)

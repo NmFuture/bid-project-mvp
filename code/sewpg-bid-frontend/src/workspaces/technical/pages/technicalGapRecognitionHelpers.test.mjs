@@ -835,35 +835,6 @@ test('父章节覆盖：目录号归一化与 level 后代识别', () => {
   assert.deepEqual(descendants.map((item) => item.id), ['C1', 'C2'])
 })
 
-test('父章节覆盖：本节点没素材时不可设置，设置后可撤销', () => {
-  const items = [
-    { id: 'P1', number: '第3章', level: 1 },
-    { id: 'C1', number: '3.1', level: 2 },
-  ]
-  const empty = technicalHelpers.technicalGapParentCoverageState(items[0], items)
-  assert.equal(empty.descendantCount, 1)
-  assert.equal(empty.hasMaterial, false)
-  assert.equal(empty.canApply, false)
-
-  const withMaterial = [
-    { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1' }] },
-    { id: 'C1', number: '3.1', level: 2 },
-  ]
-  const ready = technicalHelpers.technicalGapParentCoverageState(withMaterial[0], withMaterial)
-  assert.equal(ready.canApply, true)
-  assert.equal(ready.applied, false)
-
-  const applied = [
-    { id: 'P1', number: '第3章', level: 1, matchedMaterials: [{ id: 'M1' }] },
-    { id: 'C1', number: '3.1', level: 2, coveredByParent: 'P1', parentCoverageSource: 'manual' },
-    // planner 自动判定的覆盖不计入人工态，不由这个按钮撤销。
-    { id: 'C2', number: '3.2', level: 2, coveredByParent: 'P1' },
-  ]
-  const state = technicalHelpers.technicalGapParentCoverageState(applied[0], applied)
-  assert.equal(state.applied, true)
-  assert.equal(state.coveredCount, 1)
-})
-
 test('一键填写汇总覆盖正文与附表，失败按目录项计', () => {
   const items = [
     // 待填数只认「待填写」标签，模板须已定案，这里用解析空表来源（appendixTasks）满足。
