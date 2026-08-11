@@ -161,8 +161,8 @@ class _ChapterDecisionAggregator:
             pass
 TECHNICAL_SUGGESTION_ACTIONS = {"必要", "建议增加", "建议删除", "待确认"}
 
-# 注入 S2 manifest 的事实表状态：已确认/已抽取/待人工确认的值可信可用；
-# 未提取/缺来源/冲突/不适用于不注入。
+# 注入 S2 manifest 的事实表状态：有值即可用（confirmed）；未提取与不适用不注入。
+# 历史值 extracted/pending_confirmation 一并保留，旧项目状态未重建时仍能注入。
 MANIFEST_FACT_VALUE_STATUSES = {"confirmed", "extracted", "pending_confirmation"}
 
 

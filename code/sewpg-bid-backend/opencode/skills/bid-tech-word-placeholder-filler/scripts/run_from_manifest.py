@@ -222,23 +222,27 @@ def readable_model(model: Any, aliases: Any = None) -> str:
 
 
 def project_fact_table_facts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """事实表里有值的字段都可用（产品裁决 2026-08-10：取消人工确认闸门）。
+
+    只按取值和「不适用」判断，不看状态名：状态已收敛成三态，且旧项目的 gap_state
+    里还留着 extracted / pending_confirmation 等历史态。按状态名白名单过滤会让这些
+    项目在重建事实表之前一个字段都进不来，整份文档全标黄。
+    """
     facts: list[dict[str, Any]] = []
     table = manifest.get("projectFactTable") if isinstance(manifest.get("projectFactTable"), dict) else {}
-    table_status = clean(table.get("status"))
     for field in object_items(table.get("fields")):
-        status = clean(field.get("status")) or ("confirmed" if table_status == "confirmed" else "")
-        if status not in {"confirmed", "candidate"}:
+        status = clean(field.get("status"))
+        if status == "not_applicable":
             continue
-        confidence = 0.97 if status == "confirmed" else 0.84
         before = len(facts)
         add_fact(
             facts,
             label=field.get("label"),
             value=field.get("value"),
             source="projectFactTable",
-            confidence=confidence,
+            confidence=0.97,
             location=status,
-            fact_type="confirmed_project_fact" if status == "confirmed" else "candidate_project_fact",
+            fact_type="confirmed_project_fact",
         )
         if len(facts) > before:
             # 清单第 2/3 列随字段下发：正文按「待填写文件 + 占位符原文」定位，不靠字面相似度猜

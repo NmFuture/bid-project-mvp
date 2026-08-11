@@ -3894,9 +3894,14 @@ def test_technical_gap_save_facts_stays_in_technical_service() -> None:
 
     assert payload["status"] == "confirmed"
     assert payload["confirmedBy"] == "技术用户"
-    # 整表 confirm 只升表级状态；字段级"已人工确认"只能由 PATCH 单字段接口产生，
-    # 否则一次保存就把整张表变成 AI 禁区
-    assert payload["fields"][0]["status"] == "extracted"
+    # 整表 confirm 只升表级状态；字段级"人工产出"标记只能由 PATCH 单字段接口产生，
+    # 否则一次保存就把整张表变成 AI 禁区（三态收敛后这层约束落在 sourceRefs 标记上，
+    # 字段状态本身只反映有无取值）
+    assert payload["fields"][0]["status"] == "confirmed"
+    assert all(
+        ref.get("type") not in {"manualEdit", "manualFact"}
+        for ref in payload["fields"][0].get("sourceRefs") or []
+    )
     assert store._require(project_id)["gap_state"]["projectFactTable"]["status"] == "confirmed"
 
 

@@ -991,10 +991,10 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertNotIn("未知保证值", labels)
         model = next(field for field in payload["fields"] if field["label"] == "投标机型")
         self.assertEqual(model["value"], "EW10.0-220下置")
-        self.assertEqual(model["status"], "extracted")
+        self.assertEqual(model["status"], "confirmed")
         self.assertTrue(model["sourceRefs"])
-        # 未提取骨架计 unextracted，missingCount 只统计 missing_source
-        self.assertEqual(payload["summary"]["missingCount"], 0)
+        # 没抽到值的清单骨架一律计 unextracted（三态收敛后不再区分 missing_source）
+        self.assertTrue(payload["summary"]["unextractedCount"] > 0)
         self.assertEqual(payload["summary"]["specTotal"], 148)
 
         confirmed = self._confirm_project_fact_table(project_id, {"承诺函致函对象全称": "按招标文件要求执行"})
@@ -1375,7 +1375,7 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["轮毂高度"]["unit"], "m")
         self.assertEqual(by_label["安全等级"]["value"], "IEC S")
         self.assertEqual(by_label["湍流强度"]["value"], "0.10")
-        self.assertEqual(by_label["总装机容量"]["status"], "extracted")
+        self.assertEqual(by_label["总装机容量"]["status"], "confirmed")
         self.assertEqual(by_label["总装机容量"]["sourceRefs"][0]["materialTier"], "project")
         # 空气密度/极端风速/设计寿命匹配不到 spec，清单模式下不再成行
         self.assertNotIn("空气密度", by_label)
@@ -1443,8 +1443,8 @@ class GapReviewFlowTests(unittest.TestCase):
         by_label = {field["label"]: field for field in response.json()["fields"]}
         self.assertEqual(by_label["轮毂高度"]["value"], "125")
         self.assertEqual(by_label["年平均风速"]["value"], "7.20m/s")
-        self.assertEqual(by_label["轮毂高度"]["status"], "extracted")
-        self.assertEqual(by_label["年平均风速"]["status"], "extracted")
+        self.assertEqual(by_label["轮毂高度"]["status"], "confirmed")
+        self.assertEqual(by_label["年平均风速"]["status"], "confirmed")
         # 空气密度匹配不到 spec，清单模式下不再成行
         self.assertNotIn("空气密度", by_label)
 
