@@ -1404,8 +1404,11 @@ export default function TechnicalGapRecognition({ showToast }) {
       }
       const matrixMeta = factsPayload?.appendixSourceMatrix
       setSourceMatrixMeta({
-        imported: Boolean(matrixMeta?.path),
+        // 附表规则已改按客户维护：meta 为 {rowCount, fileName, customerName,...}，无规则时是空 dict
+        imported: Number(matrixMeta?.rowCount) > 0 || Boolean(matrixMeta?.path),
         fileName: String(matrixMeta?.fileName || ''),
+        rowCount: Number(matrixMeta?.rowCount) || 0,
+        customerName: String(matrixMeta?.customerName || ''),
       })
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
@@ -2636,25 +2639,15 @@ export default function TechnicalGapRecognition({ showToast }) {
       <PageHeader
         actions={(
           <Toolbar>
-            {/* 规则维护入口已迁至素材库 · 规则页：这里只保留两个跳转入口，状态收进 tooltip。
+            {/* 规则维护入口已迁至素材库 · 规则页：附表规则按客户维护，保留一个跳转入口，
+                样式与工具栏其他按钮（项目事实表等）一致。事实表清单入口已移除。
                 「项目事实表」按钮保留——它打开的是字段维护弹窗，不是上传入口。 */}
             <Button
               type="button"
               onClick={() => navigate('/workspace/tech/materials/rules')}
-              title={factSpecsMeta.imported ? `事实表清单：${factSpecsMeta.fileName || '已上传'}（全局生效，到素材库 · 规则页维护）` : '尚未上传事实表清单，到素材库 · 规则页上传'}
-              size="xs"
+              title={sourceMatrixMeta.imported ? `附表填写规则：${sourceMatrixMeta.fileName || '已维护'}（按客户${sourceMatrixMeta.customerName ? `「${sourceMatrixMeta.customerName}」` : ''}维护，到素材库 · 规则页维护）` : '该客户尚未维护附表填写规则，到素材库 · 规则页维护'}
+              size="stage"
               variant="quiet"
-              icon="open_in_new"
-            >
-              事实表清单
-            </Button>
-            <Button
-              type="button"
-              onClick={() => navigate('/workspace/tech/materials/rules')}
-              title={sourceMatrixMeta.imported ? `附表填写规则：${sourceMatrixMeta.fileName || '已上传'}（到素材库 · 规则页按项目维护）` : '尚未上传附表填写规则，到素材库 · 规则页按项目上传'}
-              size="xs"
-              variant="quiet"
-              icon="open_in_new"
             >
               附表规则
             </Button>

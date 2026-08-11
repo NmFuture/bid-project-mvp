@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-"""项目级附表来源矩阵上传（POST /api/technical/projects/{pid}/appendix-source-matrix）测试。"""
+"""项目级附表来源矩阵上传（POST /api/technical/projects/{pid}/appendix-source-matrix）测试。
 
+规则已改为按客户维护：项目级上传端点保留兼容（留盘 + 绑定元数据），同时把属于
+本项目客户的规则行透写到客户规则库；应用/重放统一从客户规则库读取。
+"""
+
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,9 +14,11 @@ from unittest.mock import patch
 
 import openpyxl
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.main import app
 from app.core.config import settings
+from app.models import async_session
 from app.services import technical_gap_service
 from app.services.store import store
 from app.services.technical_appendix_source_matrix import (
@@ -19,8 +26,23 @@ from app.services.technical_appendix_source_matrix import (
     apply_appendix_source_matrix_to_plan,
     load_appendix_source_matrix_for_project,
 )
+from app.services.technical_rules_store import ensure_technical_rules_tables
 
 MATRIX_HEADER = ["客户", "表格", "项目定制", "标准文件", "其他"]
+
+
+def _reset_rule_tables() -> None:
+    """规则表跨用例共享测试库，每个用例前清空，保证客户规则隔离。"""
+
+    async def _run() -> None:
+        async with async_session() as session:
+            await ensure_technical_rules_tables(session)
+            await session.execute(text("DELETE FROM technical_appendix_rule_rows"))
+            await session.execute(text("DELETE FROM technical_appendix_rule_meta"))
+            await session.execute(text("DELETE FROM technical_fact_spec_rows"))
+            await session.commit()
+
+    asyncio.run(_run())
 
 
 def _build_matrix_xlsx(path: Path, rows: list[list[str]], header: list[str] | None = None) -> Path:
@@ -43,6 +65,7 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
         settings.ensure_dirs()
 
         store.reset_for_tests()
+        _reset_rule_tables()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
 
     def tearDown(self) -> None:
@@ -119,7 +142,9 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
         meta = after.json()["appendixSourceMatrix"]
         self.assertEqual(meta["fileName"], "填写文件来源.xlsx")
         self.assertEqual(meta["rowCount"], 1)
-        self.assertTrue(meta["path"])
+        # 规则按客户维护后，元数据带客户身份（不再有项目级 path）
+        self.assertEqual(meta["customerName"], "华能集团")
+        self.assertEqual(meta["customerId"], "CUST-HUANENG")
 
     def test_upload_rejects_non_xlsx(self) -> None:
         project_id = self._create_project()
@@ -301,7 +326,8 @@ class AppendixSourceMatrixUploadTests(unittest.TestCase):
         self.assertNotIn("sourceRoutedMaterials", removed_item)
 
         new_task = new_item["appendixTasks"][0]
-        self.assertEqual(new_task["sourceRouting"]["ruleId"], "Sheet!R2")
+        # 规则行来自客户规则库，ruleId 为 db!<customerId>#<seq> 形式
+        self.assertEqual(new_task["sourceRouting"]["ruleId"], "db!CUST-HUANENG#1")
         self.assertEqual([item["id"] for item in new_task["recommendedMaterials"]], ["RAW-0002"])
         self.assertEqual([item["id"] for item in new_item["sourceRoutedMaterials"]], ["RAW-0002"])
 

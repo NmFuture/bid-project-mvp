@@ -223,6 +223,18 @@ def load_appendix_source_matrix_for_project(project: dict[str, Any]) -> dict[str
     return parse_appendix_source_matrix(path)
 
 
+def load_appendix_source_matrix_for_customer(customer_name: Any) -> dict[str, Any]:
+    """按客户加载附表来源矩阵（SQL 为唯一事实来源）；无规则或空客户名返回空 rows。
+
+    同步包装：内部经 run_awaitable_sync 桥查库，供 gap planner 等同步上下文使用；
+    异步上下文请直接 await technical_rules_store.load_appendix_matrix_for_customer。
+    """
+    from app.services.file_utils import run_awaitable_sync
+    from app.services.technical_rules_store import load_appendix_matrix_for_customer
+
+    return run_awaitable_sync(load_appendix_matrix_for_customer(customer_name))
+
+
 def table_title_match_score(left: Any, right: Any) -> float:
     code_score = appendix_rule_code_score(left, right)
     if code_score:
