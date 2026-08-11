@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
@@ -519,6 +519,25 @@ const FactMaintenanceModal = ({
     .map((field, index) => ({ field, index }))
     .filter(({ field }) => matchesFactFilter(field))
 
+  // 多机型项目按机型分段显示（后端已把这些行按 turbineGroup 排到表首）。
+  // 单机型只有一组，不加分段标题，表现与改动前一致。
+  const turbineGroupCount = new Set(
+    fields.map((field) => Number(field.turbineGroup) || 0).filter(Boolean),
+  ).size
+  const factGroupHeaders = {}
+  if (turbineGroupCount > 1) {
+    let currentGroup = null
+    visibleRows.forEach(({ field, index }) => {
+      const group = Number(field.turbineGroup) || 0
+      if (group === currentGroup) return
+      currentGroup = group
+      const modelLabel = String(field.turbineModelLabel || '').trim()
+      factGroupHeaders[index] = group
+        ? `机型${group}${modelLabel ? ` · ${modelLabel}` : ''}`
+        : '全场共用'
+    })
+  }
+
   const factFilterChipClass = (active, tone, count) =>
     `rounded-md px-2.5 py-1 text-xs font-semibold ${tone} ${
       active ? 'ring-2 ring-primary/70' : 'hover:brightness-95'
@@ -861,8 +880,13 @@ const FactMaintenanceModal = ({
                       const refPaths = allRefPaths.slice(0, 2)
                       const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
                       return (
+                        <Fragment key={field.id || `${field.label}-${index}`}>
+                        {factGroupHeaders[index] ? (
+                          <div className="bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant" role="row">
+                            {factGroupHeaders[index]}
+                          </div>
+                        ) : null}
                         <div
-                          key={field.id || `${field.label}-${index}`}
                           className="grid min-h-[60px] items-center transition-colors hover:bg-surface-container-low/60"
                           style={factRowGridStyle}
                           role="row"
@@ -917,6 +941,7 @@ const FactMaintenanceModal = ({
                             )}
                           </div>
                         </div>
+                        </Fragment>
                       )
                       })}
                       {!visibleRows.length ? (

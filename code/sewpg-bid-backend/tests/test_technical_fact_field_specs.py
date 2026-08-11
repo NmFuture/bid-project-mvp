@@ -331,6 +331,83 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertFalse(manual.get("specSeq"))
         self.assertEqual(table["summary"]["specTotal"], 148)
 
+    def test_single_turbine_pins_project_selected_fields(self) -> None:
+        """单机型：人选的机型参数不带序号、提到表首，只比改动前多一行清单外的「基础形式」。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "单机型项目",
+            "parse_result": {},
+            "turbineModels": [{"model": "EW10.0-220", "turbineCount": "25", "foundationType": "桩基础"}],
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+
+        self.assertEqual(len(table["fields"]), 149)
+        self.assertEqual(table["summary"]["specTotal"], 148)
+        self.assertEqual(
+            [field["label"] for field in table["fields"][:6]],
+            ["投标机型", "机组台数", "基础形式", "单机容量", "叶轮直径", "轮毂高度"],
+        )
+        by_label = {field["label"]: field for field in table["fields"]}
+        self.assertEqual(by_label["投标机型"]["value"], "EW10.0-220")
+        self.assertEqual(by_label["机组台数"]["value"], "25")
+        self.assertEqual(by_label["基础形式"]["value"], "桩基础")
+        # 命中清单的仍带 specSeq、照常计进度；基础形式是清单外行，不计
+        self.assertEqual(by_label["投标机型"]["specSeq"], 11)
+        self.assertEqual(by_label["机组台数"]["specSeq"], 84)
+        self.assertIsNone(by_label["基础形式"].get("specSeq"))
+        self.assertTrue(all(field["turbineGroup"] == 1 for field in table["fields"][:6]))
+
+    def test_multi_turbine_expands_rows_per_model(self) -> None:
+        """多机型：每个机型一组带序号的行置顶，不带序号的机型/台数留给清单行取全场口径。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "混排项目",
+            "parse_result": {},
+            "turbineModels": [
+                {"model": "EW10.0-220", "turbineCount": "15", "foundationType": "桩基础"},
+                {"model": "EW8.5-230", "turbineCount": "10", "foundationType": "重力基础"},
+            ],
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+
+        self.assertEqual(len(table["fields"]), 160)
+        self.assertEqual(table["summary"]["specTotal"], 148)
+        self.assertEqual(
+            [field["label"] for field in table["fields"][:12]],
+            [
+                "投标机型1", "机型1台数", "机型1基础形式", "机型1单机容量", "机型1叶轮直径", "机型1轮毂高度",
+                "投标机型2", "机型2台数", "机型2基础形式", "机型2单机容量", "机型2叶轮直径", "机型2轮毂高度",
+            ],
+        )
+        by_label = {field["label"]: field for field in table["fields"]}
+        self.assertEqual(by_label["投标机型1"]["value"], "EW10.0-220")
+        self.assertEqual(by_label["机型1台数"]["value"], "15")
+        self.assertEqual(by_label["机型2基础形式"]["value"], "重力基础")
+        self.assertEqual(by_label["投标机型1"]["turbineModelLabel"], "EW10.0-220")
+        self.assertEqual(by_label["投标机型2"]["turbineGroup"], 2)
+        # 清单第 11/84 行给全场口径：机型合并串、台数各行之和
+        self.assertEqual(by_label["投标机型"]["value"], "EW10.0-220、EW8.5-230")
+        self.assertEqual(by_label["机组台数"]["value"], "25")
+        self.assertIsNone(by_label["投标机型"].get("turbineGroup"))
+        # 多机型不再出不带序号的「基础形式」
+        self.assertNotIn("基础形式", by_label)
+
+    def test_multi_turbine_count_sum_skips_incomplete_rows(self) -> None:
+        """任一行没填台数就不给总数，回落到招标文件与素材抽取。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "混排项目",
+            "parse_result": {},
+            "turbineModels": [
+                {"model": "EW10.0-220", "turbineCount": "15"},
+                {"model": "EW8.5-230", "turbineCount": ""},
+            ],
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+        # 没有项目表单候选时，台数那行退回清单骨架（标签用清单原文），值为空
+        count_field = next(field for field in table["fields"] if field.get("specSeq") == 84)
+        self.assertEqual(count_field["value"], "")
+
     @staticmethod
     def _gap_state_with_confirmed_legacy_field(rule_id: str) -> dict:
         return {

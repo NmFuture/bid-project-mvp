@@ -1258,7 +1258,10 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(by_label["项目名称"]["value"], "华能真实项目名称")
         self.assertIn("机组台数", by_label)
         self.assertIn("总装机容量", by_label)
-        self.assertEqual(by_label["机组台数"]["category"], "待填写表格字段")
+        # 机型参数块会先建这一行（项目已选机型），表格占位符来源并入 sourceRefs
+        self.assertTrue(
+            any(ref.get("type") == "gapTableField" for ref in by_label["机组台数"]["sourceRefs"])
+        )
         # 清单之外的字段不再成行：招标编号/招标人无匹配 spec，技术承诺仍是噪声
         self.assertNotIn("招标编号", by_label)
         self.assertNotIn("招标人", by_label)
