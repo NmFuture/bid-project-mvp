@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-"""技术标项目事实表字段 spec（148 条清单）加载与匹配支持。
+"""技术标项目事实表字段 spec（清单）加载与匹配支持。
 
-spec JSON 由 scripts/import_technical_fact_specs.py 从甲方清单 xlsx 生成，
-随仓库版本化。运行时也可经设置页上传新清单（POST /api/settings/technical-fact-specs），
-上传结果写到 settings.fact_specs_override_path（数据卷），存在且可读时优先于仓库默认。
+清单只有一份，全局共用、与项目无关：素材库「规则」tab 上传的 xlsx 解析后写到
+settings.fact_specs_override_path（数据卷）。仓库不再自带默认清单——没上传就是没有
+清单，事实表建不出来并提示去上传，不能拿一份过期的内置清单顶上去当真值来源。
 
-匹配策略（在 technical_gap_fact_table._reconcile_with_specs 中使用）：
+匹配策略（在 technical_gap_fact_table.reconcile_fact_fields_with_specs 中使用）：
 1. spec.label / spec.reviewLabel 经 canonical_fact_label + fact_label_key 归一后直接匹配；
 2. 匹配不到时查 SPEC_LABEL_ALIASES（spec.label → 现有启发式字段标签列表）。
 """
@@ -17,8 +17,6 @@ from typing import Any
 
 from app.core.config import settings
 from app.services.technical_fact_spec_import import classify_source
-
-SPECS_PATH = Path(__file__).resolve().parent.parent / "data" / "technical_fact_field_specs.json"
 
 # spec.label → 现有启发式抽取产出的字段标签（canonical 前的写法均可，匹配时会统一归一）。
 # 只收录语义确定等价的项；语义待甲方确认的（如"承诺函致函对象全称"）刻意不映射，保持未提取。
@@ -112,13 +110,8 @@ def clear_specs_cache() -> None:
 
 
 def load_specs() -> tuple[dict[str, Any], ...]:
-    """加载字段 spec：override 文件存在且可读时优先，否则读仓库默认 SPECS_PATH。"""
-    override_path = Path(settings.fact_specs_override_path)
-    if override_path.is_file():
-        specs = _load_specs_file(override_path)
-        if specs is not None:
-            return specs
-    return _load_specs_file(SPECS_PATH) or ()
+    """加载全局字段 spec；尚未上传清单时返回空元组（调用方据此报"请先上传清单"）。"""
+    return _load_specs_file(Path(settings.fact_specs_override_path)) or ()
 
 
 def fillable_specs() -> list[dict[str, Any]]:

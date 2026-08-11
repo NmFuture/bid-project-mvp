@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""项目级实时表上传（POST /api/technical/projects/{pid}/gaps/facts/specs-upload）与 build_facts 门控测试。"""
+"""事实表素材范围与扫描口径测试（清单统一走全局，项目不再各自上传）。"""
 
 import tempfile
 import unittest
@@ -13,12 +13,12 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
 from app.services import technical_gap_fact_table as fact_table_module
+from app.services.auth_service import current_user
 from app.services.store import store
-from app.services.technical_fact_field_specs import fillable_specs
+from app.services.technical_fact_field_specs import clear_specs_cache
 from app.services.technical_fact_spec_import import EXPECTED_HEADER
 
-# 全局默认清单（148 条）里的独有字段，用于断言项目骨架不含全局清单字段
-GLOBAL_ONLY_LABEL = "极端工况-Mx（kNm）"
+TEST_USER = {"id": "u-facts", "name": "事实表测试用户"}
 
 
 def _build_xlsx(path: Path, rows: list[tuple[str, str]], header: list[str] | None = None) -> Path:
@@ -41,11 +41,19 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
         settings.parsed_dir = base / "parsed"
         settings.ensure_dirs()
 
+        self._orig_override = settings.fact_specs_override_path
+        settings.fact_specs_override_path = base / "documents" / "technical_fact_field_specs.override.json"
+        clear_specs_cache()
+
         store.reset_for_tests()
+        app.dependency_overrides[current_user] = lambda: dict(TEST_USER)
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
 
     def tearDown(self) -> None:
         self.client.close()
+        app.dependency_overrides.pop(current_user, None)
+        settings.fact_specs_override_path = self._orig_override
+        clear_specs_cache()
         self.temp_dir.cleanup()
 
     def _create_project(self, *, recognition_completed: bool = False) -> str:
@@ -74,10 +82,10 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
             store._persist_project(project)
         return project_id
 
-    def _upload_specs(self, project_id: str, path: Path, filename: str = "实时表.xlsx"):
+    def _upload_specs(self, path: Path, filename: str = "事实表清单.xlsx"):
         with path.open("rb") as handle:
             return self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
+                "/api/technical/materials/rules/fact-specs",
                 files={
                     "file": (
                         filename,
@@ -87,110 +95,13 @@ class ProjectFactSpecsUploadTests(unittest.TestCase):
                 },
             )
 
-    def test_upload_valid_xlsx_persists_fact_specs(self) -> None:
-        project_id = self._create_project()
-        xlsx_path = _build_xlsx(
-            Path(self.temp_dir.name) / "实时表.xlsx",
-            [("招标编号", "招标文件/招标公告"), ("总装机容量", "项目定制/工程量清单"), ("叶片产能", "/")],
-        )
-
-        response = self._upload_specs(project_id, xlsx_path)
-
-        self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertEqual(payload["specTotal"], 3)
-        self.assertEqual(payload["fileName"], "实时表.xlsx")
-        self.assertTrue(payload["uploadedAt"])
-
-        project = store._require(project_id)
-        fact_specs = project["gap_state"]["factSpecs"]
-        self.assertEqual(fact_specs["fileName"], "实时表.xlsx")
-        specs = fact_specs["specs"]
-        self.assertEqual(len(specs), 3)
-        self.assertEqual([spec["label"] for spec in specs], ["招标编号", "总装机容量", "叶片产能"])
-        self.assertEqual(specs[0]["sourceKind"], "tender")
-        self.assertEqual(specs[1]["sourceKind"], "material")
-
-    def test_upload_rejects_wrong_header(self) -> None:
-        project_id = self._create_project()
-        xlsx_path = _build_xlsx(
-            Path(self.temp_dir.name) / "坏表头.xlsx",
-            [("招标编号", "招标文件/招标公告")],
-            header=["A", "B", "C", "D", "E", "F", "G"],
-        )
-
-        response = self._upload_specs(project_id, xlsx_path)
-
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn("表头", response.json()["detail"])
-        self.assertNotIn("factSpecs", store._require(project_id).get("gap_state") or {})
-
-    def test_upload_rejects_non_xlsx_filename(self) -> None:
-        project_id = self._create_project()
-        bad_path = Path(self.temp_dir.name) / "实时表.txt"
-        bad_path.write_text("not an xlsx", encoding="utf-8")
-
-        response = self._upload_specs(project_id, bad_path, filename="实时表.txt")
-
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertTrue(response.json()["detail"])
-        self.assertNotIn("factSpecs", store._require(project_id).get("gap_state") or {})
-
-    def test_build_facts_gate_blocks_until_specs_uploaded(self) -> None:
-        project_id = self._create_project(recognition_completed=True)
-
-        blocked = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
-        self.assertEqual(blocked.status_code, 400, blocked.text)
-        self.assertIn("请先上传", blocked.json()["detail"])
-
-        xlsx_path = _build_xlsx(
-            Path(self.temp_dir.name) / "实时表.xlsx",
-            [("招标编号", "招标文件/招标公告"), ("总装机容量", "项目定制/工程量清单")],
-        )
-        self.assertEqual(self._upload_specs(project_id, xlsx_path).status_code, 200)
-
-        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
-        self.assertEqual(build_response.status_code, 200, build_response.text)
-        payload = build_response.json()
-        labels = [field["label"] for field in payload["fields"]]
-        # 以清单为唯一字段骨架：字段行 == 上传清单的 2 条 spec，不含全局 148 条清单独有字段，
-        # 匹配不到 spec 的启发式候选（项目名称/招标方等）不再单独成行
-        self.assertIn("招标编号", labels)
-        self.assertIn("总装机容量", labels)
-        self.assertEqual(len(payload["fields"]), 2)
-        self.assertTrue(all(field.get("specSeq") for field in payload["fields"]))
-        self.assertTrue(any(spec["label"] == GLOBAL_ONLY_LABEL for spec in fillable_specs()))
-        self.assertNotIn(GLOBAL_ONLY_LABEL, labels)
-        self.assertEqual(payload["summary"]["specTotal"], 2)
-
-    def test_facts_metadata_reflects_specs_upload(self) -> None:
-        project_id = self._create_project()
-
-        before = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
-        self.assertEqual(before.status_code, 200, before.text)
-        self.assertFalse(before.json()["specsImported"])
-        self.assertEqual(before.json()["specTotal"], 0)
-
-        xlsx_path = _build_xlsx(
-            Path(self.temp_dir.name) / "实时表.xlsx",
-            [("招标编号", "招标文件/招标公告"), ("总装机容量", "项目定制/工程量清单")],
-        )
-        self.assertEqual(self._upload_specs(project_id, xlsx_path).status_code, 200)
-
-        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
-        self.assertEqual(after.status_code, 200, after.text)
-        self.assertTrue(after.json()["specsImported"])
-        self.assertEqual(after.json()["specsFileName"], "实时表.xlsx")
-        # specTotal 始终表示上传规则条数，构建前后口径不变。
-        self.assertEqual(after.json()["specTotal"], 2)
-
     def test_draft_save_preserves_rule_reference_and_spec_total(self) -> None:
         project_id = self._create_project(recognition_completed=True)
         xlsx_path = _build_xlsx(
             Path(self.temp_dir.name) / "事实表.xlsx",
             [("招标编号", "招标文件/招标公告"), ("总装机容量", "项目定制/工程量清单")],
         )
-        self.assertEqual(self._upload_specs(project_id, xlsx_path).status_code, 200)
+        self.assertEqual(self._upload_specs(xlsx_path).status_code, 200)
         built = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(built.status_code, 200, built.text)
 

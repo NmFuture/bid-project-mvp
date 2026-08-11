@@ -447,8 +447,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         with (
             patch.object(
                 fact_table_module,
-                "resolve_project_specs",
-                return_value=(self._CURRENT_SPECS, {"source": "project", "ruleId": "fsr-current"}),
+                "resolve_fact_specs",
+                return_value=(self._CURRENT_SPECS, {"source": "global", "ruleId": "fsr-current"}),
             ),
             patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
         ):
@@ -509,8 +509,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         with (
             patch.object(
                 fact_table_module,
-                "resolve_project_specs",
-                return_value=(specs, {"source": "project", "ruleId": "fsr-current"}),
+                "resolve_fact_specs",
+                return_value=(specs, {"source": "global", "ruleId": "fsr-current"}),
             ),
             patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
         ):
@@ -534,8 +534,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertNotIn("旧规则字段", [field["label"] for field in table["fields"]])
         self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
 
-    def test_build_falls_back_to_global_specs_when_project_not_uploaded(self) -> None:
-        """项目未上传清单时以全局默认清单为骨架。"""
+    def test_build_uses_global_specs_for_every_project(self) -> None:
+        """清单全局唯一：任何项目都以全局清单为骨架，不需要项目自己上传。"""
         project = {"id": "P-GLOBAL", "name": "全局清单项目", "parse_result": {}}
         table = build_project_fact_table(project, {})
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
@@ -543,12 +543,12 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertEqual(table["summary"]["specTotal"], len(load_specs()))
 
     def test_build_keeps_union_behavior_when_no_specs_available(self) -> None:
-        """极端兜底：项目未上传且全局清单加载失败，维持来源并集行为并记 warning。"""
+        """极端兜底：全局清单尚未上传或加载失败，维持来源并集行为并记 warning。"""
         project = {"id": "P-NOSPEC", "name": "无清单项目", "parse_result": {}}
         with patch.object(
             fact_table_module,
-            "resolve_project_specs",
-            return_value=([], {"source": "default"}),
+            "resolve_fact_specs",
+            return_value=([], {"source": "global"}),
         ):
             with self.assertLogs(fact_table_module.logger, level="WARNING"):
                 table = build_project_fact_table(project, {})

@@ -21,7 +21,7 @@ from app.services.technical_fact_field_specs import (
     fillable_specs,
     spec_category,
 )
-from app.services.technical_fact_spec_versions import fact_specs_ref, resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model, project_turbine_models
 
@@ -413,8 +413,7 @@ def reconcile_fact_fields_with_specs(
     - 未匹配到的 spec 生成"未提取"骨架字段，保证清单字段在事实表中齐全。
     - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
     - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
-    - specs 为 None 时回退全局 fillable_specs()；项目构建链路显式传项目级清单
-      （用户上传的事实表 Excel 解析结果）。
+    - specs 为 None 时回退 fillable_specs()（全局清单）；构建链路显式传已解析的 specs。
     """
     existing_by_key = existing_by_key or {}
     matched_field_keys: set[str] = set()
@@ -529,8 +528,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     # 用于把这些行按机型分组置顶，并让它们绕过清单骨架过滤（多机型行不在清单里）。
     turbine_group_by_key: dict[str, tuple[int, int]] = {}
     turbine_label_by_key: dict[str, str] = {}
-    # 任务启动时固化规则快照（R06-B04-02）：本项目绑定版本优先，无绑定回落系统默认清单
-    project_specs, fact_specs_meta = resolve_project_specs(gap_state)
+    # 清单全局唯一（规则页上传），所有项目同一份；这里把生效版本固化进产物做审计
+    project_specs, fact_specs_meta = resolve_fact_specs()
     # 换了新 Excel（规则版本变更）视作从头来：连人工值一起丢弃。清单换掉后字段本就
     # 可能对不上号，继承旧值只会让上一版的结论混进新清单。同一份 Excel 刷新不受影响。
     existing_rule_id = str(

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 """技术标项目事实表字段清单 xlsx → spec JSON 的解析核心。
 
-Docker 部署只 COPY app/，scripts/ 不是运行时可依赖的包路径，因此解析逻辑放在
-app 包内：设置页上传接口（app/api/routes/settings.py）与
-scripts/import_technical_fact_specs.py CLI 共用本模块。
+清单只有全局一份，由素材库「规则」tab 和设置页上传，两个入口共用本模块解析。
 
 清单列（Sheet1，首行表头）：
     序号 / 待填写文件 / 原占位符位置 / 实际要填写的字段 / 必要说明 / 复核 / 来源文件

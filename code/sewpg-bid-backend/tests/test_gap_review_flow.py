@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 from docx import Document
 from fastapi.testclient import TestClient
-import openpyxl
 
 from app.main import app
 from app.core.config import settings
@@ -21,7 +20,6 @@ from app.services.technical_gap_domain import aggregate_technical_gap_fill_quali
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
 from app.services.technical_fact_field_specs import fillable_specs
-from app.services.technical_fact_spec_import import EXPECTED_HEADER
 from app.services.workspace_artifacts import technical_workspace_dir
 
 
@@ -1110,44 +1108,6 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertEqual(len(manual_fields), 1)
         self.assertEqual(manual_fields[0]["value"], "张三")
         self.assertEqual(manual_fields[0]["status"], "confirmed")
-
-    def test_fact_specs_upload_accepts_xlsx(self) -> None:
-        """R06-B07-09：项目级实时表上传 .xlsx 成功用例。"""
-        project_id = self._create_project_with_confirmed_outline()
-        xlsx_path = Path(self.temp_dir.name) / "实时表.xlsx"
-        workbook = openpyxl.Workbook()
-        sheet = workbook.active
-        sheet.append(EXPECTED_HEADER)
-        for index in range(1, 4):
-            sheet.append([index, "招标文件-技术规范书", "第一章 1.1", f"上传字段{index}", "说明", "", "招标文件/技术规范书"])
-        workbook.save(xlsx_path)
-
-        with xlsx_path.open("rb") as handle:
-            upload_response = self.client.post(
-                f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
-                files={"file": ("实时表.xlsx", handle, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-            )
-        self.assertEqual(upload_response.status_code, 200, upload_response.text)
-        self.assertEqual(upload_response.json()["specTotal"], 3)
-
-        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
-        self.assertEqual(facts_response.status_code, 200, facts_response.text)
-        self.assertTrue(facts_response.json()["specsImported"])
-        self.assertEqual(facts_response.json()["specTotal"], 3)
-
-    def test_fact_specs_upload_rejects_xls(self) -> None:
-        """R06-B07-09：.xls 与前后端规则一致地被 400 拒绝，且不写入项目清单。"""
-        project_id = self._create_project_with_confirmed_outline()
-        upload_response = self.client.post(
-            f"/api/technical/projects/{project_id}/gaps/facts/specs-upload",
-            files={"file": ("实时表.xls", b"not a real xls", "application/vnd.ms-excel")},
-        )
-        self.assertEqual(upload_response.status_code, 400, upload_response.text)
-        self.assertIn(".xlsx", upload_response.json()["detail"])
-
-        facts_response = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts")
-        self.assertEqual(facts_response.status_code, 200, facts_response.text)
-        self.assertFalse(facts_response.json()["specsImported"])
 
     def test_project_fact_table_filters_noisy_parse_items_and_extracts_table_fields(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
