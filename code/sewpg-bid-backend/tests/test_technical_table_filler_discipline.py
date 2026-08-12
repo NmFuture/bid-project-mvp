@@ -59,18 +59,6 @@ class UsableValueTests(unittest.TestCase):
         self.assertFalse(filler.usable_value("项目定制"))
 
 
-class RequirementValueIsDirectResponseTests(unittest.TestCase):
-    def test_conditional_clause_is_not_a_direct_response(self) -> None:
-        # 招标人要求列里若本身是按场景分叉的门槛描述，不能直接当投标人响应值抄。
-        self.assertFalse(
-            filler.requirement_value_is_direct_response("纯钢塔：需≤125； 混塔、分片塔：需≥140")
-        )
-
-    def test_simple_requirement_still_usable_as_direct_response(self) -> None:
-        self.assertTrue(filler.requirement_value_is_direct_response("IEC IIA"))
-        self.assertTrue(filler.requirement_value_is_direct_response("60"))
-
-
 class StripNumericTrailingAnnotationTests(unittest.TestCase):
     def test_strips_descriptive_annotation_after_number(self) -> None:
         self.assertEqual(filler.strip_numeric_trailing_annotation("50（背风策略）"), "50")

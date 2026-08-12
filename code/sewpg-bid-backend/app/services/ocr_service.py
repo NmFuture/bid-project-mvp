@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 UNLIMITED_OCR_MODEL_MARKER = "unlimited-ocr"
 
-_OCR_MAX_CONCURRENT = 8
+_OCR_MAX_CONCURRENT = settings.ocr_max_concurrent
 _OCR_MAX_RETRIES = 2
 _OCR_WORKER_IDLE_SLEEP = 1.0
 _OCR_WAIT_POLL_INTERVAL = 0.5
@@ -820,7 +820,7 @@ class OcrService:
         total_pages = len(document)
         if _is_unlimited_ocr_config(config):
             # 长 PDF 按批处理，避免单请求塞入过多图片导致 token/超时问题
-            batch_size = 10
+            batch_size = settings.ocr_pdf_batch_size
             texts: list[str] = []
             raw_pages: list[dict[str, Any]] = []
             for batch_start in range(0, total_pages, batch_size):

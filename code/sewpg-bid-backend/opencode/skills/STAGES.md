@@ -7,7 +7,7 @@
 | S0/S1 解析 | bid-tech-tender-structured-parser | `s1parse` | `s1_parse_manifest.json` |
 | S1 模板与目录 | bid-tech-outline-generator | `s2outline`（兼容 `s2toc`） | `s2_toc_workdir` |
 | S3 缺口处理（识别） | bid-tech-gap-planner | `s4gap` | `s4_gap_workdir` |
-| S3 缺口处理（空副表填写） | bid-tech-table-filler | `s4fill` | `s4_gap_workdir/ai_fill/<gapId>` |
+| S3 缺口处理（空副表填写） | bid-tech-table-filler | `s4fill-prepare` / `s4fill-apply`（LLM 判断为唯一模式） | `s4_gap_workdir/ai_fill/<gapId>` |
 | S3 缺口处理（待填写 Word） | bid-tech-word-placeholder-filler | `s4wordfill` | `s4_gap_workdir/ai_fill/<gapId>` |
 | S3 缺口处理（事实表维护） | bid-tech-fact-curator | `factcurate` | `s4_gap_workdir/fact_curate` |
 | S4 生成标书（正文组装） | bid-tech-assembler | `run_from_manifest.py` | `s7_assembly_workdir` |
@@ -19,5 +19,6 @@
 注意事项：
 
 - 用户侧没有 S2 阶段；`s2/s4/s5/s7` 等前缀只是历史工作目录编号，与用户侧 S1/S3/S4 不对应。
+- S4 链路顺序固定为：正文组装 → 图表题注编号 → 格式清洗 → 评分索引交叉引用。题注编号是纯规则脚本、不经 agent，所以不是 skill，实现在 `app/document_processing/technical_document/captioning/`，不在本表内。题注必须先于格式清洗（清洗会把素材图名提升成 Heading，题注就改写不到了），交叉引用必须最后（前面每一步都改分页）。
 - 后端代码（`app/services/`）与产物路径仍使用历史编号；改动这些名字属于跨线重构，须单独立项评审。
 - 商务标（bid-business-*）如需同样映射，在本文件追加第二张表。

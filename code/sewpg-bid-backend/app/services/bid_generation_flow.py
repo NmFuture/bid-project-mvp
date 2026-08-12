@@ -404,6 +404,70 @@ def _handle_fill_progress(
         )
         return
 
+    if stage == "calling_caption_number":
+        _update_fill_generation(
+            project_id,
+            percentage=87,
+            summary="正在为正文里的图片和表格逐章编号并加题注。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message="已进入图表题注编号阶段，正在按章为表格加「表N-M」、为图片加「图N-M」。",
+            event_step="caption_number",
+            opencode_output={
+                "execution": {
+                    "engine": "python",
+                    "pipeline": "technical-document-assembly-cleaning",
+                    "stage": "caption_number",
+                    "status": "running",
+                    "artifacts": {"manifestPath": str(meta.get("manifestPath") or "")},
+                }
+            },
+        )
+        return
+
+    if stage == "caption_number_completed":
+        summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
+        caption_count = int(summary.get("captionCount") or 0)
+        table_count = int(summary.get("tableCount") or 0)
+        figure_count = int(summary.get("figureCount") or 0)
+        inserted = int(summary.get("insertedCount") or 0)
+        _update_fill_generation(
+            project_id,
+            percentage=88,
+            summary=f"图表题注编号完成，共 {caption_count} 条（表 {table_count} / 图 {figure_count}）。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=(
+                f"图表题注编号完成：共 {caption_count} 条（表 {table_count} / 图 {figure_count}），"
+                f"其中新插入题注 {inserted} 条，编号为 SEQ 域，在 Word 里全选后按 F9 可重排。"
+            ),
+            event_level="success",
+            event_step="caption_number_done",
+        )
+        return
+
+    if stage == "caption_number_skipped":
+        _update_fill_generation(
+            project_id,
+            percentage=88,
+            summary="正文中没有需要编号的图片或表格，已跳过图表题注编号。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message="已跳过图表题注编号：正文中没有识别到需要编号的图片或表格。",
+            event_level="warning",
+            event_step="caption_number_skipped",
+        )
+        return
+
+    if stage == "caption_number_failed":
+        _update_fill_generation(
+            project_id,
+            percentage=88,
+            summary="图表题注编号失败，已沿用未编号的组装原稿继续输出。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=f"图表题注编号失败，已沿用组装原稿：{meta.get('error') or '未知错误'}",
+            event_level="warning",
+            event_step="caption_number_failed",
+        )
+        return
+
     if stage == "calling_format_cleaner":
         manifest_path = str(meta.get("manifestPath") or "")
         cleaner_skill = str(

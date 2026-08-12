@@ -248,6 +248,8 @@ function MaterialCandidateCard({
   onAiFill,
   aiFillBusy,
   aiFillCompleted,
+  aiFillDisabled,
+  aiFillDisabledReason,
   leading,
   coverageLabel,
   onCardClick,
@@ -328,8 +330,8 @@ function MaterialCandidateCard({
                 event.stopPropagation()
                 onAiFill(material)
               }}
-              disabled={busy}
-              title={aiFillCompleted ? '已完成，可再次发起 AI 填写' : ''}
+              disabled={busy || aiFillDisabled}
+              title={aiFillDisabled ? (aiFillDisabledReason || '') : aiFillCompleted ? '已完成，可再次发起 AI 填写' : ''}
               size="sm"
               variant="secondary"
             >
@@ -1059,6 +1061,7 @@ function AiFillReferenceModal({
   onClose,
   onUpload,
   uploadBusy,
+  confirmBlockReason,
 }) {
   if (!open) return null
   const usesTenderDocument = Boolean(tenderDocumentState?.required)
@@ -1185,7 +1188,13 @@ function AiFillReferenceModal({
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
             <Button type="button" onClick={onClose} disabled={busy} variant="quiet">取消</Button>
-            <Button type="button" onClick={onConfirm} disabled={busy || missingTenderDocument} variant="primary">
+            <Button
+              type="button"
+              onClick={onConfirm}
+              disabled={busy || missingTenderDocument || Boolean(confirmBlockReason)}
+              title={confirmBlockReason || ''}
+              variant="primary"
+            >
               {busy ? '处理中...' : missingTenderDocument ? '缺少招标文件' : '开始 AI 填写'}
             </Button>
           </div>
@@ -1692,6 +1701,9 @@ export default function TechnicalGapRecognition({ showToast }) {
     onAiFill: selectedFillTask && !frozenSelected ? () => startAiFill(selectedFillTask) : null,
     aiFillBusy,
     aiFillCompleted: selectedAiFillCompleted,
+    // 一键填写进行中禁用所有单条填写入口（与后端 409 互斥一致）
+    aiFillDisabled: bodyFillRunning,
+    aiFillDisabledReason: '一键填写进行中，暂不可单条填写',
   })
   // 合并清单里由「待填写-」模板选用而来的产物，继续提供 AI填写 入口（对应各自填写任务）。
   const fillTaskForMergeArtifact = (artifact) => {
@@ -2425,6 +2437,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   // task 缺省为首个填写任务；多空表目录项（如 附表F.5 双任务）由各自素材卡传入对应任务。
   const handleAiFill = async (task = selectedFillTask) => {
     if (!selected || !task) return null
+    if (bodyFillRunning) {
+      showToast?.('一键填写进行中，暂不可单条填写', 'error')
+      return null
+    }
     if (!factConfirmed && !(await ensureFactTableReady())) {
       return null
     }
@@ -2468,6 +2484,11 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 定位也不提供取值，点了直接跑；附表仍要先选参考素材，保持原有弹窗。
   const startAiFill = (task) => {
     if (!task) return
+    // 一键填写进行中禁止单条填写（后端同样返回 409，这里提前拦截并提示原因）
+    if (bodyFillRunning) {
+      showToast?.('一键填写进行中，暂不可单条填写', 'error')
+      return
+    }
     if (String(task?.skill || '') === TECHNICAL_WORD_FILL_SKILL) {
       handleAiFill(task)
       return
@@ -3170,8 +3191,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                                           <Button
                                             type="button"
                                             onClick={() => startAiFill(task)}
-                                            disabled={Boolean(busyAction)}
-                                            title={completed ? '已完成，可再次发起 AI 填写' : ''}
+                                            disabled={Boolean(busyAction) || bodyFillRunning}
+                                            title={bodyFillRunning ? '一键填写进行中，暂不可单条填写' : completed ? '已完成，可再次发起 AI 填写' : ''}
                                             size="sm"
                                             variant="secondary"
                                           >
@@ -3201,6 +3222,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                                   onAiFill={() => startAiFill(entry.task)}
                                   aiFillBusy={aiFillBusy}
                                   aiFillCompleted={String(entry.task?.status || '') === 'completed'}
+                                  aiFillDisabled={bodyFillRunning}
+                                  aiFillDisabledReason="一键填写进行中，暂不可单条填写"
                                 />
                               ))}
                             </div>
@@ -3507,6 +3530,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         onPreview={handlePreviewMaterial}
         onUpload={handleAiFillUpload}
         uploadBusy={aiFillUploadBusy}
+        confirmBlockReason={bodyFillRunning ? '一键填写进行中，暂不可单条填写' : ''}
         onConfirm={() => {
           const task = aiFillModalTask
           setAiFillModalTask(null)

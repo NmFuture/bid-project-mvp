@@ -11,6 +11,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from app.core.config import BASE_DIR, settings
 from app.services.identity import build_project_material_scope
@@ -34,7 +35,6 @@ TABLE_FILL_SCHEMA_VERSION = "bid-tech-table-fill-v1"
 WORD_FILL_SCHEMA_VERSION = "bid-tech-word-placeholder-fill-v1"
 TECHNICAL_TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
 TECHNICAL_WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
-TABLE_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_TABLE_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
 WORD_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_WORD_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
 
 
@@ -258,6 +258,51 @@ def _appendix_task_for_fill(item: dict[str, Any], task: dict[str, Any]) -> dict[
     return dict(appendix_tasks[0]) if appendix_tasks else {}
 
 
+class AppendixSourceNotReadyError(RuntimeError):
+    """附表来源规则未满足（manual_required/missing_source）：拒绝自动填写，提示待补资料。"""
+
+    def __init__(self, reason: str, *, routing_status: str):
+        super().__init__(reason)
+        self.routing_status = routing_status
+        self.code = f"APPENDIX_SOURCE_{routing_status.upper() or 'NOT_READY'}"
+
+
+def effective_source_routing(item: dict[str, Any], appendix_task: dict[str, Any]) -> dict[str, Any]:
+    """附表来源规则：任务级优先，目录项级兜底（与矩阵写入位置一致）。"""
+    for carrier in (appendix_task, item):
+        routing = carrier.get("sourceRouting") if isinstance(carrier.get("sourceRouting"), dict) else {}
+        if routing.get("source") == "appendix_source_matrix":
+            return routing
+    return {}
+
+
+def source_routing_fill_block_reason(routing: dict[str, Any]) -> str:
+    """manual_required / missing_source 的阻断原因；可自动填写返回空串。"""
+    status = str(routing.get("status") or "")
+    if status == "manual_required":
+        return "附表来源规则要求人工收集资料（manual_required），请先补充素材后再发起填写。"
+    if status == "missing_source":
+        return "附表来源规则未匹配到可用来源（missing_source），请先补充素材或完善来源规则。"
+    return ""
+
+
+def source_routing_unmet_reason(routing: dict[str, Any]) -> str:
+    """质量门禁口径：在阻断口径之上，matched 但命中为空同样判未满足。"""
+    reason = source_routing_fill_block_reason(routing)
+    if reason:
+        return reason
+    if str(routing.get("status") or "") == "matched" and not _object_items(routing.get("matchedMaterials")):
+        return "附表来源规则状态为 matched，但规则命中素材为空，请补充素材后重填。"
+    return ""
+
+
+def fill_task_source_block_reason(item: dict[str, Any], task: dict[str, Any]) -> str:
+    """该填写任务因附表来源规则待补资料时的原因；可填写（含正文任务）返回空串。"""
+    if str(task.get("skill") or "") == TECHNICAL_WORD_FILL_SKILL_NAME:
+        return ""
+    return source_routing_fill_block_reason(effective_source_routing(item, _appendix_task_for_fill(item, task)))
+
+
 def _project_tender_documents_for_fill(
     project: dict[str, Any],
     appendix_task: dict[str, Any],
@@ -322,23 +367,16 @@ def _selected_reference_material_ids(
     if "referenceMaterialIds" in data:
         return _string_items(data.get("referenceMaterialIds"))
 
-    has_source_routing = (
-        isinstance(appendix_task.get("sourceRouting"), dict)
-        and appendix_task["sourceRouting"].get("source") == "appendix_source_matrix"
-    ) or (
-        isinstance(item.get("sourceRouting"), dict)
-        and item["sourceRouting"].get("source") == "appendix_source_matrix"
-    )
-    if has_source_routing:
-        routed = _string_items([
+    if effective_source_routing(item, appendix_task):
+        # 有来源规则时严格执行：只用规则命中的素材，命中为空就是空，
+        # 禁止回退目录项通用 matchedMaterials（否则会绕过规则填错来源）。
+        return _string_items([
             _material_key(material)
             for material in (
                 _object_items(appendix_task.get("recommendedMaterials"))
                 + _object_items(item.get("sourceRoutedMaterials"))
             )
         ])
-        if routed:
-            return routed
 
     matched = [_material_key(material) for material in _object_items(item.get("matchedMaterials"))]
     matched = [item for item in matched if item]
@@ -358,10 +396,16 @@ def _reference_materials_for_fill(
     data: dict[str, Any],
     selected_ids: list[str],
 ) -> list[dict[str, Any]]:
+    # 有来源规则时 context 同样不混入通用 matched/candidate 素材，
+    # 只用规则命中与调用方显式指定的素材做 id → 素材详情解析。
+    generic_pools = (
+        []
+        if effective_source_routing(item, appendix_task)
+        else _object_items(item.get("matchedMaterials")) + _object_items(item.get("candidateMaterials"))
+    )
     context = _dedupe_material_summaries(
         _object_items(data.get("referenceMaterials"))
-        + _object_items(item.get("matchedMaterials"))
-        + _object_items(item.get("candidateMaterials"))
+        + generic_pools
         + _object_items(item.get("sourceRoutedMaterials"))
         + _object_items(appendix_task.get("recommendedMaterials"))
         + [
@@ -1024,22 +1068,6 @@ def _run_local_skill_runner(runner: Path, manifest_path: Path, schema_version: s
     return payload
 
 
-def _build_table_filler_prompt(manifest_path: Path) -> str:
-    return f"""
-Use the {TECHNICAL_TABLE_FILL_SKILL_NAME} skill.
-
-你现在在做技术标缺口项 AI 填写。后端已经准备好 manifest，其中包含待填写空表/Word、人工指定的参考素材、解析字段和输出路径。
-
-manifest：{manifest_path}
-
-请直接调用一次 Bash 工具执行下面命令，Bash 工具 timeout 必须设置为 1800000 毫秒或更高。不要先检查工作目录，不要先执行 pwd/ls/cat/read/glob，不要拆成多条命令，不要改写命令或路径：
-
-s4fill {manifest_path}
-
-只返回命令 stdout 中的小型 JSON，不要返回解释文字，不要使用 Markdown 代码块。
-""".strip()
-
-
 def _build_table_filler_llm_prompt(manifest_path: Path) -> str:
     return f"""
 Use the {TECHNICAL_TABLE_FILL_SKILL_NAME} skill.
@@ -1073,17 +1101,11 @@ def _run_table_filler_llm(
 
     不传 early_tool_command——「脚本完成/文件落地」不代表终稿，提前收口会回收
     中间态并把会话孤儿化；等会话自然结束（对齐 factcurate 不提前返回的先例）。
-    会话或回收校验失败时显式回退纯脚本路径，并在 opencodeOutput 标注
-    fallbackReason，不再静默。
+    LLM 判断是附表填写的唯一模式，会话失败或产物缺失时显式抛出，由上层记录
+    失败原因并标红目录项，不再回退任何脚本路径。
     """
     prompt = _build_table_filler_llm_prompt(manifest_path)
     timeout_sec = settings.s4_llm_fill_timeout_sec or settings.opencode_timeout_sec
-
-    def fallback(reason: str) -> dict[str, Any]:
-        result = _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
-        opencode_output = result.get("opencodeOutput") if isinstance(result.get("opencodeOutput"), dict) else {}
-        result["opencodeOutput"] = {**opencode_output, "fallbackReason": reason}
-        return result
 
     try:
         result = OpencodeClient(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
@@ -1096,11 +1118,11 @@ def _run_table_filler_llm(
             early_tool_command="",
         )
     except Exception as exc:
-        return fallback(f"LLM 填写会话失败，回退纯脚本路径：{exc}")
+        raise RuntimeError(f"LLM 附表填写会话失败：{exc}") from exc
     # 回收校验：stdout 摘要过 _extract_table_fill_json 后，outputFile 必须真实存在
     output_file = str(result.get("outputFile") or "").strip()
     if not output_file or not Path(output_file).exists():
-        return fallback(f"LLM 填写未产出有效输出文件（outputFile={output_file or '缺失'}），回退纯脚本路径。")
+        raise RuntimeError(f"LLM 附表填写未产出有效输出文件（outputFile={output_file or '缺失'}）。")
     return result
 
 
@@ -1108,21 +1130,8 @@ def run_technical_table_filler_skill(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    if settings.s4_table_fill_mode == "llm":
-        return _run_table_filler_llm(manifest_path, progress_callback)
-    prompt = _build_table_filler_prompt(manifest_path)
-    try:
-        return OpencodeClient().run_bid_tech_table_filler_with_trace(
-            prompt,
-            stream_callback=(
-                (lambda details: progress_callback("table_filler_delta", details))
-                if progress_callback
-                else None
-            ),
-            early_tool_command="s4fill",
-        )
-    except Exception:
-        return _run_local_skill_runner(TABLE_FILL_RUNNER, manifest_path, TABLE_FILL_SCHEMA_VERSION)
+    """附表填写只走 LLM 判断模式；失败直接抛出，由上层记 fillError 显式暴露。"""
+    return _run_table_filler_llm(manifest_path, progress_callback)
 
 
 def run_technical_word_placeholder_filler_skill(manifest_path: Path) -> dict[str, Any]:
@@ -1169,7 +1178,12 @@ def _merge_fill_sidecar_report(result: dict[str, Any], output_file: Path) -> dic
     return merged
 
 
-def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -> dict[str, Any]:
+def _build_fill_quality_report(
+    result: dict[str, Any],
+    *,
+    output_exists: bool,
+    routing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     report = result.get("fillReport") if isinstance(result.get("fillReport"), dict) else {}
     unfilled_fields = result.get("unfilledFields") if isinstance(result.get("unfilledFields"), list) else []
     evidence_refs = result.get("evidenceRefs") if isinstance(result.get("evidenceRefs"), list) else []
@@ -1232,12 +1246,19 @@ def _build_fill_quality_report(result: dict[str, Any], *, output_exists: bool) -
         and failed_target_count == 0
         and output_exists
     ) else "needs_review"
+    # 来源规则未满足（待补资料，或 matched 但命中为空）时一律不通过，
+    # 避免产物进入 s7Ready（下游按 FILL_QUALITY_ACCEPTED_STATUSES 判定）。
+    source_unmet = source_routing_unmet_reason(routing) if routing else ""
+    if source_unmet:
+        status = "needs_review"
     source_coverage = report.get("sourceCoverage") if isinstance(report.get("sourceCoverage"), dict) else None
     return {
         "schemaVersion": "bid-fill-quality-report-v1",
         "status": status,
         "noFillRequired": no_fill_required,
         "sourceCoverage": source_coverage,
+        "sourceRuleSatisfied": not source_unmet,
+        "sourceRuleMessage": source_unmet,
         "coverageRate": round(coverage_rate, 4),
         "correctnessRate": round(correctness_rate, 4),
         "completenessRate": round(completeness_rate, 4),
@@ -1325,6 +1346,7 @@ def _build_ai_fill_artifacts(
     tender_documents: list[dict[str, Any]],
     manifest_path: Path,
     s7_ready: bool,
+    source_routing: dict[str, Any] | None = None,
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> list[dict[str, Any]]:
@@ -1336,7 +1358,7 @@ def _build_ai_fill_artifacts(
         target_report = target_result.get("fillReport") if isinstance(target_result.get("fillReport"), dict) else {}
         artifact_id = base_artifact_id if batch_count == 1 else f"{base_artifact_id}-{index:03d}"
         title = str(target_report.get("title") or item_title or output_file.stem)
-        quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists())
+        quality_report = _build_fill_quality_report(target_result, output_exists=output_file.exists(), routing=source_routing)
         artifact_s7_ready = s7_ready and quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES
         artifacts.append(
             {
@@ -1508,6 +1530,15 @@ def compute_technical_ai_fill(
     # 正文填写只走清单定位（占位符原文 → 事实表字段），素材既不参与定位也不提供取值，
     # 因此不备素材、不跑 OCR、不起 agent；附表填写仍按原路准备素材。
     is_word_fill = skill_name == TECHNICAL_WORD_FILL_SKILL_NAME
+    # 附表来源规则（#228）：manual_required / missing_source 拒绝自动填写，明确提示待补资料。
+    # 单条与一键填写都汇聚到这里，拦截只需在这一层做一次。
+    source_routing = {} if is_word_fill else effective_source_routing(item, appendix_task)
+    if source_routing and not isinstance(appendix_task.get("sourceRouting"), dict):
+        # 规则只挂在目录项级时回填到任务副本，招标原文与清单都按同一份规则走
+        appendix_task = {**appendix_task, "sourceRouting": source_routing}
+    block_reason = source_routing_fill_block_reason(source_routing)
+    if block_reason:
+        raise AppendixSourceNotReadyError(block_reason, routing_status=str(source_routing.get("status") or ""))
     if is_word_fill:
         require_spec_driven_fact_table(project_fact_table)
     selected_reference_ids = [] if is_word_fill else _selected_reference_material_ids(item, appendix_task, data)
@@ -1534,10 +1565,12 @@ def compute_technical_ai_fill(
     )
     parse_fields = _parse_fields_for_fill(appendix_task, task, data)
     tender_documents = _project_tender_documents_for_fill(project, appendix_task)
-    source_routing = appendix_task.get("sourceRouting") if isinstance(appendix_task.get("sourceRouting"), dict) else {}
     if source_routing.get("useTenderParseFields") and not tender_documents:
         raise RuntimeError("附表填写规则要求读取招标文件，但项目当前没有可读取的原始文件或全文解析结果，请重新解析招标文件。")
-    work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id
+    # 每次填写用独立运行目录（时间戳 + 短 uuid），同 gap 并发/重跑的 manifest 与输出互不覆盖；
+    # 共享素材缓存 _material_index_cache 刻意跨任务复用，保持不动。
+    run_id = f"{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+    work_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / gap_id / run_id
     work_dir.mkdir(parents=True, exist_ok=True)
     shared_material_cache_dir = _project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_material_index_cache"
     # PDF 素材（认证证书等）三路都做 OCR sidecar：证书 PDF 通常只经 materialIndex
@@ -1638,6 +1671,7 @@ def compute_technical_ai_fill(
     quality_report = _build_fill_quality_report(
         result,
         output_exists=bool(output_files) and all(path.exists() for path in output_files),
+        routing=source_routing,
     )
     created_at = _now_iso()
     operator = str(data.get("operator") or "当前用户")
@@ -1659,6 +1693,7 @@ def compute_technical_ai_fill(
         tender_documents=tender_documents,
         manifest_path=manifest_path,
         s7_ready=quality_report["status"] in FILL_QUALITY_ACCEPTED_STATUSES,
+        source_routing=source_routing,
         browser_base_url=browser_base_url,
         onlyoffice_base_url=onlyoffice_base_url,
     )

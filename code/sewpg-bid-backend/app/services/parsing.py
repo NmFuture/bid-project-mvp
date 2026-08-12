@@ -7390,7 +7390,9 @@ def parse_tender_documents(
             # finalize 重写结构化结果时也不含 appendices，附表是 finalize 之后才从内存合并回去的。
             # 所以放到后台线程与 prepare + 分片会话同时跑，把这段本地耗时藏进会话等待里。
             # 重叠期间不上报附表阶段进度：两个阶段同时写进度会让阶段标签来回跳。
-            appendix_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s1-appendix")
+            appendix_pool = ThreadPoolExecutor(
+                max_workers=settings.s1_appendix_workers, thread_name_prefix="s1-appendix"
+            )
             appendices_future = appendix_pool.submit(extract_appendices, None)
         else:
             appendices = extract_appendices(progress_callback)

@@ -337,3 +337,33 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-backend/tests/test_technical_body_fill_job.py`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-12 06:45:30 post-commit dea12a3
+
+提交摘要：refactor(性能): 六个并发参数由硬编码改为环境变量可配
+
+变更文件：
+
+- `code/docker-compose.yml`
+- `code/sewpg-bid-backend/app/core/config.py`
+- `code/sewpg-bid-backend/app/services/business_wiki_generation.py`
+- `code/sewpg-bid-backend/app/services/ocr_service.py`
+- `code/sewpg-bid-backend/app/services/outline_generation.py`
+- `code/sewpg-bid-backend/app/services/parsing.py`
+- `code/sewpg-bid-backend/app/services/technical_wiki_preview_generation.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-12 07:11:19 post-commit fe0d7f3
+
+提交摘要：feat(监控): 任务耗时统计覆盖全部任务类型并关联前端 traceId
+
+变更文件：
+
+- `code/progress.md`
+- `code/sewpg-bid-backend/app/main.py`
+- `code/sewpg-bid-backend/app/services/job_queue.py`
+- `code/sewpg-bid-backend/app/services/job_timing.py`
+- `code/sewpg-bid-backend/app/workers/redis_worker.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

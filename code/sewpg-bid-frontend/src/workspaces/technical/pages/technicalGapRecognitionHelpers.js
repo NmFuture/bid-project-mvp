@@ -57,6 +57,15 @@ export const technicalGenerationPresentation = (status) => {
     ? assembly.formatClean
     : (status?.formatClean && typeof status.formatClean === 'object' ? status.formatClean : {})
   const formatCleanFailed = formatClean.status === 'failed'
+  const captionNumber = assembly.captionNumber && typeof assembly.captionNumber === 'object'
+    ? assembly.captionNumber
+    : {}
+  let captionNumberMessage = ''
+  if (captionNumber.status === 'failed') {
+    captionNumberMessage = '图表题注编号失败，当前使用未编号的组装稿'
+  } else if (captionNumber.status === 'skipped') {
+    captionNumberMessage = '正文中没有需要编号的图片或表格，已跳过图表题注编号'
+  }
   const scoreIndexXref = assembly.scoreIndexXref && typeof assembly.scoreIndexXref === 'object'
     ? assembly.scoreIndexXref
     : {}
@@ -76,6 +85,7 @@ export const technicalGenerationPresentation = (status) => {
     warningCount,
     formatCleanFailed,
     formatCleanMessage: formatCleanFailed ? '格式清洗失败，当前使用组装稿' : '',
+    captionNumberMessage,
     scoreIndexXrefMessage,
   }
 }

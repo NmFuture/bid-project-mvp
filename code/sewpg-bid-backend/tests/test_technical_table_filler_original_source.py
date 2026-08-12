@@ -87,20 +87,6 @@ class AddSourceFromMaterialOriginalTests(unittest.TestCase):
         # 清洗稿不丢：整表移植等按 Word 表格工作的分支仍可回退使用
         self.assertEqual(source.cleaned_docx_path, cleaned.resolve())
 
-    def test_quote_source_matched_after_original_landed(self) -> None:
-        cleaned = _write_docx(self.base / "RAW-0136-无价格-…报价文件.docx")
-        original = _write_xlsx(self.base / "RAW-0136-无价格-…报价文件.xlsx")
-        sources = self._add(
-            {
-                "id": "RAW-0136",
-                "name": "无价格-标段一：…报价文件.xlsx",
-                "path": str(cleaned),
-                "originalPath": str(original),
-            }
-        )
-        # 报价转写器要求 kind=xlsx 且名含"报价文件"，此前恒为 None 导致 B 簇全空
-        self.assertIsNotNone(filler.quote_xlsx_source(sources))
-
     def test_missing_original_keeps_cleaned_docx_behaviour(self) -> None:
         cleaned = _write_docx(self.base / "RAW-0161-风资源评估报告.docx")
         sources = self._add({"id": "RAW-0161", "name": "风资源评估报告.docx", "path": str(cleaned)})
@@ -137,38 +123,6 @@ class AddSourceFromMaterialOriginalTests(unittest.TestCase):
             }
         )
         self.assertEqual(sources[0].kind, "docx")
-
-
-class SourceDocxPathTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.base = Path(self._tmp.name)
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def test_docx_source_uses_itself(self) -> None:
-        path = _write_docx(self.base / "a.docx")
-        source = filler.Source(name="a", path=path, kind="docx", priority=70, route="test")
-        self.assertEqual(filler.source_docx_path(source), path)
-
-    def test_xlsx_source_falls_back_to_cleaned_docx(self) -> None:
-        cleaned = _write_docx(self.base / "b.docx")
-        original = _write_xlsx(self.base / "b.xlsx")
-        source = filler.Source(
-            name="b",
-            path=original,
-            kind="xlsx",
-            priority=70,
-            route="test",
-            cleaned_docx_path=cleaned,
-        )
-        self.assertEqual(filler.source_docx_path(source), cleaned)
-
-    def test_xlsx_source_without_cleaned_docx_is_none(self) -> None:
-        original = _write_xlsx(self.base / "c.xlsx")
-        source = filler.Source(name="c", path=original, kind="xlsx", priority=70, route="test")
-        self.assertIsNone(filler.source_docx_path(source))
 
 
 if __name__ == "__main__":

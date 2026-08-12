@@ -5,6 +5,7 @@ import logging
 import queue
 import threading
 from contextlib import closing
+from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from typing import Any
 
@@ -83,6 +84,24 @@ def _db_text(value: Any, max_length: int) -> str:
 
 def _timing_key(run_id: str, suffix: str) -> str:
     return f"{TIMING_KEY_PREFIX}{run_id}:{suffix}"
+
+
+# 前端每个请求都带 x-trace-id（api/index.js 在 API_ENABLE_TRACE 下设置，生产默认开），
+# 并把它连同 duration_ms 上报进 user_event_log。这里在请求作用域内接住同一个值，
+# 入队时写进 job_timings.meta.traceId，前端一次点击即可下钻到后台各任务耗时。
+_CURRENT_TRACE_ID: ContextVar[str] = ContextVar("current_trace_id", default="")
+
+
+def set_current_trace_id(value: str) -> Token[str]:
+    return _CURRENT_TRACE_ID.set(str(value or "").strip()[:100])
+
+
+def reset_current_trace_id(token: Token[str]) -> None:
+    _CURRENT_TRACE_ID.reset(token)
+
+
+def current_trace_id() -> str:
+    return _CURRENT_TRACE_ID.get()
 
 
 def record_phase(run_id: str, step: str, label: str, at: str | None = None) -> None:

@@ -11,21 +11,21 @@ allowed-tools: [Bash]
 你只能依据 manifest 与 fill_brief.json 给定的内容工作：
 
 - `blankSource` / `appendixTask`：解析阶段生成的单个空副表（Word）。
-- `referenceMaterials` / `selectedReferenceMaterials`：人工最终指定的参考素材，优先级最高。
-- `tenderDocuments`：项目招标文件全文（规则要求时给入）。
-- `materialIndex` / `recommendedMaterials`：素材索引与上游推荐，只作补充线索。
-- `projectFactTable` / `parseFields` / `projectTurbineModel`：项目事实表、招标解析字段、投标机型。
+- `factTableFields`：项目事实表（L1，取值优先级最高）；`targetFields` 里带 `preferredValue` 的字段已与事实表完成预绑定。
+- `materials`：锁定素材清单，每个素材带 `tier`——`2` = 附表填写规则命中（sourceRouting）或人工最终指定（referenceMaterials/selectedReferenceMaterials，含规则要求给入的招标文件全文）；`3` = 其他来源（素材索引/上游推荐），只作补充线索。
+- `parseFields` / `projectTurbineModel`：招标解析字段、投标机型（L3）。
 
 ## 铁律
 
-1. **素材范围锁定。** 只读 fill_brief.json `materials` 列表里的文件（路径直接用共享卷绝对路径）。禁止读取 manifest/brief 之外的任何文件，禁止重新搜索全库——前端「勾选锁定唯一素材范围」是产品裁决。
-2. **不编造。** 任何取值必须能在素材、事实表或招标解析原文中找到依据；找不到依据的格子 `action: "manual"`，脚本会写入 `[待人工补充：字段名]` 并黄色高亮，绝不硬填。
-3. **每格必须带原文证据。** 非 manual 格子的 `evidence.excerpt` 必须是来源文件的原文原句，脚本会按 excerpt 在 `sourcePath` 中逐字校验（仅忽略空白差异）；命中不了强制降级 manual 并在报告标注「证据未命中」。
-4. **值只写数值/结论本身，不写单位。** 单位由脚本按单位列口径写入；值与模板单位量纲不同时在 `unit` 里写来源单位，脚本负责换算。
-5. **机型只写英数字型号编码**（如 `EW10.0-220`），不写「上置/下置」等中文布局后缀。
-6. **要求值优先直抄。** 字段带 `requirementValue`（招标人要求值）且是明确具体值时，直接抄为响应值。
-7. **targetFieldId 逐字照抄。** plan 的 `targetFieldId` 必须与 brief `targetFields` 逐字一致，坐标（tableIndex/rowIndex/valueCol）可以不写（脚本按字段取），写了就必须一致。
-8. **一次只处理一张附表。** brief 已含全部待填字段清单，素材按需阅读，不要求一次读完所有素材。
+1. **取值来源优先级：L1 事实表 > L2 `tier: 2` 素材 > L3 `tier: 3` 来源。** `targetField` 带 `preferredValue` 的格子必须填事实表值（确需偏离要在 `reason` 里写充分理由，脚本仍会按事实表值复核）；高优先级来源有依据时禁止用低优先级来源取值。
+2. **素材范围锁定。** 只读 fill_brief.json `materials` 列表里的文件（路径直接用共享卷绝对路径）。禁止读取 manifest/brief 之外的任何文件，禁止重新搜索全库——前端「勾选锁定唯一素材范围」是产品裁决。
+3. **不编造。** 任何取值必须能在素材、事实表或招标解析原文中找到依据；找不到依据的格子 `action: "manual"`，脚本会写入 `[待人工补充：字段名]` 并黄色高亮，绝不硬填。
+4. **有文件来源的格子必须带原文证据。** 素材/招标文件路由的非 manual 格子 `evidence.excerpt` 必须是来源文件的原文原句，脚本会按 excerpt 在 `sourcePath` 中逐字校验（仅忽略空白差异）；命中不了强制降级 manual 并在报告标注「证据未命中」。无文件路由（`factTable`/`parseFields`/`projectTurbineModel`）的格子不要求 excerpt，但填的值必须与对应事实表/解析字段的值一致，不一致同样强制降级 manual。
+5. **值只写数值/结论本身，不写单位。** 单位由脚本按单位列口径写入；值与模板单位量纲不同时在 `unit` 里写来源单位，脚本负责换算。
+6. **机型只写英数字型号编码**（如 `EW10.0-220`），不写「上置/下置」等中文布局后缀。
+7. **要求值优先直抄。** 字段带 `requirementValue`（招标人要求值）且是明确具体值时，直接抄为响应值。
+8. **targetFieldId 逐字照抄。** plan 的 `targetFieldId` 必须与 brief `targetFields` 逐字一致，坐标（tableIndex/rowIndex/valueCol）可以不写（脚本按字段取），写了就必须一致。
+9. **一次只处理一张附表。** brief 已含全部待填字段清单，素材按需阅读，不要求一次读完所有素材。
 
 ## 流程
 
@@ -34,7 +34,7 @@ s4fill-prepare /data/documents/<projectId>/technical-workspace/s4_gap_workdir/ai
 ```
 
 1. 执行一次 `s4fill-prepare <manifest>`，stdout 返回 `{"briefFile": ...}`；同目录生成 `fill_brief.json`。
-2. 阅读 `fill_brief.json`：`targetFields`（待填字段+坐标+要求值+单位）、`materials`（锁定素材清单，PDF 优先读 `ocrTextPath` 的 OCR sidecar，xlsx 有 `originalPath` 原件）、`factTableFields`、`parseFields`、`projectTurbineModel`、`rules`。
+2. 阅读 `fill_brief.json`：`targetFields`（待填字段+坐标+要求值+单位，带 `preferredValue` 的字段按铁律 1 取事实表值）、`materials`（锁定素材清单，带 `tier` 取值分级；PDF 优先读 `ocrTextPath` 的 OCR sidecar，xlsx 有 `originalPath` 原件）、`factTableFields`、`parseFields`、`projectTurbineModel`、`rules`。
 3. 按需用 Bash 阅读素材原文后逐格判断取值。大文件先看 OCR sidecar 或清洗稿（`cleanedPath`）；xlsx 原件用 python 读：
 
    ```bash
@@ -65,7 +65,7 @@ s4fill-prepare /data/documents/<projectId>/technical-workspace/s4_gap_workdir/ai
         "sourceRoute": "referenceMaterial",  // 或 tenderDocument / factTable / parseFields / projectTurbineModel
         "sourcePath": "/data/documents/.../塔架与基础工程量.docx",  // factTable 等无文件路由可省
         "sheet": null, "row": null, "column": null,
-        "excerpt": "原文原句（脚本将按此在 sourcePath 中校验溯源）"
+        "excerpt": "原文原句（有文件路由脚本按此在 sourcePath 中校验；无文件路由可省，改校验值与事实表/解析字段一致）"
       },
       "reason": "为什么取这个值"
     }
@@ -80,6 +80,6 @@ s4fill-prepare /data/documents/<projectId>/technical-workspace/s4_gap_workdir/ai
 
 ## 规则细则的适用范围
 
-`references/rules.md` 的完整细则中：**结构规则依然适用且由脚本保证**——S1 越界表剔除（第二个编号不同的附表标题之后不填）、清单型一行多列写回、单位口径与换算、`[待人工补充]` 黄高亮（FFF2CC）、fill_report sidecar。词典/概念打分细则只适用于纯脚本回退路径（后端直接跑 `s4fill` 时使用），你在 LLM 模式下不需要关心匹配打分，只需按铁律取值并给出原文证据。
+`references/rules.md` 的完整细则中：**结构规则依然适用且由脚本保证**——S1 越界表剔除（第二个编号不同的附表标题之后不填）、清单型一行多列写回、单位口径与换算、`[待人工补充]` 黄高亮（FFF2CC）、fill_report sidecar。词典/概念打分只用于脚本侧的冲突降级与值守门，你不需要关心匹配打分，只需按铁律取值并给出原文证据。
 
 `requiresFill` 的正文/占位符模板不在本 Skill 范围，由 `bid-tech-word-placeholder-filler` 处理。

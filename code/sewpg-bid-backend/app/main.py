@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.auth_service import auth_service
+from app.services.job_timing import reset_current_trace_id, set_current_trace_id
 from app.services.ocr_service import ocr_service
 from app.services.system_settings import system_settings_service
 
@@ -42,6 +43,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def capture_trace_id(request: Request, call_next):
+    """把前端的 x-trace-id 放进请求作用域，入队任务时写入 job_timings.meta。
+
+    仅做上下文透传，异常一律不影响主链路。
+    """
+
+    token = set_current_trace_id(request.headers.get("x-trace-id") or "")
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_trace_id(token)
 
 
 @app.exception_handler(KeyError)
