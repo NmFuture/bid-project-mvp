@@ -6,6 +6,7 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, Request
@@ -72,10 +73,12 @@ from app.services.technical_body_fill_job import (
     body_fill_running,
     body_fill_stale,
     body_fill_state,
+    collect_body_fill_skips,
     collect_body_fill_targets,
     plan_item_snapshot,
     schedule_body_fill_job,
 )
+from app.services.job_queue import acquire_ai_fill_lock, release_ai_fill_lock
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_repository import (
@@ -250,6 +253,43 @@ def _raise_gap_error(exc: Exception, not_found_detail: str) -> None:
     if isinstance(contract_error, KeyError):
         raise HTTPException(status_code=404, detail=not_found_detail) from exc
     raise exc
+
+
+# 单条 AI 填写的 (project, gap) 互斥：Redis 锁为主，多实例共享；
+# Redis 缺席时退化为进程内锁，供本地单进程环境使用。
+_LOCAL_AI_FILL_SLOTS: set[tuple[str, str]] = set()
+_LOCAL_AI_FILL_SLOTS_GUARD = threading.Lock()
+
+
+def _acquire_ai_fill_slot(project_id: str, gap_id: str) -> tuple[str, str] | None:
+    """抢占单条填写互斥位，冲突返回 None；成功返回释放用 token。"""
+    owner = uuid4().hex
+    acquired = acquire_ai_fill_lock(project_id, gap_id, owner)
+    if acquired is True:
+        return ("redis", owner)
+    if acquired is False:
+        return None
+    key = (project_id, gap_id)
+    with _LOCAL_AI_FILL_SLOTS_GUARD:
+        if key in _LOCAL_AI_FILL_SLOTS:
+            return None
+        _LOCAL_AI_FILL_SLOTS.add(key)
+    return ("local", owner)
+
+
+def _release_ai_fill_slot(project_id: str, gap_id: str, token: tuple[str, str]) -> None:
+    kind, owner = token
+    if kind == "redis":
+        release_ai_fill_lock(project_id, gap_id, owner)
+        return
+    with _LOCAL_AI_FILL_SLOTS_GUARD:
+        _LOCAL_AI_FILL_SLOTS.discard((project_id, gap_id))
+
+
+def _require_no_body_fill_running(project_id: str, gap_state: dict[str, Any]) -> None:
+    """一键填写运行中（状态或队列锁任一成立）时，单条填写返回 409。"""
+    if body_fill_locked(project_id) or (body_fill_running(gap_state) and not body_fill_stale(gap_state, project_id)):
+        raise PeripheralError(409, "一键填写任务正在执行，暂不可单条填写，请等待完成后再试。", "BODY_FILL_RUNNING")
 
 
 class TechnicalGapService:
@@ -1393,21 +1433,29 @@ class TechnicalGapService:
         request: Request,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        slot: tuple[str, str] | None = None
         try:
             # 与一键填写同一模式：在快照上跑完，再把这条目录项原子并回最新状态
             snapshot = require_technical_gap_project_for_update(project_id)
             gap_state = ensure_technical_gap_state(snapshot)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别。")
+            _require_no_body_fill_running(project_id, gap_state)
+            slot = _acquire_ai_fill_slot(project_id, gap_id)
+            if slot is None:
+                raise PeripheralError(409, "该目录项正在 AI 填写中，请等待完成后再试。", "AI_FILL_RUNNING")
             repair_technical_gap_state_fill_task_skills(gap_state)
             self._require_confirmed_project_fact_table(gap_state)
             result = run_technical_ai_fill_for_gap(snapshot, gap_id, data or {}, **self._url_scope(request))
             filled_item = plan_item_snapshot(snapshot, gap_id)
+            filled_task_id = str(
+                (result.get("artifact") or {}).get("fillTaskId") or (data or {}).get("fillTaskId") or ""
+            )
 
             def apply(project: dict[str, Any]) -> dict[str, Any]:
                 latest_state = ensure_technical_gap_state(project)
                 repair_technical_gap_state_fill_task_skills(latest_state)
-                apply_filled_gap_item(project, gap_id, filled_item)
+                apply_filled_gap_item(project, gap_id, filled_item, fill_task_id=filled_task_id)
                 final_state = ensure_technical_gap_state(project)
                 self._refresh_gap_integrity(project, final_state)
                 # 终审（recompute_technical_gap_decisions）跑在落库这份状态上，
@@ -1424,6 +1472,9 @@ class TechnicalGapService:
             return payload
         except Exception as exc:
             _raise_gap_error(exc, "Gap not found")
+        finally:
+            if slot is not None:
+                _release_ai_fill_slot(project_id, gap_id, slot)
 
     def body_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """一键填写（正文 + 附表）：提交后台任务后立即返回，进度走 bodyFillState 轮询。"""
@@ -1442,6 +1493,11 @@ class TechnicalGapService:
             payload = dict(data or {})
             targets = collect_body_fill_targets(gap_state, payload)
             if not targets:
+                skips = collect_body_fill_skips(gap_state, payload)
+                if skips:
+                    raise ValueError(
+                        f"当前范围内没有可自动填写的任务：{len(skips)} 条附表任务按来源规则待补资料，请先补充素材。"
+                    )
                 raise ValueError("当前范围内没有待填写的正文或附表任务。")
             payload["expectedTotal"] = len(targets)
             payload.update(

@@ -52,6 +52,7 @@ def empty_body_fill_state() -> dict[str, Any]:
         "current": "",
         "message": "",
         "errors": [],
+        "skipped": [],
     }
 
 
@@ -82,21 +83,93 @@ def plan_item_snapshot(project: dict[str, Any], gap_id: str) -> dict[str, Any]:
     raise KeyError(gap_id)
 
 
-def apply_filled_gap_item(project: dict[str, Any], gap_id: str, filled_item: dict[str, Any]) -> None:
-    """把填写完的目录项并进给定状态，只替换这一条，其余目录项保持原值。
+def apply_filled_gap_item(
+    project: dict[str, Any],
+    gap_id: str,
+    filled_item: dict[str, Any],
+    *,
+    fill_task_id: str = "",
+) -> None:
+    """把填写完的目录项并进给定状态：fillTask/产物级合并，不再整条替换。
 
-    调用方负责落库；放在 CAS 事务里可安全重放。
+    基于 CAS 重放时读到的最新 item，只更新本次填写真正写的字段（该 fillTask 条目、
+    resolvedArtifacts 中对应条目、status/qualityStatus/qualityReport/resolvedAt/
+    resolvedSource，reviewNotes 按追加合并），其余字段保留最新值——填写期间同项内的
+    其他新修改不被填写开始时的旧快照覆盖。调用方负责落库；放在 CAS 事务里可安全重放。
     """
+    from app.services.technical_gap_ai_fill import _replace_resolved_artifacts
     from app.services.technical_gap_domain import summarize_technical_gap_plan
     from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 
     gap_state, plan, items = _plan_of(project)
-    for index, entry in enumerate(items):
-        if isinstance(entry, dict) and str(entry.get("id") or "") == gap_id:
-            items[index] = copy.deepcopy(filled_item)
-            break
-    else:
+    target_index = next(
+        (
+            index
+            for index, entry in enumerate(items)
+            if isinstance(entry, dict) and str(entry.get("id") or "") == gap_id
+        ),
+        None,
+    )
+    if target_index is None:
         raise KeyError(gap_id)
+    latest = items[target_index]
+
+    resolved_task_id = str(fill_task_id or "").strip()
+    if not resolved_task_id:
+        # 兼容未传任务 id 的调用：本次填写完成的任务 completedAt 与 item.resolvedAt 一致
+        filled_tasks = filled_item.get("fillTasks") if isinstance(filled_item.get("fillTasks"), list) else []
+        resolved_at = str(filled_item.get("resolvedAt") or "")
+        resolved_task_id = next(
+            (
+                str(task.get("id") or "")
+                for task in filled_tasks
+                if isinstance(task, dict) and resolved_at and str(task.get("completedAt") or "") == resolved_at
+            ),
+            "",
+        )
+    if not resolved_task_id:
+        # 定位不到本次填写的任务时无法安全合并，退回整条替换（旧行为）
+        items[target_index] = copy.deepcopy(filled_item)
+    else:
+        merged = copy.deepcopy(latest)
+        # 条目级字段：填写只写这几个，直接取结果值
+        for field in ("status", "qualityStatus", "qualityReport", "resolvedAt", "resolvedSource"):
+            if field in filled_item:
+                merged[field] = copy.deepcopy(filled_item[field])
+        # reviewNotes 是追加语义：并发新增的保留，本次新加的补上
+        notes = list(latest.get("reviewNotes") or [])
+        for note in filled_item.get("reviewNotes") or []:
+            if note not in notes:
+                notes.append(note)
+        if "reviewNotes" in filled_item or "reviewNotes" in latest:
+            merged["reviewNotes"] = notes
+        # fillTask 级：只替换本次填写完成的那条任务，其余任务条目保留最新值
+        filled_tasks_by_id = {
+            str(task.get("id") or ""): task
+            for task in (filled_item.get("fillTasks") or [])
+            if isinstance(task, dict)
+        }
+        filled_task = filled_tasks_by_id.get(resolved_task_id)
+        latest_tasks = merged.get("fillTasks") if isinstance(merged.get("fillTasks"), list) else []
+        if filled_task is not None:
+            for task_index, task in enumerate(latest_tasks):
+                if isinstance(task, dict) and str(task.get("id") or "") == resolved_task_id:
+                    latest_tasks[task_index] = copy.deepcopy(filled_task)
+                    break
+        # 产物级：在最新 resolvedArtifacts 上按任务替换/追加，不整条覆盖
+        new_artifacts = [
+            artifact
+            for artifact in (filled_item.get("resolvedArtifacts") or [])
+            if isinstance(artifact, dict) and str(artifact.get("fillTaskId") or "") == resolved_task_id
+        ]
+        if new_artifacts:
+            merged["resolvedArtifacts"] = _replace_resolved_artifacts(
+                latest.get("resolvedArtifacts"),
+                new_artifacts,
+                fill_task_id=resolved_task_id,
+                skill_name=str(new_artifacts[0].get("skill") or ""),
+            )
+        items[target_index] = merged
     plan["updatedAt"] = _now_iso()
     plan["summary"] = summarize_technical_gap_plan(plan)
     gap_state["plan"] = plan
@@ -137,6 +210,7 @@ def schedule_body_fill_job(project_id: str, data: dict[str, Any] | None = None) 
         current="",
         message="已提交，等待执行。",
         errors=[],
+        skipped=[],
         startedAt=_now_iso(),
         finishedAt="",
     )
@@ -183,13 +257,19 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
         project = require_technical_gap_project_for_update(project_id)
         gap_state = ensure_technical_gap_state(project)
         targets = collect_body_fill_targets(gap_state, payload)
+        skips = collect_body_fill_skips(gap_state, payload)
         if not targets:
+            # 待补资料的任务不进清单，但原因要在任务状态里可见
+            message = "没有待填写的正文或附表任务。"
+            if skips:
+                message = f"没有可自动填写的任务：{len(skips)} 条附表任务按来源规则待补资料，请补充素材后再填写。"
             return _write_state(
                 project_id,
                 status="succeeded",
                 total=0,
                 done=0,
-                message="没有待填写的正文或附表任务。",
+                message=message,
+                skipped=skips,
                 finishedAt=_now_iso(),
             )
         # 事实表是项目级单张表，缺清单列时整批都填不了。在这里先判一次，整批一条原因结束，
@@ -206,6 +286,7 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
             succeeded=0,
             failed=0,
             message=f"正在填写 0/{len(targets)}",
+            skipped=skips,
         )
     except Exception as exc:  # noqa: BLE001 - 失败原因如实回写，不静默吞掉
         _write_state(project_id, status="failed", message=str(exc) or "一键填写启动失败。", finishedAt=_now_iso())
@@ -291,17 +372,23 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
     return {"status": "succeeded", "message": message}
 
 
-def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any] | None = None) -> list[dict[str, str]]:
-    """待填写的正文 + 附表任务清单。
+def _collect_body_fill_tasks(
+    gap_state: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """待填写的正文 + 附表任务清单，以及因来源规则待补资料被预过滤的任务。
 
     正文（word-placeholder-filler）与附表（table-filler）任务都收，正文在前、附表在后
     （附表填写走 opencode agent、单条更重，放后面让正文结果先落出来）。已完成的默认跳过，
     传 rerun 才重跑。gapIds 非空时只跑这些目录项（前端按当前标签筛选传入）。
+    附表来源规则为 manual_required / missing_source 的任务不进清单（单条填写入口同样
+    会被拦截），放入 skips 带回原因，让「待补资料」在任务状态中可见。
     """
     from app.services.technical_gap_actions import (
         TECHNICAL_TABLE_FILL_SKILL_NAME,
         TECHNICAL_WORD_FILL_SKILL_NAME,
     )
+    from app.services.technical_gap_ai_fill import fill_task_source_block_reason
 
     data = dict(payload or {})
     requested = {
@@ -313,6 +400,7 @@ def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any]
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     word_targets: list[dict[str, str]] = []
     table_targets: list[dict[str, str]] = []
+    skips: list[dict[str, str]] = []
     for item in plan.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -331,6 +419,17 @@ def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any]
                 continue
             if str(task.get("status") or "pending") == "completed" and not rerun:
                 continue
+            block_reason = fill_task_source_block_reason(item, task)
+            if block_reason:
+                skips.append(
+                    {
+                        "gapId": gap_id,
+                        "fillTaskId": str(task.get("id") or ""),
+                        "title": str(item.get("title") or gap_id),
+                        "reason": block_reason,
+                    }
+                )
+                continue
             bucket = word_targets if skill == TECHNICAL_WORD_FILL_SKILL_NAME else table_targets
             bucket.append(
                 {
@@ -339,7 +438,19 @@ def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any]
                     "title": str(item.get("title") or gap_id),
                 }
             )
-    return word_targets + table_targets
+    return word_targets + table_targets, skips
+
+
+def collect_body_fill_targets(gap_state: dict[str, Any], payload: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """一键填写实际执行的任务清单（不含待补资料的附表任务）。"""
+    targets, _ = _collect_body_fill_tasks(gap_state, payload)
+    return targets
+
+
+def collect_body_fill_skips(gap_state: dict[str, Any], payload: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """按来源规则待补资料、被预过滤掉的附表任务（含原因，随 bodyFillState 展示）。"""
+    _, skips = _collect_body_fill_tasks(gap_state, payload)
+    return skips
 
 
 def _record_item_failure(project_id: str, gap_id: str, fill_task_id: str, message: str) -> None:
