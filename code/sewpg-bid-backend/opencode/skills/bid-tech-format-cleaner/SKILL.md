@@ -6,7 +6,7 @@ allowed-tools: [Read, Bash]
 
 # 技术标成稿 Word 格式清洗
 
-本 skill 只处理已经成稿的技术标 `.docx`，属于成稿后处理阶段。它根据后端在 `s5_format_switch_workdir` 准备的技术标目录 JSON（由 S1 目录阶段产物转换而来）定位标题，统一 Word 标题、目录、页眉、页面方向和正文基础格式。历史目录编号映射见 `../STAGES.md`。
+本 skill 只处理已经成稿的技术标 `.docx`，属于成稿后处理阶段。上游的图表题注编号由后端模块 `app/document_processing/technical_document/captioning/` 完成；本 skill 把已编号的题注段视为保留段，不重排也不重新套格式。它根据后端在 `s5_format_switch_workdir` 准备的技术标目录 JSON（由 S1 目录阶段产物转换而来）定位标题，统一 Word 标题、目录、页眉、页面方向和正文基础格式。历史目录编号映射见 `../STAGES.md`。
 
 ## 输入
 

@@ -16,6 +16,7 @@ from app.document_processing.technical_document.assembly import (
     run_from_manifest as run_assembly_manifest,
 )
 from app.document_processing.technical_document.assembly.parse_toc import display_chapter_no
+from app.document_processing.technical_document.captioning import run_manifest as run_caption_manifest
 from app.document_processing.technical_document.formatting import run_manifest as run_format_manifest
 from app.services.bid_fill_generation_state import save_fill_generation_result_state
 from app.services.bid_project_state import project_parse_input_records
@@ -166,22 +167,36 @@ def assemble_tech_bid_for_project_with_progress(
             },
         )
 
+    # 题注编号排在格式清洗之前：清洗器会把"短 + 加粗"的素材图名保守提升成 Heading 3/4，
+    # 而题注工具对 Heading 样式段绝不改写，只会另插一行造成重复并污染目录。先编上号，
+    # 段落变成"图1-1 xxx"后正好命中清洗器的题注判定，被划入保留段不再动它。
+    caption_number = _run_tech_caption_number_step(
+        input_path=assembled_path,
+        output_path=work_dir / f"{assembled_path.stem}_captioned{assembled_path.suffix}",
+        work_dir=work_dir,
+        progress_callback=progress_callback,
+    )
+    caption_output_path = Path(str(caption_number.get("outputFile") or ""))
+    format_input_path = assembled_path
+    if caption_number.get("status") == "completed" and caption_output_path.exists():
+        format_input_path = caption_output_path
+
     format_output_path = output_file
-    if assembled_path.resolve() == output_file.resolve():
+    if output_file.resolve() in {assembled_path.resolve(), format_input_path.resolve()}:
         format_output_path = work_dir / f"{output_file.stem}_formatted{output_file.suffix}"
 
     format_clean = _run_tech_format_cleaner_step(
         project=project,
         toc_json_path=toc_json_path,
-        assembled_path=assembled_path,
+        assembled_path=format_input_path,
         output_path=format_output_path,
         project_params=project_params,
         work_dir=work_dir,
         progress_callback=progress_callback,
     )
-    final_output_path = Path(str(format_clean.get("outputFile") or assembled_path))
+    final_output_path = Path(str(format_clean.get("outputFile") or format_input_path))
     if not final_output_path.exists():
-        final_output_path = assembled_path
+        final_output_path = format_input_path
 
     score_index_xref = _run_tech_score_index_xref_step(
         input_path=final_output_path,
@@ -200,17 +215,28 @@ def assemble_tech_bid_for_project_with_progress(
     file_name = final_output_path.name
     run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
     filled_at = now_iso()
+    caption_warnings = _normalize_warnings(caption_number.get("warnings"))
     format_warnings = _normalize_warnings(format_clean.get("warnings"))
     xref_warnings = _normalize_warnings(score_index_xref.get("warnings"))
-    execution_warnings = [*assembly_warnings, *format_warnings, *xref_warnings]
-    # 格式清洗或交叉引用降级时都沿用上一环节产物，如实标成 fallback，不报成干净完成。
+    execution_warnings = [*assembly_warnings, *caption_warnings, *format_warnings, *xref_warnings]
+    # 题注编号、格式清洗或交叉引用降级时都沿用上一环节产物，如实标成 fallback，不报成干净完成。
     execution_status = (
         "completed"
-        if format_clean.get("status") == "completed" and score_index_xref.get("status") != "failed"
+        if (
+            format_clean.get("status") == "completed"
+            and score_index_xref.get("status") != "failed"
+            and caption_number.get("status") != "failed"
+        )
         else "completed_with_fallback"
     )
     execution_error = " | ".join(
-        text for text in (str(format_clean.get("error") or ""), str(score_index_xref.get("error") or "")) if text
+        text
+        for text in (
+            str(caption_number.get("error") or ""),
+            str(format_clean.get("error") or ""),
+            str(score_index_xref.get("error") or ""),
+        )
+        if text
     )
     execution = {
         "engine": "python",
@@ -222,6 +248,7 @@ def assemble_tech_bid_for_project_with_progress(
             "manifestPath": str(manifest_path),
             "planFile": str(plan_path),
             "rawOutputFile": str(assembled_path),
+            "captionNumberFile": str(caption_number.get("outputFile") or ""),
             "outputFile": str(final_output_path),
             "scoreIndexXrefFile": str(score_index_xref.get("outputFile") or ""),
         },
@@ -263,6 +290,7 @@ def assemble_tech_bid_for_project_with_progress(
             "planFile": str(plan_path),
             "summary": assembly_summary,
             "warnings": assembly_warnings,
+            "captionNumber": caption_number,
             "formatClean": format_clean,
             "scoreIndexXref": score_index_xref,
             "execution": execution,
@@ -1220,6 +1248,84 @@ def _run_local_assembler(
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     return run_assembly_manifest(manifest_path, progress_callback=progress_callback)
+
+
+def _run_tech_caption_number_step(
+    *,
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    """给正文里的表格和图片加「表N-M」「图N-M」题注。
+
+    跑在格式清洗之前：清洗器会把"短 + 加粗"的素材图名保守提升成 Heading，题注工具对
+    Heading 样式段绝不改写，先编号才能让这些图名被认成题注保留下来。
+    正文里一张图一张表都没有、或本步骤失败时都不阻断出稿，调用方沿用组装原稿。
+    """
+    manifest_path = work_dir / "tech_caption_number_input.json"
+    manifest = {
+        "schemaVersion": "bid-tech-caption-number-manifest-v1",
+        "inputFile": str(input_path),
+        "outputFile": str(output_path),
+        "styleSpecPath": str(TECH_DOCUMENT_RESOURCES_DIR / "heading_style.json"),
+        "highlight": False,
+        "useWordFields": True,
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if progress_callback:
+        progress_callback(
+            "calling_caption_number",
+            {"manifestPath": str(manifest_path), "inputFile": str(input_path)},
+        )
+
+    try:
+        result = run_caption_manifest(manifest_path)
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        warnings = _normalize_warnings(result.get("warnings"))
+        status = str(result.get("status") or "completed")
+        numbered_path = Path(str(result.get("outputFile") or "")).expanduser()
+        if status == "completed" and not numbered_path.exists():
+            raise RuntimeError(f"技术标图表题注编号未生成输出文件：{numbered_path}")
+        step = {
+            "status": status,
+            "engine": "python",
+            "manifestPath": str(manifest_path),
+            "inputFile": str(input_path),
+            "outputFile": str(numbered_path) if status == "completed" else "",
+            "summary": summary,
+            "warnings": warnings,
+        }
+        if progress_callback:
+            progress_callback(
+                f"caption_number_{'completed' if status == 'completed' else 'skipped'}",
+                {"summary": summary, "outputFile": step["outputFile"], "warnings": warnings},
+            )
+        return step
+    except Exception as exc:
+        step = {
+            "status": "failed",
+            "engine": "python",
+            "manifestPath": str(manifest_path),
+            "inputFile": str(input_path),
+            "outputFile": "",
+            "summary": {"fallback": True},
+            "warnings": [
+                {
+                    "code": "caption_number_failed",
+                    "message": f"图表题注编号失败，已沿用未编号的组装原稿：{exc}",
+                    "count": 1,
+                }
+            ],
+            "error": str(exc),
+        }
+        if progress_callback:
+            progress_callback(
+                "caption_number_failed",
+                {"error": str(exc), "manifestPath": str(manifest_path)},
+            )
+        return step
 
 
 def _run_tech_format_cleaner_step(
