@@ -229,6 +229,23 @@ def release_ai_fill_lock(project_id: str, gap_id: str, owner: str) -> None:
         logger.warning("Failed to release AI fill lock: %s", exc)
 
 
+def _attach_trace_id(job_id: str) -> None:
+    """把当前请求的 x-trace-id 挂到该任务的耗时元数据上。
+
+    job_timing 模块导入了本模块，这里必须延迟导入以避免循环依赖；
+    埋点是旁路，任何异常都不能影响入队本身。
+    """
+
+    try:
+        from app.services.job_timing import current_trace_id, record_timing_meta
+
+        trace_id = current_trace_id()
+        if trace_id:
+            record_timing_meta(job_id, traceId=trace_id)
+    except Exception as exc:  # noqa: BLE001 - 埋点失败不影响主链路
+        logger.warning("关联 traceId 失败 job_id=%s: %s", job_id, exc)
+
+
 def enqueue_generation_job(
     job_type: str,
     project_id: str,
@@ -300,6 +317,7 @@ def enqueue_generation_job(
         pipe.expire(_job_key(job_id), settings.redis_job_result_ttl_sec)
         pipe.rpush(_queue_key_for_job_type(job_type), payload)
         pipe.execute()
+        _attach_trace_id(job_id)
         return EnqueueResult(queued=True, job_id=job_id)
     except RedisError as exc:
         logger.warning("Failed to enqueue Redis job, falling back to local execution: %s", exc)

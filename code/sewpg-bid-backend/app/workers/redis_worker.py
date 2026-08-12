@@ -9,6 +9,7 @@ from typing import Any
 from app.core.config import settings
 from app.core.redis import redis_is_available
 from app.services.job_queue import (
+    KNOWN_JOB_TYPES,
     MATERIAL_QUEUE_KEY,
     QUEUE_KEY,
     claim_s1_workflow_lock,
@@ -119,8 +120,9 @@ def _finish_expired_s1_job(
     return True
 
 
-# 耗时监控：仅对跟踪的任务类型在终态时汇总写 job_timings，中间态（等待/重试）跳过。
-@track_job_timing(tracked_types={"s1_parse", "s1_parse_continue", "directory_generation"})
+# 耗时监控：所有已知任务类型在终态时汇总写 job_timings，中间态（等待/重试）跳过。
+# 用 KNOWN_JOB_TYPES 而非写死子集：新增任务类型自动纳入统计，不会漏采。
+@track_job_timing(tracked_types=KNOWN_JOB_TYPES)
 def _run_job(job: dict[str, Any]) -> bool:
     job_type = str(job.get("type") or "")
     project_id = str(job.get("projectId") or "")
