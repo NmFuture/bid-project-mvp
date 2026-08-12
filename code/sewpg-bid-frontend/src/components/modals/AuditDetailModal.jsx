@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog'
 
 const flattenObject = (input, prefix = '', output = {}) => {
   if (input === null || input === undefined) {
@@ -78,26 +79,22 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
   }, [detail])
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog-content w-full max-w-5xl animate-fade-in" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-surface-container-high">
+    <Dialog open onClose={onClose} size="xl" className="max-w-5xl">
+        <DialogHeader onClose={onClose}>
           <div>
             <h2 className="text-xl font-headline font-bold text-on-surface">日志详情</h2>
             <p className="text-xs text-outline mt-1">日志 ID：{auditId}</p>
           </div>
-          <button onClick={onClose} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
-            <span className="material-symbols-outlined">close</span>
-          </button>
-        </div>
+        </DialogHeader>
 
-        <div className="p-6">
-          {loading && <div className="animate-shimmer w-full h-80 rounded-xl" />}
+        <DialogBody className="p-4 sm:p-6">
+          {loading && <div role="status" aria-label="正在加载日志详情" className="h-80 w-full animate-shimmer rounded-lg" />}
           {!loading && error && (
-            <div className="bg-error-container/20 border border-error/20 rounded-lg p-4 text-sm text-error">{error}</div>
+            <div role="alert" className="rounded-lg border border-error/20 bg-error-container/20 p-4 text-sm text-error">{error}</div>
           )}
           {!loading && !error && detail && (
             <div className="space-y-5">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-lg bg-surface-container-low p-3">
                   <p className="text-outline">时间</p>
                   <p className="mt-1 text-on-surface">{detail.time || '-'}</p>
@@ -117,16 +114,16 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
               </div>
 
               {detail?.diff && (
-              <div className="rounded-xl border border-surface-container-high overflow-hidden">
-                <div className="grid grid-cols-12 bg-surface-container-low text-xs font-semibold text-on-surface-variant border-b border-surface-container-high">
+              <div className="overflow-hidden rounded-lg border border-surface-container-high">
+                <div className="grid min-w-[42rem] grid-cols-12 border-b border-surface-container-high bg-surface-container-low text-xs font-semibold text-on-surface-variant">
                   <div className="col-span-3 px-3 py-2">字段</div>
                   <div className="col-span-4 px-3 py-2">Before</div>
                   <div className="col-span-4 px-3 py-2">After</div>
                   <div className="col-span-1 px-3 py-2 text-center">变化</div>
                 </div>
-                <div className="max-h-[52vh] overflow-auto">
+                <div className="max-h-[52dvh] overflow-auto">
                   {diffRows.map((row) => (
-                    <div key={row.key} className="grid grid-cols-12 border-b border-surface-container-high/60 text-xs">
+                    <div key={row.key} className="grid min-w-[42rem] grid-cols-12 border-b border-surface-container-high/60 text-xs">
                       <div className="col-span-3 px-3 py-2 font-mono text-on-surface break-all">{row.key}</div>
                       <div className={`col-span-4 px-3 py-2 whitespace-pre-wrap break-all ${row.changed ? 'bg-error-container/20 text-error' : 'text-on-surface-variant'}`}>
                         {toDisplay(row.before)}
@@ -135,7 +132,7 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
                         {toDisplay(row.after)}
                       </div>
                       <div className="col-span-1 px-3 py-2 flex items-center justify-center">
-                        <span className={`material-symbols-outlined text-sm ${row.changed ? 'text-primary' : 'text-outline'}`}>
+                        <span aria-hidden="true" className={`material-symbols-outlined text-sm ${row.changed ? 'text-primary' : 'text-outline'}`}>
                           {row.changed ? 'change_circle' : 'remove'}
                         </span>
                       </div>
@@ -149,14 +146,14 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
               )}
 
               {metaRows.length > 0 && (
-                <div className="rounded-xl border border-surface-container-high overflow-hidden">
-                  <div className="grid grid-cols-12 bg-surface-container-low text-xs font-semibold text-on-surface-variant border-b border-surface-container-high">
+                <div className="overflow-hidden rounded-lg border border-surface-container-high">
+                  <div className="grid min-w-[36rem] grid-cols-12 border-b border-surface-container-high bg-surface-container-low text-xs font-semibold text-on-surface-variant">
                     <div className="col-span-3 px-3 py-2">附加信息（meta）</div>
                     <div className="col-span-9 px-3 py-2">值</div>
                   </div>
-                  <div className="max-h-[52vh] overflow-auto">
+                  <div className="max-h-[52dvh] overflow-auto">
                     {metaRows.map(([key, value]) => (
-                      <div key={key} className="grid grid-cols-12 border-b border-surface-container-high/60 text-xs">
+                      <div key={key} className="grid min-w-[36rem] grid-cols-12 border-b border-surface-container-high/60 text-xs">
                         <div className="col-span-3 px-3 py-2 font-mono text-on-surface break-all">{key}</div>
                         <div className="col-span-9 px-3 py-2 whitespace-pre-wrap break-all text-on-surface-variant">
                           {toDisplay(value)}
@@ -168,14 +165,13 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
               )}
             </div>
           )}
-        </div>
+        </DialogBody>
 
-        <div className="px-6 py-4 border-t border-surface-container-high flex justify-end bg-surface-container-low rounded-b-xl">
-          <button onClick={onClose} className="px-5 py-2 text-sm font-medium text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-colors">
+        <DialogFooter>
+          <button type="button" onClick={onClose} className="ui-control h-9 rounded-md px-5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high">
             关闭
           </button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+    </Dialog>
   )
 }

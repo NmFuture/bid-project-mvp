@@ -203,14 +203,17 @@ export default function BusinessProjectWizardModal({
   }
 
   return (
-    <div className="dialog-overlay bg-[rgba(23,33,43,0.28)] backdrop-blur-0" onClick={onClose}>
+    <div className="dialog-overlay overscroll-contain bg-[rgba(23,33,43,0.28)] p-2 backdrop-blur-0 sm:p-4" onClick={onClose}>
       <div
-        className="dialog-content wizard-modal-surface w-full max-w-[720px] animate-fade-in border border-[#d1d9e4]"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="business-project-wizard-title"
+        className="dialog-content wizard-modal-surface max-h-[calc(100dvh-1rem)] w-full max-w-[720px] animate-fade-in overflow-y-auto border border-dialog-border sm:max-h-[calc(100dvh-2rem)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#d8e0ea] bg-white">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-dialog-section-border bg-white">
           <div>
-            <h2 className="text-[18px] font-headline font-semibold text-on-surface">
+            <h2 id="business-project-wizard-title" className="font-headline text-xl font-semibold text-on-surface">
               {isUpdateMode ? '完善商务标项目信息' : '新建商务标项目'}
             </h2>
             <p className="text-xs text-on-surface-variant mt-1">
@@ -219,10 +222,11 @@ export default function BusinessProjectWizardModal({
           </div>
           <button
             onClick={onClose}
-            className="close-plain text-on-surface-variant hover:text-primary transition-colors"
+            type="button"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
             aria-label="关闭"
           >
-            <span className="material-symbols-outlined text-[20px]">close</span>
+            <span aria-hidden="true" className="material-symbols-outlined text-[20px]">close</span>
           </button>
         </div>
 
@@ -230,17 +234,22 @@ export default function BusinessProjectWizardModal({
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">标书类型</label>
+                <label htmlFor="business-project-bid-type" className="block text-sm font-semibold text-on-surface mb-2">标书类型</label>
                 <input
-                  className="w-full min-h-0 h-9 px-4 bg-[#eef3f7] border border-[#c2d0df] text-sm text-on-surface"
+                  id="business-project-bid-type"
+                  name="bidType"
+                  className="w-full min-h-0 h-9 px-4 bg-control-muted-light border border-control-muted-border text-sm text-on-surface"
                   value={BUSINESS_BID_TYPE}
                   disabled
                 />
               </div>
               <div className="md:col-span-2">
-                <label className="block text-sm font-semibold text-on-surface mb-2">项目名称 *</label>
+                <label htmlFor="business-project-name" className="block text-sm font-semibold text-on-surface mb-2">项目名称 *</label>
                 <input
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                  id="business-project-name"
+                  name="projectName"
+                  autoComplete="off"
+                  className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                   placeholder="输入商务标项目名称"
                   value={form.name}
                   onChange={(e) => updateForm('name', e.target.value)}
@@ -250,18 +259,24 @@ export default function BusinessProjectWizardModal({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">业务项目编号</label>
+                <label htmlFor="business-project-code" className="block text-sm font-semibold text-on-surface mb-2">业务项目编号</label>
                 <input
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                  id="business-project-code"
+                  name="projectCode"
+                  autoComplete="off"
+                  className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                   placeholder="例如：招标编号、项目编号"
                   value={form.projectCode}
                   onChange={(e) => updateForm('projectCode', e.target.value)}
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">负责人 *</label>
+                <label htmlFor="business-project-manager" className="block text-sm font-semibold text-on-surface mb-2">负责人 *</label>
                 <input
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                  id="business-project-manager"
+                  name="projectManager"
+                  autoComplete="off"
+                  className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                   placeholder="负责人姓名"
                   value={form.manager}
                   onChange={(e) => updateForm('manager', e.target.value)}
@@ -271,9 +286,11 @@ export default function BusinessProjectWizardModal({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">客户来源</label>
+                <label htmlFor="business-customer-mode" className="block text-sm font-semibold text-on-surface mb-2">客户来源</label>
                 <select
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                  id="business-customer-mode"
+                  name="customerMode"
+                  className="h-9 min-h-0 w-full cursor-pointer border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:ring-0"
                   value={customerMode}
                   onChange={(e) => {
                     const nextMode = e.target.value
@@ -298,12 +315,14 @@ export default function BusinessProjectWizardModal({
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">
+                <label htmlFor="business-customer-name" className="block text-sm font-semibold text-on-surface mb-2">
                   {customerMode === 'library' ? '重点客户 *' : '普通客户 *'}
                 </label>
                 {customerMode === 'library' && materialCustomers.length > 0 ? (
                   <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                    id="business-customer-name"
+                    name="customerName"
+                    className="h-9 min-h-0 w-full cursor-pointer border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:ring-0"
                     value={selectedMaterialCustomerId}
                     onChange={(e) => {
                       const nextId = e.target.value
@@ -325,7 +344,10 @@ export default function BusinessProjectWizardModal({
                   </select>
                 ) : (
                   <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                    id="business-customer-name"
+                    name="customerName"
+                    autoComplete="off"
+                    className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                     placeholder="输入客户名称"
                     value={form.customerName}
                     onChange={(e) => {
@@ -336,7 +358,7 @@ export default function BusinessProjectWizardModal({
                   />
                 )}
                 {(identityError || loadingIdentities) && (
-                  <p className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
+                  <p role={identityError ? 'alert' : 'status'} className={`text-xs mt-2 ${identityError ? 'text-error' : 'text-outline'}`}>
                     {identityError || '正在加载商务标客户/项目...'}
                   </p>
                 )}
@@ -345,9 +367,11 @@ export default function BusinessProjectWizardModal({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">项目来源</label>
+                <label htmlFor="business-project-mode" className="block text-sm font-semibold text-on-surface mb-2">项目来源</label>
                 <select
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                  id="business-project-mode"
+                  name="materialProjectMode"
+                  className="h-9 min-h-0 w-full cursor-pointer border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:ring-0"
                   value={materialProjectMode}
                   onChange={(e) => {
                     const nextMode = e.target.value
@@ -371,12 +395,14 @@ export default function BusinessProjectWizardModal({
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">
+                <label htmlFor="business-material-project" className="block text-sm font-semibold text-on-surface mb-2">
                   {materialProjectMode === 'library' ? '重点项目 *' : '普通项目'}
                 </label>
                 {materialProjectMode === 'library' && materialProjects.length > 0 ? (
                   <select
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:ring-0 transition-all cursor-pointer"
+                    id="business-material-project"
+                    name="materialProjectName"
+                    className="h-9 min-h-0 w-full cursor-pointer border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:ring-0"
                     value={selectedMaterialProjectId}
                     onChange={(e) => {
                       const nextId = e.target.value
@@ -398,7 +424,10 @@ export default function BusinessProjectWizardModal({
                   </select>
                 ) : (
                   <input
-                    className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                    id="business-material-project"
+                    name="materialProjectName"
+                    autoComplete="off"
+                    className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                     placeholder="项目名称，不填则使用投标项目名称"
                     value={form.materialProjectName}
                     onChange={(e) => updateForm('materialProjectName', e.target.value)}
@@ -407,21 +436,25 @@ export default function BusinessProjectWizardModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">起始日期 *</label>
+                <label htmlFor="business-project-start-date" className="block text-sm font-semibold text-on-surface mb-2">起始日期 *</label>
                 <input
+                  id="business-project-start-date"
+                  name="startDate"
                   type="date"
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                  className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                   value={form.startDate}
                   onChange={(e) => updateForm('startDate', e.target.value)}
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-on-surface mb-2">截止日期 *</label>
+                <label htmlFor="business-project-end-date" className="block text-sm font-semibold text-on-surface mb-2">截止日期 *</label>
                 <input
+                  id="business-project-end-date"
+                  name="endDate"
                   type="date"
-                  className="w-full min-h-0 h-9 px-4 bg-[#e8eef2] border border-[#c2d0df] text-sm text-on-surface focus:border-primary/70 focus:ring-0 transition-all"
+                  className="h-9 min-h-0 w-full border border-control-muted-border bg-control-muted px-4 text-sm text-on-surface transition-[background-color,border-color,color,box-shadow] focus:border-primary/70 focus:ring-0"
                   value={form.endDate}
                   onChange={(e) => updateForm('endDate', e.target.value)}
                 />
@@ -431,27 +464,28 @@ export default function BusinessProjectWizardModal({
             {missingRequiredItems.length > 0 && (
               <div
                 id="business-project-required-hint"
-                className="border border-[#f2c169] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a4d00]"
+                role="status"
+                className="border border-notice-border bg-notice-surface px-3 py-2 text-xs text-on-notice"
               >
                 {disabledReason}
               </div>
             )}
 
-            <div className="rounded-md border border-[#d2dce8] bg-[#f8fbfd] px-3 py-2">
+            <div className="rounded-md border border-panel-muted-border bg-panel-muted px-3 py-2">
               <p className="text-xs text-outline">商务标材料归档路径预览</p>
               <p className="mt-1 text-sm font-medium text-on-surface">{archivePathPreview}</p>
             </div>
 
             {createError && (
-              <div className="bg-error-container/30 border border-error/30 rounded-[4px] p-3 text-sm text-error">
+              <div role="alert" className="bg-error-container/30 border border-error/30 rounded-[4px] p-3 text-sm text-error">
                 {createError}
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex justify-between items-center px-5 py-4 border-t border-[#d7e0ea] bg-white">
-          <Button onClick={onClose} size="sm" variant="quiet">
+        <div className="flex flex-col-reverse gap-2 border-t border-dialog-footer-border bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <Button onClick={onClose} size="sm" variant="quiet" className="w-full sm:w-auto">
             取消
           </Button>
           <Button
@@ -461,6 +495,7 @@ export default function BusinessProjectWizardModal({
             aria-describedby={!canSubmit ? 'business-project-required-hint' : undefined}
             size="stage"
             variant="primary"
+            className="w-full sm:w-auto"
           >
             {creating ? (isUpdateMode ? '保存中...' : '创建中...') : '确认提交'}
           </Button>

@@ -17,11 +17,10 @@ export default function MaterialsViewSwitch({
         <div className="flex min-w-0 flex-1 flex-col gap-3 lg:flex-row lg:items-center">
           <div className="min-w-0 lg:w-[240px] xl:w-[260px]">
             <div className="flex min-w-0 items-center gap-2">
-              <span aria-hidden="true" className="h-4 w-1 shrink-0 rounded-full bg-primary/80" />
-              <h1 className="truncate text-base font-headline font-bold text-on-surface">{title || '素材库'}</h1>
+              <h1 className="truncate text-2xl font-headline font-semibold text-on-surface">{title || '素材库'}</h1>
             </div>
             {subtitle ? (
-              <p className="mt-1 truncate pl-3 text-xs text-outline" title={typeof subtitle === 'string' ? subtitle : undefined}>
+              <p className="mt-1 truncate text-sm text-on-surface-variant" title={typeof subtitle === 'string' ? subtitle : undefined}>
                 {subtitle}
               </p>
             ) : null}
@@ -33,11 +32,11 @@ export default function MaterialsViewSwitch({
                 {groupIndex > 0 ? (
                   <span aria-hidden="true" className="hidden h-6 w-px bg-outline-variant/60 sm:inline-block" />
                 ) : null}
-                <span className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/10 px-3 text-xs font-semibold text-primary">
+                <span className="inline-flex h-8 items-center gap-1.5 px-1 text-xs font-semibold text-on-surface">
                   <span aria-hidden="true" className="material-symbols-outlined text-[16px]">{group.icon}</span>
                   {group.label}
                 </span>
-                <div className="inline-flex h-8 w-fit rounded-lg border border-outline-variant/55 bg-surface-container-low p-0.5 text-xs">
+                <div className="inline-flex h-8 w-fit rounded-md border border-outline-variant bg-white p-0.5 text-xs">
                   {(group.items || []).map((item) => {
                     const selected = active === item.key
                     return (
@@ -46,7 +45,7 @@ export default function MaterialsViewSwitch({
                         to={item.to}
                         className={`inline-flex h-7 min-w-[74px] items-center justify-center rounded-md px-2.5 transition-colors ${
                           selected
-                            ? 'bg-primary text-on-primary font-medium'
+                            ? 'bg-surface-container-high font-semibold text-on-surface'
                             : 'text-on-surface-variant hover:bg-surface-container-high'
                         }`}
                       >

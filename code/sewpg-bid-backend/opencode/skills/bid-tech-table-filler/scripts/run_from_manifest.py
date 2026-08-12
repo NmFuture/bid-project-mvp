@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Fill a requested technical bid appendix/table from manifest data.
 
-The runner intentionally keeps the LLM/Agent contract small: OpenCode calls
-`s4fill <manifest>`, while this deterministic script preserves the original
-Word file and writes into the detected value cells.
+LLM 判断是附表填写的唯一模式：`--prepare` 产出填写简报 fill_brief.json
+（目标字段 + 锁定素材清单）供 agent 阅读取值；`--apply` 校验 agent 写出的
+fill_plan.json（证据摘录必须能在声明来源中检索到）后执行同一套保格式写回与
+报告管线，fillMode="llm-plan"。取值判断全部在 LLM 侧完成，本脚本只做机械准备、
+计划校验、保格式写回和报告产出。
 """
 
 from __future__ import annotations
@@ -12,11 +14,9 @@ import argparse
 import json
 import math
 import re
-from copy import deepcopy
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -199,66 +199,6 @@ C2_C3_CONCEPTS = {
 
 CONCEPTS = {**C1_CONCEPTS, **C2_C3_CONCEPTS}
 
-PROJECT_SPECIFIC = {
-    "turbine_count",
-    "total_capacity",
-    "hub_height",
-    "vave",
-    "iref",
-    "air_density",
-    "cp_max",
-    "cp_speed_range",
-    "guarantee_energy",
-    "guarantee_hours",
-}
-
-STRICT_MANUAL = {
-    "blade_carbon_ratio",
-    "blade_root_pcd",
-    "blade_root_bolt_count",
-    "blade_root_bolt_spec",
-    "blade_root_bolt_grade",
-    "blade_root_prefab",
-    "blade_trailing_edge_prefab",
-    "blade_web_form",
-    "blade_tip_fatigue",
-    "blade_lightning_response",
-    "blade_lightning_area",
-    "pitch_bearing_friction",
-    "pitch_bearing_hardening",
-    "pitch_bearing_weight",
-    "pitch_motor_power",
-    "pitch_motor_rated_torque",
-    "pitch_motor_max_torque",
-    "pitch_motor_brake_torque",
-    "pitch_gearbox_rated_torque",
-    "pitch_gearbox_max_torque",
-    "pitch_gearbox_brake_torque",
-    "front_bedplate_weight",
-    "rear_bedplate_weight",
-    "gearbox_power",
-    "gearbox_speed",
-    "gearbox_efficiency",
-    "gearbox_oil_volume",
-    "gearbox_heater",
-    "gearbox_offline_filter",
-    "sliding_bearing_form",
-    "hydraulic_brake_pressure",
-    "hydraulic_pressure_range",
-    "yaw_motor_max_torque",
-    "yaw_motor_rated_torque",
-    "yaw_motor_brake_torque",
-    "yaw_brake_count",
-    "yaw_running_brake_torque",
-    "yaw_static_brake_torque",
-    "yaw_gearbox_max_torque",
-    "yaw_gearbox_rated_torque",
-    "yaw_gearbox_brake_torque",
-    "nacelle_lightning_mesh",
-    "nacelle_mesh_size",
-}
-
-
 @dataclass
 class Source:
     name: str
@@ -272,8 +212,7 @@ class Source:
     ocr_text_path: Path | None = None  # PDF 素材的 OCR 文本 sidecar（后端生成）
     text_path: Path | None = None
     document_nav_path: Path | None = None
-    # Excel 原件对应的清洗 docx 文本稿：kind=xlsx 时保留，供按 Word 表格结构
-    # 工作的分支（整表移植、同构表查表）回退使用。
+    # Excel 原件对应的清洗 docx 文本稿：kind=xlsx 时保留，供填写简报 cleanedPath 使用。
     cleaned_docx_path: Path | None = None
 
 
@@ -432,17 +371,6 @@ def cell_needs_fill(value: Any) -> bool:
     if not text:
         return True
     return any(marker in text for marker in ("待填写", "待补充", "待确认", "待人工补充", "[待", "【待"))
-
-
-def requirement_value_is_direct_response(value: Any) -> bool:
-    text = clean(value)
-    if not usable_value(text):
-        return False
-    if any(token in text for token in ("根据", "厂家", "测算", "确定", "另行", "待", "见", "详见")):
-        return False
-    if requirement_like_value(text):
-        return False
-    return bool(re.search(r"[0-9]|%|IEC|GB|NB|DL|是|否|有|无", text, flags=re.I))
 
 
 def requirement_like_value(value: Any) -> bool:
@@ -1228,7 +1156,7 @@ def add_source_from_material(
                 break
     if original_path is not None:
         # Excel 原件优先：清洗 docx 只保留文本，读不出 sheet；原件在时整条链路按 xlsx 走。
-        # 清洗稿仍留在 cleaned_docx_path，供整表移植等按 Word 表格结构工作的分支使用。
+        # 清洗稿仍留在 cleaned_docx_path，随填写简报 cleanedPath 暴露给 agent 阅读。
         if path.suffix.lower() == ".docx":
             cleaned_docx_path = path
         path = original_path
@@ -1882,16 +1810,6 @@ def cert_intents_for(text: str) -> set[str]:
 
 
 # 行键部件词：长词在前（主轴承先于主轴），供 F.3 行组锁定事实来源
-COMPONENT_ROW_TOKENS = ("主轴承", "齿轮箱", "发电机", "变流器", "主控", "叶片", "轮毂", "变桨", "偏航", "主轴", "塔架", "机舱")
-
-
-def component_row_token(text: str) -> str:
-    for token in COMPONENT_ROW_TOKENS:
-        if token in text:
-            return token
-    return ""
-
-
 CERT_ISSUER_SUFFIXES = ("认证中心", "认证公司", "认证有限公司", "认证集团", "船级社", "检验认证")
 CERT_OCR_RISK = "OCR 识别值，需人工核对证书原件"
 CERT_FIELD_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -2608,8 +2526,8 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
 def table_is_curve_matrix(table: Any, header_row: int) -> bool:
     """曲线矩阵表判据（与 _extract_fields_from_table 内一致）。
 
-    曲线表由 apply_curve_appendix_table_fill / apply_curve_matrix_fill 整表重建，
-    设计上就该在字段抽取阶段返回 0 字段，清单兜底不能把它们拉回逐格路径。
+    曲线矩阵表无逐格响应单元格，设计上就该在字段抽取阶段返回 0 字段，
+    清单兜底不能把它们拉回逐格路径。
     """
     curve_role_cols = [
         idx
@@ -2772,14 +2690,6 @@ def score(field: dict[str, Any], fact: dict[str, Any], scenario: str) -> float:
     return round(min(value * fact["baseConfidence"], 0.99), 3)
 
 
-def project_specific_source_allowed(candidate: dict[str, Any]) -> bool:
-    if candidate["source"] in {"projectTurbineModel", "parseFields", "projectFactTable", "derived"}:
-        return True
-    if candidate.get("sourceRoute") == TENDER_SOURCE_ROUTE:
-        return True
-    return candidate.get("sourceKind") in {"xlsx", "docx"} and int(candidate.get("sourcePriority") or 0) >= 64
-
-
 def find_conflict(candidates: list[dict[str, Any]]) -> str:
     usable = [c for c in candidates if c["usable"] and c["score"] >= 0.55]
     if not usable:
@@ -2815,194 +2725,6 @@ def find_conflict(candidates: list[dict[str, Any]]) -> str:
             continue
         return f"候选来源存在不一致：{best['source']}={best['value']}；{other['source']}={other['value']}"
     return ""
-
-
-def map_fields(spec: AppendixSpec, fields: list[dict[str, Any]], facts: list[dict[str, Any]], scenario: str) -> dict[str, Any]:
-    decisions = []
-    for field in fields:
-        candidates = sorted(
-            [
-                {
-                    "factId": fact["id"],
-                    "label": fact["label"],
-                    "value": fact["value"],
-                    "unit": fact["unit"],
-                    "source": fact["source"],
-                    "sourceKind": fact["sourceKind"],
-                    "sourcePriority": fact.get("sourcePriority", 0),
-                    "sourceRoute": fact.get("sourceRoute", ""),
-                    "row": fact["row"],
-                    "sheet": fact["sheet"],
-                    "score": score(field, fact, scenario),
-                    "usable": fact["usable"],
-                    "notes": fact["notes"],
-                    "risk": fact["risk"],
-                    "actionHint": fact["actionHint"],
-                }
-                for fact in facts
-                if score(field, fact, scenario) > 0
-            ],
-            key=lambda item: (item["score"], item["sourceKind"] == "xlsx", item.get("sourcePriority", 0)),
-            reverse=True,
-        )
-        # F.3 大部件行键路由：行组（"叶片单独认证"等跨列组标题）锁定部件后，
-        # 候选只保留来源名带同部件词的事实——否则发电机证书的制造商会顶进
-        # 叶片行（金标反评 F.3.1：96 格错位主因之一）。
-        if spec.prefix == "F3":
-            row_token = component_row_token(clean(f"{field.get('group') or ''}"))
-            if row_token:
-                scoped = [item for item in candidates if row_token in clean(item["source"])]
-                if scoped:
-                    candidates = scoped
-        # F 系列认证表：证书 OCR 值是权威来源。有过线的证书事实时收窄到证书候选，
-        # 否则校核报告等 docx 的污染值（金标反评：单机功率"P…"、轮毂 630mm）
-        # 会通过 find_conflict 把正确的证书值一起否掉。
-        if spec.prefix.startswith("F"):
-            pdf_candidates = [item for item in candidates if item["sourceKind"] == "pdf" and item["usable"] and item["score"] >= 0.62]
-            if pdf_candidates:
-                candidates = pdf_candidates
-        selected = next((item for item in candidates if item["usable"] and item["score"] >= 0.62), None)
-        concepts = set(field["concepts"])
-        reason = ""
-        action = "fill"
-
-        conflict = find_conflict(candidates)
-        if conflict and (not selected or selected["score"] < 0.82):
-            selected = None
-            reason = conflict
-        if (
-            concepts & PROJECT_SPECIFIC
-            and selected
-            and not project_specific_source_allowed(selected)
-            # F 系列认证表例外：证书本身就是"认证了什么配置"的权威记载，
-            # 轮毂高度/安全等级等值按证书抄录正是这类表的本意
-            and not (spec.prefix.startswith("F") and selected.get("sourceKind") == "pdf")
-        ):
-            selected = None
-            reason = "该字段是项目/场址特定值，当前候选来源不属于项目信息、招标解析或项目范围素材，不能直接填。"
-        if concepts & STRICT_MANUAL and (not selected or selected["score"] < 0.78):
-            selected = None
-        if selected and selected.get("actionHint") == "partial":
-            action = "partial"
-        # partial 事实（如证书 OCR 值）本身语义就是"填入并高亮待人工核对"，
-        # 不走 risk 低分拦截——拦掉就退回全空，人工连核对起点都没有。
-        if selected and selected.get("risk") and selected["score"] < 0.76 and action != "partial":
-            reason = selected["risk"]
-            selected = None
-
-        # F 系列"认证未完成或存在待解决项"类字段：证书已读到且未见待解决记载时，
-        # 按中标件通行写法默认"无"，partial 高亮交人工确认
-        if (
-            not selected
-            and spec.prefix.startswith("F")
-            and "待解决" in field["field"]
-            and any(fact["sourceKind"] == "pdf" for fact in facts)
-        ):
-            selected = {
-                "factId": f"{field['id']}-CERT-NONE",
-                "label": "待解决项默认响应",
-                "value": "无",
-                "unit": "",
-                "source": "证书 OCR（未见待解决项记载）",
-                "sourceKind": "pdf",
-                "sourcePriority": 60,
-                "row": field["rowIndex"],
-                "sheet": "",
-                "score": 0.62,
-                "usable": True,
-                "notes": "证书 OCR 文本未见未完成/待解决记载，按通行写法默认'无'。",
-                "risk": CERT_OCR_RISK,
-                "actionHint": "partial",
-            }
-            action = "partial"
-            reason = ""
-
-        if not selected and requirement_value_is_direct_response(field.get("requirementValue")):
-            requirement_value = clean(field.get("requirementValue"))
-            selected = {
-                "factId": f"{field['id']}-REQ",
-                "label": "招标人要求值",
-                "value": requirement_value,
-                "unit": field["unit"],
-                "source": f"{spec.title} 空表要求列",
-                "sourceKind": "template_requirement",
-                "sourcePriority": 88,
-                "row": field["rowIndex"],
-                "sheet": "",
-                "score": 0.86,
-                "usable": True,
-                "notes": "投标人响应值按同一行明确招标人要求值填写。",
-                "risk": "",
-                "actionHint": "fill",
-            }
-            reason = ""
-
-        if selected:
-            display_value = normalize_value_for_field(field, selected)
-            decisions.append(
-                {
-                    "targetFieldId": field["id"],
-                    "rowIndex": field["rowIndex"],
-                    "tableIndex": field.get("tableIndex"),
-                    "valueCol": field.get("valueCol"),
-                    "unitCol": field.get("unitCol"),
-                    "field": field["field"],
-                    "action": action,
-                    "value": display_value,
-                    "unit": field["unit"] or selected["unit"],
-                    "confidence": selected["score"],
-                    "selectedFact": selected,
-                    "alternatives": candidates[1:4],
-                    "reason": "语义概念匹配，并通过来源优先级与可用性检查。",
-                }
-            )
-        else:
-            if not reason:
-                if candidates:
-                    best = candidates[0]
-                    reason = f"有相近候选，但不可直接使用或置信度不足：{best['label']}={best['value']}，score={best['score']}"
-                else:
-                    reason = "未找到可映射的参考事实。"
-            decisions.append(
-                {
-                    "targetFieldId": field["id"],
-                    "rowIndex": field["rowIndex"],
-                    "tableIndex": field.get("tableIndex"),
-                    "valueCol": field.get("valueCol"),
-                    "unitCol": field.get("unitCol"),
-                    "field": field["field"],
-                    "action": "manual",
-                    "value": f"[待人工补充：{field['field']}]",
-                    "unit": field["unit"],
-                    "confidence": 0,
-                    "selectedFact": None,
-                    "alternatives": candidates[:4],
-                    "reason": reason,
-                }
-            )
-
-    return {
-        "schema": "bid-tech-table-field-mapping-v1",
-        "scenario": scenario,
-        "appendixId": spec.appendix_id,
-        "title": spec.title,
-        "targetFile": spec.source.name,
-        "table": {
-            "tableIndex": spec.table_index,
-            "headerRow": spec.header_row,
-            "fieldCol": spec.field_col,
-            "valueCol": spec.value_col,
-            "unitCol": spec.unit_col,
-            "remarkCol": spec.remark_col,
-        },
-        "summary": {
-            "fill": sum(d["action"] == "fill" for d in decisions),
-            "partial": sum(d["action"] == "partial" for d in decisions),
-            "manual": sum(d["action"] == "manual" for d in decisions),
-            "total": len(decisions),
-        },
-        "decisions": decisions,
-    }
 
 
 def set_cell(cell: Any, text: str, *, highlight: bool = False) -> None:
@@ -3092,15 +2814,6 @@ def parse_number(value: Any) -> float | None:
         return None
 
 
-def compact_number(value: Any) -> str:
-    number = parse_number(value)
-    if number is None:
-        return clean(value)
-    if abs(number - round(number)) < 1e-9:
-        return str(int(round(number)))
-    return f"{number:.6f}".rstrip("0").rstrip(".")
-
-
 def table_header_text(table: Any, row_idx: int, col_idx: int) -> str:
     parts: list[str] = []
     for probe in range(0, min(row_idx + 1, 5)):
@@ -3133,1333 +2846,6 @@ def matrix_role(header: str) -> str:
     if any(token in text for token in ("功率", "Power", "power")):
         return "power"
     return ""
-
-
-def source_density_rank(source: Source, header: str) -> int:
-    text = f"{source.name} {source.path.name}"
-    if "标准空气密度" in header:
-        return 4 if "1.225" in text else 2 if "1.16" not in text else 0
-    if "风电场空气密度" in header or "场址空气密度" in header:
-        return 4 if "1.16" in text else 1
-    return 2
-
-
-def extract_curve_tables(sources: list[Source]) -> list[dict[str, Any]]:
-    tables: list[dict[str, Any]] = []
-    for source in sources:
-        if source.kind != "xlsx":
-            continue
-        try:
-            wb = load_workbook(source.path, data_only=True, read_only=True)
-        except Exception:
-            continue
-        for ws in wb.worksheets:
-            rows = list(ws.iter_rows(values_only=True))
-            if not rows:
-                continue
-            header = [clean(cell) for cell in rows[0]]
-            wind_col = next((idx for idx, text in enumerate(header) if "风速" in text), None)
-            if wind_col is None:
-                continue
-            role_cols: dict[str, list[int]] = {"power": [], "ct": [], "pitch": []}
-            for idx, text in enumerate(header):
-                role = matrix_role(text)
-                if role:
-                    role_cols.setdefault(role, []).append(idx)
-            if not any(role_cols.values()):
-                continue
-            by_wind: dict[float, list[str]] = {}
-            min_wind: float | None = None
-            for values in rows[1:]:
-                if wind_col >= len(values):
-                    continue
-                wind = parse_number(values[wind_col])
-                if wind is None:
-                    continue
-                min_wind = wind if min_wind is None else min(min_wind, wind)
-                by_wind[round(wind, 3)] = [clean(value) for value in values]
-            if by_wind:
-                tables.append(
-                    {
-                        "source": source,
-                        "sheet": ws.title,
-                        "header": header,
-                        "roleCols": role_cols,
-                        "byWind": by_wind,
-                        "minWind": min_wind,
-                    }
-                )
-        wb.close()
-    return tables
-
-
-def table_cells(table: Any, max_rows: int | None = None) -> list[list[str]]:
-    rows = table.rows if max_rows is None else table.rows[:max_rows]
-    return [[clean(cell.text) for cell in row.cells] for row in rows]
-
-
-def table_header_cells(table: Any) -> list[str]:
-    cells: list[str] = []
-    for row in table_cells(table, max_rows=2):
-        for cell in row:
-            text = clean(cell)
-            if text and text not in cells:
-                cells.append(text)
-    return cells
-
-
-def meaningful_header_cells(cells: list[str]) -> list[str]:
-    ignored = {
-        "项目",
-        "内容",
-        "单位",
-        "备注",
-        "说明",
-        "序号",
-        "编号",
-        "名称",
-        "参数",
-        "指标",
-        "无",
-        "…",
-        "...",
-    }
-    result: list[str] = []
-    for cell in cells:
-        text = clean(cell)
-        normalized = norm(text)
-        if len(normalized) < 2 or normalized in ignored:
-            continue
-        if normalized in result:
-            continue
-        result.append(text)
-    return result
-
-
-def table_header_similarity(target_table: Any, source_table: Any) -> float:
-    target_cells = meaningful_header_cells(table_header_cells(target_table))
-    source_cells = meaningful_header_cells(table_header_cells(source_table))
-    if not target_cells or not source_cells:
-        return 0.0
-    source_norm = " ".join(norm(cell) for cell in source_cells)
-    matched = 0
-    for target in target_cells:
-        target_norm = norm(target)
-        if len(target_norm) >= 3 and target_norm in source_norm:
-            matched += 1
-            continue
-        if any(generic_match_score(target, source) >= 0.68 for source in source_cells):
-            matched += 1
-    return matched / max(1, len(target_cells))
-
-
-def sparse_table_needs_expansion(table: Any) -> bool:
-    if len(table.rows) > 20:
-        return False
-    data_rows = table.rows[1:] if table.rows else []
-    if not data_rows:
-        return False
-    empty = 0
-    total = 0
-    has_ellipsis = False
-    for row in data_rows:
-        for cell in row.cells:
-            text = clean(cell.text)
-            if text in {"…", "..."}:
-                has_ellipsis = True
-            if not text:
-                empty += 1
-            total += 1
-    return has_ellipsis or (total > 0 and empty / total >= 0.55)
-
-
-def source_table_nonempty_cells(table: Any) -> int:
-    return sum(1 for row in table.rows for cell in row.cells if clean(cell.text))
-
-
-def rounded_integer_text(value: Any) -> str:
-    text = clean(value).replace(",", "")
-    if not text:
-        return ""
-    try:
-        number = Decimal(text)
-    except InvalidOperation:
-        return clean(value)
-    return str(int(number.quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
-
-
-def find_position_rows(sources: list[Source]) -> tuple[list[dict[str, str]], Source | None, int]:
-    for source in sources:
-        if source.kind != "docx":
-            continue
-        try:
-            source_doc = Document(str(source.path))
-        except Exception:
-            continue
-        for table_idx, table in enumerate(source_doc.tables):
-            rows = table_cells(table)
-            if not rows:
-                continue
-            header_idx = -1
-            col_site = col_x = col_y = col_model = -1
-            for idx, row in enumerate(rows[:4]):
-                normalized = [norm(cell) for cell in row]
-                if not any("机位编号" in cell or "风机编号" in cell for cell in normalized):
-                    continue
-                col_site = next((i for i, cell in enumerate(normalized) if "机位编号" in cell or "风机编号" in cell), -1)
-                col_x = next((i for i, cell in enumerate(normalized) if cell in {"x", "xm"} or cell.startswith("x")), -1)
-                col_y = next((i for i, cell in enumerate(normalized) if cell in {"y", "ym"} or cell.startswith("y")), -1)
-                col_model = next((i for i, cell in enumerate(normalized) if "机型" in cell), -1)
-                if min(col_site, col_x, col_y, col_model) >= 0:
-                    header_idx = idx
-                    break
-            if header_idx < 0:
-                continue
-            result: list[dict[str, str]] = []
-            for row in rows[header_idx + 1 :]:
-                if max(col_site, col_x, col_y, col_model) >= len(row):
-                    continue
-                site = clean(row[col_site])
-                model = clean(row[col_model])
-                if not site or site.endswith("区") or model in {"备选", "备用"}:
-                    continue
-                x = rounded_integer_text(row[col_x])
-                y = rounded_integer_text(row[col_y])
-                if not x or not y or not model:
-                    continue
-                result.append({"site": site, "x": x, "y": y, "model": model})
-            if len(result) >= 2:
-                result.sort(key=lambda item: position_site_sort_key(item["site"]))
-                return result, source, table_idx
-    return [], None, -1
-
-
-def position_site_sort_key(site: str) -> tuple[str, int, str]:
-    text = clean(site)
-    match = re.match(r"^([A-Za-z\u4e00-\u9fff]+)0*([0-9]+)$", text)
-    if not match:
-        return (text, 0, text)
-    return (match.group(1), int(match.group(2)), text)
-
-
-def replace_table_element(target_table: Any, generated_table: Any) -> None:
-    """用生成表替换目标表，保留目标表的 tblPr（样式引用/显式边框/外观）。
-
-    build_table_docx 在新文档里建表，样式引用 "Table Grid" 且无显式
-    tblBorders；整表直接替换后，目标文档样式表里没有 TableGrid 定义，
-    表格在 Word/OnlyOffice 里渲染成无框线纯文本。保留原 tblPr 可让
-    目标表维持招标模板自身的样式与网格线。
-    """
-    new_tbl = deepcopy(generated_table._tbl)
-    original_tblpr = target_table._tbl.tblPr
-    if original_tblpr is not None:
-        generated_tblpr = new_tbl.find(qn("w:tblPr"))
-        if generated_tblpr is not None:
-            new_tbl.remove(generated_tblpr)
-        new_tbl.insert(0, deepcopy(original_tblpr))
-    target_table._tbl.getparent().replace(target_table._tbl, new_tbl)
-
-
-def build_table_docx(rows: list[list[str]], style: str = "Table Grid") -> Any:
-    generated = Document()
-    table = generated.add_table(rows=1, cols=len(rows[0]) if rows else 1)
-    try:
-        table.style = style
-    except Exception:
-        pass
-    for row_idx, row_values in enumerate(rows):
-        cells = table.rows[0].cells if row_idx == 0 else table.add_row().cells
-        for col_idx, value in enumerate(row_values):
-            if col_idx < len(cells):
-                cells[col_idx].text = value
-    return table
-
-
-def replace_first_table(output_file: Path, rows: list[list[str]]) -> None:
-    doc = Document(str(output_file))
-    if not doc.tables or not rows:
-        return
-    generated_table = build_table_docx(rows)
-    replace_table_element(doc.tables[0], generated_table)
-    doc.save(str(output_file))
-
-
-def source_with_tokens(sources: list[Source], *tokens: str, kind: str | None = None) -> Source | None:
-    for source in sources:
-        if kind and source.kind != kind:
-            continue
-        text = f"{source.name} {source.path.name}"
-        if all(token in text for token in tokens):
-            return source
-    return None
-
-
-def generated_table_decisions(rows: list[list[str]], source: Source | None, *, label: str, reason: str, action_hint: str) -> list[dict[str, Any]]:
-    decisions: list[dict[str, Any]] = []
-    for row_idx, row in enumerate(rows):
-        for col_idx, value in enumerate(row):
-            if not clean(value):
-                continue
-            decisions.append(
-                {
-                    "targetFieldId": f"{action_hint.upper()}-T1-R{row_idx + 1}-C{col_idx + 1}",
-                    "rowIndex": row_idx,
-                    "field": rows[0][col_idx] if rows and col_idx < len(rows[0]) else f"C{col_idx + 1}",
-                    "action": "fill",
-                    "value": value,
-                    "unit": "",
-                    "confidence": 0.88,
-                    "selectedFact": {
-                        "factId": "",
-                        "label": label,
-                        "value": value,
-                        "unit": "",
-                        "source": source.name if source else "",
-                        "sourceKind": source.kind if source else "",
-                        "sourcePriority": source.priority if source else 64,
-                        "row": row_idx + 1,
-                        "sheet": "table[0]",
-                        "score": 0.88,
-                        "usable": True,
-                        "notes": reason,
-                        "risk": "",
-                        "actionHint": action_hint,
-                        "sourcePath": str(source.path) if source else "",
-                        "column": col_idx + 1,
-                    },
-                    "alternatives": [],
-                    "reason": reason,
-                }
-            )
-    return decisions
-
-
-def strip_approx(value: str) -> str:
-    text = clean(value)
-    text = re.sub(r"^[~～]\s*", "", text)
-    return text.strip()
-
-
-def project_model_display(project: dict[str, Any]) -> str:
-    model = clean(project.get("model"))
-    for suffix in ("上置", "下置", "_上置", "_下置"):
-        model = model.replace(suffix, "")
-    return model or "投标机型"
-
-
-def strip_trailing_decimal_zero(value: str) -> str:
-    text = clean(value)
-    if re.fullmatch(r"-?\d+\\.0", text):
-        return text[:-2]
-    return text
-
-
-def repeated_row(value: str, width: int = 8) -> list[str]:
-    return [value] * width
-
-
-def quote_xlsx_source(sources: list[Source]) -> Source | None:
-    for source in sources:
-        text = f"{source.name} {source.path.name}"
-        if source.kind == "xlsx" and ("报价文件" in text or "投标价格" in text):
-            return source
-    return None
-
-
-def cell_text(ws: Any, row: int, col: int) -> str:
-    return clean(ws.cell(row, col).value)
-
-
-def quote_rows_until(ws: Any, start: int, *, stop_tokens: tuple[str, ...]) -> list[int]:
-    rows: list[int] = []
-    for row in range(start, ws.max_row + 1):
-        first = cell_text(ws, row, 1)
-        joined = " ".join(cell_text(ws, row, col) for col in range(1, min(ws.max_column, 10) + 1))
-        if first and any(token in first or token in joined for token in stop_tokens):
-            break
-        if any(cell_text(ws, row, col) for col in range(1, min(ws.max_column, 10) + 1)):
-            rows.append(row)
-    return rows
-
-
-def normalize_section_title(value: str) -> str:
-    text = clean(value)
-    text = re.sub(r"^[一二三四五六七八九十]+、", "", text)
-    text = re.sub(r"^3[.．][12]\s*", "", text)
-    return text
-
-
-def quote_b1_rows(wb: Any) -> list[list[str]]:
-    ws = wb["B 设备的分项报价"]
-    rows = [["序号", "货物名称", "货物名称", "品牌或制造商名称", "型号和规格", "原产地", "数量", "备注"]]
-    for row in quote_rows_until(ws, 5, stop_tokens=("设备分项价格合计", "设备分项价格总计", "注1")):
-        seq = cell_text(ws, row, 1)
-        name = cell_text(ws, row, 2)
-        sub_name = cell_text(ws, row, 3)
-        spec = cell_text(ws, row, 4)
-        quantity = cell_text(ws, row, 7)
-        maker = cell_text(ws, row, 10)
-        origin = cell_text(ws, row, 11)
-        remark = cell_text(ws, row, 12)
-        if not (seq or name or sub_name):
-            continue
-        left_name = name or ""
-        right_name = sub_name or name
-        rows.append(["", left_name, right_name, maker, spec, origin, quantity, remark])
-    rows.append(["", "…..", "…..", "", "", "", "", ""])
-    rows.append(repeated_row("备注1：航空障碍灯必须符合《民用机场飞行区技术标准（MH/T 5001-2013）》、国际民航组织颁发的《国际标准和建设措施机备注场》和国民用航空行业标准《航空障碍灯（MH/T 6012-2015[1]）》等相关规范。障碍灯厂家应是在民用机场专用设备管理系统中备案厂家。\n备注2：招标项目有额外特殊需求采购设备，需在此表尾部进行罗列。"))
-    return rows
-
-
-def quote_b2_rows(wb: Any) -> list[list[str]]:
-    ws = wb["E 推荐备品备件（如果有）的分项报价"]
-    rows = [["序号", "名称", "型号和规格", "单位", "数量", "备注", "更换周期", "国内替代产品型号"]]
-    rows.append(repeated_row("一、备品备件部分"))
-    for row in quote_rows_until(ws, 6, stop_tokens=("合计", "总计", "注1")):
-        seq = cell_text(ws, row, 1)
-        name = cell_text(ws, row, 2)
-        spec = cell_text(ws, row, 3)
-        unit = cell_text(ws, row, 4)
-        quantity = cell_text(ws, row, 5)
-        if not seq or not name:
-            continue
-        rows.append([seq, name, spec, unit, quantity, "\\", "\\", "\\"])
-    return rows
-
-
-def quote_tool_row(ws: Any, row: int) -> list[str]:
-    return [
-        cell_text(ws, row, 1),
-        cell_text(ws, row, 2),
-        cell_text(ws, row, 3) or "\\",
-        cell_text(ws, row, 5),
-        cell_text(ws, row, 6),
-        "\\",
-        cell_text(ws, row, 9),
-        cell_text(ws, row, 10),
-    ]
-
-
-def quote_b3_rows(wb: Any) -> list[list[str]]:
-    ws = wb["C 必备的专用工具（包括消耗品）的分项报价"]
-    rows = [["序号", "名称", "型号和规格", "单位", "数量", "产地", "生产厂家", "备注"]]
-    for row in quote_rows_until(ws, 6, stop_tokens=("运行、维护专用工具及仪器合计",)):
-        seq = cell_text(ws, row, 1)
-        if seq.isdigit():
-            rows.append(quote_tool_row(ws, row))
-    return rows
-
-
-def quote_b4_rows(wb: Any) -> list[list[str]]:
-    ws = wb["C 必备的专用工具（包括消耗品）的分项报价"]
-    rows = [["序号", "名称", "型号和规格", "单位", "数量", "产地", "生产厂家", "备注"]]
-    for row in range(42, 146):
-        first = cell_text(ws, row, 1)
-        if not first or first == "三、吊具清单":
-            continue
-        if first.isdigit():
-            rows.append(quote_tool_row(ws, row))
-            continue
-        title = normalize_section_title(first)
-        if title:
-            rows.append(repeated_row(title))
-    return rows
-
-
-def quote_rows_for_title(title: str, wb: Any) -> list[list[str]]:
-    if "B.1.1" in title or "供货范围清单" in title:
-        return quote_b1_rows(wb)
-    if "B.2" in title or "备品备件" in title:
-        return quote_b2_rows(wb)
-    if "B.3" in title or "运行、维护专用工具" in title:
-        return quote_b3_rows(wb)
-    if "B.4" in title or "安装、调试专用" in title:
-        return quote_b4_rows(wb)
-    return []
-
-
-def apply_quote_appendix_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec) -> list[dict[str, Any]]:
-    source = quote_xlsx_source(sources)
-    if source is None:
-        return []
-    try:
-        wb = load_workbook(source.path, data_only=True, read_only=True)
-    except Exception:
-        return []
-    try:
-        rows = quote_rows_for_title(spec.title, wb)
-    finally:
-        wb.close()
-    if len(rows) < 2:
-        return []
-    doc = Document(str(output_file))
-    if not doc.tables:
-        return []
-    target_table = doc.tables[0]
-    generated_table = build_table_docx(rows)
-    replace_table_element(target_table, generated_table)
-    decisions: list[dict[str, Any]] = []
-    for row_idx, row in enumerate(rows):
-        for col_idx, value in enumerate(row):
-            if not clean(value):
-                continue
-            decisions.append(
-                {
-                    "targetFieldId": f"QUOTE-T1-R{row_idx + 1}-C{col_idx + 1}",
-                    "rowIndex": row_idx,
-                    "field": rows[0][col_idx] if col_idx < len(rows[0]) else f"C{col_idx + 1}",
-                    "action": "fill",
-                    "value": value,
-                    "unit": "",
-                    "confidence": 0.88,
-                    "selectedFact": {
-                        "factId": "",
-                        "label": "报价文件分项报价",
-                        "value": value,
-                        "unit": "",
-                        "source": source.name,
-                        "sourceKind": source.kind,
-                        "sourcePriority": source.priority,
-                        "row": row_idx + 1,
-                        "sheet": "报价文件",
-                        "score": 0.88,
-                        "usable": True,
-                        "notes": "从项目报价文件分项报价 Sheet 转写技术附表清单。",
-                        "risk": "",
-                        "actionHint": "quote_table",
-                        "sourcePath": str(source.path),
-                        "column": col_idx + 1,
-                    },
-                    "alternatives": [],
-                    "reason": "目标清单与项目报价文件分项报价表结构匹配。",
-                }
-            )
-    if decisions:
-        doc.save(str(output_file))
-    return decisions
-
-
-def tower_source_values(source: Source) -> dict[tuple[str, str], str]:
-    result: dict[tuple[str, str], str] = {}
-    try:
-        doc = Document(str(source.path))
-    except Exception:
-        return result
-    if not doc.tables:
-        return result
-    for row in doc.tables[0].rows:
-        cells = [clean(cell.text) for cell in row.cells]
-        if len(cells) >= 3 and (cells[0] or cells[1]) and cells[2]:
-            result[(tower_lookup_key(cells[0]), tower_lookup_key(cells[1]))] = cells[2]
-            result[(tower_lookup_key(cells[0]), "")] = cells[2]
-    return result
-
-
-def tower_lookup_key(value: str) -> str:
-    return re.sub(r"\s*/\s*", "/", clean(value))
-
-
-def tower_value(values: dict[tuple[str, str], str], first: str, second: str = "") -> str:
-    first_key = tower_lookup_key(first)
-    second_key = tower_lookup_key(second)
-    return strip_approx(values.get((first_key, second_key), "") or values.get((first_key, ""), ""))
-
-
-def apply_tower_appendix_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec, project: dict[str, Any]) -> list[dict[str, Any]]:
-    if "附表C.6" not in spec.title and "塔架技术参数" not in spec.title:
-        return []
-    source = source_with_tokens(sources, "塔架与基础工程量", kind="docx")
-    if source is None:
-        return []
-    values = tower_source_values(source)
-    if not values:
-        return []
-    sections = [
-        ("第一段筒壁/（段号从上至下排序）（不含环法兰重量）", "第5段(顶)/塔节Q355NE"),
-        ("第二段筒壁/（不含环法兰重量）", "第4段/塔节Q355NE"),
-        ("第三段筒壁/（不含环法兰重量）", "第3段/塔节Q355NE"),
-        ("第四段筒壁\n（不含环法兰重量）", "第2段/塔节Q355NE"),
-        ("第五段筒壁\n（不含环法兰重量）", "第1段(底)/塔节Q355NE"),
-    ]
-    rows = [
-        ["项目", "项目", "技术参数和规格", "计量单位", "备注"],
-        ["机型", "机型", project_model_display(project), "", ""],
-        ["塔筒形式", "塔筒形式", "整环式全钢塔", "", "整环式全钢塔、分片式全钢塔等"],
-        ["塔筒台数", "塔筒台数", "", "台", ""],
-        ["塔筒高度", "塔筒高度", strip_trailing_decimal_zero(tower_value(values, "轮毂高度（m）")), "m", ""],
-        ["塔筒总节数（段）", "塔筒总节数（段）", tower_value(values, "塔筒段数（段）"), "", ""],
-        ["分片节数", "分片节数", "/", "", "如采用分片式全钢塔，则填写此行，否则无需填写"],
-        ["塔筒防腐等级，外/内", "塔筒防腐等级，外/内", "C4/C3", "", ""],
-        ["法兰材料规格型号", "法兰材料规格型号", tower_value(values, "环向法兰材料规格型号"), "", ""],
-        ["法兰剖面形状", "法兰剖面形状", "L型", "", ""],
-    ]
-    for target_label, source_label in sections:
-        rows.extend(
-            [
-                [target_label, "长度", tower_value(values, source_label, "长度（m）"), "m", ""],
-                [target_label, "重量", tower_value(values, source_label, "重量（kg）"), "kg", "如采用分片式全钢塔，纵向法兰及连接件重量计入筒壁" if "第一段" in target_label else ""],
-                [target_label, "材料规格型号", tower_value(values, "筒节钢板材规格型号"), "", ""],
-                [target_label, "顶部筒壁外直径", tower_value(values, source_label, "顶部直径（m）"), "m", ""],
-                [target_label, "底部筒壁外直径", tower_value(values, source_label, "底部直径（m）"), "m", ""],
-            ]
-        )
-    rows.extend(
-        [
-            ["筒壁总重量", "筒壁总重量", tower_value(values, "钢材型号Q355NE的筒节质量（kg）"), "kg", ""],
-            ["法兰总重量", "法兰总重量", tower_value(values, "环向法兰重量（kg）"), "kg", ""],
-            ["内附件总重量", "内附件总重量", tower_value(values, "塔筒内附件近似重量（kg）"), "kg", ""],
-            ["塔筒重量TG1\n（筒壁+法兰总重量）", "塔筒重量TG1\n（筒壁+法兰总重量）", tower_value(values, "筒壁+法兰重量（kg）"), "kg", "即不含附件重量"],
-            ["塔筒总重量TG2\n（筒壁+法兰+内附件总重量）", "塔筒总重量TG2\n（筒壁+法兰+内附件总重量）", tower_value(values, "塔架总重（筒壁+法兰+内附件）（kg）"), "kg", "即含附件重量"],
-        ]
-    )
-    replace_first_table(output_file, rows)
-    return generated_table_decisions(rows, source, label="塔架与基础工程量", reason="从项目塔架与基础工程量表重组附表C.6 塔架技术参数。", action_hint="tower_table")
-
-
-def logistics_rows(source: Source) -> list[list[str]]:
-    try:
-        doc = Document(str(source.path))
-    except Exception:
-        return []
-    if not doc.tables:
-        return []
-    return [[clean(cell.text) for cell in row.cells] for row in doc.tables[0].rows]
-
-
-def apply_delivery_schedule_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec, project: dict[str, Any]) -> list[dict[str, Any]]:
-    if "附表H.2" not in spec.title and "交货进度" not in spec.title:
-        return []
-    source = source_with_tokens(sources, "物流解决方案", kind="docx")
-    if source is None:
-        return []
-    source_rows = logistics_rows(source)
-    if len(source_rows) < 2:
-        return []
-    model = project_model_display(project)
-    rows = [["批次", "型号规格", "总装厂名称", "数量", "发运地点", "交货时间", "备注"]]
-    for idx, row in enumerate(source_rows[1:], start=1):
-        name = row[0] if len(row) > 0 else ""
-        quantity = row[1] if len(row) > 1 else ""
-        origin = row[3] if len(row) > 3 else ""
-        if not name or not quantity:
-            continue
-        if "叶片" in name:
-            spec_name = name
-            maker = "中材"
-            try:
-                quantity = str(int(float(quantity)) * 3)
-            except ValueError:
-                pass
-        else:
-            spec_name = name.replace("EW10", model)
-            maker = "上海电气"
-        rows.append([str(idx), spec_name, maker, quantity, origin, "响应招标文件", ""])
-    if len(rows) < 2:
-        return []
-    replace_first_table(output_file, rows)
-    return generated_table_decisions(rows, source, label="物流方案设备发运表", reason="从项目物流解决方案设备起运地和数量表生成交货进度。", action_hint="delivery_table")
-
-
-def x2_param_value(source: Source, project: dict[str, Any], label_token: str) -> str:
-    try:
-        wb = load_workbook(source.path, data_only=True, read_only=True)
-    except Exception:
-        return ""
-    try:
-        ws = choose_param_sheet(wb, project)
-        if ws is None:
-            return ""
-        col = choose_param_col(ws, project)
-        if col is None:
-            return ""
-        for row in range(1, ws.max_row + 1):
-            label = clean(ws.cell(row, 3).value)
-            if label_token in label:
-                return clean(ws.cell(row, col).value)
-    finally:
-        wb.close()
-    return ""
-
-
-def transport_dimension(value: str) -> str:
-    text = re.sub(r"[（(].*?[）)]", "", clean(value))
-    return text.replace("×", "*").strip()
-
-
-def transport_weight(value: str) -> str:
-    text = re.sub(r"[（(].*?[）)]", "", clean(value))
-    return text.strip()
-
-
-def apply_large_component_transport_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec, project: dict[str, Any]) -> list[dict[str, Any]]:
-    # "大部件"词面会撞上 F.3 系"大部件认证情况"——那是认证表不是运输表，
-    # 整表重建会把 58x5 认证空表替换成 7x10 运输表（金标反评 F.3.1 假阳性 66 格）。
-    if "附表H.5" not in spec.title and ("大部件" not in spec.title or "认证" in spec.title):
-        return []
-    source = next((item for item in sources if item.kind == "xlsx" and "X2平台机型投标参数" in item.name), None)
-    if source is None:
-        # 素材命名演进：不再限定旧文件名，凡参数表内含运输尺寸行（长×宽×高）的 xlsx 均可作源。
-        source = next(
-            (item for item in sources if item.kind == "xlsx" and x2_param_value(item, project, "长×宽×高")),
-            None,
-        )
-    logistics = source_with_tokens(sources, "物流解决方案", kind="docx")
-    if source is None:
-        return []
-    origins = {"叶片": "连云港", "轮毂": "滨海", "主机舱": "锡盟", "副机舱（上置）": "锡盟", "驱动链整体": "锡盟"}
-    if logistics:
-        for row in logistics_rows(logistics)[1:]:
-            name = row[0] if len(row) > 0 else ""
-            origin = row[3] if len(row) > 3 else ""
-            if "叶片" in name:
-                origins["叶片"] = origin or origins["叶片"]
-            elif "轮毂" in name:
-                origins["轮毂"] = origin or origins["轮毂"]
-            elif "副机舱" in name:
-                origins["副机舱（上置）"] = origin or origins["副机舱（上置）"]
-            elif "机舱" in name:
-                origins["主机舱"] = origin or origins["主机舱"]
-    rows = [
-        ["序号", "部件名称", "数量", "尺寸（m）长×宽×高", "尺寸（m）长×宽×高", "重量（t）", "重量（t）", "厂家/名称", "部件/产地", "备注"],
-        ["序号", "部件名称", "数量", "包装", "未包装", "包装", "未包装", "厂家/名称", "部件/产地", "备注"],
-    ]
-    specs = [
-        ("1", "叶片", "180", "叶片：长×宽×高", "叶片（1片）", ""),
-        ("2", "轮毂", "60", "轮毂：长×宽×高", "轮毂(含运输支架", ""),
-        ("3", "主机舱", "60", "主机舱: 长×宽×高", "主机舱(含运输支架", "机舱与驱动链分体运输"),
-        ("4", "副机舱（上置）", "60", "副机舱: 长×宽×高", "副机舱（含支架", ""),
-        ("5", "驱动链整体", "60", "驱动链整体", "驱动链（含支架", ""),
-    ]
-    for seq, name, quantity, dim_token, weight_token, remark in specs:
-        dim = transport_dimension(x2_param_value(source, project, dim_token))
-        weight = transport_weight(x2_param_value(source, project, weight_token))
-        rows.append([seq, name, quantity, dim, dim, weight, weight, "上海电气", origins.get(name, ""), remark])
-    replace_first_table(output_file, rows)
-    evidence_source = logistics or source
-    return generated_table_decisions(rows, evidence_source, label="大部件运输参数", reason="从机型参数表运输尺寸/重量和物流方案起运地生成大部件情况表。", action_hint="large_component_table")
-
-
-def wind_key(value: float) -> float:
-    return round(float(value), 3)
-
-
-def wind_values(start: float, end: float, step: float = 0.5) -> list[float]:
-    values: list[float] = []
-    current = start
-    while current <= end + 1e-9:
-        values.append(round(current, 3))
-        current += step
-    return values
-
-
-def d1_wind_text(wind: float) -> str:
-    return "0" if abs(wind) < 1e-9 else f"{wind:.1f}"
-
-
-def load_curve_series(sources: list[Source]) -> dict[str, dict[float, dict[str, str]]]:
-    result: dict[str, dict[float, dict[str, str]]] = {"standard": {}, "site": {}}
-    for source in sources:
-        if source.kind != "xlsx":
-            continue
-        text = f"{source.name} {source.path.name}"
-        density = "standard" if "1.225" in text else "site" if "1.16" in text else ""
-        if not density:
-            continue
-        try:
-            wb = load_workbook(source.path, data_only=True, read_only=True)
-        except Exception:
-            continue
-        try:
-            ws = wb["功率曲线与发电量"] if "功率曲线与发电量" in wb.sheetnames else wb.worksheets[0]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                wind = parse_number(row[0] if len(row) > 0 else None)
-                if wind is None:
-                    continue
-                result[density][wind_key(wind)] = {
-                    "power": compact_number(row[1] if len(row) > 1 else ""),
-                    "ct": compact_number(row[2] if len(row) > 2 else ""),
-                    "cp": compact_number(row[3] if len(row) > 3 else ""),
-                }
-        finally:
-            wb.close()
-    return result
-
-
-def curve_lookup(series: dict[str, dict[float, dict[str, str]]], density: str, wind: float, key: str) -> str:
-    value = (series.get(density) or {}).get(wind_key(wind), {}).get(key, "")
-    return value if value else "/"
-
-
-def curve_row_decisions(rows: list[list[str]], source: Source | None, reason: str) -> list[dict[str, Any]]:
-    decisions: list[dict[str, Any]] = []
-    for row_idx, row in enumerate(rows):
-        for col_idx, value in enumerate(row):
-            if not clean(value):
-                continue
-            decisions.append(
-                {
-                    "targetFieldId": f"CURVE-T1-R{row_idx + 1}-C{col_idx + 1}",
-                    "rowIndex": row_idx,
-                    "field": rows[1][col_idx] if len(rows) > 1 and col_idx < len(rows[1]) else f"C{col_idx + 1}",
-                    "action": "fill",
-                    "value": value,
-                    "unit": "",
-                    "confidence": 0.86,
-                    "selectedFact": {
-                        "factId": "",
-                        "label": "功率/推力曲线",
-                        "value": value,
-                        "unit": "",
-                        "source": source.name if source else "",
-                        "sourceKind": source.kind if source else "xlsx",
-                        "sourcePriority": source.priority if source else 64,
-                        "row": row_idx + 1,
-                        "sheet": "功率曲线与发电量",
-                        "score": 0.86,
-                        "usable": True,
-                        "notes": reason,
-                        "risk": "",
-                        "actionHint": "curve_table",
-                        "sourcePath": str(source.path) if source else "",
-                        "column": col_idx + 1,
-                    },
-                    "alternatives": [],
-                    "reason": reason,
-                }
-            )
-    return decisions
-
-
-def apply_curve_appendix_table_fill(output_file: Path, sources: list[Source], spec: AppendixSpec) -> list[dict[str, Any]]:
-    title = spec.title
-    if not any(token in title for token in ("附表D.1", "附表D.2", "附表D.3", "附表D.4", "附表D.5", "附表D.6")):
-        return []
-    try:
-        current_doc = Document(str(output_file))
-        current_rows = len(current_doc.tables[0].rows) if current_doc.tables else 0
-    except Exception:
-        return []
-    if current_rows < 10:
-        return []
-    series = load_curve_series(sources)
-    if not (series.get("site") or series.get("standard")):
-        return []
-    source = next((item for item in sources if item.kind == "xlsx" and "功率曲线" in f"{item.name} {item.path.name}"), None)
-    rows: list[list[str]] = []
-    if "附表D.1" in title:
-        compare_chart = "标准空气密度\n\n风电场空气密度"
-        rows = [["机型：投标机型1"] * 6, ["风速区间（m/s）", "区间平均风速（m/s）", "标准空气密度下功率（kW）", "风电场空气密度下功率（kW）", "功率曲线对比图", "功率曲线对比图"]]
-        for wind in wind_values(0, 25):
-            interval = f"{max(0, wind - 0.25):.2f}-{wind + 0.25:.2f}"
-            rows.append([interval, d1_wind_text(wind), curve_lookup(series, "standard", wind, "power"), curve_lookup(series, "site", wind, "power"), compare_chart, compare_chart])
-        rows.append(["投标人授权代表签名", "投标人授权代表签名", "", "", "标准空气密度为1.225kg/m3", "风电场空气密度为 1.16  kg/m3"])
-    elif "附表D.2" in title:
-        compare_chart = "标准空气密度\n\n风电场空气密度"
-        rows = [["机型：投标机型1"] * 5, ["风速m/s", "标准空气密度推力系数", "风电场空气密度推力系数", compare_chart, compare_chart]]
-        for wind in wind_values(3, 23):
-            rows.append([compact_number(wind), curve_lookup(series, "standard", wind, "ct"), curve_lookup(series, "site", wind, "ct"), compare_chart, compare_chart])
-        rows.append(["投标人授权代表签名", "投标人授权代表签名", "", "标准空气密度为1.225 kg/m3", "风电场空气密度为/1.16kg/m3"])
-    elif "附表D.3" in title or "附表D.6" in title:
-        footer = "空气密度为1.16kg/m3" if "附表D.3" in title else "风电场空气密度为 1.16 kg/m3"
-        rows = [["机型：投标机型1"] * 4, ["风速m/s", "功率kW", "桨距角°", "功率-桨距角曲线图"]]
-        for wind in wind_values(1, 25):
-            power = curve_lookup(series, "site", wind, "power")
-            pitch = "/" if power == "/" else ""
-            rows.append([compact_number(wind), power, pitch, "功率-桨距角曲线/"])
-        rows.append(["投标人授权代表签名", "投标人授权代表签名", "", footer])
-    elif "附表D.4" in title:
-        rows = [["机型：投标机型1"] * 4, ["风速m/s", "功率kW", "风能利用系数Cp", "功率曲线图"]]
-        for wind in wind_values(1, 25):
-            rows.append([compact_number(wind), curve_lookup(series, "site", wind, "power"), curve_lookup(series, "site", wind, "cp"), "功率曲线/"])
-        rows.append(["投标人授权代表签名", "投标人授权代表签名", "", "风电场空气密度为1.16kg/m3"])
-    elif "附表D.5" in title:
-        rows = [["机型：投标机型1"] * 4, ["风速m/s", "风电场空气密度推力系数", "风电场空气密度推力系数", ""]]
-        for wind in wind_values(3, 23):
-            ct = curve_lookup(series, "site", wind, "ct")
-            rows.append([compact_number(wind), ct, ct, "/推力系数曲线//"])
-        rows.append(["投标人授权代表签名", "投标人授权代表签名", "", "风电场空气密度为1.16kg/m3"])
-    if not rows:
-        return []
-    doc = current_doc
-    if not doc.tables:
-        return []
-    generated_table = build_table_docx(rows)
-    replace_table_element(doc.tables[0], generated_table)
-    doc.save(str(output_file))
-    return curve_row_decisions(rows, source, "从项目功率/推力曲线 Excel 生成完整曲线附表；曲线范围外按招标填报习惯标为 /。")
-
-
-def apply_load_wind_parameter_table_fill(output_file: Path, sources: list[Source]) -> list[dict[str, Any]]:
-    position_rows, source, source_table_idx = find_position_rows(sources)
-    if not position_rows or source is None:
-        return []
-    doc = Document(str(output_file))
-    own_limit = own_table_limit(doc)
-    decisions: list[dict[str, Any]] = []
-    for table_idx, target_table in enumerate(doc.tables[:own_limit]):
-        target_text = " ".join(clean(cell.text) for row in target_table.rows[:4] for cell in row.cells)
-        if "载荷计算风参数分组" not in target_text or "投标机型" not in target_text:
-            continue
-        rows: list[list[str]] = [
-            ["载荷计算风参数分组1"] * 5,
-            ["序号", "机位编号", "机组坐标", "机组坐标", "投标机型"],
-            ["序号", "机位编号", "X", "Y", "投标机型"],
-        ]
-        for index, item in enumerate(position_rows, start=1):
-            rows.append([str(index), item["site"], item["x"], item["y"], item["model"]])
-        rows.append(["备注：如采用全场包络，只需填写分组1。"] * 5)
-
-        generated_table = build_table_docx(rows)
-        replace_table_element(target_table, generated_table)
-        for row_idx, row in enumerate(rows):
-            for col_idx, value in enumerate(row):
-                if not clean(value):
-                    continue
-                decisions.append(
-                    {
-                        "targetFieldId": f"LOADWIND-T{table_idx + 1}-R{row_idx + 1}-C{col_idx + 1}",
-                        "rowIndex": row_idx,
-                        "field": rows[2][col_idx] if row_idx >= 3 and col_idx < len(rows[2]) else f"R{row_idx + 1}C{col_idx + 1}",
-                        "action": "fill",
-                        "value": value,
-                        "unit": "",
-                        "confidence": 0.9,
-                        "selectedFact": {
-                            "factId": "",
-                            "label": "载荷计算风参数分组机位坐标",
-                            "value": value,
-                            "unit": "",
-                            "source": source.name,
-                            "sourceKind": source.kind,
-                            "sourcePriority": source.priority,
-                            "row": row_idx + 1,
-                            "sheet": f"table[{source_table_idx}]",
-                            "score": 0.9,
-                            "usable": True,
-                            "notes": "从项目风资源/机位坐标源表生成载荷计算风参数分组表，坐标按整数填报格式四舍五入。",
-                            "risk": "",
-                            "actionHint": "position_group_table",
-                            "sourcePath": str(source.path),
-                            "column": col_idx + 1,
-                        },
-                        "alternatives": [],
-                        "reason": "目标表为载荷计算风参数分组，项目素材中存在机位编号、X/Y 坐标和机型源表。",
-                    }
-                )
-    if decisions:
-        doc.save(str(output_file))
-    return decisions
-
-
-def source_docx_path(source: Source) -> Path | None:
-    """按 Word 表格结构读取该素材时应打开的文件。
-
-    kind=docx 用素材本身；kind=xlsx（原件优先后）回退到清洗 docx 文本稿，
-    使整表移植、同构表查表这类按 Word 表格工作的分支不因改读原件而失去来源。
-    """
-    if source.kind == "docx":
-        return source.path
-    if source.cleaned_docx_path is not None and source.cleaned_docx_path.is_file():
-        return source.cleaned_docx_path
-    return None
-
-
-def apply_source_table_transplant(output_file: Path, sources: list[Source]) -> list[dict[str, Any]]:
-    doc = Document(str(output_file))
-    own_limit = own_table_limit(doc)
-    candidates: list[dict[str, Any]] = []
-    for target_idx, target_table in enumerate(doc.tables[:own_limit]):
-        if not sparse_table_needs_expansion(target_table):
-            continue
-        for source in sources:
-            docx_path = source_docx_path(source)
-            if docx_path is None:
-                continue
-            try:
-                source_doc = Document(str(docx_path))
-            except Exception:
-                continue
-            for source_idx, source_table in enumerate(source_doc.tables):
-                if len(source_table.rows) <= max(len(target_table.rows) + 6, len(target_table.rows) * 2):
-                    continue
-                if len(source_table.columns) < 4:
-                    continue
-                similarity = table_header_similarity(target_table, source_table)
-                if similarity < 0.48:
-                    continue
-                candidates.append(
-                    {
-                        "targetIndex": target_idx,
-                        "sourceIndex": source_idx,
-                        "source": source,
-                        "sourceTable": source_table,
-                        "similarity": similarity,
-                        "nonempty": source_table_nonempty_cells(source_table),
-                    }
-                )
-    if not candidates:
-        return []
-    by_target: dict[int, dict[str, Any]] = {}
-    for candidate in sorted(candidates, key=lambda item: (item["similarity"], item["nonempty"], item["source"].priority), reverse=True):
-        by_target.setdefault(candidate["targetIndex"], candidate)
-
-    decisions: list[dict[str, Any]] = []
-    for target_idx, candidate in by_target.items():
-        target_table = doc.tables[target_idx]
-        source_table = candidate["sourceTable"]
-        target_table._tbl.getparent().replace(target_table._tbl, deepcopy(source_table._tbl))
-        source = candidate["source"]
-        for row_idx, row in enumerate(source_table.rows):
-            for col_idx, cell in enumerate(row.cells):
-                value = clean(cell.text)
-                if not value:
-                    continue
-                decisions.append(
-                    {
-                        "targetFieldId": f"TABLECOPY-T{target_idx + 1}-R{row_idx + 1}-C{col_idx + 1}",
-                        "rowIndex": row_idx,
-                        "field": table_header_text(source_table, row_idx, col_idx) or f"R{row_idx + 1}C{col_idx + 1}",
-                        "action": "fill",
-                        "value": value,
-                        "unit": "",
-                        "confidence": round(0.74 + min(0.16, candidate["similarity"] * 0.16), 3),
-                        "selectedFact": {
-                            "factId": "",
-                            "label": "结构化源表",
-                            "value": value,
-                            "unit": "",
-                            "source": source.name,
-                            "sourceKind": source.kind,
-                            "sourcePriority": source.priority,
-                            "row": row_idx + 1,
-                            "sheet": f"table[{candidate['sourceIndex']}]",
-                            "score": round(candidate["similarity"], 3),
-                            "usable": True,
-                            "notes": "空白附表与项目素材 Word 源表表头高度匹配，按源表整体移植并保留证据。",
-                            "risk": "",
-                            "actionHint": "table_transplant",
-                            "sourcePath": str(source.path),
-                            "column": col_idx + 1,
-                        },
-                        "alternatives": [],
-                        "reason": "目标表为稀疏占位表，项目素材中存在同主题完整结构化源表。",
-                    }
-                )
-    if decisions:
-        doc.save(str(output_file))
-    return decisions
-
-
-def detect_table_fill_columns(table: Any) -> tuple[int, int, int] | None:
-    for header_row, row in enumerate(table.rows[:4]):
-        cells = [clean(cell.text) for cell in row.cells]
-        value_col = choose_response_value_col(cells)
-        if value_col < 0:
-            continue
-        field_col = choose_field_col(cells, value_col)
-        if field_col >= 0 and field_col != value_col:
-            return header_row, field_col, value_col
-    return None
-
-
-def source_fill_rows(table: Any, header_row: int, field_col: int, value_col: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row_idx, row in enumerate(table.rows[header_row + 1 :], start=header_row + 1):
-        cells = [clean(cell.text) for cell in row.cells]
-        if field_col >= len(cells) or value_col >= len(cells):
-            continue
-        label = cells[field_col]
-        value = cells[value_col]
-        if not label or not usable_value(value):
-            continue
-        if norm(label) in {"项目", "参数", "名称", "内容", "说明", "备注"}:
-            continue
-        rows.append({"label": label, "value": value, "row": row_idx + 1, "column": value_col + 1})
-    return rows
-
-
-def best_source_row_match(field: str, rows: list[dict[str, Any]]) -> tuple[float, dict[str, Any] | None]:
-    best_score = 0.0
-    best_row: dict[str, Any] | None = None
-    for row in rows:
-        score_value = generic_match_score(field, row["label"])
-        if score_value > best_score:
-            best_score = score_value
-            best_row = row
-    return best_score, best_row
-
-
-def apply_same_shape_source_table_fill(
-    output_file: Path,
-    sources: list[Source],
-    spec: AppendixSpec,
-    mapping: dict[str, Any],
-) -> list[dict[str, Any]]:
-    if spec.table_index < 0:
-        return []
-    manual_decisions = [item for item in mapping.get("decisions") or [] if item.get("action") == "manual"]
-    if not manual_decisions:
-        return []
-
-    doc = Document(str(output_file))
-    if spec.table_index >= len(doc.tables):
-        return []
-    target_table = doc.tables[spec.table_index]
-
-    candidates_by_field: dict[str, list[dict[str, Any]]] = {}
-    for source in sources:
-        docx_path = source_docx_path(source)
-        if docx_path is None:
-            continue
-        try:
-            if docx_path.resolve() == spec.source.resolve():
-                continue
-            source_doc = Document(str(docx_path))
-        except Exception:
-            continue
-        for source_table_idx, source_table in enumerate(source_doc.tables):
-            detected = detect_table_fill_columns(source_table)
-            if detected is None:
-                continue
-            source_header_row, source_field_col, source_value_col = detected
-            rows = source_fill_rows(source_table, source_header_row, source_field_col, source_value_col)
-            if not rows:
-                continue
-            header_similarity = table_header_similarity(target_table, source_table)
-            table_matches: dict[str, tuple[float, dict[str, Any]]] = {}
-            for decision in manual_decisions:
-                match_score, matched_row = best_source_row_match(str(decision.get("field") or ""), rows)
-                if matched_row is not None and match_score >= 0.74:
-                    table_matches[str(decision.get("targetFieldId") or "")] = (match_score, matched_row)
-            if not table_matches:
-                continue
-            required_matches = 1 if len(manual_decisions) <= 2 else 2
-            if header_similarity < 0.42 and len(table_matches) < required_matches:
-                continue
-            for decision in manual_decisions:
-                field_id = str(decision.get("targetFieldId") or "")
-                matched = table_matches.get(field_id)
-                if matched is None:
-                    continue
-                match_score, matched_row = matched
-                combined_score = round(min(0.96, match_score + min(header_similarity, 1.0) * 0.08 + source.priority / 1000), 3)
-                candidates_by_field.setdefault(field_id, []).append(
-                    {
-                        "score": combined_score,
-                        "source": source,
-                        "sourceTableIndex": source_table_idx,
-                        "headerSimilarity": round(header_similarity, 3),
-                        "row": matched_row,
-                    }
-                )
-
-    if not candidates_by_field:
-        return []
-
-    replacements: list[dict[str, Any]] = []
-    for decision in manual_decisions:
-        field_id = str(decision.get("targetFieldId") or "")
-        candidates = candidates_by_field.get(field_id) or []
-        if not candidates:
-            continue
-        selected = sorted(candidates, key=lambda item: (item["score"], item["source"].priority), reverse=True)[0]
-        if selected["score"] < 0.78:
-            continue
-        row_idx = int(decision.get("rowIndex") or -1)
-        if row_idx < 0 or row_idx >= len(target_table.rows):
-            continue
-        row = target_table.rows[row_idx]
-        if spec.value_col >= len(row.cells):
-            continue
-        value = selected["row"]["value"]
-        # IEC S vs IB 语义区分：设计等级 ≠ 场址安全等级
-        # "风电机组安全等级" / "场址安全等级" 应填 IEC IB/IIA 等场址等级，
-        # 不应填 IEC S（设计等级）——后者来自认证证书，不是场址载荷评估。
-        field_name = str(decision.get("field") or "")
-        if ("安全等级" in field_name or "场址" in field_name) and "设计" not in field_name:
-            if re.match(r"IEC\s+[SABCR]$", str(value).strip(), re.IGNORECASE):
-                continue
-        set_cell(row.cells[spec.value_col], value)
-        replacements.append(
-            {
-                **decision,
-                "action": "fill",
-                "value": value,
-                "confidence": selected["score"],
-                "selectedFact": {
-                    "factId": "",
-                    "label": selected["row"]["label"],
-                    "value": value,
-                    "unit": decision.get("unit") or "",
-                    "source": selected["source"].name,
-                    "sourceKind": selected["source"].kind,
-                    "sourcePriority": selected["source"].priority,
-                    "row": selected["row"]["row"],
-                    "sheet": f"table[{selected['sourceTableIndex']}]",
-                    "score": selected["score"],
-                    "usable": True,
-                    "notes": "来源素材与目标附表存在同形表头和同名行字段，按同一行响应值写入。",
-                    "risk": "",
-                    "actionHint": "same_shape_table",
-                    "sourcePath": str(selected["source"].path),
-                    "column": selected["row"]["column"],
-                },
-                "alternatives": [],
-                "reason": "目标附表与参考素材存在同形行列结构，按字段行匹配填入来源表响应值。",
-            }
-        )
-    if replacements:
-        doc.save(str(output_file))
-    return replacements
-
-
-def curve_value_for(
-    curve_tables: list[dict[str, Any]],
-    *,
-    wind: float,
-    role: str,
-    target_header: str,
-) -> dict[str, Any] | None:
-    candidates: list[dict[str, Any]] = []
-    for table in curve_tables:
-        cols = table["roleCols"].get(role) or []
-        if not cols:
-            continue
-        key = round(wind, 3)
-        row = table["byWind"].get(key)
-        inferred_zero = False
-        if row is None and role == "power" and table.get("minWind") is not None and wind < float(table["minWind"]):
-            row = []
-            inferred_zero = True
-        if row is None:
-            continue
-        for col in cols:
-            value = "0" if inferred_zero else (row[col] if col < len(row) else "")
-            if not usable_value(value) and value != "0":
-                continue
-            source = table["source"]
-            candidates.append(
-                {
-                    "value": compact_number(value),
-                    "source": source,
-                    "sheet": table["sheet"],
-                    "column": col + 1,
-                    "confidence": 0.82 if not inferred_zero else 0.72,
-                    "rank": source_density_rank(source, target_header) * 10 + source.priority,
-                    "inferredZero": inferred_zero,
-                }
-            )
-    if not candidates:
-        return None
-    return sorted(candidates, key=lambda item: (item["rank"], item["confidence"]), reverse=True)[0]
-
-
-def apply_curve_matrix_fill(output_file: Path, sources: list[Source]) -> list[dict[str, Any]]:
-    curve_tables = extract_curve_tables(sources)
-    if not curve_tables:
-        return []
-    doc = Document(str(output_file))
-    own_limit = own_table_limit(doc)
-    decisions: list[dict[str, Any]] = []
-    for table_idx, table in enumerate(doc.tables[:own_limit]):
-        curve_header_row = -1
-        wind_col = -1
-        for probe_idx, probe_row in enumerate(table.rows[:5]):
-            headers = [clean(cell.text) for cell in probe_row.cells]
-            if any("风速" in header for header in headers) and any(matrix_role(header) for header in headers):
-                curve_header_row = probe_idx
-                wind_col = next((idx for idx, header in enumerate(headers) if "风速" in header), -1)
-                break
-        fallback_winds: list[float] = []
-        if curve_header_row >= 0:
-            first_table = curve_tables[0]
-            fallback_winds = sorted(float(key) for key in first_table.get("byWind", {}).keys())
-        for row_idx, row in enumerate(table.rows):
-            wind = row_numeric_key(row)
-            if wind is None and curve_header_row >= 0 and row_idx > curve_header_row:
-                offset = row_idx - curve_header_row - 1
-                if 0 <= offset < len(fallback_winds):
-                    wind = fallback_winds[offset]
-                    if 0 <= wind_col < len(row.cells) and not clean(row.cells[wind_col].text):
-                        set_cell(row.cells[wind_col], compact_number(wind))
-                        decisions.append(
-                            {
-                                "targetFieldId": f"MATRIX-T{table_idx + 1}-R{row_idx + 1}-C{wind_col + 1}",
-                                "rowIndex": row_idx,
-                                "field": table_header_text(table, row_idx, wind_col) or "风速",
-                                "action": "fill",
-                                "value": compact_number(wind),
-                                "unit": "m/s",
-                                "confidence": 0.74,
-                                "selectedFact": {
-                                    "factId": "",
-                                    "label": "风速",
-                                    "value": compact_number(wind),
-                                    "unit": "m/s",
-                                    "source": curve_tables[0]["source"].name,
-                                    "sourceKind": curve_tables[0]["source"].kind,
-                                    "sourcePriority": curve_tables[0]["source"].priority,
-                                    "row": "",
-                                    "sheet": curve_tables[0]["sheet"],
-                                    "score": 0.74,
-                                    "usable": True,
-                                    "notes": "按曲线 Excel 风速序列补齐空白曲线表行键",
-                                    "risk": "",
-                                    "actionHint": "",
-                                    "sourcePath": str(curve_tables[0]["source"].path),
-                                    "column": "",
-                                },
-                                "alternatives": [],
-                                "reason": "目标曲线表风速列为空，按项目曲线 Excel 风速序列补齐。",
-                            }
-                        )
-            if wind is None:
-                continue
-            for col_idx, cell in enumerate(row.cells):
-                if clean(cell.text):
-                    continue
-                header = table_header_text(table, row_idx, col_idx)
-                role = matrix_role(header)
-                if not role:
-                    continue
-                selected = curve_value_for(curve_tables, wind=wind, role=role, target_header=header)
-                if not selected:
-                    continue
-                set_cell(cell, selected["value"])
-                decisions.append(
-                    {
-                        "targetFieldId": f"MATRIX-T{table_idx + 1}-R{row_idx + 1}-C{col_idx + 1}",
-                        "rowIndex": row_idx,
-                        "field": header or f"R{row_idx + 1}C{col_idx + 1}",
-                        "action": "fill",
-                        "value": selected["value"],
-                        "unit": "",
-                        "confidence": selected["confidence"],
-                        "selectedFact": {
-                            "factId": "",
-                            "label": header,
-                            "value": selected["value"],
-                            "unit": "",
-                            "source": selected["source"].name,
-                            "sourceKind": selected["source"].kind,
-                            "sourcePriority": selected["source"].priority,
-                            "row": "",
-                            "sheet": selected["sheet"],
-                            "score": selected["confidence"],
-                            "usable": True,
-                            "notes": "按风速行键和功率/推力曲线列匹配",
-                            "risk": "低于曲线起始风速按功率曲线零功率外推" if selected["inferredZero"] else "",
-                            "actionHint": "",
-                            "sourcePath": str(selected["source"].path),
-                            "column": selected["column"],
-                        },
-                        "alternatives": [],
-                        "reason": "项目功率/推力曲线 Excel 与附表风速行键、列语义匹配。",
-                    }
-                )
-    if decisions:
-        doc.save(str(output_file))
-    return decisions
 
 
 def collect_facts(sources: list[Source], project: dict[str, Any], manifest: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -4536,29 +2922,6 @@ def output_path_for_target(manifest: dict[str, Any], manifest_path: Path, spec: 
     if not output_file.is_absolute():
         output_file = manifest_path.parent / output_file
     return output_file
-
-
-def child_manifest_for_target(parent: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
-    child = dict(parent)
-    appendix_task = dict(parent.get("appendixTask") or {}) if isinstance(parent.get("appendixTask"), dict) else {}
-    blank_source = dict(parent.get("blankSource") or {}) if isinstance(parent.get("blankSource"), dict) else {}
-    appendix_task.update({key: value for key, value in target.items() if value not in (None, "")})
-    blank_source.update({key: value for key, value in target.items() if value not in (None, "")})
-    child["appendixTask"] = appendix_task
-    child["blankSource"] = blank_source
-    if target.get("referenceMaterials"):
-        child["referenceMaterials"] = target["referenceMaterials"]
-    if target.get("recommendedMaterials"):
-        child["recommendedMaterials"] = target["recommendedMaterials"]
-    if target.get("parseFields"):
-        child["parseFields"] = target["parseFields"]
-    child.pop("targets", None)
-    child.pop("appendixTargets", None)
-    child.pop("batch", None)
-    child.pop("outputFile", None)
-    if parent.get("outputDir"):
-        child["outputDir"] = parent["outputDir"]
-    return child
 
 
 def target_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4661,104 +3024,24 @@ def appendix_has_no_fill_target(spec: AppendixSpec) -> bool:
     return appendix_pending_cell_count(spec) == 0
 
 
-def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_index: int | None = None) -> dict[str, Any]:
-    source_docx = blank_docx_path(manifest, manifest_path)
-    spec = detect_appendix_spec(source_docx, manifest)
-    output_file = output_path_for_target(manifest, manifest_path, spec, batch_index)
+def finalize_fill_result(
+    manifest: dict[str, Any],
+    spec: AppendixSpec,
+    output_file: Path,
+    fields: list[dict[str, Any]],
+    mapping: dict[str, Any],
+    sources: list[Source],
+    source_selection: dict[str, Any],
+    source_docx: Path,
+    source_meta: dict[str, Any],
+    *,
+    fill_mode: str | None = None,
+) -> dict[str, Any]:
+    """Assemble the fill result payload and write the sidecar reports.
 
-    project = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
-    fields = extract_target_fields(spec)
-    sources, source_selection = select_sources(manifest, manifest_path, spec, fields)
-    source_meta, facts = collect_facts(sources, project, manifest)
-    scenario = "excel_recipe" if clean(manifest.get("excelRecipePath") or manifest.get("recipePath")) else "auto_or_manual"
-    mapping = map_fields(spec, fields, facts, scenario)
-    fill_doc(spec, mapping, output_file)
-    quote_decisions = apply_quote_appendix_table_fill(output_file, sources, spec)
-    if quote_decisions:
-        mapping["decisions"] = quote_decisions
-        mapping["summary"] = {
-            "fill": len(quote_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(quote_decisions),
-        }
-    curve_appendix_decisions = apply_curve_appendix_table_fill(output_file, sources, spec)
-    if curve_appendix_decisions:
-        mapping["decisions"] = curve_appendix_decisions
-        mapping["summary"] = {
-            "fill": len(curve_appendix_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(curve_appendix_decisions),
-        }
-    tower_decisions = apply_tower_appendix_table_fill(output_file, sources, spec, project)
-    if tower_decisions:
-        mapping["decisions"] = tower_decisions
-        mapping["summary"] = {
-            "fill": len(tower_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(tower_decisions),
-        }
-    delivery_decisions = apply_delivery_schedule_table_fill(output_file, sources, spec, project)
-    if delivery_decisions:
-        mapping["decisions"] = delivery_decisions
-        mapping["summary"] = {
-            "fill": len(delivery_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(delivery_decisions),
-        }
-    large_component_decisions = apply_large_component_transport_table_fill(output_file, sources, spec, project)
-    if large_component_decisions:
-        mapping["decisions"] = large_component_decisions
-        mapping["summary"] = {
-            "fill": len(large_component_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(large_component_decisions),
-        }
-    load_wind_decisions = apply_load_wind_parameter_table_fill(output_file, sources)
-    if load_wind_decisions:
-        mapping["decisions"] = load_wind_decisions
-        mapping["summary"] = {
-            "fill": len(load_wind_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(load_wind_decisions),
-        }
-    table_transplant_decisions = apply_source_table_transplant(output_file, sources)
-    if table_transplant_decisions:
-        mapping["decisions"] = table_transplant_decisions
-        mapping["summary"] = {
-            "fill": len(table_transplant_decisions),
-            "partial": 0,
-            "manual": 0,
-            "total": len(table_transplant_decisions),
-        }
-    same_shape_decisions = apply_same_shape_source_table_fill(output_file, sources, spec, mapping)
-    if same_shape_decisions:
-        replacements = {decision["targetFieldId"]: decision for decision in same_shape_decisions}
-        mapping["decisions"] = [
-            replacements.get(decision.get("targetFieldId"), decision)
-            for decision in mapping.get("decisions") or []
-        ]
-        mapping["summary"] = {
-            "fill": sum(d["action"] == "fill" for d in mapping["decisions"]),
-            "partial": sum(d["action"] == "partial" for d in mapping["decisions"]),
-            "manual": sum(d["action"] == "manual" for d in mapping["decisions"]),
-            "total": len(mapping["decisions"]),
-        }
-    matrix_decisions = apply_curve_matrix_fill(output_file, sources)
-    if matrix_decisions:
-        mapping["decisions"].extend(matrix_decisions)
-        mapping["summary"] = {
-            "fill": sum(d["action"] == "fill" for d in mapping["decisions"]),
-            "partial": sum(d["action"] == "partial" for d in mapping["decisions"]),
-            "manual": sum(d["action"] == "manual" for d in mapping["decisions"]),
-            "total": len(mapping["decisions"]),
-        }
-
+    LLM plan path (fill_mode="llm-plan") adds fillMode to fillReport and the
+    per-cell evidence excerpt to evidenceRefs.
+    """
     unfilled = [decision["field"] for decision in mapping["decisions"] if decision["action"] == "manual"]
     reference_sources = [
         {
@@ -4789,17 +3072,18 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
     for decision in mapping["decisions"]:
         fact = decision.get("selectedFact")
         if fact:
-            evidence_refs.append(
-                {
-                    "type": "selected_fact",
-                    "field": decision["field"],
-                    "source": fact.get("source"),
-                    "sourcePath": fact.get("sourcePath"),
-                    "sheet": fact.get("sheet"),
-                    "row": fact.get("row"),
-                    "column": fact.get("column"),
-                }
-            )
+            evidence = {
+                "type": "selected_fact",
+                "field": decision["field"],
+                "source": fact.get("source"),
+                "sourcePath": fact.get("sourcePath"),
+                "sheet": fact.get("sheet"),
+                "row": fact.get("row"),
+                "column": fact.get("column"),
+            }
+            if fill_mode is not None:
+                evidence["excerpt"] = fact.get("excerpt")
+            evidence_refs.append(evidence)
 
     filled_details = []
     for decision in mapping["decisions"]:
@@ -4822,6 +3106,25 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
     no_fill_required = not mapping["decisions"] and appendix_has_no_fill_target(spec)
     source_coverage = build_source_coverage(spec, fields, mapping, manifest, sources)
 
+    fill_report: dict[str, Any] = {
+        "title": spec.title,
+        "appendixId": spec.appendix_id,
+        "filledFieldCount": mapping["summary"]["fill"],
+        "partialFieldCount": mapping["summary"]["partial"],
+        "unfilledFieldCount": mapping["summary"]["manual"],
+        "targetFieldCount": mapping["summary"]["total"],
+        "referenceMaterialCount": len(sources),
+        "referenceSources": reference_sources,
+        "sourceSelection": source_selection,
+        "blankDocxPath": str(source_docx),
+        "preservedOriginalStructure": True,
+        "manualMarker": "[待人工补充：字段名]",
+        "manualHighlight": "FFF2CC",
+        "noFillRequired": no_fill_required,
+        "sourceCoverage": source_coverage,
+    }
+    if fill_mode is not None:
+        fill_report["fillMode"] = fill_mode
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "outputFile": str(output_file),
@@ -4831,23 +3134,7 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
         "unfilledFieldDetails": [item for item in filled_details if item["action"] == "manual"],
         "mapping": mapping,
         "factMeta": source_meta,
-        "fillReport": {
-            "title": spec.title,
-            "appendixId": spec.appendix_id,
-            "filledFieldCount": mapping["summary"]["fill"],
-            "partialFieldCount": mapping["summary"]["partial"],
-            "unfilledFieldCount": mapping["summary"]["manual"],
-            "targetFieldCount": mapping["summary"]["total"],
-            "referenceMaterialCount": len(sources),
-            "referenceSources": reference_sources,
-            "sourceSelection": source_selection,
-            "blankDocxPath": str(source_docx),
-            "preservedOriginalStructure": True,
-            "manualMarker": "[待人工补充：字段名]",
-            "manualHighlight": "FFF2CC",
-            "noFillRequired": no_fill_required,
-            "sourceCoverage": source_coverage,
-        },
+        "fillReport": fill_report,
         "filledAt": now_iso(),
     }
     json_path, md_path = write_sidecar_reports(output_file, result)
@@ -4855,112 +3142,6 @@ def run_single_manifest(manifest: dict[str, Any], manifest_path: Path, *, batch_
     result["fillReport"]["reportMarkdownPath"] = str(md_path)
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
-
-
-def run_batch_manifest(manifest: dict[str, Any], manifest_path: Path, targets: list[dict[str, Any]]) -> dict[str, Any]:
-    results = []
-    for index, target in enumerate(targets, start=1):
-        child = child_manifest_for_target(manifest, target)
-        try:
-            results.append(run_single_manifest(child, manifest_path, batch_index=index))
-        except Exception as exc:
-            results.append(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "outputFile": "",
-                    "unfilledFields": [],
-                    "evidenceRefs": [],
-                    "filledFieldDetails": [],
-                    "unfilledFieldDetails": [],
-                    "fillReport": {
-                        "title": clean(target.get("title") or target.get("name")),
-                        "appendixId": clean(target.get("id") or target.get("materialId")),
-                        "filledFieldCount": 0,
-                        "partialFieldCount": 0,
-                        "unfilledFieldCount": 0,
-                        "targetFieldCount": 0,
-                        "referenceMaterialCount": 0,
-                        "referenceSources": [],
-                        "sourceSelection": {"selected": [], "candidates": []},
-                        "blankDocxPath": clean(target.get("docxPath") or target.get("path")),
-                        "preservedOriginalStructure": False,
-                        "manualMarker": "[待人工补充：字段名]",
-                        "manualHighlight": "FFF2CC",
-                        "status": "failed",
-                        "error": str(exc),
-                    },
-                    "filledAt": now_iso(),
-                }
-            )
-
-    output_root_text = clean(manifest.get("outputDir") or manifest.get("outputFile") or manifest_path.parent)
-    output_root = Path(output_root_text).expanduser()
-    if output_root.suffix:
-        output_root = output_root.parent
-    if not output_root.is_absolute():
-        output_root = manifest_path.parent / output_root
-    output_root.mkdir(parents=True, exist_ok=True)
-    batch_report = output_root / "batch_fill_report.json"
-    unfilled_fields = [
-        f"{item['fillReport'].get('title') or item['outputFile']}：{field}"
-        for item in results
-        for field in item.get("unfilledFields") or []
-    ]
-    evidence_refs = [
-        evidence
-        for item in results
-        for evidence in item.get("evidenceRefs") or []
-    ]
-    result = {
-        "schema_version": SCHEMA_VERSION,
-        "outputFile": str(batch_report),
-        "outputFiles": [item["outputFile"] for item in results if item.get("outputFile")],
-        "unfilledFields": unfilled_fields,
-        "evidenceRefs": evidence_refs,
-        "targetResults": [compact_summary(item) for item in results],
-        "fillReport": {
-            "batch": True,
-            "targetCount": len(results),
-            "successfulTargetCount": sum(1 for item in results if item["fillReport"].get("status") != "failed"),
-            "failedTargetCount": sum(1 for item in results if item["fillReport"].get("status") == "failed"),
-            "filledFieldCount": sum(int(item["fillReport"].get("filledFieldCount") or 0) for item in results),
-            "partialFieldCount": sum(int(item["fillReport"].get("partialFieldCount") or 0) for item in results),
-            "unfilledFieldCount": sum(int(item["fillReport"].get("unfilledFieldCount") or 0) for item in results),
-            "targetFieldCount": sum(int(item["fillReport"].get("targetFieldCount") or 0) for item in results),
-            "failedTargets": [
-                {
-                    "title": item["fillReport"].get("title") or "",
-                    "appendixId": item["fillReport"].get("appendixId") or "",
-                    "error": item["fillReport"].get("error") or "",
-                }
-                for item in results
-                if item["fillReport"].get("status") == "failed"
-            ],
-            "sourceSelections": [
-                {
-                    "title": item["fillReport"].get("title") or "",
-                    "appendixId": item["fillReport"].get("appendixId") or "",
-                    "selected": (item["fillReport"].get("sourceSelection") or {}).get("selected") or [],
-                    "candidates": (item["fillReport"].get("sourceSelection") or {}).get("candidates") or [],
-                }
-                for item in results
-            ],
-            "preservedOriginalStructure": all(bool(item["fillReport"].get("preservedOriginalStructure")) for item in results),
-            "manualMarker": "[待人工补充：字段名]",
-            "manualHighlight": "FFF2CC",
-        },
-        "filledAt": now_iso(),
-    }
-    batch_report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    return result
-
-
-def run_from_manifest(manifest_path: Path) -> dict[str, Any]:
-    manifest = load_manifest(manifest_path)
-    targets = target_entries(manifest)
-    if targets:
-        return run_batch_manifest(manifest, manifest_path, targets)
-    return run_single_manifest(manifest, manifest_path)
 
 
 def compact_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -4979,14 +3160,521 @@ def compact_summary(result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# LLM plan mode (--prepare / --apply): additive entry points for the
+# "agent judges, script executes" flow. Detection, normalization, conflict
+# detection, write-back and reports all reuse the functions above; the
+# default `--manifest` path is unchanged.
+# ---------------------------------------------------------------------------
+
+BRIEF_SCHEMA_VERSION = "bid-tech-table-fill-brief-v1"
+PLAN_SCHEMA_VERSION = "bid-tech-table-fill-plan-v1"
+LLM_FILL_MODE = "llm-plan"
+FILL_BRIEF_FILENAME = "fill_brief.json"
+FILL_PLAN_FILENAME = "fill_plan.json"
+
+# 填写铁律：写进 brief 约束 agent 的取值行为（与 SKILL.md 的契约一致）。
+FILL_BRIEF_RULES = (
+    "不编造：任何填写值必须能在素材、事实表或招标文件原文中找到依据，找不到依据的格子必须 action=manual。",
+    "不确定的字段不要猜：action=manual，脚本会写入 [待人工补充：字段名] 并黄高亮。",
+    "响应单元格只写数值或结论本身，不要写单位；单位由脚本按单位列口径写入。",
+    "机型字段只写英数字型号编码，不写「上置/下置」等中文布局后缀。",
+    "素材范围锁定本简报 materials 列表（manifest 给定内容），禁止读取列表之外的文件。",
+    "每个非 manual 格子必须带 evidence.excerpt（来源文件原文原句）；脚本会按 excerpt 在 sourcePath 中校验，命中不了强制降级 manual。",
+    "招标要求值 requirementValue 是明确具体值时优先直抄。",
+)
+
+
+class PlanValidationError(RuntimeError):
+    """Structural fill-plan validation failure: nothing is written and the
+    error list is returned on stdout so the agent can fix the plan and retry."""
+
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        self.errors = errors
+        super().__init__(f"fill plan validation failed with {len(errors)} error(s)")
+
+
+def brief_material_entry(material: dict[str, Any], manifest_dir: Path, route: str) -> dict[str, Any]:
+    """Brief material entry; path resolution reuses the same locating keys and
+    the original-xlsx-first rule as add_source_from_material."""
+    resolved = material_path(material, manifest_dir)
+    original = original_material_path(material, manifest_dir)
+    cleaned_docx: Path | None = None
+    if original is not None and resolved is not None and resolved.suffix.lower() == ".docx":
+        cleaned_docx = resolved
+    effective = original or resolved
+    ocr_text: Path | None = None
+    if effective is not None and effective.suffix.lower() == ".pdf":
+        candidates = (
+            Path(clean(material.get("ocrTextPath"))) if clean(material.get("ocrTextPath")) else None,
+            effective.with_suffix(".ocr.txt"),
+        )
+        for candidate in candidates:
+            if candidate is not None and candidate.exists() and candidate.is_file():
+                ocr_text = candidate.resolve()
+                break
+    return {
+        "id": clean(material.get("id") or material.get("materialId")),
+        "name": material_label(material) or (effective.name if effective else ""),
+        "route": route,
+        "path": str(effective) if effective else "",
+        "ocrTextPath": str(ocr_text) if ocr_text else "",
+        "originalPath": str(original) if original else "",
+        "cleanedPath": str(cleaned_docx) if cleaned_docx else "",
+    }
+
+
+def collect_brief_materials(manifest: dict[str, Any], manifest_dir: Path) -> list[dict[str, Any]]:
+    """Material list locked to the manifest: referenceMaterials first (highest
+    priority), then tenderDocuments, then materialIndex/recommendedMaterials,
+    each annotated with its route."""
+    materials: list[dict[str, Any]] = []
+    for material in object_items(manifest.get("referenceMaterials")) + object_items(manifest.get("selectedReferenceMaterials")):
+        materials.append(brief_material_entry(enrich_material_with_known_path(material, manifest), manifest_dir, "referenceMaterial"))
+    for document in object_items(manifest.get("tenderDocuments")):
+        materials.append(brief_material_entry(document, manifest_dir, "tenderDocument"))
+    for material in object_items(manifest.get("materialIndex")):
+        materials.append(brief_material_entry(material, manifest_dir, "materialIndex"))
+    for material in object_items(manifest.get("recommendedMaterials")):
+        materials.append(brief_material_entry(enrich_material_with_known_path(material, manifest), manifest_dir, "recommendedMaterials"))
+    return materials
+
+
+def brief_fact_table_fields(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fact-table fields the agent may quote: confirmed/extracted only."""
+    table = manifest.get("projectFactTable") if isinstance(manifest.get("projectFactTable"), dict) else {}
+    return [
+        {
+            "label": clean(field.get("label")),
+            "value": clean(field.get("value")),
+            "unit": clean(field.get("unit")),
+            "status": clean(field.get("status")),
+        }
+        for field in object_items(table.get("fields"))
+        if clean(field.get("status")) in {"confirmed", "extracted"}
+    ]
+
+
+def brief_target_field(field: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "targetFieldId": clean(field.get("id")),
+        "tableIndex": field.get("tableIndex"),
+        "rowIndex": field.get("rowIndex"),
+        "valueCol": field.get("valueCol"),
+        "unitCol": field.get("unitCol"),
+        "field": clean(field.get("field")),
+        "rowLabel": clean(field.get("listRowLabel")),
+        "columnLabel": clean(field.get("listColumnLabel")),
+        "requirementValue": clean(field.get("requirementValue")),
+        "unit": clean(field.get("unit")),
+        "group": clean(field.get("group")),
+    }
+
+
+def run_prepare(manifest_path: Path) -> dict[str, Any]:
+    """--prepare: write fill_brief.json next to the manifest and return the
+    small stdout summary. Detection reuses the exact functions of the apply
+    path, so the brief's targetFields match what --apply will fill."""
+    manifest = load_manifest(manifest_path)
+    if target_entries(manifest):
+        raise RuntimeError("--prepare 只支持单附表 manifest；批量 manifest 请先拆分。")
+    source_docx = blank_docx_path(manifest, manifest_path)
+    spec = detect_appendix_spec(source_docx, manifest)
+    output_file = output_path_for_target(manifest, manifest_path, spec)
+    fields = extract_target_fields(spec)
+    materials = collect_brief_materials(manifest, manifest_path.parent)
+    brief = {
+        "schemaVersion": BRIEF_SCHEMA_VERSION,
+        "blankDocxPath": str(source_docx),
+        "outputFile": str(output_file),
+        "planFile": str(manifest_path.with_name(FILL_PLAN_FILENAME)),
+        "title": spec.title,
+        "appendixId": spec.appendix_id,
+        "targetFields": [brief_target_field(field) for field in fields],
+        "materials": materials,
+        "factTableFields": brief_fact_table_fields(manifest),
+        "parseFields": manifest.get("parseFields") if isinstance(manifest.get("parseFields"), list) else [],
+        "projectTurbineModel": manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {},
+        "rules": list(FILL_BRIEF_RULES),
+    }
+    brief_file = manifest_path.with_name(FILL_BRIEF_FILENAME)
+    brief_file.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"briefFile": str(brief_file), "targetFieldCount": len(fields), "materialCount": len(materials)}
+
+
+def xlsx_text(path: Path) -> str:
+    wb = load_workbook(path, data_only=True, read_only=True)
+    parts: list[str] = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            parts.extend(clean(value) for value in row if clean(value))
+    wb.close()
+    return "\n".join(parts)
+
+
+def evidence_source_text(path: Path) -> str:
+    """Full text of an evidence source for excerpt grepping: docx paragraphs +
+    table rows, xlsx all cell texts, pdf its OCR sidecar, txt/md verbatim."""
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return doc_text(path)
+    if suffix in {".xlsx", ".xlsm"}:
+        return xlsx_text(path)
+    if suffix == ".pdf":
+        sidecar = path.with_suffix(".ocr.txt")
+        return sidecar.read_text(encoding="utf-8") if sidecar.exists() else ""
+    if suffix in {".txt", ".md"}:
+        return path.read_text(encoding="utf-8", errors="replace")
+    return ""
+
+
+def evidence_corpus_text(manifest: dict[str, Any], evidence: dict[str, Any], manifest_dir: Path) -> str | None:
+    """The corpus the excerpt must be found in; None means unverifiable (the
+    cell is then downgraded to manual). File-less routes (fact table,
+    parseFields, projectTurbineModel) are checked against the manifest payload."""
+    source_path = first_existing_path((evidence.get("sourcePath"),), manifest_dir)
+    if source_path is not None:
+        try:
+            return evidence_source_text(source_path)
+        except Exception:
+            return None
+    route = clean(evidence.get("sourceRoute"))
+    if route == "factTable":
+        return json.dumps(manifest.get("projectFactTable") or {}, ensure_ascii=False)
+    if route == "parseFields":
+        return json.dumps(manifest.get("parseFields") or [], ensure_ascii=False)
+    if route == "projectTurbineModel":
+        return json.dumps(manifest.get("projectTurbineModel") or {}, ensure_ascii=False)
+    return None
+
+
+def excerpt_hit(excerpt: str, corpus: str) -> bool:
+    """Verbatim hit check, ignoring whitespace differences only (docx/xlsx
+    extraction inserts newlines and cell separators); every non-whitespace
+    character of the excerpt must appear in order in the source text."""
+    needle = re.sub(r"\s+", "", clean(excerpt))
+    return bool(needle) and needle in re.sub(r"\s+", "", corpus)
+
+
+def load_fill_plan(manifest_path: Path) -> dict[str, Any]:
+    plan_file = manifest_path.with_name(FILL_PLAN_FILENAME)
+    if not plan_file.exists():
+        raise RuntimeError(f"未找到填写计划 {plan_file}；请先按 fill_brief.json 写 {FILL_PLAN_FILENAME}。")
+    try:
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PlanValidationError([{"field": "", "error": f"{FILL_PLAN_FILENAME} 不是合法 JSON：{exc}"}])
+    if not isinstance(plan, dict) or clean(plan.get("schemaVersion")) != PLAN_SCHEMA_VERSION:
+        raise PlanValidationError([{"field": "", "error": f"schemaVersion 必须是 {PLAN_SCHEMA_VERSION}。"}])
+    return plan
+
+
+def field_cell_key(spec: AppendixSpec, field: dict[str, Any]) -> tuple[int, int, int]:
+    """Write-back coordinate of a target field, with the same fallbacks as fill_doc."""
+    table_index = field.get("tableIndex")
+    value_col = field.get("valueCol")
+    return (
+        spec.table_index if table_index is None else int(table_index),
+        int(field["rowIndex"]),
+        spec.value_col if value_col is None else int(value_col),
+    )
+
+
+def collect_plan_fills(
+    spec: AppendixSpec,
+    plan: dict[str, Any],
+    fields: list[dict[str, Any]],
+    blank_doc: Any,
+) -> tuple[dict[tuple[int, int, int], dict[str, Any]], list[dict[str, Any]]]:
+    """Structural validation of plan fills: known targetFieldId, integer
+    coordinates matching the field, in-bounds and still pending in the blank
+    docx. Accepted fills are keyed by (table, row, column) — list tables fill
+    several columns of one row, so the key must include the column (same dedup
+    rule as fill_doc)."""
+    field_by_id = {clean(field.get("id")): field for field in fields}
+    accepted: dict[tuple[int, int, int], dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+    for position, fill in enumerate(object_items(plan.get("fills"))):
+        label = clean(fill.get("field")) or clean(fill.get("targetFieldId")) or f"fills[{position}]"
+        field_id = clean(fill.get("targetFieldId"))
+        field = field_by_id.get(field_id)
+        if field is None:
+            errors.append({"field": label, "error": f"未知 targetFieldId：{field_id or '（缺失）'}；必须与 fill_brief.json 的 targetFields 一致。"})
+            continue
+        action = clean(fill.get("action")) or "fill"
+        if action not in {"fill", "partial", "manual"}:
+            errors.append({"field": label, "error": f"action 必须是 fill/partial/manual，收到：{action or '（空）'}。"})
+            continue
+        expected = field_cell_key(spec, field)
+        provided = (fill.get("tableIndex"), fill.get("rowIndex"), fill.get("valueCol"))
+        coords: list[int] = []
+        mismatch = False
+        invalid = False
+        for want, got, name in zip(expected, provided, ("tableIndex", "rowIndex", "valueCol")):
+            if got is None:
+                coords.append(want)
+                continue
+            try:
+                got_int = int(got)
+            except (TypeError, ValueError):
+                errors.append({"field": label, "error": f"{name} 必须是整数，收到：{got!r}。"})
+                invalid = True
+                break
+            if got_int != want:
+                mismatch = True
+            coords.append(got_int)
+        if invalid:
+            continue
+        table_index, row_index, value_col = coords
+        # Bounds are checked on the provided coordinates too: a stale or
+        # hand-written plan must surface as a structural error, not a silent skip.
+        if table_index < 0 or table_index >= len(blank_doc.tables):
+            errors.append({"field": label, "error": f"tableIndex {table_index} 越界：空表共 {len(blank_doc.tables)} 张表。"})
+            continue
+        table = blank_doc.tables[table_index]
+        if row_index < 0 or row_index >= len(table.rows):
+            errors.append({"field": label, "error": f"rowIndex {row_index} 越界：表 {table_index} 共 {len(table.rows)} 行。"})
+            continue
+        if value_col < 0 or value_col >= len(table.rows[row_index].cells):
+            errors.append({"field": label, "error": f"valueCol {value_col} 越界：表 {table_index} 第 {row_index} 行共 {len(table.rows[row_index].cells)} 列。"})
+            continue
+        if mismatch:
+            errors.append({"field": label, "error": f"坐标 ({table_index}, {row_index}, {value_col}) 与 targetFieldId {field_id} 的坐标 {expected} 不一致。"})
+            continue
+        if not cell_needs_fill(table.rows[row_index].cells[value_col].text):
+            errors.append({"field": label, "error": f"目标单元格（表 {table_index} 行 {row_index} 列 {value_col}）不是待填空位。"})
+            continue
+        accepted[(table_index, row_index, value_col)] = fill
+    return accepted, errors
+
+
+def plan_value_conflict(field: dict[str, Any], plan_candidate: dict[str, Any], facts: list[dict[str, Any]], scenario: str) -> str:
+    """Run the plan value through the existing find_conflict as one candidate:
+    a clearly contradictory high-score fact yields the conflict text (the
+    caller downgrades low-confidence fills to manual)."""
+    candidates = [
+        {
+            "factId": fact["id"],
+            "label": fact["label"],
+            "value": fact["value"],
+            "unit": fact["unit"],
+            "source": fact["source"],
+            "sourceKind": fact["sourceKind"],
+            "sourcePriority": fact.get("sourcePriority", 0),
+            "row": fact["row"],
+            "sheet": fact["sheet"],
+            "score": score(field, fact, scenario),
+            "usable": fact["usable"],
+            "notes": fact["notes"],
+            "risk": fact["risk"],
+        }
+        for fact in facts
+        if score(field, fact, scenario) > 0
+    ]
+    candidates.append(plan_candidate)
+    candidates.sort(key=lambda item: (item["score"], item["sourceKind"] == "xlsx", item.get("sourcePriority", 0)), reverse=True)
+    return find_conflict(candidates)
+
+
+def plan_fill_decision(
+    field: dict[str, Any],
+    fill: dict[str, Any],
+    manifest: dict[str, Any],
+    manifest_dir: Path,
+    facts: list[dict[str, Any]],
+    scenario: str,
+) -> dict[str, Any]:
+    """Convert one accepted plan fill into a fill_doc-shaped decision.
+
+    Non-structural problems (unusable value, excerpt not found in its declared
+    source, low-confidence value contradicting strong facts) downgrade the cell
+    to manual with the existing [待人工补充：字段名] marker instead of failing
+    the whole run; structural errors were already rejected by collect_plan_fills.
+    """
+    field_id = clean(field.get("id"))
+    action = clean(fill.get("action")) or "fill"
+    reason = clean(fill.get("reason"))
+    try:
+        confidence = max(0.0, min(1.0, float(fill.get("confidence"))))
+    except (TypeError, ValueError):
+        confidence = 0.6
+    base = {
+        "targetFieldId": field_id,
+        "rowIndex": field["rowIndex"],
+        "tableIndex": field.get("tableIndex"),
+        "valueCol": field.get("valueCol"),
+        "unitCol": field.get("unitCol"),
+        "field": field["field"],
+        "unit": field["unit"],
+    }
+
+    def manual(reason_text: str) -> dict[str, Any]:
+        return {
+            **base,
+            "action": "manual",
+            "value": f"[待人工补充：{field['field']}]",
+            "confidence": 0,
+            "selectedFact": None,
+            "alternatives": [],
+            "reason": reason_text,
+        }
+
+    if action == "manual":
+        return manual(reason or "agent 判断该字段需人工补充。")
+    value_text = clean(fill.get("value"))
+    evidence = fill.get("evidence") if isinstance(fill.get("evidence"), dict) else {}
+    excerpt = clean(evidence.get("excerpt"))
+    source_path = first_existing_path((evidence.get("sourcePath"),), manifest_dir)
+    downgrade = ""
+    if not usable_value(value_text):
+        downgrade = f"计划值不可用（空值/占位/纯单位）：{value_text or '（空）'}"
+    elif not excerpt:
+        downgrade = "缺少 evidence.excerpt，无法溯源"
+    else:
+        corpus = evidence_corpus_text(manifest, evidence, manifest_dir)
+        if corpus is None:
+            downgrade = f"证据来源不可读：{clean(evidence.get('sourcePath')) or clean(evidence.get('sourceRoute')) or '（未声明）'}"
+        elif not excerpt_hit(excerpt, corpus):
+            downgrade = "证据未命中：excerpt 在其声明的来源文本中原样找不到"
+    if not downgrade:
+        plan_candidate = {
+            "factId": f"{field_id}-PLAN",
+            "label": field["field"],
+            "value": value_text,
+            "unit": clean(fill.get("unit")),
+            "source": "llm-plan",
+            "sourceKind": "llm_plan",
+            "sourcePriority": 90,
+            "row": field["rowIndex"],
+            "sheet": "",
+            "score": confidence,
+            "usable": True,
+            "notes": "",
+            "risk": "",
+        }
+        conflict = plan_value_conflict(field, plan_candidate, facts, scenario)
+        if conflict and confidence < 0.82:
+            downgrade = conflict
+    if downgrade:
+        note = f"{downgrade}（原计划值：{value_text}）。"
+        return manual(f"{note}{reason}" if reason else note)
+    selected = {
+        "factId": f"{field_id}-PLAN",
+        "label": field["field"],
+        "value": value_text,
+        "unit": clean(fill.get("unit")),
+        "source": clean(evidence.get("sourcePath")) or clean(evidence.get("sourceRoute")) or "llm-plan",
+        "sourceKind": "llm_plan",
+        "sourcePriority": 90,
+        "sourceRoute": clean(evidence.get("sourceRoute")),
+        "row": evidence.get("row"),
+        "sheet": evidence.get("sheet"),
+        "column": evidence.get("column"),
+        "score": confidence,
+        "usable": True,
+        "notes": reason,
+        "risk": "",
+        "actionHint": "fill",
+        "sourcePath": str(source_path) if source_path is not None else clean(evidence.get("sourcePath")),
+        "excerpt": excerpt,
+    }
+    display_value = normalize_value_for_field(field, selected)
+    return {
+        **base,
+        "action": action,
+        "value": display_value,
+        "unit": field["unit"] or selected["unit"],
+        "confidence": confidence,
+        "selectedFact": selected,
+        "alternatives": [],
+        "reason": reason or "LLM 填写计划取值，证据经脚本溯源校验。",
+    }
+
+
+def run_apply(manifest_path: Path) -> dict[str, Any]:
+    """--apply: validate fill_plan.json next to the manifest, then write back
+    through the fill_doc + sidecar-report pipeline.
+    Structural validation errors raise PlanValidationError before any file is
+    written; the returned result only adds fillMode="llm-plan"."""
+    manifest = load_manifest(manifest_path)
+    if target_entries(manifest):
+        raise RuntimeError("--apply 只支持单附表 manifest；批量 manifest 请先拆分。")
+    plan = load_fill_plan(manifest_path)
+    source_docx = blank_docx_path(manifest, manifest_path)
+    spec = detect_appendix_spec(source_docx, manifest)
+    output_file = output_path_for_target(manifest, manifest_path, spec)
+    fields = extract_target_fields(spec)
+    blank_doc = Document(str(source_docx))
+    accepted, errors = collect_plan_fills(spec, plan, fields, blank_doc)
+    if errors:
+        raise PlanValidationError(errors)
+    project = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
+    scenario = "excel_recipe" if clean(manifest.get("excelRecipePath") or manifest.get("recipePath")) else "auto_or_manual"
+    sources, source_selection = select_sources(manifest, manifest_path, spec, fields)
+    source_meta, facts = collect_facts(sources, project, manifest)
+    decisions = [
+        plan_fill_decision(
+            field,
+            accepted.get(field_cell_key(spec, field)) or {"action": "manual", "reason": "填写计划未覆盖该字段，按待人工处理。"},
+            manifest,
+            manifest_path.parent,
+            facts,
+            scenario,
+        )
+        for field in fields
+    ]
+    mapping = {
+        "schema": "bid-tech-table-field-mapping-v1",
+        "scenario": scenario,
+        "appendixId": spec.appendix_id,
+        "title": spec.title,
+        "targetFile": spec.source.name,
+        "table": {
+            "tableIndex": spec.table_index,
+            "headerRow": spec.header_row,
+            "fieldCol": spec.field_col,
+            "valueCol": spec.value_col,
+            "unitCol": spec.unit_col,
+            "remarkCol": spec.remark_col,
+        },
+        "summary": {
+            "fill": sum(decision["action"] == "fill" for decision in decisions),
+            "partial": sum(decision["action"] == "partial" for decision in decisions),
+            "manual": sum(decision["action"] == "manual" for decision in decisions),
+            "total": len(decisions),
+        },
+        "decisions": decisions,
+    }
+    fill_doc(spec, mapping, output_file)
+    return finalize_fill_result(
+        manifest,
+        spec,
+        output_file,
+        fields,
+        mapping,
+        sources,
+        source_selection,
+        source_docx,
+        source_meta,
+        fill_mode=LLM_FILL_MODE,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--response", choices=("summary", "full"), default="summary")
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--prepare", metavar="MANIFEST", help="产出填写简报 fill_brief.json 后退出")
+    modes.add_argument("--apply", metavar="MANIFEST", help="校验并执行 fill_plan.json")
     args = parser.parse_args()
-    result = run_from_manifest(Path(args.manifest).expanduser())
-    payload = compact_summary(result) if args.response == "summary" else result
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if args.prepare:
+        print(json.dumps(run_prepare(Path(args.prepare).expanduser()), ensure_ascii=False))
+        return
+    try:
+        result = run_apply(Path(args.apply).expanduser())
+    except PlanValidationError as exc:
+        print(json.dumps({"validationErrors": exc.errors}, ensure_ascii=False, indent=2))
+        raise SystemExit(1)
+    print(json.dumps(compact_summary(result), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

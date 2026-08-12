@@ -372,3 +372,40 @@ CREATE TABLE IF NOT EXISTS job_timings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_timings_job_id ON job_timings(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_timings_type_created ON job_timings(job_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_job_timings_project ON job_timings(project_id);
+
+-- ============================================================
+-- 7. Technical Rules Store (技术标规则：事实表清单全局一份 + 附表填写规则按客户一份)
+--    与 app/services/technical_rules_store.py 运行时 ensure 保持一致
+-- ============================================================
+
+-- 事实表清单（全局）：seq 即行序，payload 为完整 spec JSON
+CREATE TABLE IF NOT EXISTS technical_fact_spec_rows (
+    seq INTEGER PRIMARY KEY,
+    payload JSONB NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by VARCHAR(100)
+);
+
+-- 附表填写规则（按客户）：UNIQUE(customer_id, seq) 保证单客户内行序唯一
+CREATE TABLE IF NOT EXISTS technical_appendix_rule_rows (
+    id BIGSERIAL PRIMARY KEY,
+    customer_id VARCHAR(80) NOT NULL,
+    customer_name VARCHAR(200) NOT NULL,
+    seq INTEGER NOT NULL,
+    table_title TEXT NOT NULL,
+    project_sources JSONB DEFAULT '[]'::jsonb,
+    standard_sources JSONB DEFAULT '[]'::jsonb,
+    other_sources JSONB DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by VARCHAR(100),
+    UNIQUE(customer_id, seq)
+);
+
+-- 附表填写规则每客户元数据（上传文件名/时间）
+CREATE TABLE IF NOT EXISTS technical_appendix_rule_meta (
+    customer_id VARCHAR(80) PRIMARY KEY,
+    customer_name VARCHAR(200) NOT NULL,
+    file_name VARCHAR(255),
+    uploaded_at TIMESTAMPTZ,
+    updated_by VARCHAR(100)
+);

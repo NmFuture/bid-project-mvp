@@ -158,15 +158,20 @@ export const TECHNICAL_TABLE_FILL_SKILL = 'bid-tech-table-filler'
 // 失败按「目录项」计（失败原因写在目录项上，重填入口也在那里）。
 // pendingBody/pendingAppendix 是拆分提示，供 hover 说明用。
 export const technicalBodyFillCounts = (items) => {
+  const list = asObjectArray(items)
   const counts = { pending: 0, filled: 0, failed: 0, pendingBody: 0, pendingAppendix: 0 }
-  asObjectArray(items).forEach((item) => {
+  list.forEach((item) => {
     if (item?.titleOnly || String(item?.decision || '') !== 'fill_required') return
+    // 待填只认「待填写」标签下的行：被父章冻结的行在页面上是只读的（点不了单条 AI 填写），
+    // 待确认的行素材还没定，都不该算进一键填写的范围——一键填写实际提交的就是该标签
+    // 筛出来的行，口径不一致会让按钮上的数字比真正会填的多。已填/失败不受此限。
+    const countable = technicalGapTagOf(item, list) === 'template_ready'
     asObjectArray(item?.fillTasks).forEach((task) => {
       const skill = String(task?.skill || '')
       if (skill !== TECHNICAL_WORD_FILL_SKILL && skill !== TECHNICAL_TABLE_FILL_SKILL) return
       if (String(task?.status || 'pending') === 'completed') {
         counts.filled += 1
-      } else {
+      } else if (countable) {
         counts.pending += 1
         if (skill === TECHNICAL_TABLE_FILL_SKILL) counts.pendingAppendix += 1
         else counts.pendingBody += 1
@@ -262,8 +267,10 @@ const isTemplateTrackItem = (item) => {
   return best ? isFillTemplateMaterial(best) : false
 }
 
-const hasAiFillArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
-  .some((artifact) => currentResolvedArtifact(artifact) && String(artifact?.source || '') === 'ai_fill')
+const aiFillArtifacts = (item) => asObjectArray(item?.resolvedArtifacts)
+  .filter((artifact) => currentResolvedArtifact(artifact) && String(artifact?.source || '') === 'ai_fill')
+
+const hasAiFillArtifact = (item) => aiFillArtifacts(item).length > 0
 
 // 人工产物算「成稿」必须与后端 S7 闸口同口径（s7Ready）：人工选中的「待填写-」空模板
 // s7Ready=false（R10-B07-01），只是定下要填的模板，不算成稿，不进「已就绪」。
@@ -272,9 +279,16 @@ const hasManualArtifact = (item) => asObjectArray(item?.resolvedArtifacts)
     && currentResolvedArtifact(artifact)
     && artifact?.s7Ready !== false)
 
-export const technicalGapOwnTag = (item) => {
-  if (!item || isStructuralItem(item) || String(item?.status || '') === 'ignored') return ''
+export const technicalGapOwnTag = (item, allItems = []) => {
+  if (!item) return ''
+  // 「仅留标题」三条来源等价，统一收口（产品裁决 2026-08-11）：人工点忽略（titleOnly）、
+  // planner 判定的骨架章（structural 且确有下级）、历史人工跳过（status=ignored）——
+  // 三者在徽章、冻结行为、正文组装（build_assembly 同写 STATUS_STRUCTURAL）上本就一致，
+  // 此处让统计口径跟上，不再各自漏出统计外。
+  // 无下级的 structural 是落单章（自己没配到素材又没下级承接），仍按普通目录项判定。
   if (item?.titleOnly) return 'title_only'
+  if (String(item?.status || '') === 'ignored') return 'title_only'
+  if (isStructuralItem(item) && technicalGapDescendants(item, allItems).length) return 'title_only'
   const confirmState = technicalGapHumanConfirmState(item)
   const confirmed = confirmState === 'confirmed'
   const revoked = confirmState === 'revoked'
@@ -304,12 +318,14 @@ export const technicalGapOwnTag = (item) => {
   // 系统预选素材（matchedMaterials）生效，空项确认不产生任何定案。
   const hasSelectedMaterial = asObjectArray(item?.matchedMaterials).length > 0
   if ((confirmed && hasSelectedMaterial) || exact) return 'material_ready'
-  // 初判 ready 且无候选无产物的空骨架不算任务（decision 可能被终审改写，仅用于识别空骨架）。
+  // 初判 ready 且无候选无产物的空骨架（decision 可能被终审改写，仅用于识别空骨架）：
+  // 有下级 → 骨架容器，等同仅留标题，放开子级各自匹配；
+  // 无下级 → 系统判定本节不需要素材，本身即已就绪，不该漏在统计之外。
   if (
     String(item?.decision || '') === 'ready'
     && !candidatePool(item).length
     && !currentResolvedArtifacts(item).length
-  ) return ''
+  ) return technicalGapDescendants(item, allItems).length ? 'title_only' : 'material_ready'
   if (best >= TECHNICAL_GAP_WEAK_SCORE) return 'needs_choice'
   return 'manual_supplement'
 }
@@ -331,23 +347,82 @@ export const technicalGapAncestorItems = (item, allItems = []) => {
   return ancestors
 }
 
-// 冻结源：任一「未忽略且自身有工作标签」的祖先都会冻结整棵子树；返回最近的一个供展示。
-export const technicalGapFreezerItem = (item, allItems = []) => (
-  technicalGapAncestorItems(item, allItems).find((ancestor) => {
-    const tag = technicalGapOwnTag(ancestor)
+// 冻结源：任一「未忽略且自身有工作标签」的祖先都会冻结整棵子树。祖先链上可能有多个，
+// 取离根最近的那个——中间层若自己也被冻结，它的候选素材并未定案，拿它当继承来源
+// 会继承到一份没人拍板的素材，拿它做统计归属会把子树挂到一个同样没定案的层上。
+export const technicalGapFreezerItem = (item, allItems = []) => {
+  const freezers = technicalGapAncestorItems(item, allItems).filter((ancestor) => {
+    const tag = technicalGapOwnTag(ancestor, allItems)
     return tag && tag !== 'title_only'
-  }) || null
-)
+  })
+  return freezers.length ? freezers[freezers.length - 1] : null
+}
 
 export const technicalGapTagOf = (item, allItems = []) => {
   if (!item) return ''
-  const own = technicalGapOwnTag(item)
+  const own = technicalGapOwnTag(item, allItems)
+  // 仅留标题自身不被冻结（它就是放开子级的那一层）。
   if (own === 'title_only') return 'title_only'
-  // 结构项/人工忽略状态自身无标签，也不参与冻结展示。
-  if (isStructuralItem(item) || String(item?.status || '') === 'ignored') return own
   // 冻结判定不依赖子级自身标签：空骨架子级同样显示「由父章覆盖」（否则会漏出可操作入口）。
   if (technicalGapFreezerItem(item, allItems)) return 'parent_covered'
   return own
+}
+
+// —— 统计口径（产品裁决 2026-08-11）：每个标签两个数，任务数 + 目录数 ——
+// 任务数 = 人要动手的次数，锚在做决策的那一层；
+// 目录数 = 这个决策盖住多少行目录（自己 + 被它冻结的子树）。
+// 二者分工：任务数看还剩多少活，目录数看盖了多少目录，互不污染。
+// 关键不变量：五个桶的目录数求和 ≡ 目录总行数，所以进度天然能到 100%。
+
+// 该目录项还挂着几个待填对象（待填 Word / 附表各算一个，要分别填、分别审）。
+const pendingFillObjectCount = (item) => asObjectArray(item?.fillTasks).filter((task) => {
+  const skill = String(task?.skill || '')
+  if (skill !== TECHNICAL_WORD_FILL_SKILL && skill !== TECHNICAL_TABLE_FILL_SKILL) return false
+  return String(task?.status || 'pending') !== 'completed'
+}).length
+
+// 单个目录项贡献几个任务。被冻结的子树记 0——活在冻结源那一层，不重复计。
+// 待填写/待审核按待处理对象计，其余状态一个目录项就是一次决策（含系统自动定案的，
+// 口径是「定案单元数」而非「人实际点击数」，这样确认一条时左减一右加一，任务总数守恒）。
+export const technicalGapTaskCount = (item, allItems = []) => {
+  const tag = technicalGapTagOf(item, allItems)
+  if (!tag || tag === 'parent_covered') return 0
+  if (tag === 'template_ready') return Math.max(1, pendingFillObjectCount(item))
+  if (tag === 'template_review') return Math.max(1, aiFillArtifacts(item).length)
+  return 1
+}
+
+const emptyTagBuckets = () => ({
+  manual_supplement: 0,
+  needs_choice: 0,
+  template_ready: 0,
+  template_review: 0,
+  material_ready: 0,
+})
+
+// 仅留标题（人工忽略 / 骨架章 / 历史 ignored）归入已就绪：这一行的归属已经定案
+// ——结论是「本级不要正文」，它不欠任何东西，欠账在子级各自的格子上。
+// 统计和筛选必须共用这一个映射：标签上写 61，点开就得是 61 行，否则数字对不上账。
+export const technicalGapTagBucketOf = (tag) => (tag === 'title_only' ? 'material_ready' : tag)
+
+export const technicalGapProgressCounts = (items) => {
+  const list = asObjectArray(items)
+  const tasks = emptyTagBuckets()
+  const tocs = emptyTagBuckets()
+  list.forEach((item) => {
+    const bucket = technicalGapTagBucketOf(technicalGapTagOf(item, list))
+    if (bucket in tasks) {
+      tasks[bucket] += technicalGapTaskCount(item, list)
+      tocs[bucket] += 1
+      return
+    }
+    if (bucket !== 'parent_covered') return
+    // 被冻结的子项只把目录格子记到冻结源当前所在的桶上：父章还在「待填写」，
+    // 子树就不算已就绪。冻结源必有工作标签（title_only 不冻结子树），无需再映射。
+    const freezerTag = technicalGapOwnTag(technicalGapFreezerItem(item, list), list)
+    if (freezerTag in tocs) tocs[freezerTag] += 1
+  })
+  return { tasks, tocs }
 }
 
 // —— 人工「父章节覆盖」（产品需求 2026-07-27）——
@@ -397,26 +472,6 @@ export const technicalGapDescendants = (item, allItems = []) => {
     descendants.push(list[cursor])
   }
   return descendants
-}
-
-export const technicalGapParentCoverageState = (item, allItems = []) => {
-  const descendants = technicalGapDescendants(item, allItems)
-  const gapId = String(item?.id || '')
-  // 已按本节点人工设置覆盖的下级；planner 自动判定的覆盖不计入（不由这个按钮撤销）。
-  const manualCovered = descendants.filter(
-    (entry) => String(entry?.coveredByParent || '') === gapId
-      && String(entry?.parentCoverageSource || '') === 'manual',
-  )
-  const hasMaterial = asObjectArray(item?.matchedMaterials).length > 0
-    || currentResolvedArtifacts(item).length > 0
-  return {
-    descendantCount: descendants.length,
-    coveredCount: manualCovered.length,
-    applied: manualCovered.length > 0,
-    hasMaterial,
-    // 有下级 + 本节点自己有素材，才谈得上让下级跟着它写。
-    canApply: descendants.length > 0 && hasMaterial,
-  }
 }
 
 export const appendixTaskForFillTask = (selected, task) => {

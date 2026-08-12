@@ -94,8 +94,10 @@ export default function ParseRunningBanner() {
     }
     return (
       <div
+        role={isSuccess ? 'status' : 'alert'}
+        aria-live={isSuccess ? 'polite' : 'assertive'}
         className={[
-          'fixed bottom-20 right-4 z-40 inline-flex items-center gap-1 rounded-full border bg-white/95 py-1 pl-4 pr-1 text-xs font-semibold shadow-[0_8px_24px_-8px_rgba(13,33,55,0.35)] md:bottom-6 md:right-6',
+          'fixed bottom-20 right-4 z-40 inline-flex max-w-[calc(100vw-2rem)] items-center gap-1 rounded-lg border bg-white py-1 pl-3 pr-1 text-xs font-semibold shadow-[0_12px_28px_rgba(13,33,55,0.14)] md:bottom-6 md:right-6',
           isSuccess ? 'border-primary/20 text-primary' : 'border-error/30 text-error',
         ].join(' ')}
       >
@@ -105,18 +107,18 @@ export default function ParseRunningBanner() {
             dismiss()
             navigate(parseRouteFor(result))
           }}
-          className="inline-flex items-center gap-2 rounded-full py-1 transition-colors hover:opacity-80"
+          className="inline-flex min-w-0 items-center gap-2 rounded-md py-1 transition-colors hover:opacity-80"
         >
-          <span className="material-symbols-outlined text-[16px]">{isSuccess ? 'check_circle' : 'error'}</span>
-          {text}
+          <span aria-hidden="true" className="material-symbols-outlined text-[16px]">{isSuccess ? 'check_circle' : 'error'}</span>
+          <span className="truncate">{text}</span>
         </button>
         <button
           type="button"
           onClick={dismiss}
           aria-label="关闭通知"
-          className="inline-flex h-6 w-6 items-center justify-center rounded-full text-outline transition-colors hover:bg-surface-container-high"
+          className="ui-icon-control inline-flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant transition-colors hover:bg-surface-container-high"
         >
-          <span className="material-symbols-outlined text-[14px]">close</span>
+          <span aria-hidden="true" className="material-symbols-outlined text-[16px]">close</span>
         </button>
       </div>
     )
@@ -128,9 +130,10 @@ export default function ParseRunningBanner() {
     <button
       type="button"
       onClick={() => navigate(parseRouteFor(marker))}
-      className="fixed bottom-20 right-4 z-40 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-white/95 px-4 py-2 text-xs font-semibold text-primary shadow-[0_8px_24px_-8px_rgba(13,33,55,0.35)] transition-colors hover:bg-primary/5 md:bottom-6 md:right-6"
+      aria-live="polite"
+      className="fixed bottom-20 right-4 z-40 inline-flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border border-primary/20 bg-white px-4 py-2 text-xs font-semibold text-primary shadow-[0_12px_28px_rgba(13,33,55,0.14)] transition-colors hover:bg-primary/5 md:bottom-6 md:right-6"
     >
-      <span className="material-symbols-outlined animate-spin text-[16px]">progress_activity</span>
+      <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[16px]">progress_activity</span>
       <span className="max-w-[220px] truncate">
         {`${bidTypeLabel(marker.bidType)}解析进行中${percentage == null ? '' : ` · ${percentage}%`}${fileLabel ? ` · ${fileLabel}` : ''}`}
       </span>

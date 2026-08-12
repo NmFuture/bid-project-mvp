@@ -7,7 +7,7 @@
 | S0/S1 解析 | bid-tech-tender-structured-parser | `s1parse` | `s1_parse_manifest.json` |
 | S1 模板与目录 | bid-tech-outline-generator | `s2outline`（兼容 `s2toc`） | `s2_toc_workdir` |
 | S3 缺口处理（识别） | bid-tech-gap-planner | `s4gap` | `s4_gap_workdir` |
-| S3 缺口处理（空副表填写） | bid-tech-table-filler | `s4fill` | `s4_gap_workdir/ai_fill/<gapId>` |
+| S3 缺口处理（空副表填写） | bid-tech-table-filler | `s4fill-prepare` / `s4fill-apply`（LLM 判断为唯一模式） | `s4_gap_workdir/ai_fill/<gapId>` |
 | S3 缺口处理（待填写 Word） | bid-tech-word-placeholder-filler | `s4wordfill` | `s4_gap_workdir/ai_fill/<gapId>` |
 | S3 缺口处理（事实表维护） | bid-tech-fact-curator | `factcurate` | `s4_gap_workdir/fact_curate` |
 | S4 生成标书（正文组装） | bid-tech-assembler | `run_from_manifest.py` | `s7_assembly_workdir` |

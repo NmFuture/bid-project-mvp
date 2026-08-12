@@ -99,12 +99,8 @@ class BodyFillRunningBlocksAiFillTests(unittest.TestCase):
                 self.service.ai_fill("PRJ-MUTEX", "G1", object(), {})
         self.assertEqual(ctx.exception.status_code, 409)
 
-    def test_ai_fill_all_also_blocked(self) -> None:
-        with mock.patch.object(service_module, "body_fill_locked", return_value=True):
-            with self.assertRaises(HTTPException) as ctx:
-                self.service.ai_fill_all("PRJ-MUTEX", object(), {})
-        self.assertEqual(ctx.exception.status_code, 409)
-        self.assertIn("一键填写", str(ctx.exception.detail))
+    def test_retired_ai_fill_all_stays_removed(self) -> None:
+        self.assertFalse(hasattr(self.service, "ai_fill_all"))
 
 
 class AiFillSlotTests(unittest.TestCase):

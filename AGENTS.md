@@ -16,6 +16,7 @@
 - 团队共享规则可以提交：`AGENTS.md`、`CLAUDE.md`、`.claude/rules/**`、模块内 `CLAUDE.md`。
 - 个人本地配置禁止提交：`CLAUDE.local.md`、`.claude/settings.local.json`、`.env.local`、`.env.*.local`、真实凭证、个人 sandbox 地址和临时调试记录。
 - 修改团队共享规则要走 PR review，像代码变更一样审查。
+- 提 PR 前必须先对齐远端目标分支：`git fetch origin` 拿到目标分支最新代码，在本地把它合进自己的分支（merge 或 rebase），确认无冲突、核心链路验证通过后再推送提 PR；不允许在没合过最新目标分支的情况下直接提 PR。
 - 不要把冲刺计划、临时待办、会议流水和调试日志写进指令文件。
 - 已有 README、架构说明或长流程材料时，优先按需读取或引用，不把大段内容复制进根指令。
 

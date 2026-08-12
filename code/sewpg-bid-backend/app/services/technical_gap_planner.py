@@ -14,8 +14,8 @@ from typing import Any
 
 from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
-from app.services.identity import build_project_material_scope
-from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
+from app.services.identity import build_project_identity, build_project_material_scope
+from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_customer
 from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
     summarize_technical_gap_plan,
@@ -992,7 +992,12 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
         turbine_models,
         gap_state=project.get("gap_state") if isinstance(project.get("gap_state"), dict) else None,
     )
-    appendix_source_matrix = load_appendix_source_matrix_for_project(project)
+    # 附表填写规则按客户维护（SQL 为唯一事实来源）：项目自动套用所属客户的那份；
+    # 旧的项目级 xlsx 留盘但不再生效。
+    identity = build_project_identity(project)
+    appendix_source_matrix = load_appendix_source_matrix_for_customer(
+        str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+    )
     bid_type = require_bid_type(
         project.get("bidType"),
         error_message="技术标缺口规划必须显式传入技术标项目。",

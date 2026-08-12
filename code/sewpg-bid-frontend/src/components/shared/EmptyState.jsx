@@ -8,12 +8,12 @@ export default function EmptyState({
 }) {
   return (
     <div
-      className={`flex flex-col items-center justify-center py-12 text-center ${className}`}
+      className={`flex min-h-48 flex-col items-center justify-center px-4 py-10 text-center ${className}`}
     >
-      <span className="material-symbols-outlined text-5xl text-outline mb-3">{icon}</span>
-      {title && <h3 className="text-base font-medium text-on-surface mb-1">{title}</h3>}
+      <span aria-hidden="true" className="material-symbols-outlined mb-3 text-4xl text-outline">{icon}</span>
+      {title && <h3 className="mb-1 text-lg font-semibold text-on-surface">{title}</h3>}
       {description && (
-        <p className="text-sm text-on-surface-variant mb-4 max-w-sm">{description}</p>
+        <p className="mb-4 max-w-sm text-sm leading-[22px] text-on-surface-variant">{description}</p>
       )}
       {action}
     </div>
