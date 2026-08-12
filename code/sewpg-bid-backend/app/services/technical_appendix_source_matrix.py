@@ -197,6 +197,11 @@ def parse_appendix_source_matrix(path: Path | str) -> dict[str, Any]:
 
 
 def resolve_appendix_source_matrix_path(project: dict[str, Any]) -> str:
+    """历史文件口径的路径解析（项目 payload → 环境变量 → _config 默认）。
+
+    仅保留给存量单测与旧档案定位；缺口识别消费链已改为读客户规则库
+    （load_appendix_source_matrix_for_customer），项目级文件不再独立生效。
+    """
     candidates = [
         project.get("technicalAppendixSourceMatrixPath"),
         project.get("appendixSourceMatrixPath"),
@@ -217,10 +222,23 @@ def resolve_appendix_source_matrix_path(project: dict[str, Any]) -> str:
 
 
 def load_appendix_source_matrix_for_project(project: dict[str, Any]) -> dict[str, Any]:
+    """按历史文件口径加载矩阵（见 resolve_appendix_source_matrix_path 的口径说明）。"""
     path = resolve_appendix_source_matrix_path(project)
     if not path:
         return {"schemaVersion": "technical-appendix-source-matrix-v1", "path": "", "rows": []}
     return parse_appendix_source_matrix(path)
+
+
+def load_appendix_source_matrix_for_customer(customer_name: Any) -> dict[str, Any]:
+    """按客户加载附表来源矩阵（SQL 为唯一事实来源）；无规则或空客户名返回空 rows。
+
+    同步包装：内部经 run_awaitable_sync 桥查库，供 gap planner 等同步上下文使用；
+    异步上下文请直接 await technical_rules_store.load_appendix_matrix_for_customer。
+    """
+    from app.services.file_utils import run_awaitable_sync
+    from app.services.technical_rules_store import load_appendix_matrix_for_customer
+
+    return run_awaitable_sync(load_appendix_matrix_for_customer(customer_name))
 
 
 def table_title_match_score(left: Any, right: Any) -> float:

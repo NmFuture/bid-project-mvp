@@ -16,17 +16,19 @@ from app.services.bid_project_repository import ProjectConcurrentUpdateError, pr
 from app.services.bid_document_flow import _validate_callback_token, _validate_download_url
 from app.services.onlyoffice_documents import download_document_from_onlyoffice
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.identity import build_project_material_scope
+from app.services.identity import build_project_identity, build_project_material_scope, canonical_customer
 from app.services.material_folder_scope import project_material_root_path
 from app.services.technical_appendix_source_matrix import (
     apply_appendix_source_matrix_to_plan,
-    load_appendix_source_matrix_for_project,
     parse_appendix_source_matrix,
+)
+from app.services.technical_rules_store import (
+    load_appendix_matrix_for_customer,
+    replace_appendix_rules,
 )
 from app.services.turbine_models import project_turbine_model
 from app.services.technical_gap_fact_table import (
     FACT_STATUS_CONFIRMED,
-    FACT_STATUS_MISSING_SOURCE,
     FACT_STATUS_NOT_APPLICABLE,
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
@@ -40,7 +42,7 @@ from app.services.project_fact_materials import (
     project_fact_material_cached_path,
 )
 from app.services.peripheral import PeripheralError
-from app.services.bid_runtime_state import now_iso
+from app.services.bid_runtime_state import count_outline_nodes, now_iso
 from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
     TECHNICAL_WORD_FILL_SKILL_NAME,
@@ -81,8 +83,7 @@ from app.services.technical_body_fill_job import (
     schedule_body_fill_job,
 )
 from app.services.technical_fact_material_classes import build_fact_material_check
-from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
-from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_spec_version
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_repository import (
     get_technical_gap_project_runtime_state,
     mutate_technical_gap_project,
@@ -137,31 +138,10 @@ def _validate_editable_gap_artifact(
     return current_version
 
 
-def appendix_source_matrix_meta(project: dict[str, Any]) -> dict[str, Any]:
-    """项目级附表来源矩阵元数据：无绑定时返回空 dict，前端据此切换按钮空态/已上传态。"""
-    raw = project.get("technicalAppendixSourceMatrix")
-    if not isinstance(raw, dict):
-        raw = {}
-    path = str(
-        raw.get("path")
-        or project.get("technicalAppendixSourceMatrixPath")
-        or project.get("appendixSourceMatrixPath")
-        or ""
-    ).strip()
-    if not path:
-        return {}
-    return {
-        "path": path,
-        "fileName": str(raw.get("fileName") or ""),
-        "rowCount": int(raw.get("rowCount") or 0),
-        "uploadedAt": str(raw.get("uploadedAt") or ""),
-    }
-
-# 逐字段确认的终态集合：全部字段进入终态后表级 status 自动升 confirmed
+# 字段了结的状态集合：全部字段了结（有值或人工标不适用）后表级 status 自动升 confirmed
 PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
     FACT_STATUS_CONFIRMED,
     FACT_STATUS_NOT_APPLICABLE,
-    FACT_STATUS_MISSING_SOURCE,
 }
 
 
@@ -431,10 +411,25 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap detection not found")
 
+    @staticmethod
+    def _require_confirmed_outline(project: dict[str, Any]) -> None:
+        """素材匹配的前置闸门：目录必须已生成、已确认且至少有一个节点。
+
+        与商务标 business_gap_service.run_detection 的校验对齐；
+        ValueError 由 _raise_gap_error 映射为 400。
+        """
+        outline_state = project.get("outline_state") if isinstance(project.get("outline_state"), dict) else {}
+        nodes = outline_state.get("nodes") if isinstance(outline_state.get("nodes"), list) else []
+        if str(outline_state.get("reviewStatus") or "") != "confirmed" or not outline_state.get("generatedAt"):
+            raise ValueError("请先生成并确认投标目录，再启动素材匹配。")
+        if count_outline_nodes(nodes) < 1:
+            raise ValueError("投标目录为空，请先在目录审核页补充至少一个目录节点。")
+
     def run_detection(self, project_id: str) -> dict[str, Any]:
         try:
             # planner 是重活，先在快照上算完计划，再把结果原子写回最新状态
             snapshot = require_technical_gap_project_for_update(project_id)
+            self._require_confirmed_outline(snapshot)
             plan = build_technical_gap_plan_for_project(snapshot)
             items = legacy_technical_gap_items_from_plan(plan)
             recognized_at = now_iso()
@@ -463,10 +458,40 @@ class TechnicalGapService:
             payload = mutate_technical_gap_project(project_id, apply)
         except Exception as exc:
             _raise_gap_error(exc, "Gap detection not found")
+        self._autobuild_facts_after_detection(project_id)
         return {
             **payload,
             "message": f"缺口识别完成，共识别 {payload['summary']['totalTocItems']} 个目录项。",
         }
+
+    def _autobuild_facts_after_detection(self, project_id: str) -> None:
+        """素材匹配跑完后自动把事实表的值找一遍，人点开事实表直接看到真值。
+
+        只在第一次自动建：已经有表就不动，避免每次重跑素材匹配都把 AI 填的值冲掉；
+        之后要重建走页面上的「刷新并 AI 填充」。清单没上传、建表失败都不影响素材匹配
+        本身的结果，只记日志——事实表建不出来时页面会给出去规则页上传的引导。
+        """
+        try:
+            specs, _ = resolve_fact_specs()
+            if not specs:
+                logger.info("项目 %s 尚未上传事实表清单，跳过自动建表", project_id)
+                return
+            snapshot = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(snapshot)
+            existing = gap_state.get("projectFactTable")
+            if isinstance(existing, dict) and existing.get("fields"):
+                return
+            # run_detection 是同步路由，FastAPI 已把它放在工作线程里，
+            # 这里可以直接调用内部走 run_awaitable_sync 桥接的重活。
+            table = build_project_fact_table(snapshot, gap_state)
+
+            def apply(project: dict[str, Any]) -> None:
+                ensure_technical_gap_state(project)["projectFactTable"] = copy.deepcopy(table)
+                project["updatedAt"] = now_iso()
+
+            mutate_technical_gap_project(project_id, apply)
+        except Exception:
+            logger.exception("项目 %s 素材匹配后自动构建事实表失败，可在事实表页手动刷新", project_id)
 
     async def gaps(self, project_id: str, request: Request) -> dict[str, Any]:
         try:
@@ -1008,29 +1033,47 @@ class TechnicalGapService:
     async def facts(self, project_id: str) -> dict[str, Any]:
         project = require_technical_gap_project_for_update(project_id)
         gap_state = ensure_technical_gap_state(project)
-        fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-        specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+        specs, specs_ref = resolve_fact_specs()
         table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
         if table.get("schemaVersion") == PROJECT_FACT_TABLE_SCHEMA_VERSION:
             payload = copy.deepcopy(table)
         else:
             payload = empty_project_fact_table(project_id)
-        # 项目级事实表上传状态：前端据此决定空态引导还是展示字段
+        # 全局清单是否已上传：前端据此决定空态引导（去规则页）还是展示字段
         payload["specsImported"] = bool(specs)
-        payload["specsFileName"] = str(fact_specs.get("fileName") or "")
+        payload["specsFileName"] = str(specs_ref.get("fileName") or "")
         payload["specTotal"] = len(specs)
-        # 规则版本元数据（R06-B04-02）：审计当前绑定的是哪一版规则
-        payload["specsRuleId"] = str(fact_specs.get("ruleId") or "")
-        payload["specsVersion"] = int(fact_specs.get("version") or 0)
-        payload["specsSha256"] = str(fact_specs.get("sha256") or "")
+        # 规则版本元数据：审计当前生效的是哪一版全局清单
+        payload["specsRuleId"] = str(specs_ref.get("ruleId") or "")
+        payload["specsVersion"] = int(specs_ref.get("version") or 0)
+        payload["specsSha256"] = str(specs_ref.get("sha256") or "")
         # 用户自定义的参考资料目录（素材库虚拟路径），事实表匹配时并入扫描
         custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
         payload["materialPaths"] = [str(path) for path in custom_paths if str(path or "").strip()]
         # 默认生效的素材范围：与 AI 匹配填充实际扫描的三层口径一致，供前端如实展示
         payload["materialScopes"] = default_fact_material_scopes(project)
-        # 附表来源矩阵绑定状态：前端「附表填写规则」按钮的空态/已上传态
-        payload["appendixSourceMatrix"] = appendix_source_matrix_meta(project)
+        # 附表来源矩阵绑定状态：按客户读取（规则按客户维护，项目套用所属客户那份）
+        payload["appendixSourceMatrix"] = await self._appendix_source_matrix_meta_for_project(project)
         return payload
+
+    async def _appendix_source_matrix_meta_for_project(self, project: dict[str, Any]) -> dict[str, Any]:
+        """项目所属客户的附表规则元数据；无规则或身份解析失败返回空 dict。"""
+        try:
+            identity = build_project_identity(project)
+        except Exception:
+            return {}
+        customer_id = str(identity.get("customerId") or "")
+        if not customer_id:
+            return {}
+        from app.services.technical_rules_store import appendix_rules_meta
+
+        meta = await appendix_rules_meta(customer_id)
+        if not meta:
+            return {}
+        return {
+            **meta,
+            "customerName": str(identity.get("customerCanonicalName") or identity.get("customerName") or ""),
+        }
 
     async def save_fact_material_sources(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         """保存本项目的参考资料目录：素材库虚拟路径列表（如 技术标/项目定制/其他项目）。
@@ -1091,8 +1134,9 @@ class TechnicalGapService:
     ) -> dict[str, Any]:
         """项目级附表来源矩阵上传（《填写文件来源》Excel：客户 × 附表 → 项目定制/标准文件/其他来源）。
 
-        绑定到 project["technicalAppendixSourceMatrix"]，resolve_appendix_source_matrix_path
-        以该路径为最高优先级，下次缺口识别时经 manifest 传给 gap-planner 定 sourceRouting。
+        规则已改为按客户维护：本端点保留兼容（项目不存在 404、xlsx 留盘、绑定元数据），
+        同时把文件中属于本项目客户的规则行透写到客户规则库（全量替换该客户规则），
+        消费链统一从客户规则库读取，项目级文件不再独立生效。
         """
         if not filename.lower().endswith((".xlsx", ".xlsm")):
             raise HTTPException(status_code=400, detail="附表填写规则必须是 .xlsx 文件。")
@@ -1114,6 +1158,17 @@ class TechnicalGapService:
                 detail="未解析到有效规则行，请检查表头（客户/表格/项目定制/标准文件/其他）。",
             )
 
+        snapshot = require_technical_gap_project_for_update(project_id)
+        identity = build_project_identity(snapshot)
+        customer_id = str(identity.get("customerId") or "")
+        customer_name = str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+        own_rows = [
+            row
+            for row in rows
+            if customer_id
+            and str(canonical_customer(row.get("customer")).get("customerId") or "") == customer_id
+        ]
+
         target_dir = settings.documents_dir / project_id / "technical-workspace"
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / "appendix-source-matrix.xlsx"
@@ -1130,10 +1185,15 @@ class TechnicalGapService:
             project["updatedAt"] = uploaded_at
 
         mutate_technical_gap_project(project_id, bind_matrix)
+        # 透写客户规则库：只取属于本项目客户的行，全量替换该客户规则
+        if own_rows:
+            await replace_appendix_rules(
+                customer_id, customer_name, own_rows, "项目级上传", file_name=filename
+            )
         applied = await self._apply_appendix_source_matrix_to_plan(project_id)
         return {
             "fileName": filename,
-            "rowCount": len(rows),
+            "rowCount": len(own_rows) if own_rows else len(rows),
             "uploadedAt": uploaded_at,
             "applied": applied,
         }
@@ -1151,7 +1211,11 @@ class TechnicalGapService:
             return {}
         from app.services.technical_gap_planner import _allowed_technical_material_index
 
-        matrix = load_appendix_source_matrix_for_project(snapshot)
+        # 规则按客户维护：项目套用所属客户的规则库（SQL 为唯一事实来源）
+        identity = build_project_identity(snapshot)
+        matrix = await load_appendix_matrix_for_customer(
+            str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+        )
         material_scope = build_project_material_scope(snapshot)
         turbine_model = project_turbine_model(snapshot)
         # 素材索引构建内部经 run_awaitable_sync 桥接，与 build_facts 同模式放工作线程
@@ -1185,58 +1249,38 @@ class TechnicalGapService:
         mutate_technical_gap_project(project_id, apply, persist_when=lambda changed: changed)
         return stats
 
-    async def upload_fact_specs(
-        self, project_id: str, filename: str, content: bytes, operator: str = "当前用户"
-    ) -> dict[str, Any]:
-        """项目级事实表 Excel 上传：固化为不可变规则版本并绑定到本项目（R06-B04-02）。
+    async def replay_appendix_source_matrix_for_customer(self, customer_name: str) -> dict[str, Any]:
+        """客户规则保存/导入后，重放到该客户名下「缺口识别已完成」的技术标项目。
 
-        每次上传生成独立版本（ruleId/版本号/上传人/时间/sha256 落数据卷），
-        gap_state["factSpecs"] 只更新本项目的绑定与 specs 快照，不影响其他项目。
+        按 build_project_identity 匹配项目清单逐个重放，单项目失败不阻塞其他项目。
         """
-        if not filename.lower().endswith(".xlsx"):
-            raise HTTPException(status_code=400, detail="事实表必须是 .xlsx 文件。")
-        if not content:
-            raise HTTPException(status_code=400, detail="上传文件为空。")
-        tmp_upload: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
-                handle.write(content)
-                tmp_upload = Path(handle.name)
-            specs = import_specs(tmp_upload)
-        except FactSpecImportError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        finally:
-            if tmp_upload is not None:
-                tmp_upload.unlink(missing_ok=True)
+        customer_id = str(canonical_customer(customer_name).get("customerId") or "")
+        summary: dict[str, Any] = {"replayed": 0, "failed": 0, "projects": []}
+        if not customer_id:
+            return summary
+        from app.services.store import store
 
-        snapshot = require_technical_gap_project_for_update(project_id)
-        snapshot_state = ensure_technical_gap_state(snapshot)
-        previous = snapshot_state.get("factSpecs") if isinstance(snapshot_state.get("factSpecs"), dict) else {}
-        # 版本落盘会递增版本号，不能放进可重放的 mutate 里，否则一次冲突多出一个版本
-        binding = save_fact_spec_version(
-            project_id,
-            specs,
-            file_name=filename,
-            uploaded_by=operator,
-            content=content,
-            previous_version=int(previous.get("version") or 0),
-        )
+        listing = store.list_projects(bid_type=TECHNICAL_BID_TYPE, page=1, page_size=10000)
+        for item in listing.get("items") or []:
+            project_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+            if not project_id:
+                continue
+            try:
+                project = get_technical_gap_project_runtime_state(project_id)
+                identity = build_project_identity(project)
+                if str(identity.get("customerId") or "") != customer_id:
+                    continue
+                gap_state = ensure_technical_gap_state(project)
+                if gap_state.get("recognitionStatus") != "completed":
+                    continue
+                stats = await self._apply_appendix_source_matrix_to_plan(project_id)
+                summary["replayed"] += 1
+                summary["projects"].append({"projectId": project_id, "applied": stats})
+            except Exception as exc:  # 单项目失败不阻塞其他项目
+                summary["failed"] += 1
+                summary["projects"].append({"projectId": project_id, "error": str(exc)})
+        return summary
 
-        def apply(project: dict[str, Any]) -> None:
-            gap_state = ensure_technical_gap_state(project)
-            gap_state["factSpecs"] = copy.deepcopy(binding)
-            project["updatedAt"] = binding["uploadedAt"]
-
-        mutate_technical_gap_project(project_id, apply)
-        ref = fact_specs_ref(binding)
-        return {
-            "specTotal": len(specs),
-            "fileName": filename,
-            "uploadedAt": binding["uploadedAt"],
-            "ruleId": ref["ruleId"],
-            "version": ref["version"],
-            "sha256": ref["sha256"],
-        }
 
     async def build_facts(self, project_id: str) -> dict[str, Any]:
         try:
@@ -1244,9 +1288,9 @@ class TechnicalGapService:
             gap_state = ensure_technical_gap_state(snapshot)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别，再维护项目事实表。")
-            fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-            if not fact_specs.get("specs"):
-                raise ValueError("请先上传本项目的事实表 Excel，再生成项目事实表。")
+            specs, _ = resolve_fact_specs()
+            if not specs:
+                raise ValueError("尚未上传事实表清单，请先到素材库 · 规则页上传后再生成。")
             # 同步构建放到工作线程：内部素材查询经 run_awaitable_sync 桥接异步，
             # 在事件循环线程内直接调用会被拒并降级为空素材（字段全部 unextracted）。
             # 构建是重活，跑完再原子写回，重放只重放赋值。
@@ -1282,8 +1326,7 @@ class TechnicalGapService:
             current = gap_state.get("projectFactTable")
             if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
                 current = await asyncio.to_thread(build_project_fact_table, snapshot, gap_state)
-            fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-            specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+            specs, specs_ref = resolve_fact_specs()
             incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
             confirm = bool(payload.get("confirm") or payload.get("confirmed"))
             operator = str(payload.get("operator") or "当前用户")
@@ -1308,7 +1351,7 @@ class TechnicalGapService:
                 "summary": summarize_project_fact_fields(fields, spec_total=len(specs)),
                 "factSpecsRef": copy.deepcopy(current.get("factSpecsRef"))
                 if isinstance(current.get("factSpecsRef"), dict)
-                else fact_specs_ref(fact_specs),
+                else copy.deepcopy(specs_ref),
             }
             def apply(project: dict[str, Any]) -> None:
                 ensure_technical_gap_state(project)["projectFactTable"] = copy.deepcopy(table)
@@ -1363,8 +1406,7 @@ class TechnicalGapService:
                     saved_at=saved_at,
                 )
                 fields[target_index] = normalized
-                fact_specs = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-                specs = fact_specs.get("specs") if isinstance(fact_specs.get("specs"), list) else []
+                specs, _ = resolve_fact_specs()
                 summary = summarize_project_fact_fields(fields, spec_total=len(specs))
                 all_terminal = bool(fields) and all(
                     str(field.get("status") or "") in PROJECT_FACT_FIELD_TERMINAL_STATUSES for field in fields

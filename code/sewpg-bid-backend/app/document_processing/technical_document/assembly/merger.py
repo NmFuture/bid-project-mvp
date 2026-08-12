@@ -4,7 +4,8 @@ merger v2（方案 B）：按 assembly_plan.json 合并素材到技术标母版�
 
 关键特性：
 - 使用 docxcompose 做 section 级合并（媒体/样式自动处理）
-- 手插 toc heading：text="{chapter_no}  {title}"，样式=Heading N
+- 手插 toc heading：text="{层级编号}  {title}"，样式=Heading N
+  层级编号由 chapter_no_flat 推导：一级"第N章"，二级及以下"N.M"/"N.M.K"
 - 素材内部 Heading 按父章节相对映射为 3/4 级标题，保留正文结构
 - 素材首 Heading 若匹配 toc_title 则去重（物理移除）
 - 前言段特殊：style=Heading 1，text="前言  投标说明函"
@@ -33,7 +34,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -43,6 +44,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from copy import deepcopy
 
+from .parse_toc import display_chapter_no
 from .preprocess import preprocess
 from .numbering_fixer import (
     enforce_no_auto_numbering_on_numbered_headings,
@@ -247,7 +249,10 @@ def merge(
     params: dict,
     prep_dir: Path,
     out_path: Path,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict:
+    """progress_callback(done, total)：正文遍历是整条组装里最长的一段，逐条回传真实计数，
+    让上层进度条有可核对的量化数据而不是纯时间估算。节流交给调用方。"""
     os.makedirs(os.fspath(prep_dir), exist_ok=True)
 
     # 打开母版并清空 body（只保留 sectPr）
@@ -335,6 +340,8 @@ def merge(
 
     # Step 1: 遍历正文 plan
     for i, entry in enumerate(non_cover):
+        if progress_callback:
+            progress_callback(i, len(non_cover))
         status = entry["status"]
         level = entry["level"]
         title = entry["title"]
@@ -359,7 +366,10 @@ def merge(
             heading_text = None
             heading_level = level
         else:
-            heading_text = f"{chapter_no}  {title}" if chapter_no else title
+            # 正文标题编号统一由 chapter_no_flat 推导（一级「第N章」，其下「N.M」），
+            # 与素材内部标题的父前缀同源；目录原样号只作素材关联键，不进正文。
+            display_no = display_chapter_no(entry)
+            heading_text = f"{display_no}  {title}" if display_no else title
             heading_level = level
 
         if status == "STRUCTURAL":
@@ -516,6 +526,9 @@ def merge(
                 _add_body_paragraph(master_doc, f"[缺失：{title}——没有可用素材，请补充后重试]")
                 stats["inserted_placeholders"] += 1
                 warning_counts["DIRECTORY_WITHOUT_MATERIAL"] += 1
+
+    if progress_callback:
+        progress_callback(len(non_cover), len(non_cover))
 
     # Save
     strip_numPr_from_heading_styles(master_doc)

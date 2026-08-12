@@ -1,3 +1,4 @@
+import { createContext, useContext, useEffect, useId, useRef } from 'react'
 import { cx } from './utils'
 import IconButton from './IconButton'
 
@@ -9,6 +10,16 @@ const SIZES = {
   full: 'max-w-[calc(100vw-2rem)]',
 }
 
+const DialogContext = createContext(null)
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
+
 export function Dialog({
   children,
   className = '',
@@ -16,15 +27,66 @@ export function Dialog({
   open = true,
   size = 'md',
 }) {
+  const dialogRef = useRef(null)
+  const titleId = useId()
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    const dialog = dialogRef.current
+    const previousFocus = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    const focusTarget = dialog?.querySelector(FOCUSABLE_SELECTOR) || dialog
+    focusTarget?.focus()
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      previousFocus?.focus?.()
+    }
+  }, [open])
+
   if (!open) return null
 
+  const handleKeyDown = (event) => {
+    if (event.key === 'Escape' && onClose) {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    if (event.key !== 'Tab') return
+
+    const focusable = Array.from(dialogRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || [])
+    if (!focusable.length) {
+      event.preventDefault()
+      dialogRef.current?.focus()
+      return
+    }
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6" onClick={onClose}>
+    <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-4 sm:py-6" onClick={onClose}>
       <div
-        className={cx('flex max-h-[88vh] w-full flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface shadow-[0_12px_28px_-16px_rgba(0,62,111,0.2)]', SIZES[size] || SIZES.md, className)}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={cx('dialog-surface flex w-full flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)]', SIZES[size] || SIZES.md, className)}
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleKeyDown}
       >
-        {children}
+        <DialogContext.Provider value={{ titleId }}>{children}</DialogContext.Provider>
       </div>
     </div>
   )
@@ -35,9 +97,10 @@ export function DialogHeader({
   className = '',
   onClose,
 }) {
+  const context = useContext(DialogContext)
   return (
     <div className={cx('flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4', className)}>
-      <div className="min-w-0">{children}</div>
+      <div id={context?.titleId} className="min-w-0 text-lg font-semibold text-on-surface">{children}</div>
       {onClose ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
     </div>
   )

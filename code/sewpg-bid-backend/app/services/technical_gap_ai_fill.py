@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
-from app.services.technical_fact_spec_versions import resolve_project_specs
+from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -53,34 +54,41 @@ def _project_dir(project: dict[str, Any]) -> Path:
     return project_dir
 
 
+# 共享的专用事件循环：一键填写并发化后，多个 worker 线程都会跑到异步素材下载。
+# 原来每次调用 asyncio.run 各开新 loop——共享 AsyncEngine 的 asyncpg 连接
+# 在「前一线程的 loop 上创建、后一线程的 loop 上等待」时会永久挂起（实测并发批
+# 填时正文模板下载卡死 2 小时+，select 空转）。改成所有调用都提交到同一个常驻
+# loop（run_coroutine_threadsafe），异步原语的 loop 亲和性天然一致。
+_SHARED_ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
+_SHARED_ASYNC_LOOP_LOCK = threading.Lock()
+
+
+def _shared_async_loop() -> asyncio.AbstractEventLoop:
+    global _SHARED_ASYNC_LOOP
+    with _SHARED_ASYNC_LOOP_LOCK:
+        if _SHARED_ASYNC_LOOP is None or _SHARED_ASYNC_LOOP.is_closed():
+            loop = asyncio.new_event_loop()
+            threading.Thread(
+                target=loop.run_forever,
+                daemon=True,
+                name="technical-ai-fill-async-loop",
+            ).start()
+            _SHARED_ASYNC_LOOP = loop
+        return _SHARED_ASYNC_LOOP
+
+
 def _run_async(awaitable: Any) -> Any:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(awaitable)
+        return asyncio.run_coroutine_threadsafe(awaitable, _shared_async_loop()).result()
 
-    loop_thread_id = getattr(loop, "_thread_id", None)
-    if loop_thread_id is not None and threading.get_ident() == loop_thread_id:
+    if loop is _SHARED_ASYNC_LOOP:
         raise RuntimeError(
-            "_run_async was called from the running event loop's own thread. "
+            "_run_async was called from the shared event loop's own thread. "
             "Wrap the calling sync code with asyncio.to_thread or run it in a worker thread."
         )
-
-    result: dict[str, Any] = {}
-    error: dict[str, BaseException] = {}
-
-    def runner() -> None:
-        try:
-            result["value"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover - re-raised in caller
-            error["value"] = exc
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    thread.join()
-    if error:
-        raise error["value"]
-    return result.get("value")
+    return asyncio.run_coroutine_threadsafe(awaitable, _shared_async_loop()).result()
 
 
 def _object_items(value: Any) -> list[dict[str, Any]]:
@@ -182,7 +190,7 @@ def enrich_fact_table_with_spec_columns(
     fields = fact_table.get("fields")
     if not isinstance(fields, list) or not fields:
         return fact_table
-    specs, _meta = resolve_project_specs(gap_state)
+    specs, _meta = resolve_fact_specs()
     specs_by_key = {str(spec.get("key") or ""): spec for spec in specs if isinstance(spec, dict) and spec.get("key")}
     if not specs_by_key:
         return fact_table
@@ -557,6 +565,21 @@ async def _downloadable_technical_word_payload(material_id: str) -> tuple[dict[s
     return payload, "raw"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """写共享缓存文件：先写线程唯一的临时文件再原子改名。
+
+    一键填写并发后，多个线程可能同时生成同一素材的 OCR sidecar；直接 write_text
+    会让并发读者读到写了一半的文件。临时名带 pid/线程 id，互不覆盖。
+    """
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temp_path.write_text(text, encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
 def _ensure_pdf_ocr_sidecar(pdf_path: Path) -> tuple[str, str]:
     """为证书类 PDF 素材生成 OCR 文本 sidecar（{stem}.ocr.txt，与 PDF 同目录缓存复用）。
 
@@ -582,7 +605,7 @@ def _ensure_pdf_ocr_sidecar(pdf_path: Path) -> tuple[str, str]:
         return "", f"failed: {exc}"
     if not str(text or "").strip():
         return "", "failed: OCR 识别结果为空"
-    sidecar_path.write_text(str(text), encoding="utf-8")
+    _atomic_write_text(sidecar_path, str(text))
     return str(sidecar_path), "generated"
 
 
@@ -632,7 +655,7 @@ def _ensure_pdf_ocr_sidecars_batch(pending: list[tuple[dict[str, Any], Path]]) -
         sidecar_path = pdf_path.with_suffix(".ocr.txt")
         # 批量等待期间其他任务可能已补齐同一 sidecar，缓存优先不覆写
         if not (sidecar_path.exists() and sidecar_path.stat().st_size > 0):
-            sidecar_path.write_text(str(text), encoding="utf-8")
+            _atomic_write_text(sidecar_path, str(text))
         item["ocrTextPath"] = str(sidecar_path)
         item["ocrStatus"] = "generated"
         generated += 1
@@ -1406,14 +1429,20 @@ def _replace_resolved_artifacts(
     return kept[-24:]
 
 
-def run_technical_ai_fill_for_gap(
-    project: dict[str, Any],
+def compute_technical_ai_fill(
+    project_snapshot: dict[str, Any],
     gap_id: str,
     data: dict[str, Any],
     *,
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> dict[str, Any]:
+    """AI 填写的慢计算段：备素材、OCR、跑填写 skill、产物落盘并构建 artifacts。
+
+    只在传入的私有快照（调用方深拷贝）上读写，不碰任何共享状态；返回可 JSON 化的
+    结果包，由 :func:`apply_technical_ai_fill_result` 在 CAS 事务里纯状态写回。
+    """
+    project = project_snapshot
     gap_state = project.get("gap_state") or {}
     plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
     project_fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
@@ -1498,7 +1527,11 @@ def run_technical_ai_fill_for_gap(
         output_file = work_dir / f"{output_stem}_{output_suffix}_AI填写.docx"
     else:
         output_file = work_dir / f"{output_stem}_AI填写.docx"
-    manifest_path = work_dir / ("word_fill_input.json" if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else "table_fill_input.json")
+    manifest_name = "word_fill_input.json" if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else "table_fill_input.json"
+    if len(fill_tasks) > 1:
+        # 同一目录项挂多个填写任务时会并发跑：manifest 名带任务 id，避免互踩
+        manifest_name = f"{Path(manifest_name).stem}_{artifact_task_id}.json"
+    manifest_path = work_dir / manifest_name
     embed_sources: list[dict[str, Any]] = []
     if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
         blank_source = _prepare_word_blank_source(blank_source, work_dir)
@@ -1595,6 +1628,59 @@ def run_technical_ai_fill_for_gap(
     )
     artifact = artifacts[0]
 
+    # 结果包必须可 JSON 化：跨线程传给主线程收口，排障时也可直接落盘查看
+    return {
+        "gapId": gap_id,
+        "fillTaskId": str(task.get("id") or ""),
+        "skill": skill_name,
+        "artifact": artifact,
+        "artifacts": artifacts,
+        "qualityReport": quality_report,
+        "unfilledFieldCount": len(result.get("unfilledFields") or []),
+        "createdAt": created_at,
+        "operator": operator,
+    }
+
+
+def apply_technical_ai_fill_result(project: dict[str, Any], fill_result: dict[str, Any]) -> dict[str, Any]:
+    """把 compute 的结果包纯状态写回给定 project。
+
+    只允许状态改动，必须可重放：CAS 冲突时 mutate 会基于最新状态重新执行本函数。
+    幂等：同一结果包重复 apply（task 已带着同一产物 id、同一完成时间落库）直接
+    返回现状，不重复追加 resolvedArtifacts/reviewNotes。
+    """
+    gap_state = project.get("gap_state") or {}
+    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
+    items = plan.get("items") if isinstance(plan.get("items"), list) else []
+    gap_id = str(fill_result.get("gapId") or "")
+    item = next((entry for entry in items if str(entry.get("id") or "") == gap_id), None)
+    if item is None:
+        raise KeyError(gap_id)
+    fill_tasks = item.get("fillTasks") if isinstance(item.get("fillTasks"), list) else []
+    fill_task_id = str(fill_result.get("fillTaskId") or "")
+    task = next(
+        (
+            entry
+            for entry in fill_tasks
+            if not fill_task_id or str(entry.get("id") or "") == fill_task_id
+        ),
+        None,
+    )
+    if task is None:
+        raise ValueError("当前缺口没有可执行的 AI 填写任务。")
+    artifacts = _object_items(fill_result.get("artifacts"))
+    artifact = fill_result.get("artifact") if isinstance(fill_result.get("artifact"), dict) else {}
+    quality_report = fill_result.get("qualityReport") if isinstance(fill_result.get("qualityReport"), dict) else {}
+    created_at = str(fill_result.get("createdAt") or "")
+    skill_name = str(fill_result.get("skill") or TECHNICAL_TABLE_FILL_SKILL_NAME)
+    if (
+        str(task.get("status") or "") == "completed"
+        and str(task.get("outputArtifactId") or "") == str(artifact.get("id") or "")
+        and str(task.get("completedAt") or "") == created_at
+    ):
+        # 同一结果包的重复 apply（CAS 重放）：首次写回已落库，直接返回现状
+        return {"item": item, "artifact": artifact, "artifacts": artifacts, "gapPlan": plan}
+
     task["status"] = "completed"
     task["outputArtifactId"] = artifact["id"]
     task["outputArtifactIds"] = [entry["id"] for entry in artifacts]
@@ -1611,7 +1697,7 @@ def run_technical_ai_fill_for_gap(
     item["resolvedAt"] = created_at
     item["resolvedSource"] = artifact["fileName"] if len(artifacts) == 1 else f"{len(artifacts)} 份AI填写产物"
     item["reviewNotes"] = list(item.get("reviewNotes") or [])
-    unfilled_count = len(result.get("unfilledFields") or [])
+    unfilled_count = int(fill_result.get("unfilledFieldCount") or 0)
     if unfilled_count:
         item["reviewNotes"].append(f"AI 填写仍有未填字段：{unfilled_count} 项")
     if quality_report["status"] not in FILL_QUALITY_ACCEPTED_STATUSES:
@@ -1625,3 +1711,25 @@ def run_technical_ai_fill_for_gap(
     gap_state["reviewConfirmed"] = False
     gap_state["reviewedAt"] = ""
     return {"item": item, "artifact": artifact, "artifacts": artifacts, "gapPlan": plan}
+
+
+def run_technical_ai_fill_for_gap(
+    project: dict[str, Any],
+    gap_id: str,
+    data: dict[str, Any],
+    *,
+    browser_base_url: str = "",
+    onlyoffice_base_url: str = "",
+) -> dict[str, Any]:
+    """单条 AI 填写入口：compute（慢计算）+ apply（纯状态写回）的薄封装。
+
+    调用方传入的 project 视为私有快照，签名与返回结构和拆分前一致。
+    """
+    fill_result = compute_technical_ai_fill(
+        project,
+        gap_id,
+        data,
+        browser_base_url=browser_base_url,
+        onlyoffice_base_url=onlyoffice_base_url,
+    )
+    return apply_technical_ai_fill_result(project, fill_result)

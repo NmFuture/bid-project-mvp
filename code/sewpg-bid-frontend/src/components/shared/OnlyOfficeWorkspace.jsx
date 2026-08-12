@@ -7,7 +7,7 @@ export default function OnlyOfficeWorkspace({
   documentMeta,
   children,
   className = '',
-  heightClass = 'min-h-[640px]',
+  heightClass = 'onlyoffice-workspace-height',
   gridClassName = 'xl:grid-cols-[minmax(20rem,28rem)_minmax(0,1fr)]',
   sidebarClassName = '',
   documentAreaClassName = '',
@@ -40,7 +40,7 @@ export default function OnlyOfficeWorkspace({
     <div className={['relative', className].join(' ')}>
       <div
         className={[
-          'grid grid-cols-1 overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]',
+          'grid min-w-0 grid-cols-1 overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest',
           gridClassName,
           heightClass,
         ].join(' ')}
@@ -55,6 +55,7 @@ export default function OnlyOfficeWorkspace({
         </aside>
 
         <section
+          aria-label={documentTitle || '文档工作区'}
           className={[
             fullscreen
               ? 'fixed inset-0 z-[160] flex min-h-0 flex-col bg-white'
@@ -70,12 +71,12 @@ export default function OnlyOfficeWorkspace({
                 {documentTitle}
               </h3>
               {documentSubtitle ? (
-                <p className="mt-1 truncate text-xs text-outline" title={typeof documentSubtitle === 'string' ? documentSubtitle : undefined}>
+                <p className="mt-1 truncate text-xs text-on-surface-variant" title={typeof documentSubtitle === 'string' ? documentSubtitle : undefined}>
                   {documentSubtitle}
                 </p>
               ) : null}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
               {documentMeta}
               <button
                 type="button"
@@ -83,9 +84,9 @@ export default function OnlyOfficeWorkspace({
                 aria-pressed={fullscreen}
                 title={fullscreenLabel}
                 onClick={() => setFullscreen((value) => !value)}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-surface-container-high text-on-surface-variant transition-colors hover:bg-surface-dim hover:text-on-surface"
+                className="ui-icon-control flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-surface-container-low text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
               >
-                <span className="material-symbols-outlined text-[20px]">
+                <span aria-hidden="true" className="material-symbols-outlined text-[20px]">
                   {fullscreen ? 'close_fullscreen' : 'open_in_full'}
                 </span>
               </button>

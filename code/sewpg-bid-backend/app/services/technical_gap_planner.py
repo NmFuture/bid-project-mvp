@@ -14,8 +14,8 @@ from typing import Any
 
 from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
-from app.services.identity import build_project_material_scope
-from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
+from app.services.identity import build_project_identity, build_project_material_scope
+from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_customer
 from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
     summarize_technical_gap_plan,
@@ -596,10 +596,14 @@ def _is_non_body_pool_material(material: dict[str, Any]) -> bool:
     return PROJECT_APPENDIX_FOLDER_NAME in parts or CLIENT_APPENDIX_INPUT_FOLDER_NAME in parts
 
 
-def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any]:
-    """事实表「投标机型」字段值 → 归一化机型 dict；无事实表/无值时返回空 dict。"""
+def _fact_table_turbine_models(gap_state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """事实表「投标机型」字段值 → 归一化机型列表；无事实表/无值时返回空列表。
+
+    多机型项目里这一行是各机型的合并串（事实表按机型分组后，不带序号的那行留给
+    正文占位符取值）。不拆开就会拿一个不存在的型号去过滤，标准档素材会被全部剔除。
+    """
     if not isinstance(gap_state, dict):
-        return {}
+        return []
     fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     for field in fact_table.get("fields") or []:
         if not isinstance(field, dict):
@@ -607,8 +611,13 @@ def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any
         label = re.sub(r"\s+", "", str(field.get("label") or ""))
         value = str(field.get("value") or "").strip()
         if label == "投标机型" and value:
-            return normalize_project_turbine_model(value)
-    return {}
+            models = [
+                normalize_project_turbine_model(part)
+                for part in re.split(r"[、,，/;；]+", value)
+                if part.strip()
+            ]
+            return [model for model in models if model]
+    return []
 
 
 def _keep_by_turbine_model(item: dict[str, Any], selected: list[dict[str, Any]] | dict[str, Any]) -> bool:
@@ -646,17 +655,17 @@ def _filter_material_index_by_fact_table(
     标准档严格 match 才保留（同 _keep_by_turbine_model），客户/项目档剔除冲突、
     保留机型无关素材。首轮缺口检测时事实表尚未构建，此过滤为空操作，不形成循环依赖。
 
-    这道过滤是给「项目选错机型」兜底的。项目已选多个机型、且事实表值就是其中之一时，
-    说明选型本身没问题，此时不能按单个值收紧——那会把其余机型的标准档素材全部剔除，
+    这道过滤是给「项目选错机型」兜底的。项目已选多个机型、且事实表的机型都在其中时，
+    说明选型本身没问题，此时不能按事实表收紧——那会把其余机型的标准档素材全部剔除，
     与多机型串行铺开的目标相反。
     """
-    selected = _fact_table_turbine_model(gap_state)
+    selected = _fact_table_turbine_models(gap_state)
     if not selected:
         return items
     project_models = _as_turbine_model_list(selected_models)
+    project_names = {str(model.get("model") or "").strip() for model in project_models}
     if len(project_models) > 1 and any(
-        str(model.get("model") or "").strip() == str(selected.get("model") or "").strip()
-        for model in project_models
+        str(model.get("model") or "").strip() in project_names for model in selected
     ):
         return items
     return [item for item in items if _keep_by_turbine_model(item, selected)]
@@ -983,7 +992,12 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
         turbine_models,
         gap_state=project.get("gap_state") if isinstance(project.get("gap_state"), dict) else None,
     )
-    appendix_source_matrix = load_appendix_source_matrix_for_project(project)
+    # 附表填写规则按客户维护（SQL 为唯一事实来源）：项目自动套用所属客户的那份；
+    # 旧的项目级 xlsx 留盘但不再生效。
+    identity = build_project_identity(project)
+    appendix_source_matrix = load_appendix_source_matrix_for_customer(
+        str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+    )
     bid_type = require_bid_type(
         project.get("bidType"),
         error_message="技术标缺口规划必须显式传入技术标项目。",

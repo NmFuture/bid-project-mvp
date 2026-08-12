@@ -4,9 +4,13 @@ import { technicalDirectoryAPI, technicalGapsAPI, technicalOutlineAPI, technical
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalDirectoryProgressPanel from '../components/TechnicalDirectoryProgressPanel'
-import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import MaterialMatchProgressModal from '../../../components/shared/MaterialMatchProgressModal'
+import {
+  finishedMaterialMatchProgress,
+  idleMaterialMatchProgress,
+  startedMaterialMatchProgress,
+} from '../../../components/shared/materialMatchProgressState'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
@@ -257,11 +261,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
   const [reviewStatus, setReviewStatus] = useState('draft')
   const [currentStage, setCurrentStage] = useState(2)
-  const [materialMatchProgress, setMaterialMatchProgress] = useState({
-    open: false,
-    running: false,
-    error: '',
-  })
+  const [materialMatchProgress, setMaterialMatchProgress] = useState(idleMaterialMatchProgress)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
@@ -493,7 +493,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }
 
     setConfirming(true)
-    setMaterialMatchProgress({ open: true, running: true, error: '' })
+    setMaterialMatchProgress(startedMaterialMatchProgress())
     try {
       if (dirty) {
         const nodesToSave = renumberOutlineNodes(nodes)
@@ -506,7 +506,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       setReviewStatus('confirmed')
       showToast?.('目录确认已完成，正在执行素材匹配...')
       await technicalGapsAPI.runDetection(id)
-      setMaterialMatchProgress({ open: true, running: false, error: '' })
+      setMaterialMatchProgress((previous) => finishedMaterialMatchProgress(previous))
       const stageResult = await technicalStagesAPI.update(id, 2, { status: 'completed' })
       const nextStageId = Number(stageResult?.currentStage) || 3
       const nextRoute = getTechnicalStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
@@ -515,7 +515,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       navigate(nextRoute)
     } catch (e) {
       const message = e?.message || '目录确认或素材匹配失败，请稍后重试'
-      setMaterialMatchProgress({ open: true, running: false, error: message })
+      setMaterialMatchProgress((previous) => finishedMaterialMatchProgress(previous, message))
       showToast?.(message, 'error')
     } finally {
       setConfirming(false)
@@ -689,6 +689,8 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
               </span>
               {hasChildren ? (
                 <button
+                  type="button"
+                  aria-label={isCollapsed ? '展开子章节' : '收起子章节'}
                   onClick={(e) => {
                     e.stopPropagation()
                     handleToggleNodeCollapse(node.id)
@@ -696,7 +698,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
                   className="h-6 w-6 shrink-0 flex items-center justify-center text-outline hover:text-primary transition-colors"
                   title={isCollapsed ? '展开' : '收起'}
                 >
-                  <span className="material-symbols-outlined text-[16px]">
+                  <span aria-hidden="true" className="material-symbols-outlined text-[16px]">
                     {isCollapsed ? 'chevron_right' : 'expand_more'}
                   </span>
                 </button>
@@ -708,7 +710,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
                 value={node.title || ''}
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => handleTitleChange(node.id, e.target.value)}
-                className="flex-1 !min-h-0 h-8 px-1.5 border-0 bg-transparent text-sm text-on-surface focus:ring-0 focus:outline-none"
+                className="h-8 !min-h-0 flex-1 border-0 bg-transparent px-1.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/25"
                 placeholder="输入章节标题"
               />
               {action ? (
@@ -784,20 +786,20 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const activeTenderFileName = tenderPreview?.activeFile?.name || '未选择文件'
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none business-ui-shell">
+    <div className="stage-page business-ui-shell flex w-full max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
       <StageBreadcrumb />
-      <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
         className="mb-2"
-        actionsClassName="stage-header-actions"
+        actionsClassName="stage-header-actions w-full sm:w-auto"
         actions={(
-          <Toolbar>
+          <Toolbar className="w-full sm:w-auto">
             <Button
               onClick={handleRegenerateDirectory}
               disabled={directoryLocked || saving || confirming}
               size="lg"
               variant="primary"
+              className="!h-10 flex-1 sm:flex-none"
             >
               {directoryLocked ? '生成中...' : '重新生成目录'}
             </Button>
@@ -806,6 +808,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
               disabled={confirming || directoryLocked}
               size="lg"
               variant="success"
+              className="!h-10 flex-1 sm:flex-none"
             >
               {confirming ? '进入中...' : '进入素材匹配'}
             </Button>
@@ -814,9 +817,9 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       />
 
       <OnlyOfficeWorkspace
-        heightClass="h-[calc(100vh-13.5rem)] min-h-[680px] max-h-[920px]"
-        gridClassName="grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:grid-rows-none lg:grid-cols-[minmax(24rem,38rem)_minmax(0,1fr)]"
-        headerClassName="h-[72px] min-h-[72px]"
+        heightClass="min-h-0 lg:h-[clamp(36rem,calc(100dvh-13.5rem),57.5rem)]"
+        gridClassName="grid-rows-[minmax(22rem,44dvh)_minmax(30rem,56dvh)] lg:grid-rows-none lg:grid-cols-[minmax(24rem,38rem)_minmax(0,1fr)]"
+        headerClassName="min-h-[64px] sm:min-h-[72px]"
         documentTitle="招标文件预览"
         documentSubtitle={activeTenderFileName}
         documentMeta={(
@@ -830,7 +833,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
             disabled={directoryLocked}
             className={`flex h-full min-h-0 flex-col overflow-hidden border-0 p-0 ${directoryLocked ? 'opacity-70' : ''}`}
           >
-            <div className="flex h-[72px] min-h-[72px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3">
+            <div className="flex min-h-[64px] flex-wrap items-center justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-3 sm:min-h-[72px]">
               <h3 className="text-base font-semibold text-on-surface">投标文件目录</h3>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button
@@ -852,12 +855,12 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
               </div>
             </div>
 
-            <div data-outline-scroll className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div data-outline-scroll className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
               {nodes.length ? (
                 renderRows(nodes)
               ) : (
-                <div className="h-[320px] rounded-lg border border-dashed border-surface-container-high flex flex-col items-center justify-center text-center">
-                  <span className="material-symbols-outlined text-4xl text-outline mb-3">account_tree</span>
+                <div className="flex min-h-64 flex-col items-center justify-center rounded-lg border border-dashed border-surface-container-high p-4 text-center sm:min-h-[320px]">
+                  <span aria-hidden="true" className="material-symbols-outlined text-4xl text-outline mb-3">account_tree</span>
                   <p className="text-sm text-on-surface-variant">当前目录为空，请新增章节后继续审核。</p>
                   <Button
                     onClick={handleAddRoot}
@@ -896,7 +899,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
             onError={(message) => setOnlyofficeError(message || 'OnlyOffice 文档加载失败')}
           />
         ) : (
-          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-6 text-center">
+          <div className="flex min-h-[28rem] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high px-4 text-center sm:px-6 lg:min-h-[32rem]">
             <p className="text-sm text-on-surface-variant">
               {tenderPreview?.message || '暂无可预览的招标文件。'}
             </p>
@@ -907,7 +910,10 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         open={materialMatchProgress.open}
         running={materialMatchProgress.running}
         error={materialMatchProgress.error}
-        onClose={() => setMaterialMatchProgress({ open: false, running: false, error: '' })}
+        itemCount={countNodes(nodes)}
+        startedAtMs={materialMatchProgress.startedAtMs}
+        finishedAtMs={materialMatchProgress.finishedAtMs}
+        onClose={() => setMaterialMatchProgress(idleMaterialMatchProgress())}
       />
       <DirectoryGenerationProgressModal
         open={regenerationModalOpen}

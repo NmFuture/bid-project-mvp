@@ -3,7 +3,6 @@ import { useParams } from 'react-router-dom'
 import { businessDocumentAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import BusinessProjectStageProgress from '../components/BusinessProjectStageProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
@@ -345,7 +344,11 @@ export default function BusinessCoCreationEditor({ showToast }) {
   )
 
   const renderDocumentEditor = (minHeight = '680px') => {
-    const minHeightClass = minHeight === '740px' ? 'min-h-[740px]' : minHeight === '690px' ? 'min-h-[690px]' : 'min-h-[680px]'
+    const minHeightClass = minHeight === '740px'
+      ? 'min-h-[30rem] xl:min-h-0'
+      : minHeight === '690px'
+        ? 'min-h-[28rem] xl:min-h-0'
+        : 'min-h-[26rem] xl:min-h-0'
     return (
       <>
         <div className={useFallbackEditor ? 'hidden' : 'min-h-0 flex-1'}>
@@ -384,7 +387,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
           <div className="shrink-0 border-b border-surface-container-high px-3 py-2">
             <div className="text-sm font-semibold text-on-surface">通用 AI 对话</div>
           </div>
-          <div ref={chatHistoryRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
+          <div ref={chatHistoryRef} role="log" aria-live="polite" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
             {chatMessages.map((message, index) => (
               <div
                 key={`${message.role}-${index}`}
@@ -496,6 +499,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
       </div>
       <div className="border-t border-surface-container-high bg-surface-container-low p-3">
         <textarea
+          aria-label="商务标 AI 对话输入"
           value={chatInput}
           onChange={(event) => setChatInput(event.target.value)}
           onKeyDown={(event) => {
@@ -611,11 +615,11 @@ export default function BusinessCoCreationEditor({ showToast }) {
   )
 
   const renderProjectWorkspace = () => (
-    <div className="business-ui-shell grid min-h-[885px] grid-cols-1 items-stretch gap-4 xl:min-h-[calc(100vh-4.5rem)] xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
+    <div className="business-ui-shell grid min-h-0 grid-cols-1 items-stretch gap-4 xl:h-[clamp(42rem,calc(100dvh-4.5rem),64rem)] xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
       <section className={`business-panel flex min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-white shadow-[0_1px_2px_rgba(13,33,55,0.05)] ${
         businessPreviewFullscreen ? 'fixed inset-0 z-[160] rounded-none border-0' : ''
       }`}>
-        <div className="business-section-head flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="business-section-head flex min-h-[58px] flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}正文预览</h3>
             <p className="mt-1 truncate text-xs text-outline" title={data?.fileName || ''}>{data?.fileName || '未生成文档'}</p>
@@ -664,9 +668,9 @@ export default function BusinessCoCreationEditor({ showToast }) {
             )}
           </div>
         </div>
-        <div className="min-h-0 flex-1 p-4">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
           {onlyofficeError && (
-            <div className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+            <div role="alert" className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
               {onlyofficeError}
             </div>
           )}
@@ -674,13 +678,13 @@ export default function BusinessCoCreationEditor({ showToast }) {
         </div>
       </section>
 
-      <aside className="flex min-h-[885px] flex-col overflow-hidden xl:h-[calc(100vh-4.5rem)]">
+      <aside className="flex min-h-[36rem] flex-col overflow-hidden xl:h-full xl:min-h-0">
         <section className="business-panel flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
-          <div className="business-section-head business-editor-tool-head flex items-center justify-between gap-3 border-b border-surface-container-high px-3 py-2">
+          <div className="business-section-head business-editor-tool-head flex flex-col gap-3 border-b border-surface-container-high px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-2">
               <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}共创工具</h3>
             </div>
-            <div className="grid w-[176px] shrink-0 grid-cols-2 gap-1 rounded-md bg-surface-container-high p-1">
+            <div role="tablist" aria-label="共创工具" className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-md bg-surface-container-high p-1 sm:w-[176px]">
               {[
                 { key: 'chat', label: 'AI 对话' },
                 { key: 'format', label: '格式设置' },
@@ -688,6 +692,8 @@ export default function BusinessCoCreationEditor({ showToast }) {
                 <button
                   key={tab.key}
                   type="button"
+                  role="tab"
+                  aria-selected={businessRightTab === tab.key}
                   onClick={() => setBusinessRightTab(tab.key)}
                   className={`rounded px-2 py-1.5 text-xs font-semibold transition-colors ${businessRightTab === tab.key ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant hover:bg-surface-dim'}`}
                 >
@@ -706,9 +712,8 @@ export default function BusinessCoCreationEditor({ showToast }) {
   if (error) return <PageError title="文档加载失败" description={error} onRetry={loadDocument} />
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className="stage-page flex w-full max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
       <StageBreadcrumb />
-      <BusinessProjectStageProgress projectId={id} showToast={showToast} />
       {renderProjectWorkspace()}
     </div>
   )

@@ -116,15 +116,16 @@ def test_upload_rejects_non_xlsx_extension(client, override_path, tmp_path) -> N
     assert not override_path.exists()
 
 
-def test_upload_rejects_wrong_header_and_keeps_repo_default(client, override_path, tmp_path) -> None:
+def test_upload_rejects_wrong_header_and_keeps_current_list(client, override_path, tmp_path) -> None:
+    assert _upload(client, _build_xlsx(tmp_path / "有效.xlsx", rows=3)).status_code == 200
+
     xlsx_path = _build_xlsx(tmp_path / "清单.xlsx", rows=2, header=["A", "B", "C", "D", "E", "F", "G"])
     response = _upload(client, xlsx_path)
 
     assert response.status_code == 400
     assert "表头" in response.json()["detail"]
-    assert not override_path.exists()
-    # override 未落盘，load_specs 仍读仓库默认 148 条
-    assert len(specs_module.load_specs()) == 148
+    # 上传失败不动已生效的清单
+    assert len(specs_module.load_specs()) == 3
 
 
 def test_upload_rejects_empty_workbook(client, override_path, tmp_path) -> None:
@@ -150,20 +151,20 @@ def test_override_takes_priority_and_mtime_change_reloads(client, override_path,
     assert reloaded[0]["label"] == "上传测试字段1"
 
 
-def test_deleting_override_falls_back_to_repo_default(client, override_path, tmp_path) -> None:
+def test_deleting_list_leaves_no_specs(client, override_path, tmp_path) -> None:
+    """仓库不再自带默认清单：清单文件没了就是没有清单，不能拿内置的一份顶上。"""
     xlsx_path = _build_xlsx(tmp_path / "清单.xlsx", rows=3)
     assert _upload(client, xlsx_path).status_code == 200
     assert len(specs_module.load_specs()) == 3
 
     override_path.unlink()
-    fallback = specs_module.load_specs()
-    assert len(fallback) == 148
-    assert len(specs_module.fillable_specs()) == 148
+    assert specs_module.load_specs() == ()
+    assert specs_module.fillable_specs() == []
 
 
-def test_corrupt_override_falls_back_to_repo_default(override_path) -> None:
+def test_corrupt_list_leaves_no_specs(override_path) -> None:
     override_path.write_text("{broken json", encoding="utf-8")
-    assert len(specs_module.load_specs()) == 148
+    assert specs_module.load_specs() == ()
 
 
 def test_import_specs_writes_output_path(tmp_path) -> None:

@@ -799,7 +799,8 @@ def strip_numPr_from_heading_styles(doc) -> int:
 # ---------- 最终不变量检查 ----------
 
 # 已写入文本编号的 Heading（"1.7.3.1 xxx"）
-_NUMBERED_HEADING_TEXT_RE = re.compile(r"^\s*\d+(?:\.\d+){0,6}\s+\S")
+# 一级标题写作"第N章 xxx"，同样属于已写入文本编号，必须一并抑制 Word 自动编号
+_NUMBERED_HEADING_TEXT_RE = re.compile(r"^\s*(?:第\s*\d+\s*章|\d+(?:\.\d+){0,6})\s+\S")
 
 
 def _style_chain_has_effective_numbering(style) -> bool:

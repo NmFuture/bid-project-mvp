@@ -4,7 +4,7 @@ from __future__ import annotations
 
 针对通用启发式（facts_from_docx_material / facts_from_xlsx_material）无法覆盖的
 专项素材提供结构化解析，产出与 technical_gap_fact_table.material_fact 同形的事实，
-label 严格等于 app/data/technical_fact_field_specs.json 中的 spec label，
+label 严格等于全局事实表清单（规则页上传）中的 spec label，
 build 末尾的 reconcile_fact_fields_with_specs 据此零改动归位。
 
 覆盖范围：

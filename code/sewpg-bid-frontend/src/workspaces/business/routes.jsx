@@ -10,6 +10,7 @@ import BusinessCoCreationEditor from './pages/BusinessCoCreationEditor'
 import BusinessMaterialDB from './pages/BusinessMaterialDB'
 import BusinessMaterialWiki from './pages/BusinessMaterialWiki'
 import AuditLogCenter from '../shared/pages/AuditLogCenter'
+import BusinessProjectStageLayout from './components/BusinessProjectStageLayout'
 
 const WORKSPACE = 'business'
 
@@ -36,24 +37,14 @@ export function renderBusinessRoutes({ user, showToast }) {
       />
       <Route
         path="/workspace/business/projects/:id"
-        element={withAccess(user, <BusinessProjectEntryRedirect />)}
-      />
-      <Route
-        path="/workspace/business/projects/:id/template-directory"
-        element={withAccess(user, <BusinessParseResult showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/business/projects/:id/outline"
-        element={withAccess(user, <BusinessOutlineReview showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/business/projects/:id/gaps"
-        element={withAccess(user, <BusinessGapRecognition showToast={showToast} />)}
-      />
-      <Route
-        path="/workspace/business/projects/:id/editor"
-        element={withAccess(user, <BusinessCoCreationEditor showToast={showToast} />)}
-      />
+        element={withAccess(user, <BusinessProjectStageLayout showToast={showToast} />)}
+      >
+        <Route index element={<BusinessProjectEntryRedirect />} />
+        <Route path="template-directory" element={<BusinessParseResult showToast={showToast} />} />
+        <Route path="outline" element={<BusinessOutlineReview showToast={showToast} />} />
+        <Route path="gaps" element={<BusinessGapRecognition showToast={showToast} />} />
+        <Route path="editor" element={<BusinessCoCreationEditor showToast={showToast} />} />
+      </Route>
       <Route
         path="/workspace/business/materials/raw"
         element={withAccess(user, <BusinessMaterialDB showToast={showToast} />)}

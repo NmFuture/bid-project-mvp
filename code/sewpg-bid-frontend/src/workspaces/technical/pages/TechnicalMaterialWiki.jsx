@@ -433,7 +433,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             style={{ paddingLeft: `${12 + level * 18}px` }}
             className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
               selected
-                ? 'bg-primary/10 border-primary/20 text-primary'
+                ? 'border-outline-variant bg-surface-container-low text-on-surface'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
             }`}
             onClick={() => handleRowClick(node)}
@@ -468,7 +468,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             <span
               className={`min-w-0 flex-1 truncate ${
                 selected
-                  ? 'font-semibold text-primary'
+                  ? 'font-semibold text-on-surface'
                   : folder
                     ? 'font-medium text-on-surface'
                     : ''
@@ -514,12 +514,12 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   return (
     <>
-    <div className="flex flex-col gap-3 animate-fade-in">
+    <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
       <MaterialsViewSwitch
         active="wiki"
         title={`${activeBidType} Wiki`}
         actions={(
-          <div className="flex flex-nowrap gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <button
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
@@ -565,11 +565,11 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
       ) : (
       <div
         ref={splitContainerRef}
-        className="flex flex-col gap-6 xl:h-[calc(100dvh-12rem)] xl:flex-row xl:items-stretch xl:gap-0"
+        className="flex min-h-0 flex-col gap-3 xl:h-[clamp(32rem,calc(100dvh-14rem),52rem)] xl:flex-row xl:items-stretch xl:gap-0"
       >
         <div
           style={{ '--tree-w': `${treeWidth}px` }}
-          className="w-full xl:w-[var(--tree-w)] xl:shrink-0 bg-surface-container-lowest rounded-lg border border-outline-variant/45 flex min-h-[320px] max-h-[60vh] flex-col overflow-hidden xl:min-h-0 xl:max-h-none"
+          className="flex min-h-[20rem] max-h-[24rem] w-full flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-0 xl:max-h-none xl:w-[var(--tree-w)] xl:shrink-0"
         >
           <div className="shrink-0 px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -594,7 +594,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex min-h-[520px] max-h-[75vh] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:max-h-none">
+          <div className="flex min-h-[24rem] flex-1 flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest xl:min-h-0">
             {(selectedStatus || selectedHasFulltext) && (
               <div className="flex shrink-0 items-center gap-2 border-b border-surface-container-high px-5 py-3">
                 {selectedStatus && (
@@ -620,11 +620,11 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
                 )}
               </div>
             )}
-            <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-white p-4 sm:p-5">
               {selectedNode?.markdownContent ? (
                 <MarkdownLite content={selectedNode.markdownContent} compact />
               ) : (
-                <div className="flex min-h-[440px] items-center justify-center text-center">
+                <div className="flex min-h-[20rem] items-center justify-center text-center xl:min-h-0 xl:h-full">
                   <div>
                     <span className="material-symbols-outlined text-4xl text-outline/60">description</span>
                     <p className="mt-2 text-sm text-on-surface-variant">暂无内容</p>
@@ -646,7 +646,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         onClick={handleCloseFulltext}
       >
         <div
-          className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-outline-variant/45 bg-surface-container-lowest shadow-xl"
+          className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest shadow-xl"
           onClick={(event) => event.stopPropagation()}
         >
           <div className="flex shrink-0 items-start justify-between gap-3 border-b border-surface-container-high px-5 py-4">
@@ -671,7 +671,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
               <span aria-hidden="true" className="material-symbols-outlined text-[18px]">close</span>
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto bg-white px-5 py-4">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-white px-4 py-4 sm:px-5">
             {fulltextState.loading ? (
               <div className="flex min-h-[200px] items-center justify-center gap-2 text-sm text-on-surface-variant">
                 <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[18px] text-primary">

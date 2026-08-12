@@ -10,16 +10,18 @@ import TechnicalProjectWizardModal from './TechnicalProjectWizardModal'
 import Button from '../../../components/ui/Button'
 import { normalizeBidType, workspaceRoute } from '../../../utils/workspace'
 import {
-  formatParseDuration,
   isParseProgressFailed,
   isUploadAndRunTimeout,
   mergeMonotonicParseProgress,
+  parseDisplayPercentage,
   parseElapsedSeconds,
   pollParseProgressOnce,
   recoverUploadAndRunTimeout,
   shouldPollParseProgress,
   summarizeParseProgress,
 } from '../technicalParseUploadRecovery'
+import BidProgressPanel from '../../../components/shared/BidProgressPanel'
+import { progressElapsedLine } from '../../../utils/progressDuration'
 import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
 import {
   selectTechnicalParseProjectId,
@@ -191,15 +193,15 @@ function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full text-sm min-w-[640px]">
           <thead>
             <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">解析内容</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
+              <th scope="col" className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
+              <th scope="col" className="px-4 py-2 text-center font-semibold text-on-surface">解析内容</th>
+              <th scope="col" className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
               {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
+                <th scope="col" className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
               ) : null}
             </tr>
           </thead>
@@ -249,7 +251,7 @@ function ScoringCriteriaTable({
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
         {headerAction || (showCount ? <span className="text-xs text-outline">{rows.length} 条</span> : null)}
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className={`business-scoring-table w-full table-fixed text-sm ${showSourceColumns ? 'min-w-[980px]' : 'min-w-[860px]'}`}>
           <colgroup>
             <col className="w-16" />
@@ -319,7 +321,7 @@ function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', r
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full text-sm min-w-[860px]">
           <thead>
             <tr className="border-b border-surface-container-high">
@@ -405,7 +407,7 @@ function TechnicalInterpretationView({ groups = [] }) {
                 ))}
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" role="region" aria-label={`${group.groupName}，可横向滚动`} tabIndex={0}>
               <table className="w-full table-fixed text-sm min-w-[1180px]">
                 <colgroup>
                   <col className="w-40" />
@@ -493,6 +495,7 @@ function TechnicalInterpretationView({ groups = [] }) {
 
 const TECHNICAL_STOP_PARSE_MESSAGE = '已请求停止技术标解析任务。'
 const isStoppedParseStatus = (status) => status === 'stopped' || status === 'cancelled'
+const RUNNING_PARSE_STATUSES = new Set(['running', 'processing', 'queued'])
 
 const buildStoppedParseProgress = (previous, summary) => ({
   status: previous?.status === 'cancelled' ? 'cancelled' : 'stopped',
@@ -522,7 +525,7 @@ function ProjectBasicsTable({ title, fields = [] }) {
       <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
         <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
         <table className="w-full table-fixed text-sm min-w-[720px]">
           <colgroup>
             <col className="w-44" />
@@ -1225,7 +1228,7 @@ export default function TechnicalTenderReview({ showToast }) {
       <div className="flex flex-col gap-2">
         {tenderFiles.map((file, index) => (
           <div key={`${file.name}-${index}`} className="flex items-center gap-3 rounded-lg border border-outline-variant/55 bg-white px-3 py-2">
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary-fixed text-primary">
+            <span aria-hidden="true" className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-primary-fixed text-primary">
               <span className="material-symbols-outlined text-[18px]">description</span>
             </span>
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-on-surface" title={file.name}>{file.name}</span>
@@ -1233,10 +1236,10 @@ export default function TechnicalTenderReview({ showToast }) {
             <button
               type="button"
               onClick={() => removePickedFile(index)}
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-error hover:bg-error-container/30"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-error hover:bg-error-container/30"
               aria-label={`移除文件 ${file.name}`}
             >
-              <span className="material-symbols-outlined text-[17px]">close</span>
+              <span aria-hidden="true" className="material-symbols-outlined text-[17px]">close</span>
             </button>
           </div>
         ))}
@@ -1257,64 +1260,22 @@ export default function TechnicalTenderReview({ showToast }) {
       : parseProgress
     const progressSummary = summarizeParseProgress(progress)
     const status = progressSummary.status
-    const summary = progressSummary.summary || '正在上传并解析技术招标文件，请稍候。'
-    const badgeClass = progressSummary.tone === 'danger'
-      ? 'bg-error-container text-error'
-      : progressSummary.tone === 'warning'
-        ? 'bg-tertiary-container text-on-tertiary-container'
-        : isStoppedParseStatus(status)
-          ? 'bg-surface-container-high text-on-surface-variant'
-          : progressSummary.tone === 'success'
-            ? 'bg-primary/10 text-primary'
-            : 'bg-primary/10 text-primary'
-    const barClass = progressSummary.tone === 'danger'
-      ? 'bg-error'
-      : progressSummary.tone === 'warning'
-        ? 'bg-tertiary'
-        : 'bg-primary'
-    const elapsedDurationText = formatParseDuration(parseElapsedSeconds(progress, parseProgressClock))
-    const elapsedLineText = elapsedDurationText
-      ? `${status === 'completed' ? '总耗时' : '已运行'} ${elapsedDurationText}`
-      : ''
+    const stopped = isStoppedParseStatus(status)
+    const running = RUNNING_PARSE_STATUSES.has(status)
 
     return (
-      <div className="mt-4 rounded-md border border-surface-container-high bg-surface-container-low px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className={[
-              'material-symbols-outlined mt-0.5 text-[20px]',
-              progressSummary.tone === 'danger'
-                ? 'text-error'
-                : status === 'completed'
-                  ? 'text-secondary'
-                  : isStoppedParseStatus(status)
-                    ? 'text-outline'
-                    : 'animate-spin-slow text-primary',
-            ].join(' ')}>
-              {progressSummary.tone === 'danger'
-                ? 'error'
-                : status === 'completed'
-                  ? 'check_circle'
-                  : isStoppedParseStatus(status)
-                    ? 'stop_circle'
-                    : 'progress_activity'}
-            </span>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold tabular-nums text-on-surface">{summary}</p>
-              {elapsedLineText ? (
-                <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedLineText}</p>
-              ) : null}
-            </div>
-          </div>
-          <span className={['shrink-0 self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums', badgeClass].join(' ')}
-          >
-            {progressSummary.statusText} · {progressSummary.percentage}%
-          </span>
-        </div>
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-          <div className={['h-full rounded-full transition-all', barClass].join(' ')} style={{ width: `${progressSummary.percentage}%` }} />
-        </div>
-      </div>
+      <BidProgressPanel
+        className="mt-4 rounded-md border-x border-y"
+        tone={stopped && progressSummary.tone !== 'danger' ? 'neutral' : progressSummary.tone}
+        icon={stopped && progressSummary.tone !== 'danger' ? 'stop_circle' : ''}
+        detail={progressSummary.summary || '正在上传并解析技术招标文件，请稍候。'}
+        elapsedText={progressElapsedLine(
+          parseElapsedSeconds(progress, parseProgressClock),
+          { finished: status === 'completed' || isParseProgressFailed(progress) },
+        )}
+        percentage={parseDisplayPercentage(progress)}
+        running={running && !stopped}
+      />
     )
   }
 
@@ -1324,24 +1285,29 @@ export default function TechnicalTenderReview({ showToast }) {
 
   if (showTechnicalCompactUpload) {
     return (
-      <div className="review-page business-ui-shell flex flex-col gap-6 animate-fade-in max-w-none">
-        <DataCard className="mt-6 w-full max-w-[760px] !p-0 overflow-hidden self-center">
-          <div className="business-section-head flex items-center px-5 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-xl font-headline font-bold text-[#0067B6]">技术标解析</h3>
+      <div className="review-page business-ui-shell flex w-full max-w-none flex-col gap-4 animate-fade-in">
+        <PageHeader
+          variant="panel"
+          title="技术标解析"
+          description="上传技术招标文件，系统将自动完成结构化解析。"
+        />
+        <DataCard className="w-full overflow-hidden !p-0">
+          <div className="business-section-head flex items-center px-4 py-4 sm:px-5">
+            <div className="flex w-full flex-wrap items-center justify-between gap-3">
+              <h2 className="text-base font-headline font-semibold text-on-surface">上传招标文件</h2>
               <span className="text-xs text-outline">上传招标文件后自动解析</span>
             </div>
           </div>
 
-          <div className="px-5 py-5">
+          <div className="mx-auto w-full max-w-[960px] px-4 py-4 sm:px-5 sm:py-5">
             <label
               htmlFor="technical-review-tender-upload"
               className={[
-                'business-dropzone flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-6 py-8 text-center transition-colors',
+                'business-dropzone flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-4 py-6 text-center transition-colors sm:min-h-[160px] sm:px-6 sm:py-8',
                 uploading || reviewDecision === 'abandon' ? 'pointer-events-none opacity-60' : 'hover:border-primary hover:bg-primary/5',
               ].join(' ')}
             >
-              <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
+              <span aria-hidden="true" className="material-symbols-outlined text-2xl text-primary">upload_file</span>
               <span className="mt-2 text-sm font-semibold text-on-surface">选择技术招标文件</span>
               <span className="mt-1 text-xs text-outline">支持 Word、PDF、Excel 等招标附件</span>
             </label>
@@ -1357,13 +1323,14 @@ export default function TechnicalTenderReview({ showToast }) {
             <div className="mt-3">
               {renderPickedFiles()}
             </div>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
               <Button
                 type="button"
                 onClick={handleUploadAndParse}
                 disabled={uploading || creatingReview || reviewDecision === 'abandon'}
                 size="stage"
                 variant="primary"
+                className="!h-11 w-full sm:!h-10 sm:w-auto"
               >
                 {creatingReview ? '准备中...' : uploading ? '上传解析中...' : '上传并解析'}
               </Button>
@@ -1374,6 +1341,7 @@ export default function TechnicalTenderReview({ showToast }) {
                   size="stage"
                   variant="dangerQuiet"
                   icon="stop_circle"
+                  className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   停止解析
                 </Button>
@@ -1386,18 +1354,19 @@ export default function TechnicalTenderReview({ showToast }) {
                   size="stage"
                   variant="quiet"
                   icon="refresh"
+                  className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   重新解析
                 </Button>
               )}
             </div>
             {uploadError && (
-              <div className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
+              <div role="alert" className="mt-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error">
                 {uploadError}
               </div>
             )}
             {uploading && (
-              <div className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+              <div role="status" className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
                 正在上传并解析技术招标文件，请稍候。
               </div>
             )}
@@ -1409,17 +1378,19 @@ export default function TechnicalTenderReview({ showToast }) {
   }
 
   return (
-    <div className="review-page flex flex-col gap-6 animate-fade-in max-w-none">
+    <div className="review-page flex max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
       <PageHeader
+        variant="panel"
         title={reviewConfig.pageTitle}
         description={isParseCompleted ? '' : reviewConfig.pageDescription}
-        actionsClassName="stage-header-actions"
+        actionsClassName="stage-header-actions w-full sm:w-auto"
         actions={(
           <Button
             onClick={handleCreateReviewProject}
             disabled={creatingReview}
             size="lg"
             variant="primary"
+            className="!h-11 w-full sm:!h-10 sm:w-auto"
           >
             {creatingReview ? '准备中...' : reviewConfig.createButtonLabel}
           </Button>
@@ -1479,8 +1450,8 @@ export default function TechnicalTenderReview({ showToast }) {
               </>
             )}
 
-            <section className="border border-surface-container-high rounded-md overflow-hidden">
-              <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
+            <section className="overflow-hidden rounded-md border border-surface-container-high">
+              <div className="flex flex-col gap-2 border-b border-surface-container-high bg-surface-container-low px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-[18px] text-primary">article</span>
                   <h4 className="text-sm font-semibold text-on-surface">附表 Word</h4>
@@ -1489,9 +1460,9 @@ export default function TechnicalTenderReview({ showToast }) {
               </div>
               {appendices.length ? (
                 <OnlyOfficeWorkspace
-                  className="m-4 appendix-preview-workspace"
+                  className="appendix-preview-workspace m-2 !h-[clamp(32rem,72dvh,48rem)] sm:m-4 sm:!h-[clamp(40rem,76dvh,48.75rem)]"
                   heightClass="appendix-preview-shell"
-                  gridClassName="grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
+                  gridClassName="grid-rows-[minmax(14rem,38%)_minmax(0,1fr)] lg:grid-rows-none lg:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]"
                   sidebarClassName="appendix-preview-aside"
                   documentAreaClassName="appendix-preview-document"
                   documentTitle={selectedAppendix?.title || '附表预览'}
@@ -1572,7 +1543,7 @@ export default function TechnicalTenderReview({ showToast }) {
                                 title={selectedForMaterial ? '取消纳入素材库' : '纳入素材库'}
                                 onClick={() => handleApproveAppendixAsset(appendix.id, !selectedForMaterial)}
                                 disabled={savingAllAppendices || Boolean(savingAppendixId) || !appendix.id}
-                                className="m-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="m-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50 sm:m-2"
                               >
                                 <span className="material-symbols-outlined text-[20px]">
                                   {selectedForMaterial ? 'check_box' : 'check_box_outline_blank'}
@@ -1647,7 +1618,7 @@ export default function TechnicalTenderReview({ showToast }) {
                   <span className="mr-2 align-middle material-symbols-outlined text-[18px] text-primary">travel_explore</span>
                   证据明细
                 </summary>
-                <div className="overflow-x-auto border-t border-surface-container-high">
+                <div className="overflow-x-auto border-t border-surface-container-high" role="region" aria-label="证据明细，可横向滚动" tabIndex={0}>
                   <table className="w-full text-sm min-w-[1120px]">
                     <thead>
                       <tr className="bg-surface-container-low border-b border-surface-container-high">

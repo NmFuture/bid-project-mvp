@@ -10,11 +10,12 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
-from app.core.config import settings
+from app.core.config import BASE_DIR, settings
 from app.document_processing.technical_document.assembly import (
     finalize_merged_output,
     run_from_manifest as run_assembly_manifest,
 )
+from app.document_processing.technical_document.assembly.parse_toc import display_chapter_no
 from app.document_processing.technical_document.formatting import run_manifest as run_format_manifest
 from app.services.bid_fill_generation_state import save_fill_generation_result_state
 from app.services.bid_project_state import project_parse_input_records
@@ -43,6 +44,10 @@ from app.services.wiki_export import export_wiki
 
 TECH_DOCUMENT_RESOURCES_DIR = Path(__file__).resolve().parents[1] / "document_processing" / "technical_document" / "resources"
 WORD_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME = "bid-tech-score-index-xref"
+SCORE_INDEX_XREF_RUNNER = (
+    BASE_DIR / "opencode" / "skills" / TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME / "scripts" / "run_from_manifest.py"
+)
 
 
 def assemble_tech_bid_for_project_with_progress(
@@ -178,6 +183,16 @@ def assemble_tech_bid_for_project_with_progress(
     if not final_output_path.exists():
         final_output_path = assembled_path
 
+    score_index_xref = _run_tech_score_index_xref_step(
+        input_path=final_output_path,
+        output_path=work_dir / f"{final_output_path.stem}_xref{final_output_path.suffix}",
+        work_dir=work_dir,
+        progress_callback=progress_callback,
+    )
+    xref_output_path = Path(str(score_index_xref.get("outputFile") or ""))
+    if score_index_xref.get("status") == "completed" and xref_output_path.exists():
+        final_output_path = xref_output_path
+
     target_path = document_path(project_id)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(final_output_path, target_path)
@@ -186,8 +201,17 @@ def assemble_tech_bid_for_project_with_progress(
     run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
     filled_at = now_iso()
     format_warnings = _normalize_warnings(format_clean.get("warnings"))
-    execution_warnings = [*assembly_warnings, *format_warnings]
-    execution_status = "completed" if format_clean.get("status") == "completed" else "completed_with_fallback"
+    xref_warnings = _normalize_warnings(score_index_xref.get("warnings"))
+    execution_warnings = [*assembly_warnings, *format_warnings, *xref_warnings]
+    # 格式清洗或交叉引用降级时都沿用上一环节产物，如实标成 fallback，不报成干净完成。
+    execution_status = (
+        "completed"
+        if format_clean.get("status") == "completed" and score_index_xref.get("status") != "failed"
+        else "completed_with_fallback"
+    )
+    execution_error = " | ".join(
+        text for text in (str(format_clean.get("error") or ""), str(score_index_xref.get("error") or "")) if text
+    )
     execution = {
         "engine": "python",
         "pipeline": "technical-document-assembly-cleaning",
@@ -199,9 +223,10 @@ def assemble_tech_bid_for_project_with_progress(
             "planFile": str(plan_path),
             "rawOutputFile": str(assembled_path),
             "outputFile": str(final_output_path),
+            "scoreIndexXrefFile": str(score_index_xref.get("outputFile") or ""),
         },
         "warnings": execution_warnings,
-        "error": str(format_clean.get("error") or ""),
+        "error": execution_error,
     }
     opencode_output = {"execution": execution}
 
@@ -239,6 +264,7 @@ def assemble_tech_bid_for_project_with_progress(
             "summary": assembly_summary,
             "warnings": assembly_warnings,
             "formatClean": format_clean,
+            "scoreIndexXref": score_index_xref,
             "execution": execution,
         },
     )
@@ -1186,11 +1212,14 @@ def _run_assembler_manifest(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    return _run_local_assembler(manifest_path)
+    return _run_local_assembler(manifest_path, progress_callback=progress_callback)
 
 
-def _run_local_assembler(manifest_path: Path) -> dict[str, Any]:
-    return run_assembly_manifest(manifest_path)
+def _run_local_assembler(
+    manifest_path: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    return run_assembly_manifest(manifest_path, progress_callback=progress_callback)
 
 
 def _run_tech_format_cleaner_step(
@@ -1276,6 +1305,211 @@ def _run_local_tech_format_cleaner(manifest_path: Path) -> dict[str, Any]:
     return run_format_manifest(manifest_path)
 
 
+def _run_tech_score_index_xref_step(
+    *,
+    input_path: Path,
+    output_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    """给成稿里的技术评分标准索引表建立交叉引用与页码域。
+
+    跑在格式清洗之后：清洗会重排标题样式与文本编号，先建引用会让书签挂在被改写的段落上。
+    文档里没有评分索引表、或本步骤失败时都不阻断出稿，调用方沿用格式清洗产物。
+    """
+    manifest_path = work_dir / "tech_score_index_xref_input.json"
+    mapping_path = work_dir / "tech_score_index_xref_mapping.json"
+
+    if progress_callback:
+        progress_callback(
+            "calling_score_index_xref",
+            {"manifestPath": str(manifest_path), "inputFile": str(input_path)},
+        )
+
+    mapping_source = ""
+    mapping_error = ""
+    try:
+        # 章节号只有正文组装完才存在，S3 的待填写填充只能在这一列留 `[待人工补充：章节索引]`。
+        # 所以先体检：还没判断章节就先让 agent 判断，判断结果落成映射再交给确定性脚本建引用。
+        probe = _probe_tech_score_index_xref(input_path, work_dir)
+        if probe.get("tableFound") and int(probe.get("pendingRowCount") or 0) > 0 and not mapping_path.exists():
+            mapping_source, mapping_error = _request_score_index_xref_mapping(
+                probe=probe,
+                mapping_path=mapping_path,
+                work_dir=work_dir,
+                progress_callback=progress_callback,
+            )
+
+        manifest = {
+            "schemaVersion": "bid-tech-score-index-xref-manifest-v1",
+            "inputFile": str(input_path),
+            "outputFile": str(output_path),
+            # 容器里没有 Word，页码留占位符，靠成稿里的 updateFields 在 Word/WPS 打开时刷新。
+            "updateFieldsWithWord": False,
+            "syncTitle": False,
+            "styledLink": False,
+        }
+        if mapping_path.exists():
+            manifest["mappingFile"] = str(mapping_path)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        result = _run_local_tech_score_index_xref(manifest_path)
+        status = str(result.get("status") or "completed")
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        warnings = _normalize_warnings(result.get("warnings"))
+        produced = Path(str(result.get("outputFile") or "")) if result.get("outputFile") else None
+        if status == "completed" and (produced is None or not produced.exists()):
+            raise RuntimeError(f"技术标评分索引交叉引用未生成输出文件：{produced}")
+        xref = {
+            "status": status,
+            "engine": "python",
+            "skill": TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME,
+            "manifestPath": str(manifest_path),
+            "inputFile": str(input_path),
+            "outputFile": str(produced) if produced else "",
+            "mappingSource": mapping_source,
+            "mappingFile": str(mapping_path) if mapping_path.exists() else "",
+            "summary": summary,
+            "warnings": warnings,
+        }
+        if mapping_error:
+            xref["warnings"] = [
+                *warnings,
+                {
+                    "code": "score_index_xref_mapping_unavailable",
+                    "message": f"章节判断未产出可用映射，本次未填章节索引列：{mapping_error}",
+                    "count": 1,
+                },
+            ]
+        if progress_callback:
+            progress_callback(
+                "score_index_xref_completed" if status == "completed" else "score_index_xref_skipped",
+                {"summary": summary, "outputFile": xref["outputFile"], "warnings": xref["warnings"]},
+            )
+        return xref
+    except Exception as exc:  # noqa: BLE001 - 交叉引用失败不应阻断出稿
+        xref = {
+            "status": "failed",
+            "engine": "python",
+            "skill": TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME,
+            "manifestPath": str(manifest_path),
+            "inputFile": str(input_path),
+            "outputFile": "",
+            "summary": {},
+            "warnings": [
+                {
+                    "code": "score_index_xref_failed",
+                    "message": f"技术评分标准索引表交叉引用失败，已沿用格式清洗成稿：{exc}",
+                    "count": 1,
+                }
+            ],
+            "error": str(exc),
+        }
+        if progress_callback:
+            progress_callback(
+                "score_index_xref_failed",
+                {"error": str(exc), "manifestPath": str(manifest_path)},
+            )
+        return xref
+
+
+def _probe_tech_score_index_xref(input_path: Path, work_dir: Path) -> dict[str, Any]:
+    """体检成稿：索引表在不在、章节索引列有多少行还没判断章节。"""
+    manifest_path = work_dir / "tech_score_index_xref_inspect.json"
+    manifest = {
+        "schemaVersion": "bid-tech-score-index-xref-manifest-v1",
+        "mode": "inspect",
+        "inputFile": str(input_path),
+        "outDir": str(work_dir),
+        "briefFile": str(work_dir / "tech_score_index_xref_brief.json"),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return _run_local_tech_score_index_xref(manifest_path)
+
+
+def _request_score_index_xref_mapping(
+    *,
+    probe: dict[str, Any],
+    mapping_path: Path,
+    work_dir: Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> tuple[str, str]:
+    """让 opencode agent 判断每个评审因素该索引哪些章节，产出映射 JSON。
+
+    返回 (mappingSource, error)。agent 不可用或返回不可用结果时不抛错：
+    映射缺席只是这一列填不上，不该让整份标书出不来。
+    """
+    if progress_callback:
+        progress_callback(
+            "score_index_xref_mapping_requested",
+            {"pendingRowCount": int(probe.get("pendingRowCount") or 0), "mappingFile": str(mapping_path)},
+        )
+    brief_path = Path(str(probe.get("briefFile") or work_dir / "tech_score_index_xref_brief.json"))
+    try:
+        result = run_technical_score_index_xref_skill(brief_path, mapping_path)
+    except Exception as exc:  # noqa: BLE001 - agent 不可用不阻断出稿
+        return "", str(exc)
+
+    inline = result.get("mapping") if isinstance(result.get("mapping"), dict) else None
+    if inline and not mapping_path.exists():
+        mapping_path.write_text(json.dumps(inline, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not mapping_path.exists():
+        return "", "agent 未落盘映射文件"
+    try:
+        payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return "", f"映射文件不是合法 JSON：{exc}"
+    if not isinstance(payload, dict) or not [key for key in payload if not str(key).startswith("_")]:
+        mapping_path.unlink(missing_ok=True)
+        return "", "映射文件为空"
+    return "opencode", ""
+
+
+def _build_score_index_xref_prompt(brief_path: Path, mapping_path: Path) -> str:
+    return f"""
+Use the {TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME} skill.
+
+你现在要为技术标成稿里的「技术评分标准索引表」判断章节索引：每个评审因素该指向正文的哪些章节。后端已经把体检简报准备好，里面有逐行的评审因素、投标响应原文、当前索引状态，以及正文完整标题树（number/title/level）。
+
+简报：{brief_path}
+
+本环境没有 read / write / edit 工具，绝对不要调用它们——读文件用 Bash（jq 或 sed -n / grep -n 取片段，简报较大不要整份 cat）。
+
+按 SKILL.md 的「章节判断方法」和 references/section_mapping.md 逐行判断，然后用 Bash heredoc 把映射写成 JSON：先写 {mapping_path}.tmp，确认 JSON 完整后再 mv -f 改名为 {mapping_path}。
+
+映射格式：{{"评审因素原文": ["章节号", "章节号", ...]}}。硬性要求：
+- 键用简报里 rows[].factor 的原文；只处理 pending 为 true 的行。
+- 值只写章节号（如 "5.8.1"、"第3章"）或无编号标题的前缀，不要手抄标题，标题由脚本从正文补全。
+- 章节号必须来自简报的 headings，不存在的号一律不写；宁可少写也不要编。
+- 每行 3~6 条，指向能独立回答该因素的最小完整章节。
+
+最后只返回小型 JSON：{{"mappingFile": "{mapping_path}", "factorCount": 数字}}，不要返回解释文字，不要使用 Markdown 代码块。
+""".strip()
+
+
+def run_technical_score_index_xref_skill(brief_path: Path, mapping_path: Path) -> dict[str, Any]:
+    """opencode 调用隔离点：测试 patch 本函数即可 mock 章节判断。"""
+    from app.services.opencode_client import OpencodeClient
+
+    return OpencodeClient().run_bid_tech_score_index_xref_with_trace(
+        _build_score_index_xref_prompt(brief_path, mapping_path),
+    )
+
+
+def _run_local_tech_score_index_xref(manifest_path: Path) -> dict[str, Any]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "bid_tech_score_index_xref_runner",
+        SCORE_INDEX_XREF_RUNNER,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载交叉引用脚本：{SCORE_INDEX_XREF_RUNNER}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_manifest(manifest_path)
+
+
 def _prepare_tech_format_outline(toc_json_path: Path, work_dir: Path) -> Path:
     target = work_dir / "tech_format_outline.json"
     toc = json.loads(toc_json_path.read_text(encoding="utf-8"))
@@ -1308,7 +1542,8 @@ def _tech_format_sections_from_toc_items(items: list[Any]) -> list[dict[str, Any
         section = {
             "id": str(raw.get("itemId") or raw.get("nodeId") or raw.get("id") or f"TECH-FORMAT-{index:04d}"),
             "title": title,
-            "number": str(raw.get("number") or raw.get("tocNumber") or "").strip(),
+            # 必须与 merger 手插标题用同一套编号，否则 cleaner 按「编号+标题」匹配不上正文
+            "number": display_chapter_no(raw) or str(raw.get("number") or raw.get("tocNumber") or "").strip(),
             "level": level,
             "children": [],
         }

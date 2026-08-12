@@ -152,6 +152,7 @@ class Settings:
     s1_parse_technical_shard_enabled: bool
     s1_parse_shard_concurrency: int
     s4_llm_fill_timeout_sec: float | None
+    body_fill_concurrency: int
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
@@ -252,6 +253,9 @@ settings = Settings(
     # LLM 填写会话明显变长：独立超时，缺省沿用 OPENCODE_TIMEOUT_SEC；
     # 5090 实测取值只写 docker-compose.5090.yml。
     s4_llm_fill_timeout_sec=_optional_float_env("S4_LLM_FILL_TIMEOUT_SEC"),
+    # 一键填写（正文+附表）的 compute 并发度；本地安全默认值，5090 实测取值只写
+    # docker-compose.5090.yml。使用处另有 1~8 的 clamp 兜底。
+    body_fill_concurrency=_int_env("BODY_FILL_CONCURRENCY", 4),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",

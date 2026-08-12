@@ -783,7 +783,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
   return (
     <>
-      <div className="flex flex-col gap-3 animate-fade-in">
+      <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
         <MaterialsViewSwitch
           active="certificates"
           title="证书台账"
@@ -856,7 +856,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
           })}
         </div>
 
-        <section className="min-h-[520px] overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
+        <section className="min-h-0 overflow-hidden rounded-lg border border-outline-variant/45 bg-surface-container-lowest">
           {error && rows.length > 0 ? (
             <div className="border-b border-error/20 bg-error-container/20 px-4 py-2 text-sm text-error">{error}</div>
           ) : null}
@@ -866,11 +866,13 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                 value={filters.keyword}
                 onChange={(event) => updateFilter('keyword', event.target.value)}
                 placeholder="搜索文件、目录、状态、日期"
+                aria-label="搜索证书"
                 className="h-9 min-w-0 rounded-lg border border-surface-container-high bg-white px-3 text-xs text-on-surface"
               />
               <select
                 value={filters.status}
                 onChange={(event) => updateFilter('status', event.target.value)}
+                aria-label="按识别状态筛选"
                 className="h-9 rounded-lg border border-surface-container-high bg-white px-3 text-xs text-on-surface"
               >
                 <option value="all">全部状态</option>
@@ -881,6 +883,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
               <select
                 value={filters.validity}
                 onChange={(event) => updateFilter('validity', event.target.value)}
+                aria-label="按有效期筛选"
                 className="h-9 rounded-lg border border-surface-container-high bg-white px-3 text-xs text-on-surface"
               >
                 {CERTIFICATE_VALIDITY_FILTERS.map((item) => (
@@ -910,7 +913,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
             </div>
           </div>
           {rows.length ? (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overscroll-x-contain [scrollbar-gutter:stable]">
               <div className="min-w-[1060px]">
                 <div className="grid grid-cols-[2rem_minmax(14rem,1.5fr)_7.5rem_7.5rem_5.5rem_6rem_minmax(12rem,1fr)_7rem] items-center gap-3 border-b border-surface-container-high bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant">
                   <label className="flex items-center" title="选择当前筛选结果">
@@ -931,7 +934,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                   <span>素材目录</span>
                   <span>操作</span>
                 </div>
-                <div className="max-h-[64vh] overflow-y-auto divide-y divide-surface-container-high">
+                <div className="max-h-[clamp(22rem,58dvh,42rem)] divide-y divide-surface-container-high overflow-y-auto overscroll-contain">
                   {filteredRows.length ? filteredRows.map((item) => (
                     <div
                       key={item.fileId}
@@ -1069,7 +1072,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
               </div>
             </div>
           ) : (
-            <div className="flex min-h-[520px] items-center justify-center text-center">
+            <div className="flex min-h-[20rem] items-center justify-center text-center">
               <div>
                 <span className="material-symbols-outlined text-4xl text-outline/60">event_busy</span>
                 <p className="mt-2 text-sm text-on-surface-variant">暂无证书台账记录</p>
@@ -1082,7 +1085,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
       {scopeDialogOpen && (
         <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="wizard-modal-surface flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="设置证书识别范围" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
               <div className="min-w-0">
                 <h3 className="text-base font-semibold text-on-surface">识别范围</h3>
@@ -1101,7 +1104,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
             <div className="min-h-0 flex-1 overflow-auto p-5">
               <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <section className="flex h-[60vh] flex-col rounded-lg border border-outline-variant/45 bg-surface-container-low p-4">
+                <section className="flex h-[clamp(22rem,60dvh,36rem)] flex-col rounded-lg border border-outline-variant/45 bg-surface-container-low p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-0.5 rounded-lg bg-surface-container-high p-0.5">
                       <button
@@ -1271,7 +1274,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                   }}
                   onDragLeave={() => setScopeDropActive(false)}
                   onDrop={handleScopeDrop}
-                  className={`flex h-[60vh] flex-col rounded-lg border p-4 transition-colors ${
+                  className={`flex h-[clamp(22rem,60dvh,36rem)] flex-col rounded-lg border p-4 transition-colors ${
                     scopeDropActive
                       ? 'border-primary/60 bg-primary/5'
                       : 'border-outline-variant/45 bg-surface-container-low'
@@ -1363,7 +1366,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
       {previewItem && (
         <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="flex h-[86vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="证书在线预览" className="flex h-[calc(100dvh-2rem)] max-h-[52rem] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-3">
               <div className="min-w-0">
                 <h3 className="truncate text-sm font-semibold text-on-surface" title={previewItem.name}>{previewItem.name}</h3>
@@ -1433,7 +1436,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
         const receipt = buildFailureReceipt(receiptItem)
         return (
           <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="wizard-modal-surface w-full max-w-lg overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+            <div role="alertdialog" aria-modal="true" aria-label="识别失败回执" className="wizard-modal-surface w-full max-w-lg overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
               <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-6 py-4">
                 <div className="min-w-0">
                   <h3 className="text-base font-semibold text-on-surface">识别失败回执</h3>
@@ -1488,7 +1491,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
       {editing && (
         <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="wizard-modal-surface w-full max-w-md rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="编辑证书时间" className="wizard-modal-surface w-full max-w-md rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between border-b border-surface-container-high px-6 py-4">
               <div className="min-w-0">
                 <h3 className="text-lg font-semibold text-on-surface">编辑证书时间</h3>

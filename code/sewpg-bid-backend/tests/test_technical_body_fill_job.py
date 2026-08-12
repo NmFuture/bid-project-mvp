@@ -1,10 +1,13 @@
 """正文一键填写后台任务：范围收敛、并发配置、失败记录、素材精简路径。"""
 from __future__ import annotations
 
-import os
+import copy
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
+from app.core.config import settings
 from app.services.technical_body_fill_job import (
     body_fill_running,
     body_fill_state,
@@ -12,6 +15,7 @@ from app.services.technical_body_fill_job import (
     empty_body_fill_state,
 )
 from app.services.technical_gap_ai_fill import (
+    apply_technical_ai_fill_result,
     fact_table_drives_placeholders,
     fact_table_spec_coverage,
     require_spec_driven_fact_table,
@@ -37,6 +41,36 @@ def _gap_state(*items: dict, fact_table: dict | None = None) -> dict:
     return {
         "plan": {"items": list(items)},
         "projectFactTable": SPEC_DRIVEN_FACT_TABLE if fact_table is None else fact_table,
+    }
+
+
+def _fill_result(
+    gap_id: str,
+    fill_task_id: str,
+    *,
+    skill: str = WORD_SKILL,
+    unfilled: int = 0,
+    quality: str = "passed",
+    artifact_id: str = "",
+    created_at: str = "2026-08-11T00:00:00Z",
+) -> dict:
+    """compute_technical_ai_fill 的可 JSON 化结果包（测试替身）。"""
+    artifact = {
+        "id": artifact_id or f"ART-{gap_id}-{fill_task_id}",
+        "fileName": f"{gap_id}_AI填写.docx",
+        "skill": skill,
+        "fillTaskId": fill_task_id,
+    }
+    return {
+        "gapId": gap_id,
+        "fillTaskId": fill_task_id,
+        "skill": skill,
+        "artifact": artifact,
+        "artifacts": [artifact],
+        "qualityReport": {"status": quality},
+        "unfilledFieldCount": unfilled,
+        "createdAt": created_at,
+        "operator": "测试用户",
     }
 
 
@@ -149,15 +183,15 @@ class RunBodyFillJobTests(unittest.TestCase):
                 _item("G3", _task("T3")),
             ),
         }
+        self.mutate_mock = mock.patch(
+            "app.services.technical_body_fill_job.mutate_technical_gap_project",
+            # 写回走 CAS 重放封装：测试里直接把改动作用在同一份 project 上即可
+            side_effect=lambda project_id, mutate, **kwargs: mutate(self.project),
+        ).start()
         patches = [
             mock.patch(
                 "app.services.technical_body_fill_job.require_technical_gap_project_for_update",
                 side_effect=lambda project_id: self.project,
-            ),
-            # 写回走 CAS 重放封装：测试里直接把改动作用在同一份 project 上即可
-            mock.patch(
-                "app.services.technical_body_fill_job.mutate_technical_gap_project",
-                side_effect=lambda project_id, mutate, **kwargs: mutate(self.project),
             ),
             mock.patch(
                 "app.services.technical_body_fill_job.ensure_technical_gap_state",
@@ -167,32 +201,43 @@ class RunBodyFillJobTests(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
+        self.addCleanup(mock.patch.stopall)
 
-    def _run(self, fill_side_effect) -> dict:
+    def _run(self, compute_side_effect) -> dict:
         with mock.patch(
-            "app.services.technical_gap_actions.run_technical_ai_fill_for_gap",
-            side_effect=fill_side_effect,
+            "app.services.technical_gap_ai_fill.compute_technical_ai_fill",
+            side_effect=compute_side_effect,
         ):
             from app.services.technical_body_fill_job import run_body_fill_job
 
             run_body_fill_job("PRJ-BODY", {"operator": "测试用户"})
         return self.project["gap_state"]["bodyFillState"]
 
+    @staticmethod
+    def _compute_ok(calls: list[str] | None = None):
+        def compute(project, gap_id, data, **kwargs):
+            if calls is not None:
+                calls.append(gap_id)
+            return _fill_result(gap_id, str(data.get("fillTaskId") or ""))
+
+        return compute
+
     def test_all_success_reports_totals(self) -> None:
         calls: list[str] = []
-        state = self._run(lambda project, gap_id, data, **kwargs: calls.append(gap_id))
+        state = self._run(self._compute_ok(calls))
 
-        # 严格按清单顺序串行：并发写回会撞上 asyncpg 连接池绑定 event loop 的限制
-        self.assertEqual(calls, ["G1", "G2", "G3"])
+        # 并发执行：完成顺序不确定，只保证每条都跑到
+        self.assertEqual(sorted(calls), ["G1", "G2", "G3"])
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual((state["total"], state["done"], state["succeeded"], state["failed"]), (3, 3, 3, 0))
 
     def test_one_failure_does_not_stop_the_batch(self) -> None:
-        def fill(project, gap_id, data, **kwargs):
+        def compute(project, gap_id, data, **kwargs):
             if gap_id == "G2":
                 raise RuntimeError("素材缺失")
+            return _fill_result(gap_id, str(data.get("fillTaskId") or ""))
 
-        state = self._run(fill)
+        state = self._run(compute)
 
         self.assertEqual(state["status"], "partial")
         self.assertEqual((state["succeeded"], state["failed"]), (2, 1))
@@ -200,7 +245,12 @@ class RunBodyFillJobTests(unittest.TestCase):
         self.assertIn("素材缺失", state["errors"][0]["message"])
 
     def test_failure_is_recorded_on_the_item_for_red_marking(self) -> None:
-        self._run(lambda project, gap_id, data, **kwargs: (_ for _ in ()).throw(RuntimeError("填写失败")) if gap_id == "G1" else None)
+        def compute(project, gap_id, data, **kwargs):
+            if gap_id == "G1":
+                raise RuntimeError("填写失败")
+            return _fill_result(gap_id, str(data.get("fillTaskId") or ""))
+
+        self._run(compute)
 
         failed = next(item for item in self.project["gap_state"]["plan"]["items"] if item["id"] == "G1")
         self.assertEqual(failed["fillError"]["fillTaskId"], "T1")
@@ -223,13 +273,222 @@ class RunBodyFillJobTests(unittest.TestCase):
         )
         calls: list[str] = []
         with self.assertRaises(RuntimeError):
-            self._run(lambda project, gap_id, data, **kwargs: calls.append(gap_id))
+            self._run(self._compute_ok(calls))
 
         state = self.project["gap_state"]["bodyFillState"]
         self.assertEqual(calls, [])
         self.assertEqual(state["status"], "failed")
         self.assertIn("重新上传", state["message"])
         self.assertFalse(any("fillError" in item for item in self.project["gap_state"]["plan"]["items"]))
+
+
+class ParallelBodyFillTests(unittest.TestCase):
+    """并发执行：compute 真并行、进度计数准确、CAS 重放不丢更新、并发度有上限。"""
+
+    def setUp(self) -> None:
+        self.project = {
+            "id": "PRJ-BODY",
+            "gap_state": _gap_state(
+                _item("G1", _task("T1")),
+                _item("G2", _task("T2")),
+                _item("G3", _task("T3")),
+                _item("G4", _task("T4")),
+            ),
+        }
+        self.mutate_mock = mock.patch(
+            "app.services.technical_body_fill_job.mutate_technical_gap_project",
+            side_effect=lambda project_id, mutate, **kwargs: mutate(self.project),
+        ).start()
+        patches = [
+            mock.patch(
+                "app.services.technical_body_fill_job.require_technical_gap_project_for_update",
+                side_effect=lambda project_id: self.project,
+            ),
+            mock.patch(
+                "app.services.technical_body_fill_job.ensure_technical_gap_state",
+                side_effect=lambda project: project["gap_state"],
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(mock.patch.stopall)
+
+    def _run(self, compute_side_effect) -> dict:
+        with mock.patch(
+            "app.services.technical_gap_ai_fill.compute_technical_ai_fill",
+            side_effect=compute_side_effect,
+        ):
+            from app.services.technical_body_fill_job import run_body_fill_job
+
+            run_body_fill_job("PRJ-BODY", {"operator": "测试用户"})
+        return self.project["gap_state"]["bodyFillState"]
+
+    def test_compute_runs_in_parallel(self) -> None:
+        # 4 条任务都进到 compute 里 barrier 才放行；串行执行会超时抛 BrokenBarrierError
+        barrier = threading.Barrier(4, timeout=30)
+        entered: list[str] = []
+
+        def compute(project, gap_id, data, **kwargs):
+            entered.append(gap_id)
+            barrier.wait()
+            return _fill_result(gap_id, str(data.get("fillTaskId") or ""))
+
+        state = self._run(compute)
+
+        self.assertEqual(sorted(entered), ["G1", "G2", "G3", "G4"])
+        self.assertEqual((state["done"], state["succeeded"], state["failed"]), (4, 4, 0))
+        self.assertEqual(state["status"], "succeeded")
+
+    def test_progress_counters_accurate_under_concurrency(self) -> None:
+        barrier = threading.Barrier(4, timeout=30)
+
+        def compute(project, gap_id, data, **kwargs):
+            barrier.wait()
+            if gap_id == "G3":
+                raise RuntimeError("素材缺失")
+            return _fill_result(gap_id, str(data.get("fillTaskId") or ""))
+
+        state = self._run(compute)
+
+        self.assertEqual((state["total"], state["done"], state["succeeded"], state["failed"]), (4, 4, 3, 1))
+        self.assertEqual(state["status"], "partial")
+        self.assertEqual([error["gapId"] for error in state["errors"]], ["G3"])
+
+    def test_cas_replay_keeps_concurrent_writes_without_duplicates(self) -> None:
+        # 模拟 postgres CAS：第一次 apply 写回时判定冲突（另一操作同时改了别的目录项），
+        # 回滚后基于最新状态重放。最终 apply 结果与并发写都要在，且重放不产生重复。
+        # 进入填写阶段（compute 被调用）后的第一次 mutate 一定是某条结果的 apply 写回。
+        filling = {"entered": False}
+        injected = {"done": False}
+
+        def cas_mutate(project_id, mutate, **kwargs):
+            for _ in range(8):
+                snapshot = copy.deepcopy(self.project)
+                result = mutate(self.project)
+                if injected["done"] or not filling["entered"]:
+                    return result
+                injected["done"] = True
+                # 冲突：回滚本次写回，先落一笔「并发写」，再循环重放 mutate
+                self.project.clear()
+                self.project.update(snapshot)
+                for entry in self.project["gap_state"]["plan"]["items"]:
+                    if entry["id"] == "G2":
+                        entry["reviewNotes"] = ["并发写加的备注"]
+            raise AssertionError("CAS 重放未收敛")
+
+        def compute(project, gap_id, data, **kwargs):
+            filling["entered"] = True
+            return _fill_result(gap_id, str(data.get("fillTaskId") or ""))
+
+        self.mutate_mock.side_effect = cas_mutate
+
+        state = self._run(compute)
+
+        self.assertTrue(injected["done"])
+        self.assertEqual((state["done"], state["succeeded"], state["failed"]), (4, 4, 0))
+        items = {entry["id"]: entry for entry in self.project["gap_state"]["plan"]["items"]}
+        for gap_id in ("G1", "G2", "G3", "G4"):
+            entry = items[gap_id]
+            task = entry["fillTasks"][0]
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(len(entry["resolvedArtifacts"]), 1)
+        self.assertEqual(items["G2"]["reviewNotes"], ["并发写加的备注"])
+
+    def test_concurrency_clamped_to_max(self) -> None:
+        recorded: list[int] = []
+
+        class PoolSpy(ThreadPoolExecutor):
+            def __init__(self, max_workers=None, **kwargs):
+                recorded.append(max_workers)
+                super().__init__(max_workers=max_workers, **kwargs)
+
+        with (
+            mock.patch.object(settings, "body_fill_concurrency", 100),
+            mock.patch("app.services.technical_body_fill_job.ThreadPoolExecutor", PoolSpy),
+        ):
+            self._run(RunBodyFillJobTests._compute_ok())
+
+        self.assertEqual(recorded, [8])
+
+    def test_concurrency_one_runs_every_target(self) -> None:
+        calls: list[str] = []
+        with mock.patch.object(settings, "body_fill_concurrency", 1):
+            state = self._run(RunBodyFillJobTests._compute_ok(calls))
+
+        # 并发度 1 时退化为按清单顺序串行
+        self.assertEqual(calls, ["G1", "G2", "G3", "G4"])
+        self.assertEqual((state["done"], state["succeeded"], state["failed"]), (4, 4, 0))
+
+
+class ApplyTechnicalAiFillResultTests(unittest.TestCase):
+    """apply 的幂等与重跑语义：重复 apply 不叠加，新结果（重填）正常覆盖。"""
+
+    def test_repeated_apply_is_idempotent(self) -> None:
+        project = {"gap_state": _gap_state(_item("G1", _task("T1")))}
+        result = _fill_result("G1", "T1", unfilled=2, quality="needs_review")
+
+        apply_technical_ai_fill_result(project, result)
+        apply_technical_ai_fill_result(project, result)
+
+        item = project["gap_state"]["plan"]["items"][0]
+        self.assertEqual(len(item["resolvedArtifacts"]), 1)
+        self.assertEqual(item["reviewNotes"].count("AI 填写仍有未填字段：2 项"), 1)
+        self.assertEqual(item["reviewNotes"].count("AI 填写质量验收未达标，请人工复核或补充事实表后重填。"), 1)
+
+    def test_rerun_with_new_result_applies_again(self) -> None:
+        project = {"gap_state": _gap_state(_item("G1", _task("T1")))}
+        first = _fill_result("G1", "T1", unfilled=1, artifact_id="ART-G1-T1-a", created_at="2026-08-11T00:00:00Z")
+        second = _fill_result("G1", "T1", unfilled=1, artifact_id="ART-G1-T1-b", created_at="2026-08-11T01:00:00Z")
+
+        apply_technical_ai_fill_result(project, first)
+        apply_technical_ai_fill_result(project, second)
+
+        item = project["gap_state"]["plan"]["items"][0]
+        task = item["fillTasks"][0]
+        self.assertEqual(task["outputArtifactId"], "ART-G1-T1-b")
+        self.assertEqual(task["completedAt"], "2026-08-11T01:00:00Z")
+        # 同一 fillTask 的旧产物被替换，不叠加
+        self.assertEqual(len(item["resolvedArtifacts"]), 1)
+        self.assertEqual(item["resolvedArtifacts"][0]["id"], "ART-G1-T1-b")
+        # 重填是两次独立填写，未填字段提示各记一条
+        self.assertEqual(item["reviewNotes"].count("AI 填写仍有未填字段：1 项"), 2)
+
+    def test_apply_rejects_unknown_gap(self) -> None:
+        project = {"gap_state": _gap_state(_item("G1", _task("T1")))}
+        with self.assertRaises(KeyError):
+            apply_technical_ai_fill_result(project, _fill_result("G9", "T9"))
+
+
+class RunAsyncThreadingTests(unittest.TestCase):
+    """_run_async 走共享常驻 loop：并发批填的 worker 线程同时调用时不挂死、不串 loop。
+
+    回归背景：每线程各开 asyncio.run 时，共享 AsyncEngine 的 asyncpg 连接跨 loop
+    等待会永久挂起（生产实测正文模板下载卡死 2 小时+）。
+    """
+
+    def test_concurrent_calls_from_worker_threads(self) -> None:
+        import asyncio  # 局部 import：测试文件主流程用不到
+
+        from app.services.technical_gap_ai_fill import _run_async
+
+        async def probe(value: int) -> int:
+            await asyncio.sleep(0.01)
+            return value * 2
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda n: _run_async(probe(n)), range(8)))
+
+        self.assertEqual(sorted(results), [n * 2 for n in range(8)])
+
+    def test_error_propagates_to_caller(self) -> None:
+        from app.services.technical_gap_ai_fill import _run_async
+
+        async def boom() -> None:
+            raise RuntimeError("下载失败")
+
+        with self.assertRaises(RuntimeError):
+            _run_async(boom())
 
 
 if __name__ == "__main__":
@@ -246,7 +505,7 @@ class EnrichFactTableTests(unittest.TestCase):
         self.specs = [
             {"key": "投标机型", "placeholder": "[投标机型，待填写]", "targetFile": "客户定制/华能/待填写-x.docx"},
         ]
-        patch = mock.patch.object(module, "resolve_project_specs", side_effect=lambda gap_state: (self.specs, {}))
+        patch = mock.patch.object(module, "resolve_fact_specs", side_effect=lambda: (self.specs, {}))
         patch.start()
         self.addCleanup(patch.stop)
 

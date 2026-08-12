@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-"""技术标填表规则（事实表字段清单）版本化与项目绑定。
+"""技术标填表规则（事实表字段清单）版本化。
 
-背景（R06-B04-02）：历史上规则只有系统唯一一份公共清单，项目间相互污染、
-无法审计正式标书用了哪版规则。现在：
+清单全局共用、与项目无关：规则页上传一份，所有项目按同一张表去各自的招标文件与
+素材里找自己的值。这里只管版本留痕：
 
-- 每次项目上传生成一个不可变版本文件（数据卷 fact_spec_versions/{projectId}/{ruleId}.json），
-  记录 ruleId / projectId / version / 上传人 / 上传时间 / 文件 sha256 / specs 快照；
-- 项目绑定写在项目 gap_state["factSpecs"]（随项目持久化，重启不丢），内含 specs 快照，
-  运行链路只读快照，其他项目上传新版本不影响本项目；
-- 项目未绑定规则时按 resolve_project_specs 回落系统默认清单
-  （设置页 override 优先于仓库默认，系统默认规则独立管理）；
-- 事实表构建 / AI 维护任务启动时把绑定元数据固化进产物（factSpecsRef），可事后审计。
+- 每次上传生成一个不可变版本文件（数据卷 fact_spec_versions/_global/{ruleId}.json），
+  记录 ruleId / version / 上传人 / 上传时间 / 文件 sha256 / specs 快照；
+- 事实表构建 / AI 维护任务启动时把当前生效版本固化进产物（factSpecsRef），可事后审计。
+
+历史上还有一层项目级绑定（gap_state["factSpecs"]，R06-B04-02 为隔离项目间污染而加），
+清单改成全局唯一后已移除：项目不再各自持有清单快照。
 """
 
 import hashlib
@@ -24,11 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
-from app.services.technical_fact_field_specs import load_specs, normalize_spec_source_kind
 
-# gap_state["factSpecs"] 的来源标识：项目专属绑定 / 系统默认回落
-FACT_SPECS_SOURCE_PROJECT = "project"
-FACT_SPECS_SOURCE_DEFAULT = "default"
+# factSpecsRef.source：清单只有全局一层，保留字段名供已固化的产物与前端兼容读取
+FACT_SPECS_SOURCE_GLOBAL = "global"
 
 
 def _now_iso() -> str:
@@ -39,41 +36,18 @@ def _safe_project_id(project_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(project_id or "").strip()) or "project"
 
 
-def fact_specs_binding(gap_state: dict[str, Any]) -> dict[str, Any]:
-    """项目当前的规则绑定（gap_state["factSpecs"]），无绑定返回 {}。"""
-    binding = gap_state.get("factSpecs") if isinstance(gap_state.get("factSpecs"), dict) else {}
-    return binding if isinstance(binding.get("specs"), list) and binding.get("specs") else {}
-
-
-def resolve_project_specs(gap_state: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """取项目生效规则：有绑定返回项目快照，否则回落系统默认清单。
-
-    返回 (specs, meta)；meta 含 source（project/default）及绑定元数据，
-    可直接固化进任务产物做审计。
-    """
-    binding = fact_specs_binding(gap_state)
-    if binding:
-        # 历史绑定快照里「/」被归成 template，按原始 referenceFile 重算，避免重传才生效
-        specs = [
-            normalize_spec_source_kind(spec) for spec in binding["specs"] if isinstance(spec, dict)
-        ]
-        return specs, fact_specs_ref(binding, source=FACT_SPECS_SOURCE_PROJECT)
-    return list(load_specs()), {"source": FACT_SPECS_SOURCE_DEFAULT}
-
-
-def fact_specs_ref(binding: dict[str, Any], *, source: str | None = None) -> dict[str, Any]:
-    """从绑定提取可审计元数据（不含 specs 本体）。"""
-    ref = {
-        "source": source or (FACT_SPECS_SOURCE_PROJECT if binding else FACT_SPECS_SOURCE_DEFAULT),
-        "ruleId": str(binding.get("ruleId") or ""),
-        "version": int(binding.get("version") or 0),
-        "fileName": str(binding.get("fileName") or ""),
-        "uploadedAt": str(binding.get("uploadedAt") or ""),
-        "uploadedBy": str(binding.get("uploadedBy") or ""),
-        "sha256": str(binding.get("sha256") or ""),
-        "specTotal": len(binding.get("specs") or []),
+def fact_specs_ref(meta: dict[str, Any], *, spec_total: int | None = None) -> dict[str, Any]:
+    """从清单元数据提取可审计字段（不含 specs 本体）。"""
+    return {
+        "source": FACT_SPECS_SOURCE_GLOBAL,
+        "ruleId": str(meta.get("ruleId") or ""),
+        "version": int(meta.get("version") or 0),
+        "fileName": str(meta.get("fileName") or ""),
+        "uploadedAt": str(meta.get("uploadedAt") or ""),
+        "uploadedBy": str(meta.get("uploadedBy") or ""),
+        "sha256": str(meta.get("sha256") or ""),
+        "specTotal": len(meta.get("specs") or []) if spec_total is None else int(spec_total),
     }
-    return ref
 
 
 def save_fact_spec_version(

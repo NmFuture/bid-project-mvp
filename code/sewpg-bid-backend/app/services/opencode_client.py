@@ -23,6 +23,12 @@ OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS = 10.0
 
 _OPENCODE_REQUEST_SLOTS = threading.BoundedSemaphore(settings.opencode_max_concurrency)
 _SESSION_CREATE_RETRY_DELAYS_SEC = (0.5, 1.0, 2.0, 4.0, 8.0, 8.0)
+# S2 决策会话的整体重试次数（含首次）。上游偶发的流式帧错乱会让整个会话报错，
+# 而 S2 决策是并行分章跑的，一个章节挂掉过去会让整轮目录生成作废。
+# 决策结果落在各章 work_dir 里，重试开新会话后 `decision-next` 会把未判完的批次
+# （含中断的 active_batch）原样带回，所以重试是续跑而不是重做。
+OUTLINE_DECISION_SESSION_MAX_ATTEMPTS = 3
+_OUTLINE_DECISION_RETRY_DELAYS_SEC = (2.0, 5.0)
 _SESSION_CREATE_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
@@ -194,38 +200,85 @@ class OpencodeClient:
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         session_phase: str = "chapter_decision",
     ) -> dict[str, Any]:
-        """运行一个独立决策会话（章节或附表），最终结果以持久化状态为准。"""
-        session = self.create_session(session_title)
-        session_id = str(session.get("id") or "")
-        if session_ready_callback:
-            session_ready_callback(
-                {
-                    "sessionId": session_id,
-                    "providerId": self.provider_id,
-                    "modelId": self.model_id,
-                    "sessionPhase": session_phase,
-                }
+        """运行一个独立决策会话（章节或附表），最终结果以持久化状态为准。
+
+        会话报错时不直接放弃：先看落盘状态（错误可能发生在结果写完之后），
+        没判完再开新会话续跑。上游一次流式抖动过去会让整轮目录生成作废。
+        """
+        for attempt in range(1, OUTLINE_DECISION_SESSION_MAX_ATTEMPTS + 1):
+            session = self.create_session(session_title)
+            session_id = str(session.get("id") or "")
+            if session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": self.provider_id,
+                        "modelId": self.model_id,
+                        "sessionPhase": session_phase,
+                    }
+                )
+            response = self._send_prompt_with_session_polling(
+                session_id,
+                prompt_text,
+                stream_callback=stream_callback or (lambda _details: None),
+                early_tool_command="",
+                assistant_stop_validator=completion_validator,
             )
-        response = self._send_prompt_with_session_polling(
-            session_id,
-            prompt_text,
-            stream_callback=stream_callback or (lambda _details: None),
-            early_tool_command="",
-            assistant_stop_validator=completion_validator,
-        )
-        info = response.get("info") if isinstance(response.get("info"), dict) else {}
-        if info.get("error"):
-            raise RuntimeError(self._format_response_error(info["error"]))
-        state = response.get("_assistantStopValidation")
-        if not isinstance(state, dict):
+            info = response.get("info") if isinstance(response.get("info"), dict) else {}
+            session_error = info.get("error")
+            if session_error:
+                error_text = self._format_response_error(session_error)
+                # 决策以持久化状态为准：报错不等于没判完。
+                persisted = self._safe_decision_state(completion_validator)
+                if persisted is not None and bool(persisted.get("complete")):
+                    logger.warning(
+                        "S2 决策会话报错但本章已判完，采用落盘结果：%s：%s",
+                        session_title,
+                        error_text,
+                    )
+                    return {
+                        "sessionId": session_id,
+                        "state": persisted,
+                        "opencodeOutput": self._build_output_trace(session_id, response),
+                    }
+                if attempt >= OUTLINE_DECISION_SESSION_MAX_ATTEMPTS:
+                    raise RuntimeError(error_text)
+                delay = _OUTLINE_DECISION_RETRY_DELAYS_SEC[
+                    min(attempt - 1, len(_OUTLINE_DECISION_RETRY_DELAYS_SEC) - 1)
+                ]
+                logger.warning(
+                    "S2 决策会话失败，%s 秒后开新会话续跑（第 %s/%s 次）：%s：%s",
+                    delay,
+                    attempt,
+                    OUTLINE_DECISION_SESSION_MAX_ATTEMPTS,
+                    session_title,
+                    error_text,
+                )
+                time.sleep(delay)
+                continue
+            state = response.get("_assistantStopValidation")
+            if not isinstance(state, dict):
+                state = completion_validator()
+            if not bool(state.get("complete")):
+                # 会话自己收尾但没判完：交给上层的串行接力，重试同一个提示词只会重复空转。
+                raise RuntimeError(f"S2 决策会话未完成：{session_title}")
+            return {
+                "sessionId": session_id,
+                "state": state,
+                "opencodeOutput": self._build_output_trace(session_id, response),
+            }
+        raise RuntimeError(f"S2 决策会话未完成：{session_title}")
+
+    @staticmethod
+    def _safe_decision_state(
+        completion_validator: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """读落盘决策状态；读不出来就当作没判完，不因为兜底逻辑本身再抛一次错。"""
+        try:
             state = completion_validator()
-        if not bool(state.get("complete")):
-            raise RuntimeError(f"S2 决策会话未完成：{session_title}")
-        return {
-            "sessionId": session_id,
-            "state": state,
-            "opencodeOutput": self._build_output_trace(session_id, response),
-        }
+        except (Exception, SystemExit):
+            return None
+        return state if isinstance(state, dict) else None
 
     def generate_outline_with_trace(
         self,
@@ -538,6 +591,35 @@ class OpencodeClient:
             early_tool_command=early_tool_command,
         )
         parsed = self._extract_table_fill_json(response)
+        return {
+            **parsed,
+            "opencodeOutput": self._build_output_trace(session_id, response),
+        }
+
+    def run_bid_tech_score_index_xref_with_trace(
+        self,
+        prompt_text: str,
+        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        early_tool_command: str = "",
+    ) -> dict[str, Any]:
+        session = self.create_session("S4 技术标评分索引章节判断")
+        session_id = str(session.get("id") or "")
+        if session_ready_callback:
+            session_ready_callback(
+                {
+                    "sessionId": session_id,
+                    "providerId": self.provider_id,
+                    "modelId": self.model_id,
+                }
+            )
+        response = self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_tool_command=early_tool_command,
+        )
+        parsed = self._extract_score_index_mapping_json(response)
         return {
             **parsed,
             "opencodeOutput": self._build_output_trace(session_id, response),
@@ -920,6 +1002,18 @@ class OpencodeClient:
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("outputFile"), str):
             raise RuntimeError("futurecode 返回的 AI 填写 JSON 结构不正确。")
+        return parsed
+
+    def _extract_score_index_mapping_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = self._extract_json_response(
+            response,
+            empty_message="futurecode 未返回评分索引章节判断结果。",
+            repair_kind="gap_plan",
+        )
+        if not isinstance(parsed, dict) or (
+            not isinstance(parsed.get("mappingFile"), str) and not isinstance(parsed.get("mapping"), dict)
+        ):
+            raise RuntimeError("futurecode 返回的评分索引章节判断 JSON 结构不正确。")
         return parsed
 
     def _extract_fact_curator_json(self, response: dict[str, Any]) -> dict[str, Any]:

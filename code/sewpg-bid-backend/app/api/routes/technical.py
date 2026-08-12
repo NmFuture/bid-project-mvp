@@ -438,23 +438,13 @@ async def build_technical_gap_project_facts(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.build_facts(project_id)
 
 
-@router.post("/api/technical/projects/{project_id}/gaps/facts/specs-upload")
-async def upload_technical_gap_fact_specs(
-    project_id: str,
-    file: UploadFile = File(...),
-) -> dict[str, Any]:
-    """上传本项目事实表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
-    return await technical_gap_service.upload_fact_specs(
-        project_id, str(file.filename or ""), await file.read()
-    )
-
-
 @router.post("/api/technical/projects/{project_id}/appendix-source-matrix")
 async def upload_technical_appendix_source_matrix(
     project_id: str,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    """上传本项目附表填写规则 Excel（客户×附表→素材来源矩阵），下次缺口识别时确定每张附表的取值来源。"""
+    """上传附表填写规则 Excel（客户×附表→素材来源矩阵）：规则按客户入库（透写客户规则库），
+    该客户名下项目缺口识别时确定每张附表的取值来源。"""
     return await technical_gap_service.upload_appendix_source_matrix(
         project_id, str(file.filename or ""), await file.read()
     )

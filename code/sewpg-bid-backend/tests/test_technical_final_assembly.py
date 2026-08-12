@@ -204,6 +204,114 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                 ],
             )
 
+    def test_apply_gap_plan_matches_repeated_local_numbers_by_toc_idx(self) -> None:
+        from app.document_processing.technical_document.assembly import build_assembly as runtime_build_assembly
+
+        with patch.dict(sys.modules, {"yaml": object()}):
+            skill_build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-FIRST",
+                                "number": "1\u3001",
+                                "title": "Score Index",
+                                "level": 2,
+                                "matchedMaterials": [{"path": "score-index.docx"}],
+                            },
+                            {
+                                "id": "GAP-SECOND",
+                                "number": "1\u3001",
+                                "title": "Project Team",
+                                "level": 2,
+                                "matchedMaterials": [{"path": "project-team.docx"}],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            for build_assembly in (skill_build_assembly, runtime_build_assembly):
+                with self.subTest(module=build_assembly.__name__):
+                    plan = [
+                        {
+                            "toc_idx": 0,
+                            "chapter_no": "1\u3001",
+                            "chapter_no_flat": "1.1",
+                            "title": "Score Index",
+                            "level": 2,
+                            "status": "UNMATCHED",
+                        },
+                        {
+                            "toc_idx": 1,
+                            "chapter_no": "1\u3001",
+                            "chapter_no_flat": "2.1",
+                            "title": "Project Team",
+                            "level": 2,
+                            "status": "UNMATCHED",
+                        },
+                    ]
+                    result = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+                    self.assertEqual(
+                        [item["gap_plan_item_id"] for item in result],
+                        ["GAP-FIRST", "GAP-SECOND"],
+                    )
+                    self.assertEqual(
+                        [item["paths"] for item in result],
+                        [["score-index.docx"], ["project-team.docx"]],
+                    )
+
+    def test_apply_gap_plan_rejects_toc_idx_candidate_when_title_or_level_differs(self) -> None:
+        from app.document_processing.technical_document.assembly import build_assembly as runtime_build_assembly
+
+        with patch.dict(sys.modules, {"yaml": object()}):
+            skill_build_assembly = load_assembler_script("build_assembly")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gap_plan_path = Path(tmp) / "gap-plan.json"
+            gap_plan_path.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": "GAP-OTHER",
+                                "number": "1\u3001",
+                                "title": "Other Section",
+                                "level": 3,
+                                "matchedMaterials": [{"path": "wrong.docx"}],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            for build_assembly in (skill_build_assembly, runtime_build_assembly):
+                with self.subTest(module=build_assembly.__name__):
+                    plan = [
+                        {
+                            "toc_idx": 0,
+                            "chapter_no": "1\u3001",
+                            "chapter_no_flat": "1.1",
+                            "title": "Expected Section",
+                            "level": 2,
+                            "status": "MATCHED",
+                            "paths": ["wiki-guessed.docx"],
+                        }
+                    ]
+                    result = build_assembly.apply_gap_plan(plan, gap_plan_path)
+
+                    self.assertEqual(result[0]["status"], "UNMATCHED")
+                    self.assertEqual(result[0]["paths"], [])
+                    self.assertEqual(result[0]["note"], "目录顺序与 gap plan 的标题或层级不一致")
+                    self.assertNotIn("gap_plan_item_id", result[0])
+
     def test_chinese_chapter_number_keeps_selected_materials_through_gap_plan(self) -> None:
         from app.services import tech_assembly, technical_gap_planner
 
@@ -422,6 +530,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-PARENT",
                                 "number": "1.7",
                                 "title": "投标方案优势说明",
+                                "level": 2,
                                 "coverageRole": "chapter_master",
                                 "matchedMaterials": [{"path": "source-1.7.docx"}],
                             },
@@ -429,6 +538,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-CHILD",
                                 "number": "1.7.1",
                                 "title": "投标方案整体优势",
+                                "level": 3,
                                 "coverageRole": "covered_by_parent",
                                 "coveredByParent": "GAP-PARENT",
                             },
@@ -440,16 +550,20 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             )
             plan = [
                 {
+                    "toc_idx": 0,
                     "chapter_no": "1.7",
                     "chapter_no_flat": "1.7",
                     "title": "投标方案优势说明",
+                    "level": 2,
                     "status": "UNMATCHED",
                     "paths": ["wiki-guessed-parent.docx"],
                 },
                 {
+                    "toc_idx": 1,
                     "chapter_no": "1.7.1",
                     "chapter_no_flat": "1.7.1",
                     "title": "投标方案整体优势",
+                    "level": 3,
                     "status": "NEEDS_REVIEW",
                     "paths": ["wiki-guessed-child.docx"],
                 },
@@ -475,6 +589,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-PARENT",
                                 "number": "1.7",
                                 "title": "投标方案优势说明",
+                                "level": 2,
                                 "titleOnly": True,
                                 "coverageRole": "chapter_master",
                                 "matchedMaterials": [{"path": "old-parent.docx"}],
@@ -483,6 +598,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-CHILD",
                                 "number": "1.7.1",
                                 "title": "投标方案整体优势",
+                                "level": 3,
                                 "coverageRole": "covered_by_parent",
                                 "coveredByParent": "GAP-PARENT",
                                 "resolvedArtifacts": [
@@ -501,16 +617,20 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             )
             plan = [
                 {
+                    "toc_idx": 0,
                     "chapter_no": "1.7",
                     "chapter_no_flat": "1.7",
                     "title": "投标方案优势说明",
+                    "level": 2,
                     "status": "UNMATCHED",
                     "paths": [],
                 },
                 {
+                    "toc_idx": 1,
                     "chapter_no": "1.7.1",
                     "chapter_no_flat": "1.7.1",
                     "title": "投标方案整体优势",
+                    "level": 3,
                     "status": "UNMATCHED",
                     "paths": [],
                 },
@@ -541,6 +661,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-PARENT",
                                 "number": "1.7",
                                 "title": "投标方案优势说明",
+                                "level": 2,
                                 "titleOnly": False,
                                 "coverageRole": "chapter_master",
                                 "matchedMaterials": [{"path": "old-parent.docx"}],
@@ -549,6 +670,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-CHILD",
                                 "number": "1.7.1",
                                 "title": "投标方案整体优势",
+                                "level": 3,
                                 "coverageRole": "covered_by_parent",
                                 "coveredByParent": "GAP-PARENT",
                                 "matchedMaterials": [{"path": "new-child.docx"}],
@@ -561,16 +683,20 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             )
             plan = [
                 {
+                    "toc_idx": 0,
                     "chapter_no": "1.7",
                     "chapter_no_flat": "1.7",
                     "title": "投标方案优势说明",
+                    "level": 2,
                     "status": "UNMATCHED",
                     "paths": [],
                 },
                 {
+                    "toc_idx": 1,
                     "chapter_no": "1.7.1",
                     "chapter_no_flat": "1.7.1",
                     "title": "投标方案整体优势",
+                    "level": 3,
                     "status": "UNMATCHED",
                     "paths": [],
                 },
@@ -597,6 +723,7 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
                                 "id": "GAP-6-6",
                                 "number": "6.6",
                                 "title": "技术附表",
+                                "level": 2,
                                 "coverageRole": "covered_by_parent",
                                 "coveredByParent": "GAP-6",
                                 "matchedMaterials": [],
@@ -609,9 +736,11 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
             )
             plan = [
                 {
+                    "toc_idx": 0,
                     "chapter_no": "6.6",
                     "chapter_no_flat": "6.6",
                     "title": "技术附表",
+                    "level": 2,
                     "status": "MATCHED",
                     "paths": ["appendix-b.docx", "appendix-c.docx", "appendix-i.docx"],
                     "shifts": [0, 0, 0],

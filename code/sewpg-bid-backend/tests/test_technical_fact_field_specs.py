@@ -9,10 +9,7 @@ from app.services import technical_gap_fact_table as fact_table_module
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
 from app.services.technical_gap_fact_table import (
     FACT_STATUS_CONFIRMED,
-    FACT_STATUS_EXTRACTED,
-    FACT_STATUS_MISSING_SOURCE,
     FACT_STATUS_NOT_APPLICABLE,
-    FACT_STATUS_PENDING_CONFIRMATION,
     FACT_STATUS_UNEXTRACTED,
     build_project_fact_table,
     normalize_fact_status,
@@ -58,13 +55,16 @@ class TestTechnicalFactFieldSpecs(unittest.TestCase):
         intact = {"label": "x", "referenceFile": "招标文件", "sourceKind": "tender", "valueRequired": True}
         self.assertIs(normalize_spec_source_kind(intact), intact)
 
-    def test_legacy_status_mapping(self) -> None:
-        self.assertEqual(normalize_fact_status("candidate", has_value=True), FACT_STATUS_EXTRACTED)
-        self.assertEqual(normalize_fact_status("missing", has_value=False), FACT_STATUS_MISSING_SOURCE)
+    def test_legacy_status_collapses_to_three_states(self) -> None:
+        # 历史四/七态一律按有无取值收敛，不需要迁移脚本
+        for legacy in ("candidate", "extracted", "pending_confirmation", "conflict", "bogus", ""):
+            self.assertEqual(normalize_fact_status(legacy, has_value=True), FACT_STATUS_CONFIRMED)
+        for legacy in ("missing", "missing_source", "unextracted", "bogus", ""):
+            self.assertEqual(normalize_fact_status(legacy, has_value=False), FACT_STATUS_UNEXTRACTED)
         self.assertEqual(normalize_fact_status("confirmed", has_value=True), FACT_STATUS_CONFIRMED)
-        self.assertEqual(normalize_fact_status("unextracted", has_value=False), FACT_STATUS_UNEXTRACTED)
-        self.assertEqual(normalize_fact_status("bogus", has_value=True), FACT_STATUS_EXTRACTED)
-        self.assertEqual(normalize_fact_status("", has_value=False), FACT_STATUS_MISSING_SOURCE)
+        # 不适用是人工裁定，与有无取值无关
+        self.assertEqual(normalize_fact_status("not_applicable", has_value=False), FACT_STATUS_NOT_APPLICABLE)
+        self.assertEqual(normalize_fact_status("not_applicable", has_value=True), FACT_STATUS_NOT_APPLICABLE)
 
 
 class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
@@ -84,7 +84,7 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
                 "key": "功率曲线保证率",
                 "label": "功率曲线保证率",
                 "value": "95%",
-                "status": FACT_STATUS_EXTRACTED,
+                "status": FACT_STATUS_CONFIRMED,
             }
         }
         reconcile_fact_fields_with_specs(fields_by_key)
@@ -115,20 +115,20 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
         self.assertEqual(normalized["placeholder"], source["placeholder"])
         self.assertEqual(normalized["targetFile"], source["targetFile"])
 
-    def test_needs_confirmation_spec_becomes_pending(self) -> None:
-        # spec 87「函件签署日期」别名「日期」，无待确认；spec 7「发电小时数/电量承诺函版本」需确认
+    def test_needs_confirmation_spec_keeps_status(self) -> None:
+        # needsConfirmation 只作为「口径要人工核」的展示标记随字段下发，不再改状态
         fields_by_key = {
             "日期": {
                 "id": "FACT-0001",
                 "key": "日期",
                 "label": "日期",
                 "value": "2026年07月23日",
-                "status": FACT_STATUS_EXTRACTED,
+                "status": FACT_STATUS_CONFIRMED,
             }
         }
         reconcile_fact_fields_with_specs(fields_by_key)
         self.assertEqual(fields_by_key["日期"].get("specSeq"), 87)
-        self.assertEqual(fields_by_key["日期"]["status"], FACT_STATUS_EXTRACTED)
+        self.assertEqual(fields_by_key["日期"]["status"], FACT_STATUS_CONFIRMED)
 
         pending_spec = next(spec for spec in fillable_specs() if spec["seq"] == 114)  # 单机功率曲线考核阈值
         from app.services.technical_gap_fact_table import fact_label_key
@@ -139,12 +139,12 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
                 "key": fact_label_key(pending_spec["label"]),
                 "label": pending_spec["label"],
                 "value": "保证值版",
-                "status": FACT_STATUS_EXTRACTED,
+                "status": FACT_STATUS_CONFIRMED,
             }
         }
         reconcile_fact_fields_with_specs(fields_by_key)
         field = fields_by_key[fact_label_key(pending_spec["label"])]
-        self.assertEqual(field["status"], FACT_STATUS_PENDING_CONFIRMATION)
+        self.assertEqual(field["status"], FACT_STATUS_CONFIRMED)
         self.assertTrue(field["needsConfirmation"])
 
     def test_previous_manual_result_survives_rebuild(self) -> None:
@@ -157,6 +157,9 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
                 "label": spec["label"],
                 "value": "华能集团有限公司",
                 "status": FACT_STATUS_CONFIRMED,
+                # 人工标记是跨轮保留的唯一依据：status 三态收敛后规则抽取的值也是
+                # confirmed，只看状态会把整张表都当成人工结论保留下来
+                "sourceRefs": [{"type": "manualEdit", "title": "人工填写"}],
                 "confirmedAt": "2026-07-23T00:00:00",
                 "confirmedBy": "安博成",
             }
@@ -176,7 +179,7 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
                 "key": "安全等级",
                 "label": "安全等级",
                 "value": "IEC S",
-                "status": FACT_STATUS_EXTRACTED,
+                "status": FACT_STATUS_CONFIRMED,
             }
         }
         reconcile_fact_fields_with_specs(fields_by_key)
@@ -199,13 +202,23 @@ class TestNormalizeProjectFactFieldV2(unittest.TestCase):
         field = self._normalize({"label": "叶片产能", "status": "not_applicable", "notes": "本项目无叶片"}, confirm=True)
         self.assertEqual(field["status"], FACT_STATUS_NOT_APPLICABLE)
 
-    def test_confirm_maps_legacy_and_empty(self) -> None:
+    def test_status_follows_value_presence(self) -> None:
         self.assertEqual(self._normalize({"label": "A", "value": "1"}, confirm=True)["status"], FACT_STATUS_CONFIRMED)
-        self.assertEqual(self._normalize({"label": "B"}, confirm=True)["status"], FACT_STATUS_MISSING_SOURCE)
+        self.assertEqual(self._normalize({"label": "B"}, confirm=True)["status"], FACT_STATUS_UNEXTRACTED)
         self.assertEqual(
             self._normalize({"label": "C", "value": "x", "status": "candidate"})["status"],
-            FACT_STATUS_EXTRACTED,
+            FACT_STATUS_CONFIRMED,
         )
+
+    def test_confirm_marks_field_as_human_authored(self) -> None:
+        # 人在页面上保存过 → 打人工标记，重建时才认得出这是人工结论
+        field = self._normalize({"label": "A", "value": "1"}, confirm=True)
+        self.assertTrue(any(ref.get("type") == "manualEdit" for ref in field["sourceRefs"]))
+        self.assertTrue(fact_table_module.is_human_authored_fact_field(field))
+        # 规则抽取路径（confirm=False）不打标记，重建时该值重来
+        auto = self._normalize({"label": "A", "value": "1"})
+        self.assertFalse(any(ref.get("type") == "manualEdit" for ref in auto["sourceRefs"]))
+        self.assertFalse(fact_table_module.is_human_authored_fact_field(auto))
 
     def test_spec_metadata_is_preserved(self) -> None:
         field = self._normalize(
@@ -263,7 +276,7 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         # 项目名称命中 spec 112
         name_field = next(field for field in spec_fields if field["specSeq"] == 112)
         self.assertEqual(name_field["value"], "翁牛特旗120万千瓦风电项目")
-        self.assertEqual(name_field["status"], FACT_STATUS_EXTRACTED)
+        self.assertEqual(name_field["status"], FACT_STATUS_CONFIRMED)
         # 无来源的 spec 骨架保持未提取
         cert_field = next(field for field in spec_fields if field["specSeq"] == 1)
         self.assertEqual(cert_field["status"], FACT_STATUS_UNEXTRACTED)
@@ -318,6 +331,83 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertFalse(manual.get("specSeq"))
         self.assertEqual(table["summary"]["specTotal"], 148)
 
+    def test_single_turbine_pins_project_selected_fields(self) -> None:
+        """单机型：人选的机型参数不带序号、提到表首，只比改动前多一行清单外的「基础形式」。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "单机型项目",
+            "parse_result": {},
+            "turbineModels": [{"model": "EW10.0-220", "turbineCount": "25", "foundationType": "桩基础"}],
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+
+        self.assertEqual(len(table["fields"]), 149)
+        self.assertEqual(table["summary"]["specTotal"], 148)
+        self.assertEqual(
+            [field["label"] for field in table["fields"][:6]],
+            ["投标机型", "机组台数", "基础形式", "单机容量", "叶轮直径", "轮毂高度"],
+        )
+        by_label = {field["label"]: field for field in table["fields"]}
+        self.assertEqual(by_label["投标机型"]["value"], "EW10.0-220")
+        self.assertEqual(by_label["机组台数"]["value"], "25")
+        self.assertEqual(by_label["基础形式"]["value"], "桩基础")
+        # 命中清单的仍带 specSeq、照常计进度；基础形式是清单外行，不计
+        self.assertEqual(by_label["投标机型"]["specSeq"], 11)
+        self.assertEqual(by_label["机组台数"]["specSeq"], 84)
+        self.assertIsNone(by_label["基础形式"].get("specSeq"))
+        self.assertTrue(all(field["turbineGroup"] == 1 for field in table["fields"][:6]))
+
+    def test_multi_turbine_expands_rows_per_model(self) -> None:
+        """多机型：每个机型一组带序号的行置顶，不带序号的机型/台数留给清单行取全场口径。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "混排项目",
+            "parse_result": {},
+            "turbineModels": [
+                {"model": "EW10.0-220", "turbineCount": "15", "foundationType": "桩基础"},
+                {"model": "EW8.5-230", "turbineCount": "10", "foundationType": "重力基础"},
+            ],
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+
+        self.assertEqual(len(table["fields"]), 160)
+        self.assertEqual(table["summary"]["specTotal"], 148)
+        self.assertEqual(
+            [field["label"] for field in table["fields"][:12]],
+            [
+                "投标机型1", "机型1台数", "机型1基础形式", "机型1单机容量", "机型1叶轮直径", "机型1轮毂高度",
+                "投标机型2", "机型2台数", "机型2基础形式", "机型2单机容量", "机型2叶轮直径", "机型2轮毂高度",
+            ],
+        )
+        by_label = {field["label"]: field for field in table["fields"]}
+        self.assertEqual(by_label["投标机型1"]["value"], "EW10.0-220")
+        self.assertEqual(by_label["机型1台数"]["value"], "15")
+        self.assertEqual(by_label["机型2基础形式"]["value"], "重力基础")
+        self.assertEqual(by_label["投标机型1"]["turbineModelLabel"], "EW10.0-220")
+        self.assertEqual(by_label["投标机型2"]["turbineGroup"], 2)
+        # 清单第 11/84 行给全场口径：机型合并串、台数各行之和
+        self.assertEqual(by_label["投标机型"]["value"], "EW10.0-220、EW8.5-230")
+        self.assertEqual(by_label["机组台数"]["value"], "25")
+        self.assertIsNone(by_label["投标机型"].get("turbineGroup"))
+        # 多机型不再出不带序号的「基础形式」
+        self.assertNotIn("基础形式", by_label)
+
+    def test_multi_turbine_count_sum_skips_incomplete_rows(self) -> None:
+        """任一行没填台数就不给总数，回落到招标文件与素材抽取。"""
+        project = {
+            "id": "P-SPEC",
+            "name": "混排项目",
+            "parse_result": {},
+            "turbineModels": [
+                {"model": "EW10.0-220", "turbineCount": "15"},
+                {"model": "EW8.5-230", "turbineCount": ""},
+            ],
+        }
+        table = build_project_fact_table(project, self._spec_gap_state())
+        # 没有项目表单候选时，台数那行退回清单骨架（标签用清单原文），值为空
+        count_field = next(field for field in table["fields"] if field.get("specSeq") == 84)
+        self.assertEqual(count_field["value"], "")
+
     @staticmethod
     def _gap_state_with_confirmed_legacy_field(rule_id: str) -> dict:
         return {
@@ -333,7 +423,11 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
                         "status": FACT_STATUS_CONFIRMED,
                         "specSeq": 88,
                         "specKey": "legacy-field",
-                        "sourceRefs": [{"type": "project", "title": "旧项目资料"}],
+                        # 人工标记是跨轮保留的依据，不再看 status
+                        "sourceRefs": [
+                            {"type": "manualEdit", "title": "人工填写"},
+                            {"type": "project", "title": "旧项目资料"},
+                        ],
                     }
                 ],
             }
@@ -353,8 +447,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         with (
             patch.object(
                 fact_table_module,
-                "resolve_project_specs",
-                return_value=(self._CURRENT_SPECS, {"source": "project", "ruleId": "fsr-current"}),
+                "resolve_fact_specs",
+                return_value=(self._CURRENT_SPECS, {"source": "global", "ruleId": "fsr-current"}),
             ),
             patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
         ):
@@ -390,7 +484,7 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
                         "key": "ai填的字段",
                         "label": "AI 填的字段",
                         "value": "AI 凑的错值",
-                        "status": FACT_STATUS_PENDING_CONFIRMATION,
+                        "status": FACT_STATUS_CONFIRMED,
                         "specSeq": 1,
                         "specKey": "ai-field",
                         "sourceRefs": [{"type": "factCurator", "title": "AI 匹配填充"}],
@@ -400,7 +494,7 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
                         "key": "人改的字段",
                         "label": "人改的字段",
                         "value": "人工订正值",
-                        "status": FACT_STATUS_EXTRACTED,
+                        "status": FACT_STATUS_CONFIRMED,
                         "specSeq": 2,
                         "specKey": "human-field",
                         "sourceRefs": [{"type": "manualEdit", "title": "人工修改"}],
@@ -415,8 +509,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         with (
             patch.object(
                 fact_table_module,
-                "resolve_project_specs",
-                return_value=(specs, {"source": "project", "ruleId": "fsr-current"}),
+                "resolve_fact_specs",
+                return_value=(specs, {"source": "global", "ruleId": "fsr-current"}),
             ),
             patch.object(fact_table_module, "project_material_fact_fields", return_value=[]),
         ):
@@ -440,8 +534,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertNotIn("旧规则字段", [field["label"] for field in table["fields"]])
         self.assertEqual(table["factSpecsRef"]["ruleId"], "fsr-current")
 
-    def test_build_falls_back_to_global_specs_when_project_not_uploaded(self) -> None:
-        """项目未上传清单时以全局默认清单为骨架。"""
+    def test_build_uses_global_specs_for_every_project(self) -> None:
+        """清单全局唯一：任何项目都以全局清单为骨架，不需要项目自己上传。"""
         project = {"id": "P-GLOBAL", "name": "全局清单项目", "parse_result": {}}
         table = build_project_fact_table(project, {})
         spec_fields = [field for field in table["fields"] if field.get("specSeq")]
@@ -449,12 +543,12 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
         self.assertEqual(table["summary"]["specTotal"], len(load_specs()))
 
     def test_build_keeps_union_behavior_when_no_specs_available(self) -> None:
-        """极端兜底：项目未上传且全局清单加载失败，维持来源并集行为并记 warning。"""
+        """极端兜底：全局清单尚未上传或加载失败，维持来源并集行为并记 warning。"""
         project = {"id": "P-NOSPEC", "name": "无清单项目", "parse_result": {}}
         with patch.object(
             fact_table_module,
-            "resolve_project_specs",
-            return_value=([], {"source": "default"}),
+            "resolve_fact_specs",
+            return_value=([], {"source": "global"}),
         ):
             with self.assertLogs(fact_table_module.logger, level="WARNING"):
                 table = build_project_fact_table(project, {})
@@ -464,7 +558,8 @@ class TestBuildProjectFactTableWithSpecs(unittest.TestCase):
 
 
 class TestSummarizeSpecProgressBuckets(unittest.TestCase):
-    def test_four_buckets_are_exclusive_and_sum_to_spec_total(self) -> None:
+    def test_buckets_are_exclusive_and_sum_to_spec_total(self) -> None:
+        # 历史七态混在存量数据里，统计前按有无取值归一，重建前也要数对
         fields = [
             {"label": "A", "specSeq": 1, "status": "confirmed", "value": "x"},
             {"label": "B", "specSeq": 2, "status": "pending_confirmation", "value": "x"},
@@ -472,25 +567,24 @@ class TestSummarizeSpecProgressBuckets(unittest.TestCase):
             {"label": "D", "specSeq": 4, "status": "missing_source", "value": ""},
             {"label": "E", "specSeq": 5, "status": "extracted", "value": "x"},
             {"label": "F", "specSeq": 6, "status": "conflict", "value": "x"},
+            {"label": "H", "specSeq": 7, "status": "not_applicable", "value": ""},
             # 人工新增字段（无 specSeq）不计入清单统计
             {"label": "G", "status": "confirmed", "value": "x", "sourceRefs": [{"type": "manualFact"}]},
         ]
         summary = summarize_project_fact_fields(fields)
-        self.assertEqual(summary["specTotal"], 6)
-        self.assertEqual(summary["specConfirmedCount"], 1)
-        self.assertEqual(summary["specPendingConfirmationCount"], 1)
+        self.assertEqual(summary["specTotal"], 7)
+        # 有值的 A/B/E/F 全部可用；C/D 待填写；H 不适用不算待办
+        self.assertEqual(summary["specConfirmedCount"], 4)
         self.assertEqual(summary["specUnfilledCount"], 2)
-        self.assertEqual(summary["specFilledUnconfirmedCount"], 2)
         self.assertEqual(
-            summary["specConfirmedCount"]
-            + summary["specPendingConfirmationCount"]
-            + summary["specUnfilledCount"]
-            + summary["specFilledUnconfirmedCount"],
+            summary["specConfirmedCount"] + summary["specUnfilledCount"] + 1,
             summary["specBuiltTotal"],
         )
-        # 七态计数仍是全表口径（含人工行）
-        self.assertEqual(summary["totalCount"], 7)
-        self.assertEqual(summary["confirmedCount"], 2)
+        # 状态计数是全表口径（含人工行）
+        self.assertEqual(summary["totalCount"], 8)
+        self.assertEqual(summary["confirmedCount"], 5)
+        self.assertEqual(summary["unextractedCount"], 2)
+        self.assertEqual(summary["notApplicableCount"], 1)
 
     def test_spec_seq_zero_is_counted_with_stable_bound_total(self) -> None:
         fields = [{"label": "A", "specSeq": 0, "status": "confirmed", "value": "x"}]

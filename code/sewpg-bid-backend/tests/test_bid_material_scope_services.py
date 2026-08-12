@@ -170,6 +170,14 @@ def _seed_technical_gap_project(plan: dict) -> str:
     project = store.create_project({"name": "技术标服务拆分测试项目", "customerName": "测试业主", "bidType": "技术标"})
     project_id = project["id"]
     record = store._require(project_id)
+    # 素材匹配启动前要求目录已确认（R11-B07-03），seed 一个已确认的非空目录
+    record["outline_state"] = {
+        "outlineVersion": 1,
+        "reviewStatus": "confirmed",
+        "generatedAt": now_iso(),
+        "summary": {"totalNodeCount": 1},
+        "nodes": [{"id": "OL-1", "title": "总体方案", "level": 1, "children": []}],
+    }
     record["gap_state"].update(
         {
             "recognitionStatus": "completed",
@@ -1238,7 +1246,9 @@ def test_opencode_progress_uses_user_facing_structured_parse_message() -> None:
     visible_text = f"{progress['phaseLabel']} {progress['summary']} {latest_event}"
     assert progress["phaseLabel"] == "结构化解析中"
     assert progress["summary"] == "正在识别招标文件中的技术要求和原文依据，已执行 4 分 21 秒。"
-    assert latest_event == "结构化解析仍在执行，已执行 4 分 21 秒。"
+    # 事件写的是「推进了多少」而不是「还活着」：纯心跳不再落事件，否则 80 条事件环
+    # 会被刷满，上传/提取/附表的阶段记录全被挤掉。
+    assert latest_event == "结构化解析已返回 1 段输出，已执行 4 分 21 秒。"
     assert "AI" not in visible_text
     assert "Opencode" not in visible_text
     assert "opencode" not in visible_text
@@ -3892,9 +3902,14 @@ def test_technical_gap_save_facts_stays_in_technical_service() -> None:
 
     assert payload["status"] == "confirmed"
     assert payload["confirmedBy"] == "技术用户"
-    # 整表 confirm 只升表级状态；字段级"已人工确认"只能由 PATCH 单字段接口产生，
-    # 否则一次保存就把整张表变成 AI 禁区
-    assert payload["fields"][0]["status"] == "extracted"
+    # 整表 confirm 只升表级状态；字段级"人工产出"标记只能由 PATCH 单字段接口产生，
+    # 否则一次保存就把整张表变成 AI 禁区（三态收敛后这层约束落在 sourceRefs 标记上，
+    # 字段状态本身只反映有无取值）
+    assert payload["fields"][0]["status"] == "confirmed"
+    assert all(
+        ref.get("type") not in {"manualEdit", "manualFact"}
+        for ref in payload["fields"][0].get("sourceRefs") or []
+    )
     assert store._require(project_id)["gap_state"]["projectFactTable"]["status"] == "confirmed"
 
 

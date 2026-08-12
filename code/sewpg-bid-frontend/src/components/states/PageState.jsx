@@ -4,9 +4,9 @@ export function PageLoading({
   containerClassName = 'min-h-[40vh]',
 }) {
   return (
-    <div className={`flex items-center justify-center ${containerClassName}`.trim()}>
-      <div className="w-full max-w-xl rounded-xl bg-surface-container-lowest border border-surface-container-high p-8 text-center">
-        <div className="mx-auto h-10 w-10 rounded-full border-2 border-outline-variant border-t-primary animate-spin" />
+    <div role="status" aria-live="polite" aria-busy="true" className={`flex items-center justify-center ${containerClassName}`.trim()}>
+      <div className="w-full max-w-xl rounded-lg border border-outline-variant bg-surface-container-lowest p-6 text-center sm:p-8">
+        <div aria-hidden="true" className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
         <h3 className="mt-4 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
       </div>
@@ -27,18 +27,19 @@ export function PageEmpty({
   return (
     <div className={`min-h-[40vh] flex items-center justify-center ${containerClassName}`.trim()}>
       <div
-        className={`w-full max-w-xl rounded-xl bg-surface-container-lowest border border-surface-container-high p-8 text-center ${cardClassName}`.trim()}
+        className={`w-full max-w-xl rounded-lg border border-outline-variant bg-surface-container-lowest p-6 text-center sm:p-8 ${cardClassName}`.trim()}
         style={cardStyle}
       >
-        <span className="material-symbols-outlined text-5xl text-outline/50">inbox</span>
+        <span aria-hidden="true" className="material-symbols-outlined text-4xl text-outline">inbox</span>
         <h3 className="mt-3 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
         {actionText && onAction && (
           <button
+            type="button"
             onClick={onAction}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary-container transition-colors"
+            className="ui-control mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant"
           >
-            {showActionIcon ? <span className="material-symbols-outlined text-base">refresh</span> : null}
+            {showActionIcon ? <span aria-hidden="true" className="material-symbols-outlined text-base">refresh</span> : null}
             {actionText}
           </button>
         )}
@@ -53,17 +54,18 @@ export function PageError({
   onRetry,
 }) {
   return (
-    <div className="min-h-[40vh] flex items-center justify-center">
-      <div className="w-full max-w-xl rounded-xl bg-surface-container-lowest border border-error/20 p-8 text-center">
-        <span className="material-symbols-outlined text-5xl text-error">error</span>
+    <div role="alert" className="flex min-h-[40vh] items-center justify-center">
+      <div className="w-full max-w-xl rounded-lg border border-error/20 bg-surface-container-lowest p-6 text-center sm:p-8">
+        <span aria-hidden="true" className="material-symbols-outlined text-4xl text-error">error</span>
         <h3 className="mt-3 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
         {onRetry && (
           <button
+            type="button"
             onClick={onRetry}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary-container transition-colors"
+            className="ui-control mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant"
           >
-            <span className="material-symbols-outlined text-base">refresh</span>
+            <span aria-hidden="true" className="material-symbols-outlined text-base">refresh</span>
             重新加载
           </button>
         )}
@@ -77,9 +79,9 @@ export function PagePermissionDenied({
   description = '请联系管理员开通该模块权限。',
 }) {
   return (
-    <div className="min-h-[40vh] flex items-center justify-center">
-      <div className="w-full max-w-xl rounded-xl bg-surface-container-lowest border border-tertiary/30 p-8 text-center">
-        <span className="material-symbols-outlined text-5xl text-tertiary">lock</span>
+    <div className="flex min-h-[40vh] items-center justify-center">
+      <div className="w-full max-w-xl rounded-lg border border-tertiary/30 bg-surface-container-lowest p-6 text-center sm:p-8">
+        <span aria-hidden="true" className="material-symbols-outlined text-4xl text-tertiary">lock</span>
         <h3 className="mt-3 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
       </div>
