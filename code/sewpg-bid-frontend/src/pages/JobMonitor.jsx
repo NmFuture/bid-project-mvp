@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { monitoringAPI } from '../api'
 import StatusBadge from '../components/shared/StatusBadge'
 import EmptyState from '../components/shared/EmptyState'
+import PageHeader from '../components/shared/PageHeader'
 import Skeleton from '../components/shared/Skeleton'
+import Button from '../components/ui/Button'
 
 const POLL_INTERVAL_MS = 15_000
 const LIST_LIMIT = 50
@@ -23,10 +25,10 @@ const STATUS_META = {
 }
 
 const METRIC_TONE = {
-  primary: 'from-primary-fixed to-primary-fixed-dim text-on-primary-fixed-variant',
-  success: 'from-secondary-fixed to-secondary-fixed-dim text-on-secondary-fixed-variant',
-  warn: 'from-tertiary-fixed to-tertiary-fixed-dim text-on-tertiary-fixed-variant',
-  info: 'from-ai-accent-light to-tertiary-fixed text-on-tertiary-container',
+  primary: 'bg-primary-fixed text-primary',
+  success: 'bg-secondary-fixed text-secondary',
+  warn: 'bg-tertiary-fixed text-on-tertiary-fixed-variant',
+  info: 'bg-surface-container-high text-on-surface-variant',
 }
 
 const jobTypeLabel = (jobType) => JOB_TYPE_LABELS[jobType] || jobType || '未知类型'
@@ -75,20 +77,25 @@ const buildCards = (agg) => [
 function MetricCard({ metric }) {
   const tone = METRIC_TONE[metric.tone] || METRIC_TONE.primary
   return (
-    <div className={`relative overflow-hidden rounded-xl bg-gradient-to-br ${tone} p-4 animate-count-up`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1">
-          <div className="text-xs font-medium opacity-80">{metric.label}</div>
-          <div className="mt-1 flex items-baseline gap-2">
-            <span className="text-2xl font-headline font-bold tabular-nums">{metric.value}</span>
-          </div>
-        </div>
+    <div className="flex min-h-[76px] min-w-0 items-center gap-3 bg-white px-4 py-3 lg:px-5">
+      <span
+        className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${tone}`}
+        aria-hidden="true"
+      >
         <span
-          className="material-symbols-outlined text-[26px] opacity-70"
+          className="material-symbols-outlined text-[20px]"
           style={{ fontVariationSettings: "'FILL' 1" }}
         >
           {metric.icon}
         </span>
+      </span>
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
+        <div className="mt-0.5 flex items-baseline gap-2">
+          <span className="font-headline text-xl font-semibold text-on-surface tabular-nums">
+            {metric.value}
+          </span>
+        </div>
       </div>
     </div>
   )
@@ -101,6 +108,7 @@ function SectionHeader({ icon, title, hint }) {
         <span
           className="material-symbols-outlined text-[20px] text-primary"
           style={{ fontVariationSettings: "'FILL' 1" }}
+          aria-hidden="true"
         >
           {icon}
         </span>
@@ -114,24 +122,27 @@ function SectionHeader({ icon, title, hint }) {
 function PhaseRanking({ phases }) {
   const maxDuration = Math.max(...phases.map((p) => p.avgDurationMs || 0), 1)
   return (
-    <div className="rounded-xl border border-outline-variant/40 bg-white p-4 space-y-2.5">
+    <div className="overflow-hidden rounded-lg border border-outline-variant bg-white">
       {phases.map((phase, index) => {
         const widthPct = Math.max(((phase.avgDurationMs || 0) / maxDuration) * 100, 2)
         return (
-          <div key={`${phase.jobType}-${phase.step}-${index}`} className="space-y-1">
-            <div className="flex items-center justify-between text-xs gap-2">
-              <span className="text-on-surface truncate">
+          <div
+            key={`${phase.jobType}-${phase.step}-${index}`}
+            className="space-y-1.5 border-b border-outline-variant/60 px-4 py-2.5 last:border-b-0"
+          >
+            <div className="grid gap-1 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-3">
+              <span className="min-w-0 break-words text-on-surface sm:truncate">
                 <span className="text-outline">{jobTypeLabel(phase.jobType)} · </span>
                 {phase.label || phase.step}
               </span>
-              <span className="shrink-0 font-mono text-on-surface-variant tabular-nums">
+              <span className="shrink-0 text-on-surface-variant tabular-nums">
                 平均 {formatDuration(phase.avgDurationMs)}
                 <span className="text-outline"> / 最长 {formatDuration(phase.maxDurationMs)} / {phase.count || 0} 次</span>
               </span>
             </div>
-            <div className="h-2 w-full bg-surface-container-high rounded-full overflow-hidden">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-container-high/80">
               <div
-                className="h-full bg-gradient-to-r from-primary to-primary-container transition-all duration-700"
+                className="h-full bg-primary/70 transition-[width] duration-200"
                 style={{ width: `${widthPct}%` }}
               />
             </div>
@@ -157,15 +168,15 @@ function PhaseWaterfall({ phases }) {
         const leftPct = Math.min((offsetMs / span) * 100, 99)
         const widthPct = Math.max(((phase.durationMs || 0) / span) * 100, 1.5)
         return (
-          <div key={`${phase.step}-${index}`} className="flex items-center gap-2 text-xs">
-            <span className="w-40 shrink-0 truncate text-on-surface">{phase.label || phase.step}</span>
-            <div className="relative h-4 flex-1 bg-surface-container-high rounded-full overflow-hidden">
+          <div key={`${phase.step}-${index}`} className="flex min-w-0 items-center gap-2 text-xs">
+            <span className="w-24 shrink-0 truncate text-on-surface sm:w-40">{phase.label || phase.step}</span>
+            <div className="relative h-4 min-w-16 flex-1 overflow-hidden rounded-full bg-surface-container-high">
               <div
-                className="absolute top-0 h-full bg-gradient-to-r from-primary to-primary-container rounded-full"
+                className="absolute top-0 h-full rounded-full bg-primary"
                 style={{ left: `${leftPct}%`, width: `${Math.min(widthPct, 100 - leftPct)}%` }}
               />
             </div>
-            <span className="w-20 shrink-0 text-right font-mono text-on-surface-variant tabular-nums">
+            <span className="w-16 shrink-0 text-right font-mono text-on-surface-variant tabular-nums sm:w-20">
               {formatDuration(phase.durationMs)}
             </span>
           </div>
@@ -181,10 +192,12 @@ function JobRow({ item, expanded, detailState, onToggle }) {
     || detailState?.data?.phases
     || []
   return (
-    <div className="border-b border-surface-container-high last:border-b-0">
+    <div className="min-w-[52rem] border-b border-surface-container-high last:border-b-0">
       <button
         type="button"
         onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={`job-detail-${item.id}`}
         className="w-full grid grid-cols-[minmax(6rem,8rem)_1fr_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(7rem,9rem)] items-center gap-2 px-4 py-2.5 text-left text-xs hover:bg-surface-container-low transition-colors"
       >
         <span className="text-on-surface">{jobTypeLabel(item.jobType)}</span>
@@ -197,7 +210,7 @@ function JobRow({ item, expanded, detailState, onToggle }) {
         <span className="font-mono text-outline tabular-nums">{formatTime(item.startedAt || item.queuedAt)}</span>
       </button>
       {expanded && (
-        <div className="px-4 pb-3 pt-1 bg-surface-container-low/50 space-y-2 animate-fade-in">
+        <div id={`job-detail-${item.id}`} className="space-y-2 bg-surface-container-low/50 px-4 pb-3 pt-1">
           {item.status === 'failed' && item.errorMessage && (
             <div className="rounded-lg bg-error-container/50 px-3 py-2 text-xs text-error break-all">
               {item.errorMessage}
@@ -285,11 +298,11 @@ export default function JobMonitor() {
 
   if (loading && !summary && items.length === 0) {
     return (
-      <div className="px-7 md:px-10 lg:px-12 xl:px-14 py-6 space-y-6">
-        <Skeleton className="h-8 w-48" />
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="mx-auto w-full max-w-[1600px] space-y-4">
+        <Skeleton className="h-[92px] w-full rounded-lg" />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} className="h-20" />
+            <Skeleton key={i} className="h-[76px]" />
           ))}
         </div>
         <Skeleton className="h-40 w-full" />
@@ -299,7 +312,7 @@ export default function JobMonitor() {
 
   if (error && !summary && items.length === 0) {
     return (
-      <div className="px-7 md:px-10 lg:px-12 xl:px-14 py-6">
+      <div className="mx-auto w-full max-w-[1600px]">
         <EmptyState
           icon="error"
           title="耗时监控加载失败"
@@ -311,7 +324,7 @@ export default function JobMonitor() {
                 setLoading(true)
                 load()
               }}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-container hover:text-on-primary-container transition-colors"
+              className="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-container hover:text-on-primary-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
               重新加载
             </button>
@@ -334,52 +347,57 @@ export default function JobMonitor() {
   ]
 
   return (
-    <div className="px-7 md:px-10 lg:px-12 xl:px-14 py-6 space-y-6 animate-fade-in">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <h1 className="text-[22px] font-headline font-bold text-on-surface tracking-tight">耗时监控</h1>
-          <span className="text-xs text-outline">近 {summary?.days || SUMMARY_DAYS} 天</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={jobType}
-            onChange={(event) => {
-              setLoading(true)
-              setJobType(event.target.value)
-            }}
-            className="rounded-lg border border-outline-variant/60 bg-white px-3 py-1.5 text-sm text-on-surface"
-          >
-            <option value="">全部类型</option>
-            <option value="s1_parse">招标文件解析</option>
-            <option value="directory_generation">目录生成</option>
-          </select>
-          <select
-            value={status}
-            onChange={(event) => {
-              setLoading(true)
-              setStatus(event.target.value)
-            }}
-            className="rounded-lg border border-outline-variant/60 bg-white px-3 py-1.5 text-sm text-on-surface"
-          >
-            <option value="">全部状态</option>
-            <option value="succeeded">成功</option>
-            <option value="failed">失败</option>
-            <option value="cancelled">已取消</option>
-            <option value="running">运行中</option>
-          </select>
-          <button
-            type="button"
-            onClick={() => {
-              setLoading(true)
-              load()
-            }}
-            className="inline-flex items-center gap-1 rounded-lg border border-outline-variant/60 bg-white px-3 py-1.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
-          >
-            <span className="material-symbols-outlined text-[16px]">refresh</span>
-            刷新
-          </button>
-        </div>
-      </div>
+    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+      <PageHeader
+        variant="panel"
+        title="耗时监控"
+        description={`近 ${summary?.days || SUMMARY_DAYS} 天`}
+        actions={(
+          <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-[minmax(9rem,1fr)_minmax(8rem,1fr)_auto] md:w-auto">
+            <select
+              aria-label="任务类型"
+              value={jobType}
+              onChange={(event) => {
+                setLoading(true)
+                setJobType(event.target.value)
+              }}
+              className="h-11 w-full rounded-md border border-outline-variant bg-white px-3 text-base text-on-surface focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 sm:h-10 sm:text-sm"
+            >
+              <option value="">全部类型</option>
+              <option value="s1_parse">招标文件解析</option>
+              <option value="directory_generation">目录生成</option>
+            </select>
+            <select
+              aria-label="任务状态"
+              value={status}
+              onChange={(event) => {
+                setLoading(true)
+                setStatus(event.target.value)
+              }}
+              className="h-11 w-full rounded-md border border-outline-variant bg-white px-3 text-base text-on-surface focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 sm:h-10 sm:text-sm"
+            >
+              <option value="">全部状态</option>
+              <option value="succeeded">成功</option>
+              <option value="failed">失败</option>
+              <option value="cancelled">已取消</option>
+              <option value="running">运行中</option>
+            </select>
+            <Button
+              type="button"
+              onClick={() => {
+                setLoading(true)
+                load()
+              }}
+              className="w-full sm:w-24"
+              icon="refresh"
+              size="md"
+              variant="secondary"
+            >
+              刷新
+            </Button>
+          </div>
+        )}
+      />
 
       {metricGroups.map((group) => (
         <section key={group.key}>
@@ -388,7 +406,7 @@ export default function JobMonitor() {
             title={group.title}
             hint={group.agg ? `${group.agg.count} 次任务` : '暂无数据'}
           />
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 stagger">
+          <div className="grid gap-px overflow-hidden rounded-lg border border-outline-variant bg-outline-variant sm:grid-cols-2 lg:grid-cols-4 stagger">
             {buildCards(group.agg).map((metric) => (
               <MetricCard key={metric.key} metric={metric} />
             ))}
@@ -399,7 +417,7 @@ export default function JobMonitor() {
       <section>
         <SectionHeader icon="bar_chart" title="阶段耗时榜" hint="按平均耗时排序" />
         {phaseRanking.length === 0 ? (
-          <EmptyState icon="bar_chart" title="暂无阶段耗时数据" className="rounded-xl border border-outline-variant/40 bg-white" />
+          <EmptyState icon="bar_chart" title="暂无阶段耗时数据" className="rounded-lg border border-outline-variant bg-white" />
         ) : (
           <PhaseRanking phases={phaseRanking} />
         )}
@@ -407,8 +425,8 @@ export default function JobMonitor() {
 
       <section>
         <SectionHeader icon="list_alt" title="最近任务" hint={`最近 ${LIST_LIMIT} 条，点击行展开阶段瀑布`} />
-        <div className="rounded-xl border border-outline-variant/40 bg-white overflow-hidden">
-          <div className="grid grid-cols-[minmax(6rem,8rem)_1fr_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(7rem,9rem)] gap-2 px-4 py-2 text-xs font-semibold text-on-surface-variant bg-surface-container-low border-b border-surface-container-high">
+        <div className="overflow-x-auto rounded-lg border border-outline-variant bg-white">
+          <div className="grid min-w-[52rem] grid-cols-[minmax(6rem,8rem)_1fr_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(7rem,9rem)] gap-2 border-b border-surface-container-high bg-surface-container-low px-4 py-3 text-xs font-semibold text-on-surface-variant">
             <span>类型</span>
             <span>项目</span>
             <span>状态</span>

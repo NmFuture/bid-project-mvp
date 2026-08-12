@@ -14,15 +14,20 @@ from typing import Any
 
 from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
-from app.services.identity import build_project_material_scope
-from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_project
+from app.services.identity import build_project_identity, build_project_material_scope
+from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_customer
 from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
     summarize_technical_gap_plan,
     technical_outline_number_and_title,
 )
 from app.services.technical_material_store import technical_material_store
-from app.services.turbine_models import material_model_fit, normalize_project_turbine_model, project_turbine_model
+from app.services.turbine_models import (
+    material_model_fit,
+    normalize_project_turbine_model,
+    project_turbine_model,
+    project_turbine_models,
+)
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
 
 logger = logging.getLogger(__name__)
@@ -591,10 +596,14 @@ def _is_non_body_pool_material(material: dict[str, Any]) -> bool:
     return PROJECT_APPENDIX_FOLDER_NAME in parts or CLIENT_APPENDIX_INPUT_FOLDER_NAME in parts
 
 
-def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any]:
-    """事实表「投标机型」字段值 → 归一化机型 dict；无事实表/无值时返回空 dict。"""
+def _fact_table_turbine_models(gap_state: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """事实表「投标机型」字段值 → 归一化机型列表；无事实表/无值时返回空列表。
+
+    多机型项目里这一行是各机型的合并串（事实表按机型分组后，不带序号的那行留给
+    正文占位符取值）。不拆开就会拿一个不存在的型号去过滤，标准档素材会被全部剔除。
+    """
     if not isinstance(gap_state, dict):
-        return {}
+        return []
     fact_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
     for field in fact_table.get("fields") or []:
         if not isinstance(field, dict):
@@ -602,47 +611,95 @@ def _fact_table_turbine_model(gap_state: dict[str, Any] | None) -> dict[str, Any
         label = re.sub(r"\s+", "", str(field.get("label") or ""))
         value = str(field.get("value") or "").strip()
         if label == "投标机型" and value:
-            return normalize_project_turbine_model(value)
-    return {}
+            models = [
+                normalize_project_turbine_model(part)
+                for part in re.split(r"[、,，/;；]+", value)
+                if part.strip()
+            ]
+            return [model for model in models if model]
+    return []
 
 
-def _keep_by_turbine_model(item: dict[str, Any], selected: dict[str, Any]) -> bool:
+def _keep_by_turbine_model(item: dict[str, Any], selected: list[dict[str, Any]] | dict[str, Any]) -> bool:
     """标准文件池严格 1:1 限定选中机型文件夹（含上置/下置等布局后缀）：
 
     只有机型判定为 match 的标准档素材才进池，generic（无型号标记）与 conflict 一律
     剔除——新建项目已选定机型，其他机型目录下的散置通用素材也不能混入正文候选。
     客户/项目档维持「剔除 conflict、保留 match 与 generic」的宽松语义。
+
+    项目选了多个机型时按「命中任一机型即保留」判定：每个机型的素材都要进正文，
+    章节里按机型顺序串行铺开。
     """
-    fit = material_model_fit(item, selected)
+    selected_models = [model for model in _as_turbine_model_list(selected) if model]
+    if not selected_models:
+        return True
+    fits = [material_model_fit(item, model) for model in selected_models]
     if str(item.get("materialTier") or "").strip().lower() == "standard":
-        return fit == "match"
-    return fit != "conflict"
+        return "match" in fits
+    return any(fit != "conflict" for fit in fits)
+
+
+def _as_turbine_model_list(value: list[dict[str, Any]] | dict[str, Any] | None) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict) and item]
+    return [value] if isinstance(value, dict) and value else []
 
 
 def _filter_material_index_by_fact_table(
     items: list[dict[str, Any]],
     gap_state: dict[str, Any] | None,
+    selected_models: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """事实表已有「投标机型」值时，按该机型收紧素材索引。
 
     标准档严格 match 才保留（同 _keep_by_turbine_model），客户/项目档剔除冲突、
     保留机型无关素材。首轮缺口检测时事实表尚未构建，此过滤为空操作，不形成循环依赖。
+
+    这道过滤是给「项目选错机型」兜底的。项目已选多个机型、且事实表的机型都在其中时，
+    说明选型本身没问题，此时不能按事实表收紧——那会把其余机型的标准档素材全部剔除，
+    与多机型串行铺开的目标相反。
     """
-    selected = _fact_table_turbine_model(gap_state)
+    selected = _fact_table_turbine_models(gap_state)
     if not selected:
+        return items
+    project_models = _as_turbine_model_list(selected_models)
+    project_names = {str(model.get("model") or "").strip() for model in project_models}
+    if len(project_models) > 1 and any(
+        str(model.get("model") or "").strip() in project_names for model in selected
+    ):
         return items
     return [item for item in items if _keep_by_turbine_model(item, selected)]
 
 
+def _standard_scope_query_paths(
+    folder_path: str,
+    turbine_models: list[dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """标准文件层按机型目录逐个查询：`技术标/标准文件/<机型>`。
+
+    素材库标准文件目录以机型命名，弹窗候选也直接取这些目录名，所以选中机型即目录。
+    机型目录不存在（手工输入的机型）时该次查询为空，不影响其他机型；全部落空则退回
+    整个标准文件根，避免候选池被清空。
+    """
+    paths = [
+        (f"{folder_path}/{model_name}", model)
+        for model in turbine_models
+        if (model_name := str(model.get("model") or "").strip())
+    ]
+    return paths or [(folder_path, {})]
+
+
 def _allowed_technical_material_index(
     material_scope: dict[str, Any],
-    turbine_model: dict[str, Any],
+    turbine_models: list[dict[str, Any]] | dict[str, Any],
     gap_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
+    selected_models = _as_turbine_model_list(turbine_models)
     segments_by_id = _evidence_segments_by_material_id()
     wiki_cards_by_tail = _technical_wiki_cards_by_path_tail()
+    scope_queries: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
     for scope in material_scope.get("readableScopes") or []:
         if not isinstance(scope, dict):
             continue
@@ -650,17 +707,26 @@ def _allowed_technical_material_index(
         if not folder_path:
             continue
         material_tier = str(scope.get("materialTier") or "").strip().lower()
-        query_folder_path = folder_path
         if material_tier in {"customer", "project"}:
             path_parts = [part for part in folder_path.split("/") if part]
-            query_folder_path = "/".join(path_parts[:2])
+            scope_queries.append((scope, "/".join(path_parts[:2]), {}))
+        elif material_tier == "standard" and selected_models:
+            scope_queries.extend(
+                (scope, query_path, model)
+                for query_path, model in _standard_scope_query_paths(folder_path, selected_models)
+            )
+        else:
+            scope_queries.append((scope, folder_path, {}))
+
+    for scope, query_folder_path, query_model in scope_queries:
+        material_tier = str(scope.get("materialTier") or "").strip().lower()
         payload = _run_async(
             technical_material_store.raw_files(
                 folder_path=query_folder_path,
                 project_id=str(scope.get("projectId") or "") if material_tier == "project" else "",
                 customer_name=str(scope.get("customerName") or "") if material_tier == "customer" else "",
                 material_tier=material_tier,
-                turbine_model=turbine_model,
+                turbine_model=query_model or None,
                 recursive=True,
                 page=1,
                 page_size=1000,
@@ -673,8 +739,9 @@ def _allowed_technical_material_index(
             if not material_id or material_id in seen:
                 continue
             raw_with_tier = raw if raw.get("materialTier") else {**raw, "materialTier": material_tier}
-            # 标准文件：已选机型时严格 1:1 限定选中机型文件夹（generic/conflict 都不进池）。
-            if turbine_model and not _keep_by_turbine_model(raw_with_tier, turbine_model):
+            # 标准文件：已选机型时严格限定到选中机型（generic/conflict 都不进池）；
+            # 多机型时命中任一即可，各机型素材都要进正文。
+            if selected_models and not _keep_by_turbine_model(raw_with_tier, selected_models):
                 continue
             # 项目定制/附表：解析生成的空副表约定目录，不进正文素材候选池。
             if material_tier == "project" and _is_project_appendix_folder_material(raw):
@@ -712,7 +779,7 @@ def _allowed_technical_material_index(
                 if wiki_card.get("wikiApplicableTypes"):
                     entry["wikiApplicableTypes"] = wiki_card["wikiApplicableTypes"]
             items.append(entry)
-    return _filter_material_index_by_fact_table(items, gap_state)
+    return _filter_material_index_by_fact_table(items, gap_state, selected_models)
 
 
 def _is_material_word_fill_task(item: dict[str, Any], task: dict[str, Any]) -> bool:
@@ -917,13 +984,20 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     manifest_path = work_dir / "s4_gap_input.json"
     wiki_dir = _resolve_wiki_dir(project, project_dir, work_dir)
     turbine_model = project_turbine_model(project)
+    # 机型明细的全部行，顺序即用户填写顺序；下游按这个顺序在章节里串行铺开各机型素材。
+    turbine_models = project_turbine_models(project)
     material_scope = build_project_material_scope(project)
     material_index = _allowed_technical_material_index(
         material_scope,
-        turbine_model,
+        turbine_models,
         gap_state=project.get("gap_state") if isinstance(project.get("gap_state"), dict) else None,
     )
-    appendix_source_matrix = load_appendix_source_matrix_for_project(project)
+    # 附表填写规则按客户维护（SQL 为唯一事实来源）：项目自动套用所属客户的那份；
+    # 旧的项目级 xlsx 留盘但不再生效。
+    identity = build_project_identity(project)
+    appendix_source_matrix = load_appendix_source_matrix_for_customer(
+        str(identity.get("customerCanonicalName") or identity.get("customerName") or "")
+    )
     bid_type = require_bid_type(
         project.get("bidType"),
         error_message="技术标缺口规划必须显式传入技术标项目。",
@@ -941,6 +1015,7 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
         "materialScope": material_scope,
         "materialIndex": material_index,
         "projectTurbineModel": turbine_model,
+        "projectTurbineModels": turbine_models,
         "appendixSourceMatrixPath": str(appendix_source_matrix.get("path") or ""),
         "appendixSourceMatrix": appendix_source_matrix,
         "outputFile": str(output_file),
@@ -952,6 +1027,7 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     _validate_technical_gap_plan_toc_coverage(plan, toc_json_path)
     plan["projectTurbineModel"] = turbine_model
+    plan["projectTurbineModels"] = turbine_models
     plan["planFile"] = str(plan_path)
     plan["manifestPath"] = str(manifest_path)
     plan["phase"] = "gap_detection"

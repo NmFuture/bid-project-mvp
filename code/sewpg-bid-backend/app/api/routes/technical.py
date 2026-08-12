@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -322,13 +322,19 @@ async def technical_outline_tender_callback(
 
 
 @router.get("/api/technical/projects/{project_id}/gaps-detection")
-async def get_technical_gap_detection(project_id: str) -> dict[str, Any]:
-    return await technical_gap_service.detection_status(project_id)
+async def get_technical_gap_detection(project_id: str, request: Request) -> dict[str, Any]:
+    return await technical_gap_service.detection_status(project_id, request)
 
 
 @router.post("/api/technical/projects/{project_id}/gaps-detection/run")
 def run_technical_gap_detection(project_id: str) -> dict[str, Any]:
     return technical_gap_service.run_detection(project_id)
+
+
+@router.get("/api/technical/projects/{project_id}/gaps/plan-export")
+def export_technical_gap_plan(project_id: str) -> dict[str, Any]:
+    """导出当前缺口清单 + 逐项的正文组装判定（排查用，页面不挂入口）。"""
+    return technical_gap_service.export_plan(project_id)
 
 
 @router.get("/api/technical/projects/{project_id}/gaps")
@@ -355,6 +361,16 @@ async def get_technical_gap_artifact_content(
     return await technical_gap_service.artifact_content(project_id, artifact_id, filename)
 
 
+@router.post("/api/technical/projects/{project_id}/gaps/artifacts/{artifact_id}/callback")
+async def technical_gap_artifact_callback(
+    project_id: str,
+    artifact_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> JSONResponse:
+    return await technical_gap_service.artifact_callback(project_id, artifact_id, request, data)
+
+
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/artifacts/{artifact_id}/confirm")
 def confirm_technical_gap_ai_fill_artifact(
     project_id: str,
@@ -372,15 +388,6 @@ def confirm_technical_gap_ready(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, Any]:
     return technical_gap_service.confirm_ready(project_id, gap_id, data)
-
-
-@router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/parent-coverage")
-def set_technical_gap_parent_coverage(
-    project_id: str,
-    gap_id: str,
-    data: dict[str, Any] = Body(default_factory=dict),
-) -> dict[str, Any]:
-    return technical_gap_service.set_parent_coverage(project_id, gap_id, data)
 
 
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/title-only")
@@ -422,23 +429,13 @@ async def build_technical_gap_project_facts(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.build_facts(project_id)
 
 
-@router.post("/api/technical/projects/{project_id}/gaps/facts/specs-upload")
-async def upload_technical_gap_fact_specs(
-    project_id: str,
-    file: UploadFile = File(...),
-) -> dict[str, Any]:
-    """上传本项目事实表 Excel（.xlsx）：解析出的字段清单作为事实表字段骨架，仅作用于本项目。"""
-    return await technical_gap_service.upload_fact_specs(
-        project_id, str(file.filename or ""), await file.read()
-    )
-
-
 @router.post("/api/technical/projects/{project_id}/appendix-source-matrix")
 async def upload_technical_appendix_source_matrix(
     project_id: str,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    """上传本项目附表填写规则 Excel（客户×附表→素材来源矩阵），下次缺口识别时确定每张附表的取值来源。"""
+    """上传附表填写规则 Excel（客户×附表→素材来源矩阵）：规则按客户入库（透写客户规则库），
+    该客户名下项目缺口识别时确定每张附表的取值来源。"""
     return await technical_gap_service.upload_appendix_source_matrix(
         project_id, str(file.filename or ""), await file.read()
     )
@@ -473,15 +470,6 @@ async def save_technical_gap_project_facts(
     return await technical_gap_service.save_facts(project_id, data)
 
 
-@router.patch("/api/technical/projects/{project_id}/gaps/facts/{field_id}")
-async def save_technical_gap_project_fact_field(
-    project_id: str,
-    field_id: str,
-    data: dict[str, Any] = Body(default_factory=dict),
-) -> dict[str, Any]:
-    return await technical_gap_service.save_fact_field(project_id, field_id, data)
-
-
 @router.post("/api/technical/projects/{project_id}/gaps/facts/curate")
 async def curate_technical_gap_project_facts(
     project_id: str,
@@ -514,15 +502,6 @@ def ai_fill_technical_gap_material(
     return technical_gap_service.ai_fill(project_id, gap_id, request, data)
 
 
-@router.post("/api/technical/projects/{project_id}/gaps/ai-fill-all")
-def ai_fill_all_technical_gap_materials(
-    project_id: str,
-    request: Request,
-    data: dict[str, Any] = Body(default_factory=dict),
-) -> dict[str, Any]:
-    return technical_gap_service.ai_fill_all(project_id, request, data)
-
-
 @router.post("/api/technical/projects/{project_id}/gaps/body-fill")
 def body_fill_technical_gaps(
     project_id: str,
@@ -535,28 +514,6 @@ def body_fill_technical_gaps(
 @router.get("/api/technical/projects/{project_id}/gaps/body-fill")
 async def get_technical_body_fill_status(project_id: str) -> dict[str, Any]:
     return technical_gap_service.body_fill_status(project_id)
-
-
-@router.get("/api/technical/projects/{project_id}/materials/submissions")
-async def list_technical_gap_submissions(project_id: str) -> dict[str, Any]:
-    return await technical_gap_service.submissions(project_id)
-
-
-@router.post("/api/technical/projects/{project_id}/materials/submissions")
-async def submit_technical_gap_material(
-    project_id: str,
-    data: dict[str, Any] = Body(default_factory=dict),
-) -> dict[str, Any]:
-    return await technical_gap_service.submit_material(project_id, data)
-
-
-@router.patch("/api/technical/projects/{project_id}/materials/missing/{missing_id}")
-async def patch_technical_missing_material(
-    project_id: str,
-    missing_id: str,
-    data: dict[str, Any] = Body(default_factory=dict),
-) -> dict[str, Any]:
-    return await technical_gap_service.patch_missing(project_id, missing_id, data)
 
 
 @router.get("/api/technical/projects/{project_id}/fill-generation")
@@ -636,23 +593,37 @@ async def apply_technical_document_format(
 
 
 @router.get("/api/technical/projects/{project_id}/final-document")
-async def get_technical_final_document(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.final_document(project_id, request)
+async def get_technical_final_document(
+    project_id: str,
+    request: Request,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> dict[str, Any]:
+    return await technical_document_service.final_document(project_id, request, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/file")
-async def download_technical_final_document_file(project_id: str) -> FileResponse:
-    return await technical_document_service.final_document_file(project_id)
+async def download_technical_final_document_file(
+    project_id: str,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> FileResponse:
+    return await technical_document_service.final_document_file(project_id, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/pdf")
-async def prepare_technical_final_document_pdf(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.final_document_pdf(project_id, request)
+async def prepare_technical_final_document_pdf(
+    project_id: str,
+    request: Request,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> dict[str, Any]:
+    return await technical_document_service.final_document_pdf(project_id, request, version)
 
 
 @router.get("/api/technical/projects/{project_id}/final-document/pdf/file")
-async def download_technical_final_document_pdf(project_id: str) -> FileResponse:
-    return await technical_document_service.final_document_pdf_file(project_id)
+async def download_technical_final_document_pdf(
+    project_id: str,
+    version: Literal["marked", "clean"] = Query("marked"),
+) -> FileResponse:
+    return await technical_document_service.final_document_pdf_file(project_id, version)
 
 
 @router.get("/api/technical/projects/{project_id}/export/check")
@@ -1226,64 +1197,6 @@ async def technical_wiki_update(node_id: str, data: dict[str, Any] = Body(defaul
 async def technical_wiki_delete(node_id: str, bidType: str = Query(default="")) -> dict[str, Any]:
     _ = bidType
     return await technical_material_store.wiki_delete(node_id)
-
-
-@router.post("/api/technical/materials/wiki/{node_id}/move")
-async def technical_wiki_move(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.wiki_move(
-        node_id=node_id,
-        target_id=str(data.get("targetId") or ""),
-        mode=str(data.get("mode") or "inside"),
-    )
-
-
-@router.post("/api/technical/materials/wiki/{node_id}/attachments")
-async def technical_wiki_upload_attachment(node_id: str, request: Request) -> dict[str, Any]:
-    content_type = request.headers.get("content-type", "")
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        upload = form.get("file")
-        return await technical_material_store.wiki_upload_attachment(
-            node_id=node_id,
-            file_name=str(getattr(upload, "filename", "") or form.get("fileName") or ""),
-            file_size=form.get("fileSize"),
-            upload=upload,
-            mime_type=str(getattr(upload, "content_type", "") or ""),
-        )
-
-    data = await request.json()
-    raw_bytes = data.get("data")
-    decoded = None
-    if raw_bytes is not None:
-        raw_text = str(raw_bytes)
-        if raw_text.startswith("data:"):
-            raw_text = raw_text.split(",", 1)[-1]
-        decoded = base64.b64decode(raw_text)
-    return await technical_material_store.wiki_upload_attachment(
-        node_id=node_id,
-        file_name=str(data.get("fileName") or ""),
-        file_size=data.get("fileSize"),
-        data=decoded,
-        mime_type=str(data.get("mimeType") or ""),
-    )
-
-
-@router.post("/api/technical/materials/wiki/{node_id}/refresh-summary")
-async def technical_wiki_refresh_summary(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    _ = data
-    return await technical_material_store.wiki_refresh_summary(node_id)
-
-
-@router.delete("/api/technical/materials/wiki/attachments/{attachment_id}")
-async def technical_wiki_delete_attachment(attachment_id: str, bidType: str = Query(default="")) -> dict[str, Any]:
-    _ = bidType
-    return await technical_material_store.wiki_delete_attachment(attachment_id)
-
-
-@router.get("/api/technical/materials/wiki/attachments/{attachment_id}/content")
-async def technical_wiki_download_attachment_content(attachment_id: str) -> StreamingResponse:
-    payload = await technical_material_store.wiki_download_attachment_content(attachment_id)
-    return minio_streaming_response(payload)
 
 
 @router.get("/api/technical/audit")

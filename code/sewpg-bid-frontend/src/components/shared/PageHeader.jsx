@@ -3,28 +3,36 @@ export default function PageHeader({
   description,
   leftExtra,
   actions,
+  variant = 'plain',
   actionsClassName = '',
   className = '',
   titleClassName = '',
   descriptionClassName = '',
 }) {
+  const panel = variant === 'panel'
   return (
-    <header className={`flex flex-col md:flex-row justify-between items-start md:items-end gap-6 ${className}`.trim()}>
-      <div className="flex flex-col gap-2">
+    <header
+      className={`flex min-w-0 flex-col items-start justify-between gap-4 md:flex-row ${
+        panel
+          ? 'min-h-[72px] rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-4 py-4 sm:px-5 md:items-center'
+          : 'md:items-end'
+      } ${className}`.trim()}
+    >
+      <div className="flex min-w-0 flex-col gap-1.5">
         {leftExtra}
         {title && (
-          <h1 className={`text-3xl md:text-4xl font-headline font-extrabold text-primary tracking-tight ${titleClassName}`.trim()}>
+          <h1 className={`text-pretty break-words text-2xl font-headline font-semibold text-on-surface ${titleClassName}`.trim()}>
             {title}
           </h1>
         )}
         {description && (
-          <p className={`text-on-surface-variant text-sm max-w-xl leading-relaxed ${descriptionClassName}`.trim()}>
+          <p className={`max-w-2xl text-sm text-on-surface-variant ${descriptionClassName}`.trim()}>
             {description}
           </p>
         )}
       </div>
       {actions && (
-        <div className={`page-header-actions flex flex-wrap gap-3 ${actionsClassName}`.trim()}>
+        <div className={`page-header-actions flex min-h-10 w-full flex-wrap items-center gap-2 md:w-auto md:justify-end ${actionsClassName}`.trim()}>
           {actions}
         </div>
       )}

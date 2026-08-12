@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from docx import Document
 
@@ -112,7 +113,33 @@ def _summary(plan: list[dict[str, Any]], merge_result: dict[str, Any], scan: dic
     return summary, warnings
 
 
-def run_from_manifest(manifest_path: str | Path) -> dict[str, Any]:
+MERGE_PROGRESS_REPORT_INTERVAL_SEC = 3.0
+
+
+def _throttled_merge_progress(
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None,
+) -> Callable[[int, int], None] | None:
+    """把逐条组装计数降频成最多每三秒一次上报：状态每次上报都会落库，
+    整条目录逐条写库会把耗时算到进度汇报上。收尾那次必报，避免停在 n-1。"""
+    if not progress_callback:
+        return None
+    last_reported_at = 0.0
+
+    def report(done: int, total: int) -> None:
+        nonlocal last_reported_at
+        now = time.monotonic()
+        if done < total and now - last_reported_at < MERGE_PROGRESS_REPORT_INTERVAL_SEC:
+            return
+        last_reported_at = now
+        progress_callback("assembling_progress", {"done": done, "total": total})
+
+    return report
+
+
+def run_from_manifest(
+    manifest_path: str | Path,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
     path = Path(manifest_path)
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
@@ -135,7 +162,15 @@ def run_from_manifest(manifest_path: str | Path) -> dict[str, Any]:
     plan_file = work_dir / "assembly_plan.json"
     plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     merged_file = work_dir / "bid_merged.docx"
-    merge_result = merge(_create_master(manifest, work_dir), plan, material_library, params, work_dir / "bid_prep", merged_file)
+    merge_result = merge(
+        _create_master(manifest, work_dir),
+        plan,
+        material_library,
+        params,
+        work_dir / "bid_prep",
+        merged_file,
+        progress_callback=_throttled_merge_progress(progress_callback),
+    )
 
     requested_output = _path(manifest.get("outputFile"))
     finalize_output = manifest.get("finalizeOutput", True) is not False

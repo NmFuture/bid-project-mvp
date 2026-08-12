@@ -293,7 +293,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
           <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/60" />
         ) : (
           <div
-            className="h-full rounded-full bg-primary transition-all duration-700 ease-out"
+            className="h-full rounded-full bg-primary transition-[width] duration-700 ease-out"
             style={{ width: `${Math.max(percent, 4)}%` }}
           />
         )}

@@ -16,6 +16,8 @@ def start_fill_generation_state(project: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "status": "running",
         "percentage": 5,
+        # events 是 20 条环形缓冲，长任务会把首条挤掉；耗时基线单独记一份。
+        "startedAt": now_iso(),
         "filledAt": "",
         "runDurationSec": 0,
         "runDuration": "",
@@ -51,10 +53,13 @@ def update_fill_generation_state(
     event_level: str = "info",
     event_step: str = "general",
     opencode_output: dict[str, Any] | None = None,
+    assembly_progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = copy.deepcopy(project.get("fill_state") or default_fill_state(project))
     if percentage is not None:
         current["percentage"] = max(0, min(100, int(percentage)))
+    if assembly_progress is not None:
+        current["assemblyProgress"] = {**copy.deepcopy(assembly_progress), "updatedAt": now_iso()}
     if summary is not None:
         current["summary"] = summary
     if tasks is not None:
@@ -132,9 +137,11 @@ def complete_fill_generation_state(project: dict[str, Any], data: dict[str, Any]
     ]
     document_label = fill_document_label(project)
     input_label = "准备目录与已选素材" if project.get("bidType") == TECHNICAL_BID_TYPE else "准备 S2 目录、Wiki 与素材库"
+    previous_started_at = str((project.get("fill_state") or {}).get("startedAt") or "")
     project["fill_state"] = {
         "status": "completed",
         "percentage": 100,
+        "startedAt": previous_started_at,
         "filledAt": filled_at,
         "runDurationSec": 79,
         "runDuration": "1分19秒",
@@ -201,6 +208,7 @@ def save_fill_generation_result_state(
     project["fill_state"] = {
         "status": "completed",
         "percentage": 100,
+        "startedAt": str(current_state.get("startedAt") or ""),
         "filledAt": filled_at,
         "runDurationSec": int(run_duration_sec),
         "runDuration": format_duration(run_duration_sec),

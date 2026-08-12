@@ -12,37 +12,44 @@ export default function StageProgress({
   const progressRatio = progressIndex > 0 ? progressIndex / denominator : 0
   const nodeSlotWidthPx = stages.length <= 4 ? 132 : stages.length <= 6 ? 112 : 94
   const nodeCenterOffsetPx = nodeSlotWidthPx / 2
+  const progressWidthPx = Math.max(nodeSlotWidthPx * stages.length, 560)
 
   return (
-    <section className="stage-progress-shell bg-white px-0 py-3">
-      <div className="relative">
+    <section aria-label="项目阶段" className="stage-progress-shell overflow-x-auto bg-transparent px-0 py-3">
+      <div className="relative" style={{ width: `max(100%, ${progressWidthPx}px)` }}>
         <div
-          className="absolute top-[14px] h-[2px] bg-[#cfd9e3] -z-0"
+          aria-hidden="true"
+          className="absolute top-[15px] -z-0 h-[2px] bg-outline-variant"
           style={{
             left: `${nodeCenterOffsetPx}px`,
             width: `calc(100% - ${nodeSlotWidthPx}px)`,
           }}
         ></div>
         <div
-          className="absolute top-[14px] h-[2px] bg-[#14A83B] -z-0"
+          aria-hidden="true"
+          className="absolute top-[15px] -z-0 h-[2px] bg-secondary"
           style={{
             left: `${nodeCenterOffsetPx}px`,
             width: `calc((100% - ${nodeSlotWidthPx}px) * ${progressRatio})`,
           }}
         ></div>
-        <div className="flex justify-between items-start relative z-10 gap-1">
+        <div className="relative z-10 flex items-start justify-between gap-1">
           {stages.map((stage, index) => {
             const isCompleted = stage.status === 'completed'
             const isActive = stage.status === 'active'
             const lockReason = getStageLockReason?.(stage.id) || ''
             const isLocked = Boolean(lockReason)
             return (
-              <div
+              <button
+                type="button"
                 key={stage.id}
-                className={`flex flex-col items-center gap-2 relative group ${
-                  isLocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                className={`group relative flex shrink-0 flex-col items-center gap-1.5 rounded-md bg-transparent py-0.5 ${
+                  isLocked ? 'cursor-not-allowed' : 'cursor-pointer'
                 }`}
                 style={{ width: `${nodeSlotWidthPx}px` }}
+                aria-current={isActive ? 'step' : undefined}
+                aria-label={`${stage.name}${isCompleted ? '，已完成' : isActive ? '，当前阶段' : ''}${isLocked ? `，${lockReason}` : ''}`}
+                disabled={isLocked}
                 onClick={() => {
                   if (isLocked) return
                   onStageClick?.(stage)
@@ -50,28 +57,29 @@ export default function StageProgress({
                 title={isLocked ? lockReason : ''}
               >
                 <div
-                  className={`stage-node-circle w-7 h-7 border flex items-center justify-center text-[13px] font-semibold transition-colors ${
+                  aria-hidden="true"
+                  className={`stage-node-circle flex h-8 w-8 items-center justify-center border text-sm font-semibold transition-colors ${
                     isCompleted
-                      ? 'bg-[#14A83B] border-[#14A83B] text-white'
+                      ? 'border-on-secondary-fixed bg-on-secondary-fixed text-white'
                       : isActive
-                        ? 'bg-[#0067B6] border-[#0067B6] text-white'
-                        : 'bg-white border-[#c7d3e0] text-[#8ca1b5]'
+                        ? 'border-primary bg-primary text-white'
+                        : 'border-outline-variant bg-white text-on-surface-variant'
                   }`}
                 >
                   {isCompleted ? '✓' : index + 1}
                 </div>
                 <span
-                  className={`text-xs font-medium text-center leading-tight ${
+                  className={`text-center text-xs font-medium leading-[18px] ${
                     isActive
-                      ? 'text-[#0067B6] font-semibold'
+                      ? 'font-semibold text-primary'
                       : isCompleted
-                        ? 'text-[#2f4a62]'
-                        : 'text-[#8095aa]'
+                        ? 'text-on-surface'
+                        : 'text-on-surface-variant'
                   }`}
                 >
                   {stage.name}
                 </span>
-              </div>
+              </button>
             )
           })}
         </div>

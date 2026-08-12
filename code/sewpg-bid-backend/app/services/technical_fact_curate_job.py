@@ -15,7 +15,7 @@ from typing import Any
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.local_job_executor import submit_local_job
 from app.services.technical_gap_repository import (
-    persist_technical_gap_project,
+    mutate_technical_gap_project,
     require_technical_gap_project_for_update,
 )
 from app.services.technical_gap_state import ensure_technical_gap_state
@@ -50,14 +50,19 @@ def fact_curate_running(gap_state: dict[str, Any]) -> bool:
 
 
 def _write_state(project_id: str, **fields: Any) -> dict[str, Any]:
-    """把状态写回项目：worker 与请求线程都经此落库，前端轮询读同一份。"""
-    project = require_technical_gap_project_for_update(project_id)
-    gap_state = ensure_technical_gap_state(project)
-    state = fact_curate_state(gap_state)
-    state.update(fields)
-    gap_state["factCurateState"] = state
-    persist_technical_gap_project(project)
-    return copy.deepcopy(state)
+    """把状态写回项目：worker 与请求线程都经此落库，前端轮询读同一份。
+
+    整份 payload 覆盖写，进度回写与页面操作会互相盖掉，因此走 CAS 重放。
+    """
+
+    def apply(project: dict[str, Any]) -> dict[str, Any]:
+        gap_state = ensure_technical_gap_state(project)
+        state = fact_curate_state(gap_state)
+        state.update(fields)
+        gap_state["factCurateState"] = state
+        return copy.deepcopy(state)
+
+    return mutate_technical_gap_project(project_id, apply)
 
 
 def schedule_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -115,15 +120,6 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
             copy.deepcopy(project), copy.deepcopy(gap_state), payload, on_phase=on_phase
         )
 
-        latest_project = require_technical_gap_project_for_update(project_id)
-        latest_gap_state = ensure_technical_gap_state(latest_project)
-        # 与同步版同一道保护：期间事实表/填表规则被改过就不覆盖，避免盖掉人工结果
-        if (
-            latest_gap_state.get("projectFactTable") != source_table
-            or latest_gap_state.get("factSpecs") != source_fact_specs
-        ):
-            raise ValueError("AI 匹配期间事实表或填表规则已被修改，本次结果未覆盖保存；请检查最新数据后重试。")
-
         counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
         message = (
             "事实表维护完成："
@@ -134,17 +130,27 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
         if counts.get("ignored"):
             message += "存在未落表建议，请检查 curateReport.ignored 的原因。"
 
-        latest_gap_state["projectFactTable"] = updated_table
-        latest_gap_state["factCurateState"] = {
-            **fact_curate_state(latest_gap_state),
-            "status": "succeeded",
-            "phase": "",
-            "message": message,
-            "finishedAt": _now_iso(),
-            "report": copy.deepcopy(report),
-        }
-        latest_project["updatedAt"] = _now_iso()
-        persist_technical_gap_project(latest_project)
+        def apply(latest_project: dict[str, Any]) -> None:
+            latest_gap_state = ensure_technical_gap_state(latest_project)
+            # 与同步版同一道保护：期间事实表/填表规则被改过就不覆盖，避免盖掉人工结果。
+            # 放在 CAS 事务里判，重放时按最新状态重新比对。
+            if (
+                latest_gap_state.get("projectFactTable") != source_table
+                or latest_gap_state.get("factSpecs") != source_fact_specs
+            ):
+                raise ValueError("AI 匹配期间事实表或填表规则已被修改，本次结果未覆盖保存；请检查最新数据后重试。")
+            latest_gap_state["projectFactTable"] = updated_table
+            latest_gap_state["factCurateState"] = {
+                **fact_curate_state(latest_gap_state),
+                "status": "succeeded",
+                "phase": "",
+                "message": message,
+                "finishedAt": _now_iso(),
+                "report": copy.deepcopy(report),
+            }
+            latest_project["updatedAt"] = _now_iso()
+
+        mutate_technical_gap_project(project_id, apply)
         return {"status": "succeeded", "message": message}
     except Exception as exc:  # noqa: BLE001 - 失败原因要如实回写给前端，不静默吞掉
         _write_state(

@@ -3,6 +3,7 @@ import copy
 import importlib
 import importlib.util
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -285,7 +286,22 @@ def _write_multi_paragraph_toc_docx(path: Path) -> None:
             instruction.text = ' TOC \\o "1-3" '
             instruction_run.append(instruction)
             field._element.append(instruction_run)
-    doc.add_paragraph("第一章 ................................ 1", style="TOC 1")
+    toc_entry = doc.add_paragraph("第一章 ................................ ", style="TOC 1")
+    page_begin_run = OxmlElement("w:r")
+    page_begin = OxmlElement("w:fldChar")
+    page_begin.set(qn("w:fldCharType"), "begin")
+    page_begin_run.append(page_begin)
+    toc_entry._element.append(page_begin_run)
+    page_instruction_run = OxmlElement("w:r")
+    page_instruction = OxmlElement("w:instrText")
+    page_instruction.text = " PAGEREF _Toc123 \\h "
+    page_instruction_run.append(page_instruction)
+    toc_entry._element.append(page_instruction_run)
+    page_end_run = OxmlElement("w:r")
+    page_end = OxmlElement("w:fldChar")
+    page_end.set(qn("w:fldCharType"), "end")
+    page_end_run.append(page_end)
+    toc_entry._element.append(page_end_run)
     toc_end = doc.add_paragraph("1.1 节 ................................ 2", style="TOC 2")
     end_run = OxmlElement("w:r")
     end = OxmlElement("w:fldChar")
@@ -300,6 +316,35 @@ def _write_multi_paragraph_toc_docx(path: Path) -> None:
 
 def _write_toc_format_preservation_docx(path: Path) -> None:
     doc = Document()
+    toc_title = doc.add_paragraph("目录")
+    toc_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    toc_title.paragraph_format.space_before = Pt(4)
+    toc_title.paragraph_format.line_spacing = 1.2
+    toc_title.runs[0].font.size = Pt(24)
+
+    toc_begin = doc.add_paragraph()
+    begin_run = OxmlElement("w:r")
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    begin_run.append(begin)
+    toc_begin._element.append(begin_run)
+    toc_field = doc.add_paragraph()
+    instruction_run = OxmlElement("w:r")
+    instruction = OxmlElement("w:instrText")
+    instruction.text = ' TOC \\o "1-3" '
+    instruction_run.append(instruction)
+    toc_field._element.append(instruction_run)
+    separator_run = OxmlElement("w:r")
+    separator = OxmlElement("w:fldChar")
+    separator.set(qn("w:fldCharType"), "separate")
+    separator_run.append(separator)
+    toc_field._element.append(separator_run)
+    visible_run = toc_field.add_run("目录域结果")
+    toc_field.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    toc_field.paragraph_format.space_before = Pt(5)
+    toc_field.paragraph_format.line_spacing = 1.3
+    visible_run.font.size = Pt(22)
+
     for index, style_name in enumerate(("TOC 1", "TOC 2"), start=1):
         style = doc.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
         style.base_style = doc.styles["Normal"]
@@ -311,24 +356,45 @@ def _write_toc_format_preservation_docx(path: Path) -> None:
         paragraph.paragraph_format.line_spacing = 1 + index / 10
         paragraph.runs[0].font.name = "Calibri"
         paragraph.runs[0].font.size = Pt(8 + index)
-    doc.add_paragraph("普通正文")
+        if index == 2:
+            end_run = OxmlElement("w:r")
+            end = OxmlElement("w:fldChar")
+            end.set(qn("w:fldCharType"), "end")
+            end_run.append(end)
+            paragraph._element.append(end_run)
+    doc.add_paragraph("正文中的目录说明")
     doc.save(path)
 
 
 def _page_break_count_after_toc_end(path: Path) -> int:
     doc = Document(str(path))
+    active_fields: list[dict[str, bool]] = []
     for paragraph in doc.paragraphs:
-        has_end = any(
-            node.get(qn("w:fldCharType")) == "end" for node in paragraph._element.iter(qn("w:fldChar"))
-        )
-        if not has_end:
-            continue
-        count = 0
-        sibling = paragraph._element.getnext()
-        while sibling is not None and sibling.tag == qn("w:p") and sibling.findall(".//" + qn("w:br")):
-            count += 1
-            sibling = sibling.getnext()
-        return count
+        for node in paragraph._element.iter():
+            if node.tag == qn("w:fldChar"):
+                field_type = str(node.get(qn("w:fldCharType")) or "").lower()
+                if field_type == "begin":
+                    active_fields.append({"is_toc": False})
+                elif field_type == "end" and active_fields:
+                    field = active_fields.pop()
+                    if field["is_toc"]:
+                        count = 0
+                        sibling = paragraph._element.getnext()
+                        while (
+                            sibling is not None
+                            and sibling.tag == qn("w:p")
+                            and sibling.findall(".//" + qn("w:br"))
+                        ):
+                            count += 1
+                            sibling = sibling.getnext()
+                        return count
+                continue
+            if (
+                node.tag == qn("w:instrText")
+                and re.search(r"\bTOC\b", str(node.text or ""), flags=re.IGNORECASE)
+                and active_fields
+            ):
+                active_fields[-1]["is_toc"] = True
     raise AssertionError("测试文档中未找到 TOC field end")
 
 
@@ -715,6 +781,44 @@ class TechFormatCleanerTest(unittest.TestCase):
             self.assertEqual(_toc_is_followed_by_page_break(output_docx), expected_page_break)
             current_input = output_docx
 
+    def test_fld_simple_toc_is_detected_and_used_as_page_break_anchor(self):
+        module_name = "bid_tech_format_cleaner_fld_simple_test"
+        spec = importlib.util.spec_from_file_location(module_name, RUNNER_PATH)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+            doc = Document()
+            title = doc.add_paragraph("Contents")
+            toc = doc.add_paragraph()
+            field = OxmlElement("w:fldSimple")
+            field.set(qn("w:instr"), ' TOC \\o "1-3" ')
+            field.append(OxmlElement("w:r"))
+            toc._element.append(field)
+            body = doc.add_paragraph("正文")
+
+            self.assertTrue(module.document_has_toc(doc))
+            self.assertIs(module._toc_result_anchor(doc), toc._element)
+
+            module._apply_toc_page_break(doc, True)
+
+            self.assertIs(toc._element.getnext().getnext(), body._element)
+            self.assertTrue(module._is_cleaner_toc_break(toc._element.getnext()))
+            self.assertIn(title._element, module._toc_protected_paragraph_elements(doc))
+
+            pageref_only = Document()
+            paragraph = pageref_only.add_paragraph()
+            run = OxmlElement("w:r")
+            instruction = OxmlElement("w:instrText")
+            instruction.text = " PAGEREF _Toc123456789 \\h "
+            run.append(instruction)
+            paragraph._element.append(run)
+            self.assertFalse(module.document_has_toc(pageref_only))
+        finally:
+            sys.modules.pop(module_name, None)
+
     def test_warning_counts_use_structured_scan_counts(self):
         module_name = "bid_tech_format_cleaner_warning_test"
         spec = importlib.util.spec_from_file_location(module_name, RUNNER_PATH)
@@ -775,7 +879,11 @@ class TechFormatCleanerTest(unittest.TestCase):
 
             _run_manifest(manifest_path)
 
-            self.assertEqual(_page_break_count_after_toc_end(output_docx), 1 if enabled else 0)
+            self.assertEqual(
+                _page_break_count_after_toc_end(output_docx),
+                1 if enabled else 0,
+                f"第 {index} 轮目录分页位置错误",
+            )
             self.assertTrue(_user_page_break_is_present(output_docx))
             current_input = output_docx
 
@@ -800,6 +908,20 @@ class TechFormatCleanerTest(unittest.TestCase):
 
         output = Document(str(output_docx))
         paragraphs = {paragraph.text: paragraph for paragraph in output.paragraphs}
+        toc_title = paragraphs["目录"]
+        self.assertEqual(toc_title.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+        self.assertAlmostEqual(toc_title.paragraph_format.space_before.pt, 4)
+        self.assertAlmostEqual(toc_title.paragraph_format.line_spacing, 1.2)
+        self.assertAlmostEqual(toc_title.runs[0].font.size.pt, 24)
+
+        toc_field = paragraphs["目录域结果"]
+        self.assertEqual(toc_field.alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+        self.assertAlmostEqual(toc_field.paragraph_format.space_before.pt, 5)
+        self.assertAlmostEqual(toc_field.paragraph_format.line_spacing, 1.3)
+        visible_runs = [run for run in toc_field.runs if run.text]
+        self.assertTrue(visible_runs)
+        self.assertAlmostEqual(visible_runs[0].font.size.pt, 22)
+
         for index in (1, 2):
             paragraph = paragraphs[f"目录 {index} ................ {index}"]
             self.assertEqual(paragraph.style.name, f"TOC {index}")
@@ -811,7 +933,7 @@ class TechFormatCleanerTest(unittest.TestCase):
             self.assertEqual(paragraph.runs[0].font.name, "Calibri")
             self.assertAlmostEqual(paragraph.runs[0].font.size.pt, 8 + index)
 
-        body = paragraphs["普通正文"]
+        body = paragraphs["正文中的目录说明"]
         self.assertEqual(body.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
         self.assertAlmostEqual(body.runs[0].font.size.pt, 16)
 

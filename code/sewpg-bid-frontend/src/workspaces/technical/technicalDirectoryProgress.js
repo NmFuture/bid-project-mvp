@@ -1,3 +1,5 @@
+import { formatProgressDuration } from '../../utils/progressDuration.js'
+
 const runningStatuses = new Set(['running', 'processing', 'queued'])
 const failedStatuses = new Set(['failed', 'error'])
 const internalDirectoryTextPattern = /futurecode|opencode|S2|Skill|session|流式片段|provider|model/i
@@ -99,14 +101,8 @@ export const directoryElapsedSeconds = (progress = {}, nowMs = Date.now()) => {
   return Math.max(0, (endMs - startMs) / 1000)
 }
 
-export const formatDirectoryDuration = (value) => {
-  const seconds = Math.max(0, Math.floor(finiteNumber(value)))
-  if (seconds <= 0) return ''
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  if (minutes > 0) return `${minutes} 分 ${remainingSeconds} 秒`
-  return `${seconds} 秒`
-}
+// 耗时格式与其余四处进度条共用一份实现，保持「x 分 y 秒」写法一致。
+export const formatDirectoryDuration = formatProgressDuration
 
 export const normalizeDecisionProgress = (progress = {}) => {
   const raw = progress?.decisionProgress

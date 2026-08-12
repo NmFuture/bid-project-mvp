@@ -551,8 +551,6 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
   confirmReady: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
-  setParentCoverage: (projectId, gid, data) =>
-    request(`/technical/projects/${projectId}/gaps/${gid}/parent-coverage`, { method: 'POST', body: data }),
   setTitleOnly: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/title-only`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
@@ -560,10 +558,6 @@ export const technicalGapsAPI = {
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
   buildFacts: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
-  uploadFactSpecs: (projectId, data) =>
-    request(`/technical/projects/${projectId}/gaps/facts/specs-upload`, { method: 'POST', body: data }),
-  uploadAppendixSourceMatrix: (projectId, data) =>
-    request(`/technical/projects/${projectId}/appendix-source-matrix`, { method: 'POST', body: data }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
   // 提交后台任务，立即返回；执行进度经 curateFactsStatus 轮询
@@ -578,8 +572,6 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/curate`),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
-  saveFactField: (projectId, fieldId, data) =>
-    request(`/technical/projects/${projectId}/gaps/facts/${fieldId}`, { method: 'PATCH', body: data }),
   recheck: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>
@@ -594,14 +586,7 @@ export const technicalGapsAPI = {
       method: 'POST',
       body: data,
     }),
-  aiFillAll: (projectId, data) =>
-    request(`/technical/projects/${projectId}/gaps/ai-fill-all`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 30 * 60 * 1000,
-      retryCount: 0,
-    }),
-  // 正文一键填写：提交后台任务，立即返回；执行进度经 bodyFillStatus 轮询
+  // 一键填写（正文+附表）：提交后台任务，立即返回；执行进度经 bodyFillStatus 轮询
   bodyFill: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/body-fill`, {
       method: 'POST',
@@ -611,11 +596,6 @@ export const technicalGapsAPI = {
     }),
   bodyFillStatus: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/body-fill`),
-  submissions: (projectId) => request(`/technical/projects/${projectId}/materials/submissions`),
-  submitMaterial: (projectId, data) =>
-    request(`/technical/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),
-  updateMissing: (projectId, missingId, data) =>
-    request(`/technical/projects/${projectId}/materials/missing/${missingId}`, { method: 'PATCH', body: data }),
 }
 
 export const technicalGenerateAPI = {
@@ -638,8 +618,10 @@ export const technicalDocumentAPI = {
     request(`/technical/projects/${projectId}/document/technical-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
   technicalFormat: (projectId, data) =>
     request(`/technical/projects/${projectId}/document/technical-format`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
-  final: (projectId) => request(`/technical/projects/${projectId}/final-document`),
-  finalPdf: (projectId) => request(`/technical/projects/${projectId}/final-document/pdf`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
+  final: (projectId, version = 'marked') =>
+    request(`/technical/projects/${projectId}/final-document?version=${version}`),
+  finalPdf: (projectId, version = 'marked') =>
+    request(`/technical/projects/${projectId}/final-document/pdf?version=${version}`, { timeoutMs: 5 * 60 * 1000, retryCount: 0 }),
 }
 
 export const technicalMaterialsAPI = {
@@ -651,6 +633,51 @@ export const technicalMaterialsAPI = {
   // 建项目弹窗只为取客户名与机型名，用完整版必然撞上 12 秒默认超时。
   indexOptions: () => request('/technical/materials/index/options'),
   setIndexTags: (data) => request('/technical/materials/index/tags', { method: 'PUT', body: data }),
+  // 规则维护：事实表清单全局一份，附表填写规则按客户维护（项目自动套用所属客户那份）。
+  // 下载/导出与 raw.contentUrl 同款：拼 URL 由浏览器直接打开/下载。
+  rules: {
+    factSpecsMeta: () => request('/technical/materials/rules/fact-specs'),
+    factSpecsRows: () => request('/technical/materials/rules/fact-specs/rows'),
+    saveFactSpecsRows: (specs) =>
+      request('/technical/materials/rules/fact-specs/rows', { method: 'PUT', body: { specs } }),
+    uploadFactSpecs: (data) =>
+      request('/technical/materials/rules/fact-specs', {
+        method: 'POST',
+        body: data,
+        timeoutMs: 5 * 60 * 1000,
+        retryCount: 0,
+      }),
+    factSpecsDownloadUrl: () => joinUrl(ENV.API_BASE_URL, '/technical/materials/rules/fact-specs/download'),
+    factSpecsExportUrl: () => joinUrl(ENV.API_BASE_URL, '/technical/materials/rules/fact-specs/export'),
+    appendixMatrixMeta: (customerName) => {
+      const qs = new URLSearchParams(cleanQuery({ customerName })).toString()
+      return request(`/technical/materials/rules/appendix-source-matrix${qs ? `?${qs}` : ''}`)
+    },
+    appendixMatrixRows: (customerName) => {
+      const qs = new URLSearchParams(cleanQuery({ customerName })).toString()
+      return request(`/technical/materials/rules/appendix-source-matrix/rows${qs ? `?${qs}` : ''}`)
+    },
+    saveAppendixMatrixRows: (customerName, rows) => {
+      const qs = new URLSearchParams(cleanQuery({ customerName })).toString()
+      return request(`/technical/materials/rules/appendix-source-matrix/rows${qs ? `?${qs}` : ''}`, {
+        method: 'PUT',
+        body: { rows },
+      })
+    },
+    uploadAppendixMatrix: (customerName, data) => {
+      const qs = new URLSearchParams(cleanQuery({ customerName })).toString()
+      return request(`/technical/materials/rules/appendix-source-matrix${qs ? `?${qs}` : ''}`, {
+        method: 'POST',
+        body: data,
+        timeoutMs: 5 * 60 * 1000,
+        retryCount: 0,
+      })
+    },
+    appendixMatrixExportUrl: (customerName) => {
+      const qs = new URLSearchParams(cleanQuery({ customerName })).toString()
+      return joinUrl(ENV.API_BASE_URL, `/technical/materials/rules/appendix-source-matrix/export${qs ? `?${qs}` : ''}`)
+    },
+  },
   raw: {
     tree: () => request('/technical/materials/raw/tree'),
     files: (params = {}) => {
@@ -712,15 +739,6 @@ export const technicalMaterialsAPI = {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/technical/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
-    move: (id, data) => request(`/technical/materials/wiki/${id}/move`, { method: 'POST', body: data }),
-    uploadAttachment: (id, data) =>
-      request(`/technical/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
-    deleteAttachment: (id, params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/technical/materials/wiki/attachments/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
-    },
-    refreshSummary: (id, data = {}) =>
-      request(`/technical/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
     certificateTime: () => request('/technical/materials/wiki/certificate-time'),
     updateCertificateTime: (fileId, data) =>
       request(`/technical/materials/wiki/certificate-time/${fileId}`, { method: 'PATCH', body: data }),

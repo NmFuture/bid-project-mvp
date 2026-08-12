@@ -19,7 +19,11 @@ from app.services.technical_parse_assets import (
     persist_technical_parse_result,
     sync_technical_parse_appendices,
 )
-from app.services.technical_project_material_folder import prepare_technical_project_material_folder
+from app.services.technical_project_material_copy_job import schedule_technical_material_copy
+from app.services.technical_project_material_folder import (
+    prepare_technical_project_material_folder,
+    resolve_technical_project_folder_path,
+)
 from app.services.workspace_project_access import (
     create_workspace_project,
     delete_workspace_project,
@@ -125,6 +129,10 @@ class BidProjectService:
                 )
             )
         )
+        # 素材来源只在首次确认参与时生效一次：已记过来源就不再复制，避免重复堆文件。
+        copy_source_project_id = ""
+        if self.bid_type == TECHNICAL_BID_TYPE and not str(current_project.get("materialSourceProjectId") or "").strip():
+            copy_source_project_id = str((data or {}).get("materialSourceProjectId") or "").strip()
         if should_bootstrap:
             if self.bid_type == TECHNICAL_BID_TYPE:
                 project_name = str(candidate_project.get("name") or "").strip()
@@ -222,6 +230,17 @@ class BidProjectService:
         )
         if bootstrap_status is not None:
             project["materialFolderBootstrap"] = bootstrap_status
+            target_path = str(bootstrap_status.get("path") or "")
+            if copy_source_project_id and target_path:
+                source_path = await resolve_technical_project_folder_path(copy_source_project_id)
+                if not source_path:
+                    raise HTTPException(status_code=404, detail="来源项目的素材目录不存在，请重新选择项目来源。")
+                project["materialCopyState"] = schedule_technical_material_copy(
+                    project_id,
+                    source_path=source_path,
+                    target_path=target_path,
+                    source_project_id=copy_source_project_id,
+                )
         if business_sync_status is not None:
             project["businessParseAssetSync"] = business_sync_status
         if technical_sync_status is not None:

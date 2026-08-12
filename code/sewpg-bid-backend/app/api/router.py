@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import auth, business, business_gaps, dashboard, monitoring, performance, project_info, settings, system, technical
+from app.api.routes import auth, business, business_gaps, dashboard, monitoring, performance, project_info, settings, system, technical, technical_material_rules
 
 api_router = APIRouter()
 api_router.include_router(system.router)
@@ -12,4 +12,5 @@ api_router.include_router(project_info.router)
 api_router.include_router(business.router)
 api_router.include_router(business_gaps.router)
 api_router.include_router(technical.router)
+api_router.include_router(technical_material_rules.router)
 api_router.include_router(settings.router)

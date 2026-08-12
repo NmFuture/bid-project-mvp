@@ -5,10 +5,9 @@ from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from app.models import async_session
-from app.models.materials import RawFolder, WikiAttachment
+from app.models.materials import RawFolder
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.business_material_splitter import (
     confirm_business_material_split,
@@ -134,22 +133,14 @@ class TechnicalMaterialStore:
         if node_id not in _collect_wiki_ids(list(payload.get("tree") or [])):
             raise PeripheralError(400, f"{label}不属于技术标 Wiki。", "TECHNICAL_WIKI_NODE_SCOPE")
 
-    async def _ensure_wiki_attachment(self, attachment_id: str) -> None:
-        numeric_id = int(str(attachment_id).replace("WIKI-ATT-", ""))
-        async with async_session() as session:
-            result = await session.execute(
-                select(WikiAttachment)
-                .where(WikiAttachment.id == numeric_id)
-                .options(selectinload(WikiAttachment.doc))
-            )
-            attachment = result.scalar_one_or_none()
-        if attachment is None:
-            raise PeripheralError(404, "附件不存在。", "WIKI_ATTACHMENT_NOT_FOUND")
-        node_id = int(attachment.doc.node_id) if attachment.doc else 0
-        await self._ensure_wiki_node(f"WIKI-{node_id:04d}" if node_id else "", "附件")
-
     async def identity_options(self) -> dict[str, Any]:
-        return await material_store.identity_options(bid_type=TECHNICAL_BID_TYPE)
+        # 技术标「项目来源」只列素材库里已成型的项目目录，不含尚未落地的解析草稿；
+        # 技术标项目目录以项目名命名，目录名即当前项目名。
+        return await material_store.identity_options(
+            bid_type=TECHNICAL_BID_TYPE,
+            include_project_store=False,
+            folder_name_as_project_name=True,
+        )
 
     async def turbine_model_options(self) -> dict[str, Any]:
         return await list_technical_turbine_model_options()
@@ -320,6 +311,23 @@ class TechnicalMaterialStore:
             allow_identity_folder=True,
         )
         return await self._refresh_index(self._with_urls(_force_technical_tree(payload)))
+
+    async def raw_copy_project_materials(
+        self,
+        *,
+        source_path: str,
+        target_path: str,
+        exclude_top_level_names: set[str] | None = None,
+        on_progress: Any = None,
+    ) -> dict[str, Any]:
+        result = await material_store.raw_copy_folder_contents(
+            source_path=self.ensure_path(source_path, "来源项目目录"),
+            target_path=self.ensure_path(target_path, "目标项目目录"),
+            bid_type=TECHNICAL_BID_TYPE,
+            exclude_top_level_names=exclude_top_level_names,
+            on_progress=on_progress,
+        )
+        return await self._refresh_index(result)
 
     async def raw_cleanup_project_folder(self, path: str, *, expected_project_id: str = "") -> dict[str, Any]:
         normalized = self.ensure_path(path, "项目素材目录")
@@ -850,41 +858,6 @@ class TechnicalMaterialStore:
         await self._ensure_wiki_node(node_id)
         return self._with_urls(await material_store.wiki_delete(node_id, TECHNICAL_BID_TYPE))
 
-    async def wiki_move(self, *, node_id: str, target_id: str, mode: str) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        await self._ensure_wiki_node(target_id, "目标 Wiki 节点")
-        return self._with_urls(await material_store.wiki_move(
-            node_id=node_id,
-            target_id=target_id,
-            mode=mode,
-            bid_type=TECHNICAL_BID_TYPE,
-        ))
-
-    async def wiki_upload_attachment(
-        self,
-        *,
-        node_id: str,
-        file_name: str,
-        file_size: Any,
-        upload: Any | None = None,
-        data: bytes | None = None,
-        mime_type: str = "",
-    ) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        return self._with_urls(await material_store.wiki_upload_attachment(
-            node_id=node_id,
-            file_name=file_name,
-            file_size=file_size,
-            upload=upload,
-            data=data,
-            mime_type=mime_type,
-            bid_type=TECHNICAL_BID_TYPE,
-        ))
-
-    async def wiki_refresh_summary(self, node_id: str) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        return self._with_urls(await material_store.wiki_refresh_summary(node_id, TECHNICAL_BID_TYPE))
-
     async def import_generated_wiki_blueprint(
         self,
         *,
@@ -905,14 +878,5 @@ class TechnicalMaterialStore:
         selected_id = str((payload.get("selectedNode") or {}).get("id") or "")
         filtered = await self.wiki_list(selected_id)
         return {**filtered, "message": payload.get("message") or "技术标 Wiki 已生成。", "mode": payload.get("mode") or mode}
-
-    async def wiki_download_attachment_content(self, attachment_id: str) -> dict[str, Any]:
-        await self._ensure_wiki_attachment(attachment_id)
-        return await material_store.wiki_download_attachment_content(attachment_id, TECHNICAL_BID_TYPE)
-
-    async def wiki_delete_attachment(self, attachment_id: str) -> dict[str, Any]:
-        await self._ensure_wiki_attachment(attachment_id)
-        return self._with_urls(await material_store.wiki_delete_attachment(attachment_id, TECHNICAL_BID_TYPE))
-
 
 technical_material_store = TechnicalMaterialStore()

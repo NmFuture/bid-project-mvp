@@ -24,6 +24,7 @@ from app.services.opencode_client import OpencodeClient
 from app.services.bid_runtime_state import now_iso
 from app.services.workspace_project_access import (
     get_workspace_project_runtime_state,
+    persist_workspace_project_fields,
     persist_workspace_project_state,
     require_workspace_project_for_update,
 )
@@ -264,7 +265,7 @@ def assemble_business_bid_for_project_with_progress(
             "formatClean": format_clean,
         },
     )
-    persist_workspace_project_state(project_for_update)
+    persist_workspace_project_fields(project_for_update, "document_state", "fill_state", "name")
     return payload
 
 
@@ -297,7 +298,7 @@ def _recover_business_gap_plan(project: dict[str, Any], business_gap_state: dict
         project["business_gap_state"] = business_gap_state
         project["updatedAt"] = now_iso()
         try:
-            persist_workspace_project_state(project)
+            persist_workspace_project_fields(project, "business_gap_state")
         except Exception:
             pass
         return plan

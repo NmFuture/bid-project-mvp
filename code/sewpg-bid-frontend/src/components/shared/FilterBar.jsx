@@ -2,10 +2,11 @@ export default function FilterBar({ left, right, className = '' }) {
   const hasRight = Boolean(right)
   return (
     <section
-      className={`bg-transparent border-0 px-0 py-0 flex flex-col xl:flex-row gap-3 items-center justify-between ${className}`.trim()}
+      aria-label="筛选和操作"
+      className={`flex min-w-0 flex-col items-stretch justify-between gap-3 border-0 bg-transparent px-0 py-0 lg:flex-row lg:items-center ${className}`.trim()}
     >
-      <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">{left}</div>
-      {hasRight && <div className="flex items-center gap-3 w-full xl:w-auto justify-end">{right}</div>}
+      <div className="flex min-w-0 w-full flex-wrap items-center gap-2 lg:w-auto">{left}</div>
+      {hasRight && <div className="flex min-w-0 w-full flex-wrap items-center justify-start gap-2 lg:w-auto lg:justify-end">{right}</div>}
     </section>
   )
 }

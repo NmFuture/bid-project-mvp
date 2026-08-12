@@ -5,7 +5,6 @@ import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import BusinessProjectStageProgress from '../components/BusinessProjectStageProgress'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
 import FileButton from '../../../components/ui/FileButton'
@@ -326,20 +325,17 @@ function tocLevelStyles(levelValue) {
     return {
       itemClass: 'py-2.5 bg-surface-container-low',
       titleClass: 'text-sm font-bold text-on-surface',
-      titleStyle: { fontWeight: 700 },
     }
   }
   if (level === 2) {
     return {
       itemClass: 'py-2',
       titleClass: 'text-[13px] font-semibold text-on-surface',
-      titleStyle: { fontWeight: 600 },
     }
   }
   return {
     itemClass: 'py-1.5',
     titleClass: 'text-xs font-medium text-on-surface-variant',
-    titleStyle: { fontWeight: 500 },
   }
 }
 
@@ -430,12 +426,12 @@ function FactMaintenanceModal({
   const summary = factTable?.summary || {}
   const status = factTable?.status || 'empty'
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="business-fact-modal-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
+        <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-5">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-lg font-headline font-bold text-on-surface">商务标项目事实表维护</h3>
+              <h3 id="business-fact-modal-title" className="text-lg font-headline font-bold text-on-surface">商务标项目事实表维护</h3>
               <Badge shape="square" variant={status === 'confirmed' ? 'done' : 'warn'}>
                 {factStatusLabels[status] || status}
               </Badge>
@@ -444,7 +440,7 @@ function FactMaintenanceModal({
               字段：{summary.totalCount || fields.length || 0} · 已确认：{summary.confirmedCount || 0} · 待补充：{summary.missingCount || 0} · 冲突：{summary.conflictCount || 0}
             </p>
           </div>
-          <Toolbar>
+          <Toolbar className="w-full sm:w-auto">
             <Button
               type="button"
               onClick={onFieldAdd}
@@ -470,7 +466,7 @@ function FactMaintenanceModal({
 
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {fields.length ? (
-            <div className="overflow-hidden rounded-md border border-surface-container-high">
+            <div className="overflow-x-auto rounded-md border border-surface-container-high" role="region" aria-label="商务标项目事实表，可横向滚动" tabIndex={0}>
               <table className="w-full min-w-[980px] border-collapse bg-surface-container-lowest text-sm">
                 <thead className="bg-surface-container-low text-left text-xs text-outline">
                   <tr>
@@ -581,11 +577,11 @@ function BusinessGenerationProgressModal({
   const title = running ? '正在生成商务标正文' : completed ? '商务标正文已生成' : failed ? '商务标正文生成失败' : '商务标正文生成'
   const summary = status?.summary || (running ? '系统正在根据当前素材匹配结果生成正文。' : completed ? '可继续进入 S4 共创导出。' : failed ? '请检查任务状态后重新生成。' : '准备生成商务标正文。')
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="w-full max-w-xl rounded-lg bg-surface shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="business-generation-modal-title" className="w-full max-w-xl overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)]">
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+            <h3 id="business-generation-modal-title" className="text-lg font-headline font-bold text-on-surface">{title}</h3>
             <p className="mt-1 text-sm text-on-surface-variant">{summary}</p>
           </div>
           {!running ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
@@ -594,7 +590,7 @@ function BusinessGenerationProgressModal({
           <div className="flex items-center gap-3">
             <div className="h-3 flex-1 overflow-hidden rounded-full bg-surface-container-high">
               <div
-                className={`h-full transition-all duration-700 ${failed ? 'bg-error' : 'bg-primary'}`}
+                className={`h-full transition-[width,background-color] duration-700 ${failed ? 'bg-error' : 'bg-primary'}`}
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -632,11 +628,11 @@ function BusinessGapPlanProgressModal({
   const title = failed ? '素材匹配失败' : running ? '正在执行素材匹配' : '素材匹配已完成'
   const progress = failed ? 100 : running ? 68 : 100
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="w-full max-w-xl rounded-lg bg-surface shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="business-gap-plan-modal-title" className="w-full max-w-xl overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)]">
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+            <h3 id="business-gap-plan-modal-title" className="text-lg font-headline font-bold text-on-surface">{title}</h3>
           </div>
           {!running ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
         </div>
@@ -687,11 +683,11 @@ function BusinessMaterialPreviewDrawer({
   const title = payload?.materialName || materialPreviewTitle(source)
   return (
     <div className="fixed inset-0 z-[60] flex justify-end bg-black/30">
-      <div className={`flex h-full w-full flex-col overflow-hidden bg-surface shadow-2xl ${fullscreen ? 'max-w-none' : 'max-w-5xl'}`}>
+      <div role="dialog" aria-modal="true" aria-labelledby="business-material-preview-title" className={`flex h-full w-full flex-col overflow-hidden overscroll-contain bg-surface ${fullscreen ? 'max-w-none' : 'max-w-5xl shadow-[0_12px_28px_rgba(13,33,55,0.14)]'}`}>
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="truncate text-lg font-headline font-bold text-on-surface">{title}</h3>
+              <h3 id="business-material-preview-title" className="truncate text-lg font-headline font-bold text-on-surface">{title}</h3>
               {payload?.previewMode && (
                 <Badge shape="square" variant="info">
                   {payload.previewMode === 'native' ? '原件预览' : payload.previewMode === 'onlyoffice' ? '原件 OnlyOffice' : '下载核对'}
@@ -845,21 +841,22 @@ function BusinessMaterialPickerModal({
     onToggleKey(allSelected ? [] : visibleKeys, { replace: true })
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="business-material-picker-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">选择素材库材料/模板</h3>
+            <h3 id="business-material-picker-title" className="text-lg font-headline font-bold text-on-surface">选择素材库材料/模板</h3>
           </div>
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
 
         <div className="border-b border-surface-container-high p-4">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[260px] flex-1">
+            <div className="relative min-w-0 flex-1 sm:min-w-[260px]">
               <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-lg text-outline">search</span>
               <input
                 value={keyword}
+                aria-label="搜索模板和素材"
                 onChange={(event) => onKeywordChange(event.target.value)}
                 className="h-10 w-full rounded-md border border-surface-container-high bg-surface-container-lowest pl-10 pr-3 text-sm text-on-surface"
                 placeholder="搜索模板、素材名称、清洗稿、路径、关键词..."
@@ -984,12 +981,12 @@ function BusinessMaterialPickerModal({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+        <div className="flex flex-col gap-3 border-t border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="text-xs text-on-surface-variant">
             {payload?.summary ? `可选模板 ${payload.summary.templateCount || 0} 个 · 可选素材/清洗稿 ${payload.summary.materialCount || 0} 个` : '从当前商务标可读范围加载'}
             {selectedCount ? ` · 已选 ${selectedCount} 个` : ''}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full items-center gap-2 sm:w-auto">
             <Button type="button" onClick={onClose} variant="quiet">取消</Button>
             <Button
               type="button"
@@ -1045,11 +1042,11 @@ function BusinessTableFillModal({
     onToggleSource(allSelected ? [PROJECT_FACT_SOURCE_KEY] : [PROJECT_FACT_SOURCE_KEY, ...visibleKeys], { replace: true })
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 py-6">
-      <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-surface shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="business-table-fill-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 className="text-lg font-headline font-bold text-on-surface">AI填写</h3>
+            <h3 id="business-table-fill-title" className="text-lg font-headline font-bold text-on-surface">AI填写</h3>
           </div>
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
@@ -1059,6 +1056,7 @@ function BusinessTableFillModal({
             <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-lg text-outline">search</span>
             <input
               value={keyword}
+              aria-label="搜索数据来源素材"
               onChange={(event) => onKeywordChange(event.target.value)}
               className="h-10 w-full rounded-md border border-surface-container-high bg-surface-container-lowest pl-10 pr-3 text-sm text-on-surface"
               placeholder="搜索右侧素材库文件、清洗稿、路径、关键词..."
@@ -1186,13 +1184,13 @@ function BusinessTableFillModal({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-container-high bg-surface-container-low px-5 py-4">
+        <div className="flex flex-col gap-3 border-t border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="text-xs text-on-surface-variant">
             {payload?.summary ? `可选素材 ${payload.summary.materialCount || 0} 个` : '从当前商务标素材库加载'}
             {selectedTarget ? ` · 待填写：${tableFillTargetTitle(selectedTarget)}` : ''}
             {selectedSources.length ? ` · 数据来源 ${selectedSources.length} 个` : ' · 默认包含项目事实表'}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full items-center gap-2 sm:w-auto">
             <Button type="button" onClick={onClose} disabled={busy} variant="quiet">取消</Button>
             <Button
               type="button"
@@ -1840,11 +1838,11 @@ export default function BusinessGapRecognition({ showToast }) {
   if (error && !payload) return <PageError title="加载失败" description={error} onRetry={load} />
 
   return (
-    <div className="business-ui-shell flex flex-col gap-6">
-      <BusinessProjectStageProgress projectId={id} showToast={showToast} />
+    <div className="business-ui-shell flex flex-col gap-4 sm:gap-6">
       <PageHeader
+        actionsClassName="w-full sm:w-auto"
         actions={(
-          <Toolbar>
+          <Toolbar className="w-full sm:w-auto">
             <Button
               type="button"
               onClick={openFactModal}
@@ -1919,12 +1917,12 @@ export default function BusinessGapRecognition({ showToast }) {
       </div>
 
       {payload?.status === 'completed' ? (
-        <div className="grid min-h-[720px] gap-4 xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
+        <div className="grid gap-4 xl:h-[clamp(34rem,calc(100dvh-15rem),45rem)] xl:min-h-[32rem] xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
           <DataCard className="!p-0 overflow-hidden">
             <div className="business-section-head flex items-center border-b border-surface-container-high px-4 py-3">
               <h3 className="text-base font-headline font-bold text-on-surface">商务目录</h3>
             </div>
-            <div className="max-h-[720px] overflow-auto p-3">
+            <div className="max-h-[44dvh] overflow-auto p-3 xl:max-h-none xl:flex-1">
               {tocRefs.map((ref) => {
                 const refTasks = asArray(ref.taskIds).map((taskId) => taskById.get(taskId)).filter(Boolean)
                 const isSelected = selectedToc?.nodeId === ref.nodeId
@@ -1946,7 +1944,7 @@ export default function BusinessGapRecognition({ showToast }) {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex min-w-0 items-start">
-                        <div className={`line-clamp-2 leading-snug ${levelStyles.titleClass}`} style={levelStyles.titleStyle}>{ref.number ? `${ref.number} ` : ''}{ref.title}</div>
+                        <div className={`line-clamp-2 leading-snug ${levelStyles.titleClass}`}>{ref.number ? `${ref.number} ` : ''}{ref.title}</div>
                       </div>
                       <TocActionBadges tasks={refTasks} />
                     </div>
@@ -1965,7 +1963,7 @@ export default function BusinessGapRecognition({ showToast }) {
             {!selectedToc ? (
               <div className="p-8 text-sm text-on-surface-variant">请选择左侧商务目录章节。</div>
             ) : (
-              <div className="max-h-[720px] overflow-auto p-4">
+              <div className="overflow-auto p-3 sm:p-4 xl:max-h-none xl:flex-1">
                 {!visibleTasks.length ? (
                   <div className="business-dropzone rounded-md border border-dashed border-surface-container-high p-8 text-center">
                     <span className="material-symbols-outlined text-4xl text-outline">inventory_2</span>

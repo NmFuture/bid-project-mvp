@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { performanceAPI } from '../../../api'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
-import MaterialsViewSwitch from '../components/SharedMaterialsViewSwitch'
+import MaterialsViewSwitch from '../components/MaterialsViewSwitch'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
 
@@ -195,14 +195,42 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const sourceMaterialsBasePath = workspaceRoute(sourceWorkspace, '/materials')
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const hasLoadedItemsRef = useRef(false)
-  const sharedPerformanceItems = useMemo(() => [
-    { key: 'raw', label: '原始素材', absolutePath: `${sourceMaterialsBasePath}/raw` },
-    { key: 'wiki', label: 'Wiki', absolutePath: `${sourceMaterialsBasePath}/wiki` },
-    ...(sourceWorkspace === 'tech'
-      ? [{ key: 'certificates', label: '证书台账', absolutePath: `${sourceMaterialsBasePath}/certificates` }]
-      : []),
-    { key: 'performance', label: '业绩库', absolutePath: '/workspace/shared/materials/performance' },
-  ], [sourceMaterialsBasePath, sourceWorkspace])
+  // 与技术标/商务标素材页一致的分组页头：本线工作组 + 共享组常驻并列
+  const materialsGroups = useMemo(() => {
+    const base = sourceMaterialsBasePath
+    const workspaceGroup = sourceWorkspace === 'tech'
+      ? {
+          key: 'tech',
+          label: '技术标',
+          icon: 'engineering',
+          items: [
+            { key: 'raw', label: '原始素材', to: `${base}/raw` },
+            { key: 'wiki', label: 'Wiki', to: `${base}/wiki` },
+            { key: 'certificates', label: '证书台账', to: `${base}/certificates` },
+            { key: 'rules', label: '规则', to: `${base}/rules` },
+          ],
+        }
+      : {
+          key: 'business',
+          label: '商务标',
+          icon: 'request_quote',
+          items: [
+            { key: 'raw', label: '原始素材', to: `${base}/raw` },
+            { key: 'wiki', label: 'Wiki', to: `${base}/wiki` },
+          ],
+        }
+    return [
+      workspaceGroup,
+      {
+        key: 'shared',
+        label: '共享',
+        icon: 'database',
+        items: [
+          { key: 'performance', label: '业绩库', to: '/workspace/shared/materials/performance' },
+        ],
+      },
+    ]
+  }, [sourceMaterialsBasePath, sourceWorkspace])
 
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
@@ -592,7 +620,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const visibleFields = currentFields.length ? currentFields : (preview?.fieldSchema || [])
 
   return (
-    <main className="h-full min-h-0 overflow-hidden bg-surface text-on-surface">
+    <section aria-label="平台共用业绩库" className="h-full min-h-0 overflow-hidden bg-surface text-on-surface">
       <input ref={summaryInputRef} type="file" accept=".docx" onChange={previewSummary} className="hidden" />
       <input ref={contractInputRef} type="file" accept=".docx" multiple onChange={addContractFiles} className="hidden" />
       <input ref={attachmentInputRef} type="file" accept=".docx" onChange={uploadAttachment} className="hidden" />
@@ -600,20 +628,17 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
         <MaterialsViewSwitch
           active="performance"
           title="平台共用业绩库"
-          basePath={sourceMaterialsBasePath}
-          workspaceLabel="共用"
-          workspaceIcon="database"
-          items={sharedPerformanceItems}
+          groups={materialsGroups}
         />
 
         <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_7.5rem_auto]">
-            <input value={filters.keyword} onChange={(event) => updateFilter('keyword', event.target.value)} placeholder="搜索项目/买方/型号/类别" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <input value={filters.turbineModel} onChange={(event) => updateFilter('turbineModel', event.target.value)} placeholder="型号，如 EW8.5-230" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <input value={filters.contractYear} onChange={(event) => updateFilter('contractYear', event.target.value)} placeholder="合同年" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <input value={filters.deliveryYear} onChange={(event) => updateFilter('deliveryYear', event.target.value)} placeholder="交货年" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <input value={filters.operationYear} onChange={(event) => updateFilter('operationYear', event.target.value)} placeholder="投运年" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
-            <select value={filters.status} onChange={(event) => updateFilter('status', event.target.value)} className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm">
+          <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_7.5rem_auto]">
+            <input value={filters.keyword} onChange={(event) => updateFilter('keyword', event.target.value)} placeholder="搜索项目/买方/型号/类别" aria-label="搜索项目、买方、型号或类别" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.turbineModel} onChange={(event) => updateFilter('turbineModel', event.target.value)} placeholder="型号，如 EW8.5-230" aria-label="按机型筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.contractYear} onChange={(event) => updateFilter('contractYear', event.target.value)} placeholder="合同年" aria-label="按合同年筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.deliveryYear} onChange={(event) => updateFilter('deliveryYear', event.target.value)} placeholder="交货年" aria-label="按交货年筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <input value={filters.operationYear} onChange={(event) => updateFilter('operationYear', event.target.value)} placeholder="投运年" aria-label="按投运年筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
+            <select value={filters.status} onChange={(event) => updateFilter('status', event.target.value)} aria-label="按类别状态筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm">
               {CATEGORY_STATUS_OPTIONS.map((option) => (
                 <option key={option.label} value={option.value}>{option.label}</option>
               ))}
@@ -623,13 +648,13 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
               disabled={previewing}
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:brightness-95 disabled:opacity-50"
             >
-              <span className="material-symbols-outlined text-base">upload_file</span>
+              <span aria-hidden="true" className="material-symbols-outlined text-base">upload_file</span>
               {previewing ? '解析中...' : '导入汇总表'}
             </button>
           </div>
         </section>
 
-        <section className="relative min-h-0 flex-1 overflow-auto rounded-lg border border-surface-container-high bg-white">
+        <section aria-label="业绩明细表" className="relative min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-surface-container-high bg-white [scrollbar-gutter:stable]">
           {loading && !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">加载中...</div>
           ) : !items.length ? (
@@ -775,7 +800,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           ) : null}
         </section>
 
-        <div className="flex items-center justify-between text-sm text-on-surface-variant">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-on-surface-variant">
           <span>共 {total} 条业绩明细</span>
           <div className="flex items-center gap-2">
             <button disabled={page <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))} className="rounded-md bg-surface-container-high px-3 py-1.5 disabled:opacity-50">上一页</button>
@@ -787,7 +812,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
       {preview && (
         <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 transition-opacity">
-          <div className="wizard-modal-surface flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="导入业绩包" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between border-b border-surface-container-high px-5 py-4">
               <div>
                 <h2 className="text-base font-semibold">导入业绩包</h2>
@@ -797,7 +822,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                 <span className="material-symbols-outlined text-base">close</span>
               </button>
             </div>
-            <div className="min-h-0 overflow-auto p-5">
+            <div className="min-h-0 overflow-auto overscroll-contain p-5">
               <div className="grid gap-3 md:grid-cols-4">
                 <label className="text-sm text-on-surface-variant md:col-span-2">类别名称<input value={importForm.categoryName} onChange={(event) => updateImportForm('categoryName', event.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface" /></label>
                 <label className="text-sm text-on-surface-variant">场景<input value={importForm.scene} onChange={(event) => updateImportForm('scene', event.target.value)} className="mt-1 h-10 w-full rounded-lg border-none bg-surface-container-highest px-3 text-sm text-on-surface" /></label>
@@ -883,7 +908,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
       {deleteTarget && (
         <div className="dialog-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 transition-opacity">
-          <div className="wizard-modal-surface w-full max-w-lg overflow-hidden rounded-xl border border-error/30 bg-surface-container-lowest animate-float-in">
+          <div role="alertdialog" aria-modal="true" aria-label="删除业绩类别" className="wizard-modal-surface w-full max-w-lg overflow-hidden rounded-lg border border-error/30 bg-surface-container-lowest animate-float-in">
             <div className="border-b border-surface-container-high px-5 py-4">
               <h2 className="text-base font-semibold text-error">删除业绩类别</h2>
               <p className="mt-1 text-sm text-on-surface-variant">{deleteTarget.name || deleteTarget.id}</p>
@@ -918,7 +943,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
       {editTarget && (
         <div className="dialog-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 transition-opacity">
-          <div className="wizard-modal-surface flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="编辑业绩明细" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
               <div className="min-w-0">
                 <h2 className="truncate text-base font-semibold">{editTarget.id ? '编辑业绩明细' : '新增业绩明细'}</h2>
@@ -930,7 +955,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                 <span className="material-symbols-outlined text-base">close</span>
               </button>
             </div>
-            <div className="min-h-0 overflow-auto p-5">
+            <div className="min-h-0 overflow-auto overscroll-contain p-5">
               <div className="grid gap-3 md:grid-cols-2">
                 {ITEM_EDIT_FIELDS.map((field) => (
                   <label key={field.key} className={`text-sm text-on-surface-variant ${field.span === 2 ? 'md:col-span-2' : ''}`}>
@@ -961,7 +986,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
       {detailOpen && (
         <div className="dialog-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 transition-opacity">
-          <div className="wizard-modal-surface flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest animate-float-in">
+          <div role="dialog" aria-modal="true" aria-label="业绩类别明细" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
               <div className="min-w-0">
                 <h2 className="truncate text-base font-semibold">{currentDetailItem?.name || '业绩类别'}</h2>
@@ -1003,7 +1028,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                 </div>
               </div>
             ) : (
-              <div className="min-h-0 overflow-auto p-5">
+              <div className="min-h-0 overflow-auto overscroll-contain p-5">
                 {currentDetailItem?.summary ? (
                   <div className="rounded-lg bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">{currentDetailItem.summary}</div>
                 ) : null}
@@ -1115,7 +1140,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
       {attachmentPreview && (
         <div className="dialog-overlay fixed inset-0 z-[70] bg-black/45 p-3 sm:p-4">
-          <div className="mx-auto flex h-full w-full max-w-[92vw] flex-col overflow-hidden rounded-xl border border-surface-container-high bg-surface-container-lowest shadow-xl">
+          <div role="dialog" aria-modal="true" aria-label="业绩附件在线预览" className="mx-auto flex h-full w-full max-w-[96rem] flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest shadow-xl">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-3">
               <div className="min-w-0">
                 <h2 className="truncate text-base font-semibold text-on-surface">{attachmentPreview.fileName || '附件预览'}</h2>
@@ -1195,6 +1220,6 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           </div>
         </div>
       )}
-    </main>
+    </section>
   )
 }

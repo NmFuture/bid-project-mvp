@@ -21,7 +21,7 @@ import {
   TECHNICAL_BID_TYPE,
 } from '../technicalProjectPrefill'
 
-const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 2
+const TECHNICAL_PROJECT_WIZARD_DRAFT_VERSION = 3
 const TECHNICAL_PROJECT_WIZARD_DRAFT_PREFIX = 'sewpg.technicalProjectWizardDraft'
 const FORM_REQUIRED_STEP = 0
 
@@ -30,9 +30,9 @@ const FIELD_INPUT_CLASS =
   'w-full h-10 rounded-lg border border-outline-variant/80 bg-white px-3 text-sm text-on-surface placeholder:text-outline/70 transition-colors hover:border-outline focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/15 disabled:cursor-not-allowed disabled:bg-surface-container-low disabled:text-on-surface-variant'
 const FIELD_SELECT_CLASS = `${FIELD_INPUT_CLASS} cursor-pointer`
 
-function FieldLabel({ children, required = false }) {
+function FieldLabel({ children, htmlFor, required = false }) {
   return (
-    <label className="mb-1.5 block text-xs font-medium text-on-surface-variant">
+    <label htmlFor={htmlFor} className="mb-1.5 block text-xs font-medium text-on-surface-variant">
       {children}
       {required ? <span className="ml-0.5 text-error">*</span> : null}
     </label>
@@ -73,8 +73,7 @@ const readDraft = (key) => {
           ? parsed.form.turbineModels.map(createTurbineModelRow)
           : normalizeTurbineModelRows(parsed.form),
       },
-      materialProjectMode: parsed.materialProjectMode === 'library' ? 'library' : 'ordinary',
-      selectedMaterialProjectId: String(parsed.selectedMaterialProjectId || ''),
+      materialSourceProjectId: String(parsed.materialSourceProjectId || ''),
     }
   } catch {
     return null
@@ -95,14 +94,8 @@ const clearDraft = (key) => {
   window.localStorage.removeItem(key)
 }
 
-const materialProjectLabel = (item) => {
-  const parts = [
-    item.projectId,
-    item.projectCode && item.projectCode !== item.projectId ? item.projectCode : '',
-    item.customerName,
-  ].filter(Boolean)
-  return `${item.name}${parts.length ? `（${parts.join(' / ')}）` : ''}`
-}
+// 不复制历史项目时的默认项：只用本次解析产物建一个空的项目目录。
+const NEW_EMPTY_PROJECT_LABEL = '新建空项目'
 
 export default function TechnicalProjectWizardModal({
   onClose,
@@ -129,12 +122,11 @@ export default function TechnicalProjectWizardModal({
     }),
     draftForm: draft?.form,
   }))
-  const [materialProjectMode, setMaterialProjectMode] = useState(
-    draft?.materialProjectMode || project?.materialProjectMode || (project?.materialProjectId ? 'library' : 'ordinary'),
-  )
   const [materialProjects, setMaterialProjects] = useState([])
-  const [selectedMaterialProjectId, setSelectedMaterialProjectId] = useState(
-    draft?.selectedMaterialProjectId || String(project?.materialProjectId || ''),
+  // 素材来源项目：空串表示新建空项目。提交后由后端记入 materialSourceProjectId 并锁定。
+  const lockedSourceProjectId = String(project?.materialSourceProjectId || '')
+  const [materialSourceProjectId, setMaterialSourceProjectId] = useState(
+    lockedSourceProjectId || draft?.materialSourceProjectId || '',
   )
   // 客户 / 风机机型候选改为从技术标三级目录 JSON 索引派生（客户定制 / 标准文件），
   // 末尾固定带「其他」。见 doc/anbc_doc/20260618-技术标三级目录JSON索引-下游使用Handoff.md
@@ -150,7 +142,6 @@ export default function TechnicalProjectWizardModal({
   const [createError, setCreateError] = useState('')
 
   const updateForm = (key, val) => setForm((prev) => ({ ...prev, [key]: val }))
-  const selectedMaterialProject = materialProjects.find((item) => item.id === selectedMaterialProjectId)
   // 「其他」恒为最后一项，合并 form 现值时要避免把它当成真实候选重复插入。
   // 客户候选只认素材库客户目录，不再回落到 STATIC_CUSTOMER_OPTIONS：静态清单里
   // 有大量素材库中不存在的客户，一旦回落用户会选到没有素材的客户，且界面毫无提示，
@@ -220,8 +211,7 @@ export default function TechnicalProjectWizardModal({
       writeDraft(draftKey, {
         step: FORM_REQUIRED_STEP,
         form,
-        materialProjectMode,
-        selectedMaterialProjectId,
+        materialSourceProjectId,
       })
     }, 250)
     return () => clearTimeout(timer)
@@ -229,8 +219,7 @@ export default function TechnicalProjectWizardModal({
     creating,
     draftKey,
     form,
-    materialProjectMode,
-    selectedMaterialProjectId,
+    materialSourceProjectId,
   ])
 
 
@@ -289,38 +278,16 @@ export default function TechnicalProjectWizardModal({
         }
         const payload = await materialsApi.identityOptions({ bidType: form.bidType })
         if (!mounted) return
-        const projects = normalizeMaterialProjects(payload?.projects || [])
-        setMaterialProjects(projects)
-        if (isUpdateMode) {
-          if (hasDraft) return
-          const selectedProject = projects.find((item) => item.id === String(project?.materialProjectId || ''))
-          if (selectedProject) {
-            setMaterialProjectMode(project?.materialProjectMode || 'library')
-            setSelectedMaterialProjectId(selectedProject.id)
-            setForm((prev) => ({
-              ...prev,
-              materialProjectName: selectedProject.name,
-              projectCode: prev.projectCode || selectedProject.projectCode,
-            }))
-          }
-          return
-        }
-        if (!hasDraft) {
-          const defaultProject = projects[0]
-          if (defaultProject) {
-            setMaterialProjectMode('library')
-            setSelectedMaterialProjectId(defaultProject.id)
-            setForm((prev) => ({
-              ...prev,
-              materialProjectName: defaultProject.name,
-              projectCode: prev.projectCode || defaultProject.projectCode,
-            }))
-          }
-        }
+        // 候选是素材库已成型的项目目录；本项目自己不能作为自己的素材来源。
+        const currentProjectId = String(project?.id || '')
+        setMaterialProjects(
+          normalizeMaterialProjects(payload?.projects || [])
+            .filter((item) => item.projectId !== currentProjectId),
+        )
       } catch (e) {
         if (!mounted) return
         setMaterialProjects([])
-        setIdentityError(e?.message || '技术标项目候选加载失败，可选择普通项目。')
+        setIdentityError(e?.message || '素材库项目清单加载失败，可先按新建空项目提交。')
       } finally {
         if (mounted) setLoadingIdentities(false)
       }
@@ -329,22 +296,20 @@ export default function TechnicalProjectWizardModal({
     return () => {
       mounted = false
     }
-  }, [form.bidType, hasDraft, isUpdateMode, materialsApi, project?.materialProjectId, project?.materialProjectMode])
+  }, [form.bidType, materialsApi, project?.id])
 
   const missingRequiredItems = useMemo(() => {
     const items = []
     if (!form.name.trim()) items.push('项目名称')
     if (!form.customerName.trim()) items.push('客户')
-    if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
     const turbineRows = cleanTurbineModelRows(form.turbineModels)
     if (requiresTurbineModel && (!turbineRows.length || turbineRows.some((row) => !row.model))) items.push('风机机型')
     if (requiresTurbineModel && turbineRows.some((row) => !isPositiveIntegerText(row.turbineCount))) items.push('风机台数')
     if (requiresTurbineModel && turbineRows.some((row) => !row.foundationType.trim())) items.push('基础形式')
-    if (!form.manager.trim()) items.push('负责人')
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
-  }, [form, materialProjectMode, requiresTurbineModel, selectedMaterialProjectId])
+  }, [form, requiresTurbineModel])
   const canSubmit = missingRequiredItems.length === 0
   const nextDisabledReason = missingRequiredItems.length ? `请先补全：${missingRequiredItems.join('、')}` : ''
 
@@ -367,10 +332,9 @@ export default function TechnicalProjectWizardModal({
         customerCanonicalName: form.customerName,
         materialCustomerId: '',
         materialCustomerName: form.customerName,
-        materialProjectMode,
-        materialProjectId: materialProjectMode === 'library' ? selectedMaterialProject?.projectId || selectedMaterialProjectId : '',
-        materialProjectCode: materialProjectMode === 'library' ? selectedMaterialProject?.projectCode || selectedMaterialProjectId : form.projectCode,
-        materialProjectName: materialProjectMode === 'library' ? selectedMaterialProject?.name || selectedMaterialProjectId : (form.materialProjectName || form.name),
+        // 素材身份恒为项目自身，来源项目只作为复制模板单独记录。
+        materialProjectName: form.name,
+        materialSourceProjectId,
         turbineModel: requiresTurbineModel ? primaryTurbineModel : {},
       }
       if (forceReviewDecision) payload.reviewDecision = forceReviewDecision
@@ -394,15 +358,18 @@ export default function TechnicalProjectWizardModal({
   }
 
   return (
-    <div className="dialog-overlay bg-[rgba(23,33,43,0.28)] backdrop-blur-0" onClick={onClose}>
+    <div className="dialog-overlay overscroll-contain bg-[rgba(23,33,43,0.28)] p-2 backdrop-blur-0 sm:p-4" onClick={onClose}>
       <div
-        className="dialog-content wizard-modal-surface flex max-h-[90vh] w-full max-w-[760px] animate-fade-in flex-col border border-surface-container-high"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="technical-project-wizard-title"
+        className="dialog-content wizard-modal-surface flex max-h-[calc(100dvh-1rem)] w-full max-w-[760px] animate-fade-in flex-col border border-surface-container-high sm:max-h-[calc(100dvh-2rem)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex shrink-0 items-start justify-between border-b border-surface-container-high px-6 py-4">
           <div>
-            <h2 className="font-headline text-xl font-semibold text-on-surface">
+            <h2 id="technical-project-wizard-title" className="font-headline text-xl font-semibold text-on-surface">
               {isUpdateMode ? '完善项目信息' : '新建技术标项目'}
             </h2>
             <p className="mt-1 text-xs text-outline">
@@ -411,10 +378,11 @@ export default function TechnicalProjectWizardModal({
           </div>
           <button
             onClick={onClose}
-            className="close-plain text-on-surface-variant hover:text-primary transition-colors"
+            type="button"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
             aria-label="关闭"
           >
-            <span className="material-symbols-outlined text-[20px]">close</span>
+            <span aria-hidden="true" className="material-symbols-outlined text-[20px]">close</span>
           </button>
         </div>
 
@@ -422,39 +390,40 @@ export default function TechnicalProjectWizardModal({
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex flex-col gap-4 animate-fade-in">
             <div>
-              <FieldLabel required>项目名称</FieldLabel>
+              <FieldLabel htmlFor="technical-project-name" required>项目名称</FieldLabel>
               <input
+                id="technical-project-name"
+                name="projectName"
+                autoComplete="off"
                 className={FIELD_INPUT_CLASS}
                 placeholder="输入项目名称，例如：甘肃华能100MW风电项目"
                 value={form.name}
                 onChange={(e) => updateForm('name', e.target.value)}
               />
-            </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <FieldLabel>业务项目编号</FieldLabel>
-                <input
-                  className={FIELD_INPUT_CLASS}
-                  placeholder="例如：招标编号、项目编号"
-                  value={form.projectCode}
-                  onChange={(e) => updateForm('projectCode', e.target.value)}
-                />
-              </div>
-              <div>
-                <FieldLabel required>负责人</FieldLabel>
-                <input
-                  className={FIELD_INPUT_CLASS}
-                  placeholder="张建国"
-                  value={form.manager}
-                  onChange={(e) => updateForm('manager', e.target.value)}
-                />
-              </div>
+              <p className="mt-1.5 text-xs text-outline">
+                将作为素材库文件夹名，不可重名，不能含 \ / : * ? " &lt; &gt; |
+              </p>
             </div>
             <div>
-              <FieldLabel required>客户</FieldLabel>
+              <FieldLabel htmlFor="technical-project-manager">负责人</FieldLabel>
+              <input
+                id="technical-project-manager"
+                name="projectManager"
+                autoComplete="off"
+                className={FIELD_INPUT_CLASS}
+                placeholder="张建国"
+                value={form.manager}
+                onChange={(e) => updateForm('manager', e.target.value)}
+              />
+            </div>
+            <div>
+              <FieldLabel htmlFor="technical-project-customer" required>客户</FieldLabel>
               {customerIsOther ? (
                 <div className="flex items-center gap-2">
                   <input
+                    id="technical-project-customer"
+                    name="customerName"
+                    autoComplete="off"
                     className={FIELD_INPUT_CLASS}
                     placeholder="输入客户名称"
                     autoFocus
@@ -482,6 +451,8 @@ export default function TechnicalProjectWizardModal({
                 </div>
               ) : (
                 <select
+                  id="technical-project-customer"
+                  name="customerName"
                   className={FIELD_SELECT_CLASS}
                   value={form.customerName}
                   onChange={(e) => {
@@ -508,77 +479,37 @@ export default function TechnicalProjectWizardModal({
               {indexOptionsError && (
                 <p className="mt-1.5 text-xs text-error">{indexOptionsError}</p>
               )}
+            </div>
+            <div>
+              <FieldLabel htmlFor="technical-project-source">项目来源</FieldLabel>
+              <select
+                id="technical-project-source"
+                name="materialSourceProjectId"
+                className={FIELD_SELECT_CLASS}
+                value={materialSourceProjectId}
+                onChange={(e) => setMaterialSourceProjectId(e.target.value)}
+                disabled={loadingIdentities || Boolean(lockedSourceProjectId)}
+              >
+                <option value="">{NEW_EMPTY_PROJECT_LABEL}</option>
+                {materialProjects.map((item) => (
+                  <option key={item.id} value={item.projectId}>{item.name}</option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-xs text-outline">
+                {lockedSourceProjectId
+                  ? '素材已归集，如需增删请到素材库中调整。'
+                  : materialSourceProjectId
+                    ? '提交后会把该项目的素材复制进本项目文件夹（不含其附表），复制在后台进行。'
+                    : '只用本次解析产物建立项目文件夹，后续可在素材库手动上传。'}
+              </p>
               {(identityError || loadingIdentities) && (
                 <p className={`mt-1.5 text-xs ${identityError ? 'text-error' : 'text-outline'}`}>
-                  {identityError || '正在加载技术标项目...'}
+                  {identityError || '正在加载素材库项目清单...'}
                 </p>
               )}
             </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <FieldLabel>项目来源</FieldLabel>
-                <select
-                  className={FIELD_SELECT_CLASS}
-                  value={materialProjectMode}
-                  onChange={(e) => {
-                    const nextMode = e.target.value
-                    setMaterialProjectMode(nextMode)
-                    if (nextMode === 'library') {
-                      const selected = materialProjects.find((item) => item.id === selectedMaterialProjectId) || materialProjects[0]
-                      if (selected) {
-                        setSelectedMaterialProjectId(selected.id)
-                        setForm((prev) => ({
-                          ...prev,
-                          materialProjectName: selected.name,
-                          projectCode: prev.projectCode || selected.projectCode,
-                        }))
-                      }
-                    }
-                  }}
-                  disabled={loadingIdentities}
-                >
-                  <option value="library" disabled={!materialProjects.length}>重点项目</option>
-                  <option value="ordinary">普通项目</option>
-                </select>
-              </div>
-              <div>
-                <FieldLabel required={materialProjectMode === 'library'}>
-                  {materialProjectMode === 'library' ? '重点项目' : '普通项目'}
-                </FieldLabel>
-                {materialProjectMode === 'library' && materialProjects.length > 0 ? (
-                  <select
-                    className={FIELD_SELECT_CLASS}
-                    value={selectedMaterialProjectId}
-                    onChange={(e) => {
-                      const nextId = e.target.value
-                      setSelectedMaterialProjectId(nextId)
-                      const selected = materialProjects.find((item) => item.id === nextId)
-                      if (selected) {
-                        setForm((prev) => ({
-                          ...prev,
-                          materialProjectName: selected.name,
-                          projectCode: prev.projectCode || selected.projectCode,
-                        }))
-                      }
-                    }}
-                  >
-                    <option value="">选择项目</option>
-                    {materialProjects.map((item) => (
-                      <option key={item.id} value={item.id}>{materialProjectLabel(item)}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className={FIELD_INPUT_CLASS}
-                    placeholder="项目名称，不填则使用投标项目名称"
-                    value={form.materialProjectName}
-                    onChange={(e) => updateForm('materialProjectName', e.target.value)}
-                  />
-                )}
-              </div>
-            </div>
             {requiresTurbineModel && (
-              <div className="rounded-xl border border-surface-container-high bg-surface-container-low/50 p-4">
+              <div className="rounded-lg border border-surface-container-high bg-surface-container-low/50 p-4">
                 <div className="mb-3 flex items-center justify-between">
                   <div className="flex items-center gap-0.5 text-sm font-semibold text-on-surface">
                     风机机型明细<span className="text-error">*</span>
@@ -588,7 +519,7 @@ export default function TechnicalProjectWizardModal({
                     onClick={addTurbineRow}
                     className="inline-flex h-8 items-center gap-1 rounded-md bg-primary-fixed px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary-fixed-dim"
                   >
-                    <span className="material-symbols-outlined text-[16px]">add</span>
+                    <span aria-hidden="true" className="material-symbols-outlined text-[16px]">add</span>
                     添加机型
                   </button>
                 </div>
@@ -596,10 +527,12 @@ export default function TechnicalProjectWizardModal({
                   {form.turbineModels.map((row, index) => (
                     <div key={row.id} className="grid grid-cols-1 items-end gap-3 lg:grid-cols-[minmax(0,1.5fr)_110px_minmax(0,1fr)_40px]">
                       <div>
-                        <label className="mb-1 block text-xs font-medium text-outline">风机机型</label>
+                        <label htmlFor={`technical-turbine-model-${row.id}`} className="mb-1 block text-xs font-medium text-outline">风机机型</label>
                         {otherTurbineRowIds.has(row.id) ? (
                           <div className="flex items-center gap-2">
                             <input
+                              id={`technical-turbine-model-${row.id}`}
+                              name={`turbineModel-${index + 1}`}
                               className={FIELD_INPUT_CLASS}
                               placeholder="输入风机机型"
                               autoFocus
@@ -624,6 +557,8 @@ export default function TechnicalProjectWizardModal({
                           </div>
                         ) : (
                           <select
+                            id={`technical-turbine-model-${row.id}`}
+                            name={`turbineModel-${index + 1}`}
                             className={FIELD_SELECT_CLASS}
                             value={row.model}
                             onChange={(e) => {
@@ -644,8 +579,10 @@ export default function TechnicalProjectWizardModal({
                         )}
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs font-medium text-outline">风机台数</label>
+                        <label htmlFor={`technical-turbine-count-${row.id}`} className="mb-1 block text-xs font-medium text-outline">风机台数</label>
                         <input
+                          id={`technical-turbine-count-${row.id}`}
+                          name={`turbineCount-${index + 1}`}
                           inputMode="numeric"
                           pattern="[1-9][0-9]*"
                           className={FIELD_INPUT_CLASS}
@@ -658,8 +595,10 @@ export default function TechnicalProjectWizardModal({
                         />
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs font-medium text-outline">基础形式</label>
+                        <label htmlFor={`technical-foundation-type-${row.id}`} className="mb-1 block text-xs font-medium text-outline">基础形式</label>
                         <select
+                          id={`technical-foundation-type-${row.id}`}
+                          name={`foundationType-${index + 1}`}
                           className={FIELD_SELECT_CLASS}
                           value={row.foundationType}
                           onChange={(e) => updateTurbineRow(row.id, 'foundationType', e.target.value)}
@@ -677,17 +616,19 @@ export default function TechnicalProjectWizardModal({
                         aria-label={`删除第 ${index + 1} 个风机机型`}
                         title="删除"
                       >
-                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                        <span aria-hidden="true" className="material-symbols-outlined text-[18px]">delete</span>
                       </button>
                     </div>
                   ))}
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <FieldLabel required>起始日期</FieldLabel>
+                <FieldLabel htmlFor="technical-project-start-date" required>起始日期</FieldLabel>
                 <input
+                  id="technical-project-start-date"
+                  name="startDate"
                   type="date"
                   className={FIELD_INPUT_CLASS}
                   value={form.startDate}
@@ -695,8 +636,10 @@ export default function TechnicalProjectWizardModal({
                 />
               </div>
               <div>
-                <FieldLabel required>截止日期</FieldLabel>
+                <FieldLabel htmlFor="technical-project-end-date" required>截止日期</FieldLabel>
                 <input
+                  id="technical-project-end-date"
+                  name="endDate"
                   type="date"
                   className={FIELD_INPUT_CLASS}
                   value={form.endDate}
@@ -707,6 +650,7 @@ export default function TechnicalProjectWizardModal({
             {missingRequiredItems.length > 0 && (
               <div
                 id="technical-project-required-hint"
+                role="status"
                 className="flex items-center gap-2 rounded-lg border border-[#f2c169]/50 bg-[#fff8e6] px-3 py-2 text-xs text-[#7a4d00]"
               >
                 <span className="material-symbols-outlined shrink-0 text-[16px]">info</span>
@@ -714,8 +658,8 @@ export default function TechnicalProjectWizardModal({
               </div>
             )}
             {createError && (
-              <div className="flex items-center gap-2 rounded-lg border border-error/25 bg-error-container/40 px-3 py-2 text-sm text-error">
-                <span className="material-symbols-outlined shrink-0 text-[18px]">error</span>
+              <div role="alert" className="flex items-center gap-2 rounded-lg border border-error/25 bg-error-container/40 px-3 py-2 text-sm text-error">
+                <span aria-hidden="true" className="material-symbols-outlined shrink-0 text-[18px]">error</span>
                 <span>{createError}</span>
               </div>
             )}
@@ -723,11 +667,12 @@ export default function TechnicalProjectWizardModal({
         </div>
 
         {/* Footer */}
-        <div className="flex shrink-0 items-center justify-between border-t border-surface-container-high bg-surface-container-low/60 px-6 py-3.5">
+        <div className="flex shrink-0 flex-col-reverse gap-2 border-t border-surface-container-high bg-surface-container-low/60 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <Button
             onClick={onClose}
             size="sm"
             variant="quiet"
+            className="w-full sm:w-auto"
           >
             取消
           </Button>
@@ -738,6 +683,7 @@ export default function TechnicalProjectWizardModal({
             aria-describedby={!canSubmit ? 'technical-project-required-hint' : undefined}
             size="stage"
             variant="primary"
+            className="w-full sm:w-auto"
           >
             {creating ? (isUpdateMode ? '保存中...' : '创建中...') : '确认提交'}
           </Button>

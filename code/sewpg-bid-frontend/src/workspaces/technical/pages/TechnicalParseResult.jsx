@@ -4,19 +4,15 @@ import { technicalDirectoryAPI, technicalParseAPI, technicalProjectsAPI, technic
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import DataCard from '../../../components/shared/DataCard'
 import PageHeader from '../../../components/shared/PageHeader'
-import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import TechnicalDirectoryProgressPanel from '../components/TechnicalDirectoryProgressPanel'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
-  directoryDisplayPercentage,
-  directoryElapsedSeconds,
-  formatDirectoryDuration,
   isDirectoryProgressFailed,
   isDirectoryProgressRunning,
   mergeMonotonicDirectoryProgress,
   shouldShowTemplateDirectoryGenerationButton,
-  summarizeDirectoryProgress,
 } from '../technicalDirectoryProgress'
 import { subscribeDirectoryProgress } from '../technicalDirectoryProgressStream'
 
@@ -147,25 +143,6 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const isDirectoryCompleted = directoryStatus === 'completed'
   const isDirectoryFailed = isDirectoryProgressFailed(directoryState)
   const showDirectoryGenerationButton = shouldShowTemplateDirectoryGenerationButton(directoryState || {})
-  const directoryProgressSummary = summarizeDirectoryProgress(directoryState || {})
-  const directoryProgressBadgeClass = directoryProgressSummary.tone === 'danger'
-    ? 'bg-error-container text-error'
-    : directoryProgressSummary.tone === 'success'
-      ? 'bg-secondary-container text-on-secondary-container'
-      : directoryProgressSummary.tone === 'running'
-        ? 'bg-primary/10 text-primary'
-        : 'bg-surface-container-high text-on-surface-variant'
-  const directoryProgressBarClass = directoryProgressSummary.tone === 'danger'
-    ? 'bg-error'
-    : directoryProgressSummary.tone === 'success'
-      ? 'bg-secondary'
-      : 'bg-primary'
-  const elapsedDirectorySeconds = directoryElapsedSeconds(directoryState || {}, directoryProgressClock)
-  const displayPercentage = directoryDisplayPercentage(directoryState || {}, directoryProgressClock)
-  const elapsedDurationText = formatDirectoryDuration(elapsedDirectorySeconds)
-  const elapsedLineText = elapsedDurationText
-    ? `${isDirectoryCompleted ? '总耗时' : '已运行'} ${elapsedDurationText}`
-    : ''
 
   useEffect(() => {
     if (!isDirectoryRunning) return undefined
@@ -334,13 +311,12 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   if (error) return <PageError title="目录生成加载失败" description={error} onRetry={loadData} />
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className="stage-page flex w-full max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
       <StageBreadcrumb />
-      <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
 
       <PageHeader
         className="mb-2"
-        actionsClassName="stage-header-actions"
+        actionsClassName="stage-header-actions w-full sm:w-auto"
         actions={(
           <>
             <Button
@@ -349,6 +325,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
               title={!isDirectoryCompleted ? '目录生成完成后可进入目录确认' : ''}
               size="lg"
               variant="success"
+              className="!h-10 w-full sm:w-auto"
             >
               {advancing ? '进入中...' : '进入目录确认'}
             </Button>
@@ -358,15 +335,15 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
 
       <div className="business-ui-shell mx-auto w-full max-w-[1120px]">
         <DataCard className="!p-0 overflow-hidden">
-          <div className="business-section-head flex items-center px-6 py-5">
+          <div className="business-section-head flex items-center px-4 py-4 sm:px-6 sm:py-5">
             <div className="flex items-center">
-              <h2 className="text-2xl font-headline font-extrabold text-primary">生成投标文件目录</h2>
+              <h2 className="text-xl font-headline font-extrabold text-primary sm:text-2xl">生成投标文件目录</h2>
             </div>
           </div>
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.82fr)]">
-          <div className="flex min-h-[388px] flex-col gap-4 border-b border-surface-container-high p-6 lg:border-b-0 lg:border-r">
+          <div className="flex flex-col gap-4 border-b border-surface-container-high p-4 sm:p-6 lg:min-h-[388px] lg:border-b-0 lg:border-r">
         {!isReviewApproved && (
-          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
+          <div role="alert" className="flex flex-col gap-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error sm:flex-row sm:items-center sm:justify-between">
             <span>当前项目尚未确认参与投标，请先到“解析”模块完成决策。</span>
             <Button
               onClick={() => navigate(`/parse/technical?projectId=${id}`)}
@@ -378,7 +355,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           </div>
         )}
         {isReviewApproved && !isProjectInfoComplete && (
-          <div className="rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error flex items-center justify-between gap-3">
+          <div role="alert" className="flex flex-col gap-3 rounded-md border border-error/30 bg-error-container/20 px-3 py-2 text-sm text-error sm:flex-row sm:items-center sm:justify-between">
             <span>当前项目信息未补全，请返回“解析”模块重新确认参与并补全项目信息。</span>
             <Button
               onClick={() => navigate(`/parse/technical?projectId=${id}`)}
@@ -423,13 +400,37 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
                   <span className="text-sm text-on-surface flex-1 truncate" title={file.name}>{file.name}</span>
                   <span className="text-xs text-outline">{fileSizeLabel(file.size)}</span>
                   <button
+                    type="button"
+                    aria-label={`移除文件 ${file.name}`}
                     onClick={() => removePickedFile(index)}
-                    className="text-error hover:bg-error-container/30 w-6 h-6 flex items-center justify-center"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-error hover:bg-error-container/30"
                   >
-                    <span className="material-symbols-outlined text-sm">close</span>
+                    <span aria-hidden="true" className="material-symbols-outlined text-sm">close</span>
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+          {uploadedTemplateFiles.length > 0 && (
+            <div className="flex flex-col gap-2" aria-label="已上传项目模板">
+              {uploadedTemplateFiles.map((file) => (
+                <div key={file.id} className="flex items-center gap-3 rounded-md bg-surface-container-low px-3 py-2.5">
+                  <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">description</span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-on-surface" title={file.name}>{file.name}</span>
+                  <span className="shrink-0 text-xs text-outline">{file.size}</span>
+                  <span className="shrink-0 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">项目模板</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {fallbackWillBeUsed && (
+            <div className="flex items-center gap-3 rounded-md bg-surface-container-low px-3 py-2.5" aria-label="当前默认模板">
+              <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">description</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-on-surface" title={fallbackTemplate.name}>
+                {fallbackTemplate.name || '默认技术标模板'}
+              </span>
+              <span className="shrink-0 text-xs text-outline">{fallbackTemplate.sizeLabel || '-'}</span>
+              <span className="shrink-0 rounded-md bg-surface-container-high px-2 py-0.5 text-xs font-medium text-on-surface-variant">默认模板</span>
             </div>
           )}
           {!uploadedTemplateFiles.length && !fallbackWillBeUsed ? (
@@ -438,12 +439,13 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
             </div>
           ) : null}
         </div>
-        <div className="flex h-[34px] justify-center">
+        <div className="flex min-h-10 justify-center">
           <Button
             onClick={handleUploadTemplateFiles}
             disabled={uploading || isDirectoryRunning || !templateFiles.length}
             size="stage"
             variant="primary"
+            className="!h-10 w-full sm:w-auto"
           >
             {uploading ? '上传中...' : '上传模板文件'}
           </Button>
@@ -457,70 +459,26 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
 
           </div>
 
-          <div className="flex min-h-[388px] flex-col gap-4 p-6">
+          <div className="flex flex-col gap-4 p-4 sm:p-6 lg:min-h-[388px]">
             <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
 
-          <div className="flex min-h-[132px] items-center">
+          <div className="flex min-h-24 items-center sm:min-h-[132px]">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
-              <div className={[
-                'w-full border-y px-4 py-4',
-                isDirectoryFailed
-                  ? 'border-error/30 bg-error-container/10'
-                  : 'border-surface-container-high bg-surface-container-low',
-              ].join(' ')}>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <span
-                      aria-hidden="true"
-                      className={[
-                        'material-symbols-outlined mt-0.5 text-[20px]',
-                        isDirectoryFailed
-                          ? 'text-error'
-                          : isDirectoryCompleted
-                            ? 'text-secondary'
-                            : 'animate-spin-slow text-primary',
-                      ].join(' ')}
-                    >
-                      {isDirectoryFailed ? 'error' : isDirectoryCompleted ? 'check_circle' : 'progress_activity'}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold tabular-nums text-on-surface">
-                        {directoryProgressSummary.summary}
-                      </p>
-                      {elapsedLineText ? (
-                        <p className="mt-1 text-xs leading-5 tabular-nums text-outline">{elapsedLineText}</p>
-                      ) : null}
-                    </div>
-                  </div>
-                  <span className={[
-                    'shrink-0 self-start rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums',
-                    directoryProgressBadgeClass,
-                  ].join(' ')}>
-                    {directoryProgressSummary.statusText} · {Math.floor(displayPercentage)}%
-                  </span>
-                </div>
-
-                <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-                  <div
-                    className={[
-                      'h-full rounded-full transition-all duration-1000 ease-linear',
-                      directoryProgressBarClass,
-                      isDirectoryRunning ? 'bg-stripes' : '',
-                    ].join(' ')}
-                    style={{ width: `${displayPercentage}%` }}
-                  />
-                </div>
-              </div>
+              <TechnicalDirectoryProgressPanel
+                state={directoryState}
+                nowMs={directoryProgressClock}
+              />
             ) : null}
           </div>
 
-          <div className="flex h-[34px] justify-center">
+          <div className="flex min-h-10 justify-center">
             {showDirectoryGenerationButton ? (
               <Button
                 onClick={handleGenerateDirectory}
                 disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}
                 size="stage"
                 variant="primary"
+                className="!h-10 w-full sm:w-auto"
               >
                 {generatingDirectory || isDirectoryRunning
                   ? '生成中...'

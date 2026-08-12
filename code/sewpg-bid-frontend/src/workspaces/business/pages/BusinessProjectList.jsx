@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { businessProjectsAPI } from '../../../api'
 import FilterBar from '../../../components/shared/FilterBar'
 import Pagination from '../../../components/shared/Pagination'
+import PageHeader from '../../../components/shared/PageHeader'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
+import Button from '../../../components/ui/Button'
 import { projectRoute } from '../../../utils/workspace'
 import { getBusinessCompactStageLabel, getBusinessStageRoute } from '../businessStageFlow'
 import { businessProjectParseResultMenuRoute } from '../businessProjectRoutes'
@@ -140,28 +142,39 @@ export default function BusinessProjectList({ showToast }) {
   }
 
   return (
-    <div className="project-list-page flex flex-col gap-4 max-w-none mx-auto animate-fade-in h-full min-h-0 bg-white">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-headline font-bold text-primary">商务标项目</h1>
-        <p className="text-sm text-on-surface-variant">
-          当前工作区只展示商务标项目，素材库、Wiki 和日志也按商务标隔离。
-        </p>
-      </div>
+    <div className="project-list-page flex min-h-0 w-full flex-col gap-4 animate-fade-in">
+      <PageHeader
+        variant="panel"
+        title="商务标项目"
+        description="当前工作区只展示商务标项目，素材库、Wiki 和日志也按商务标隔离。"
+        actions={(
+          <Button
+            type="button"
+            onClick={() => setShowWizard(true)}
+            className="w-full sm:w-48"
+            icon="add"
+            size="stage"
+          >
+            新建商务标项目
+          </Button>
+        )}
+      />
 
       <FilterBar
         className="mt-0"
         left={(
           <>
-            <div className="flex items-center gap-2">
-              <span className="text-[14px] text-on-surface-variant whitespace-nowrap">筛选</span>
-              <div className="relative min-w-[170px]">
+            <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 md:flex md:w-auto md:items-center">
+              <label className="relative min-w-0 sm:min-w-[170px]">
+                <span className="sr-only">项目状态</span>
                 <select
+                  aria-label="项目状态"
                   value={statusFilter}
                   onChange={(e) => {
                     setStatusFilter(e.target.value)
                     setCurrentPage(1)
                   }}
-                  className="w-full min-h-0 h-[30px] appearance-none bg-[#e8eef2] border border-[#c3ced8] px-3.5 pr-9 text-[14px] text-on-surface focus:ring-0 transition-all cursor-pointer"
+                  className="h-11 w-full appearance-none rounded-md border border-control-muted-border-strong bg-white px-3.5 pr-9 text-base text-on-surface transition-colors focus:ring-2 focus:ring-primary/20 sm:h-10 sm:text-sm"
                 >
                   <option value="all">所有状态</option>
                   <option value="active">编写中</option>
@@ -169,35 +182,28 @@ export default function BusinessProjectList({ showToast }) {
                   <option value="completed">已完成</option>
                   <option value="archived">已归档</option>
                 </select>
-                <span className="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#14A83B]">arrow_drop_down</span>
-              </div>
-            </div>
-            <div className="relative min-w-[170px]">
+                <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-secondary">arrow_drop_down</span>
+              </label>
+              <label className="relative min-w-0 sm:min-w-[170px]">
+                <span className="sr-only">时间范围</span>
               <select
+                aria-label="时间范围"
                 value={dateFilter}
                 onChange={(e) => {
                   setDateFilter(e.target.value)
                   setCurrentPage(1)
                 }}
-                className="w-full min-h-0 h-[30px] appearance-none bg-[#e8eef2] border border-[#c3ced8] px-3.5 pr-9 text-[14px] text-on-surface focus:ring-0 transition-all cursor-pointer"
+                className="h-11 w-full appearance-none rounded-md border border-control-muted-border-strong bg-white px-3.5 pr-9 text-base text-on-surface transition-colors focus:ring-2 focus:ring-primary/20 sm:h-10 sm:text-sm"
               >
                 <option value="all">时间范围</option>
                 <option value="7d">最近7天</option>
                 <option value="30d">最近30天</option>
                 <option value="quarter">本季度</option>
               </select>
-              <span className="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-[#14A83B]">arrow_drop_down</span>
+                <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-secondary">arrow_drop_down</span>
+              </label>
             </div>
           </>
-        )}
-        right={(
-          <button
-            onClick={() => setShowWizard(true)}
-            className="h-[30px] px-4 flex items-center gap-1.5 bg-[#0067B6] text-on-primary font-semibold border border-[#0f77c4] hover:bg-[#0b74c8] transition-colors"
-          >
-            <span className="material-symbols-outlined text-lg">add</span>
-            新建商务标项目
-          </button>
         )}
       />
 
@@ -205,11 +211,11 @@ export default function BusinessProjectList({ showToast }) {
         <div className="flex items-center gap-2 flex-wrap">
           <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-secondary-container text-on-secondary-container text-xs font-medium border border-secondary/25">
             <span>状态: {statusFilter === 'active' ? '编写中' : statusFilter === 'review' ? '审批中' : statusFilter === 'completed' ? '已完成' : '已归档'}</span>
-            <button onClick={() => {
+            <button type="button" aria-label="清除状态筛选" onClick={() => {
               setStatusFilter('all')
               setCurrentPage(1)
             }} className="hover:text-error">
-              <span className="material-symbols-outlined text-sm">close</span>
+              <span aria-hidden="true" className="material-symbols-outlined text-sm">close</span>
             </button>
           </div>
         </div>
@@ -223,21 +229,70 @@ export default function BusinessProjectList({ showToast }) {
           onAction={loadProjects}
         />
       ) : (
-        <div className="project-table-frame mt-2 bg-surface-container-lowest border border-outline-variant/50 flex-1 min-h-0 flex flex-col">
-          <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0">
+        <div className="mt-2 flex min-h-0 flex-1 flex-col gap-3">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,22rem),1fr))] gap-3 xl:hidden" aria-label="商务标项目列表">
+            {projects.map((project) => {
+              const isActionLoading = actionLoadingId === project.id
+              const details = [
+                ['项目编号', project.id],
+                ['业主', project.owner || project.customerName || '-'],
+                ['负责人', project.manager || '-'],
+                ['标书类型', project.bidType || BUSINESS_BID_TYPE],
+                ['当前阶段', stageLabelForProject(project)],
+                ['起始日期', project.startDate || '-'],
+                ['截止日期', project.endDate || project.deadline || '-'],
+                ['更新时间', formatDateTime(project.updatedAt)],
+              ]
+              return (
+                <article key={project.id} className="overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.06)]">
+                  <div className="border-b border-outline-variant/45 px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => openProject(project)}
+                      className="min-h-10 w-full break-words text-left text-base font-semibold text-on-surface hover:text-primary"
+                    >
+                      {project.name || '-'}
+                    </button>
+                  </div>
+                  <dl className="grid grid-cols-1 gap-x-4 gap-y-3 px-4 py-3 min-[430px]:grid-cols-2">
+                    {details.map(([label, value]) => (
+                      <div key={label} className="min-w-0">
+                        <dt className="text-xs font-medium text-on-surface-variant">{label}</dt>
+                        <dd className="mt-1 break-words text-sm text-on-surface">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="grid grid-cols-1 gap-2 border-t border-outline-variant/45 bg-surface-container-low/55 p-3 min-[430px]:grid-cols-3">
+                    <button type="button" onClick={() => openProject(project)} className="min-h-10 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container">
+                      打开项目
+                    </button>
+                    <button type="button" onClick={(event) => openParseResult(project.id, event)} className="min-h-10 rounded-md bg-surface-container-high px-3 text-sm font-semibold text-on-surface hover:bg-surface-dim">
+                      查看解析
+                    </button>
+                    <button type="button" disabled={isActionLoading} onClick={() => handleDelete(project.id)} className="min-h-10 rounded-md bg-error-container/60 px-3 text-sm font-semibold text-on-error-container hover:bg-error-container disabled:opacity-50">
+                      {isActionLoading ? '删除中…' : '删除项目'}
+                    </button>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+
+          <div className="project-table-frame hidden min-h-0 flex-1 flex-col border border-outline-variant/50 bg-surface-container-lowest xl:flex">
+            <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto" tabIndex={0} aria-label="商务标项目数据表，可水平滚动">
             <table className="w-full min-w-[1180px]">
               <thead>
                 <tr>
-                  <th className="px-6 text-left text-[14px]">项目编号</th>
-                  <th className="px-6 text-left text-[14px]">项目名称</th>
-                  <th className="px-6 text-left text-[14px]">业主</th>
-                  <th className="px-6 text-left text-[14px]">负责人</th>
-                  <th className="px-6 text-left text-[14px]">标书类型</th>
-                  <th className="px-6 text-left text-[14px]">当前阶段</th>
-                  <th className="px-6 text-left text-[14px]">起始日期</th>
-                  <th className="px-6 text-left text-[14px]">截止日期</th>
-                  <th className="px-6 text-left text-[14px]">更新时间</th>
-                  <th className="px-4 text-center text-[14px] w-[80px]">操作</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">项目编号</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">项目名称</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">业主</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">负责人</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">标书类型</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">当前阶段</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">起始日期</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">截止日期</th>
+                  <th scope="col" className="whitespace-nowrap px-4 text-left text-sm">更新时间</th>
+                  <th scope="col" className="w-[80px] px-4 text-center text-sm">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -256,17 +311,17 @@ export default function BusinessProjectList({ showToast }) {
                         if (event.key === 'Enter') openProject(project)
                       }}
                     >
-                      <td className="px-6 text-[14px] text-on-surface-variant font-medium">{project.id}</td>
-                      <td className="px-6 text-[14px] text-on-surface">{project.name || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{project.owner || project.customerName || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{project.manager || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{project.bidType || BUSINESS_BID_TYPE}</td>
-                      <td className="px-6 text-[14px] text-on-surface">
+                      <td className="whitespace-nowrap px-4 text-sm font-medium text-on-surface-variant">{project.id}</td>
+                      <td className="max-w-[20rem] px-4 text-sm text-on-surface"><span className="block truncate" title={project.name || '-'}>{project.name || '-'}</span></td>
+                      <td className="max-w-[16rem] px-4 text-sm text-on-surface-variant"><span className="block truncate" title={project.owner || project.customerName || '-'}>{project.owner || project.customerName || '-'}</span></td>
+                      <td className="whitespace-nowrap px-4 text-sm text-on-surface-variant">{project.manager || '-'}</td>
+                      <td className="whitespace-nowrap px-4 text-sm text-on-surface-variant">{project.bidType || BUSINESS_BID_TYPE}</td>
+                      <td className="whitespace-nowrap px-4 text-sm text-on-surface">
                         {stageLabelForProject(project)}
                       </td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{project.startDate || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{project.endDate || project.deadline || '-'}</td>
-                      <td className="px-6 text-[14px] text-on-surface-variant">{formatDateTime(project.updatedAt)}</td>
+                      <td className="whitespace-nowrap px-4 text-sm text-on-surface-variant">{project.startDate || '-'}</td>
+                      <td className="whitespace-nowrap px-4 text-sm text-on-surface-variant">{project.endDate || project.deadline || '-'}</td>
+                      <td className="whitespace-nowrap px-4 text-sm text-on-surface-variant">{formatDateTime(project.updatedAt)}</td>
                       <td className="px-4 text-center">
                         <ProjectActionMenu
                           project={project}
@@ -285,7 +340,8 @@ export default function BusinessProjectList({ showToast }) {
             </table>
           </div>
 
-          <div className="border-t border-outline-variant/45 px-4 py-3">
+          </div>
+          <div className="rounded-md border border-outline-variant/45 bg-surface-container-lowest px-3 py-3 md:border-t md:px-4">
             <Pagination
               current={pagination.page}
               total={Math.max(1, Math.ceil((pagination.total || projects.length) / (pagination.pageSize || 12)))}

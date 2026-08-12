@@ -5299,5 +5299,63 @@ class ParsePipelineTests(unittest.TestCase):
         self.assertNotEqual(template_files[0].get("source"), "system-default")
 
 
+class ParseStructuredHeartbeatTests(unittest.TestCase):
+    """结构化解析心跳只刷新进度，不灌满事件环（events 只保留 80 条）。"""
+
+    class _RecordingService:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def raise_if_parse_cancel_requested(self, project_id: str) -> None:
+            return None
+
+        def update_parse_progress(self, project_id: str, **kwargs) -> dict:
+            self.calls.append(kwargs)
+            return {}
+
+    def _delta(self, completed_shards: int, elapsed_seconds: int) -> dict:
+        return {
+            "status": "running",
+            "shardProgress": completed_shards * 14,
+            "completedShards": completed_shards,
+            "totalShards": 7,
+            "elapsedSeconds": elapsed_seconds,
+        }
+
+    def test_heartbeats_without_progress_do_not_append_events(self) -> None:
+        from app.services.bid_parse_service import _progress_callback
+
+        service = self._RecordingService()
+        update = _progress_callback(service, "PRJ-0003")
+
+        for index in range(6):
+            update("opencode_delta", self._delta(0, 10 + index * 3))
+        update("opencode_delta", self._delta(1, 40))
+        update("opencode_delta", self._delta(1, 45))
+
+        messages = [call["event_message"] for call in service.calls]
+        logged = [message for message in messages if message]
+
+        # 8 次心跳只落 2 条事件：首次进入 + 分片数真的变了
+        self.assertEqual(len(service.calls), 8)
+        self.assertEqual(len(logged), 2)
+        self.assertIn("0/7 个分片", logged[0])
+        self.assertIn("1/7 个分片", logged[1])
+
+        # 百分比与摘要每次都刷新，卡死检测靠 heartbeatAt 而不是 events
+        self.assertTrue(all(call.get("percentage") is not None for call in service.calls))
+        self.assertIn("已完成 1/7 个分片", service.calls[-1]["summary"])
+
+    def test_summary_falls_back_to_elapsed_when_shard_counts_missing(self) -> None:
+        from app.services.bid_parse_service import _progress_callback
+
+        service = self._RecordingService()
+        update = _progress_callback(service, "PRJ-0003")
+        update("opencode_delta", {"status": "streaming", "parts": [{"type": "text"}], "elapsedSeconds": 75})
+
+        self.assertIn("已执行 1 分 15 秒", service.calls[-1]["summary"])
+        self.assertIn("已返回 1 段输出", service.calls[-1]["event_message"])
+
+
 if __name__ == "__main__":
     unittest.main()

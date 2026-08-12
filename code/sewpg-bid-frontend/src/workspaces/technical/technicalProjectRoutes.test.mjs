@@ -105,7 +105,7 @@ test('技术标项目总览从解析入口新建项目', () => {
   const source = readFileSync(resolve(__dirname, 'pages/TechnicalProjectList.jsx'), 'utf8')
 
   assert.match(source, /onClick=\{\(\) => navigate\(technicalProjectParseResultRoute\(\)\)\}/)
-  assert.match(source, />\s*解析并新建项目\s*<\/button>/)
+  assert.match(source, />\s*解析并新建项目\s*<\/Button>/)
   assert.match(source, /actionText="解析并新建项目"/)
   assert.match(source, /showActionIcon=\{false\}/)
   assert.match(source, /onAction=\{\(\) => navigate\(technicalProjectParseResultRoute\(\)\)\}/)

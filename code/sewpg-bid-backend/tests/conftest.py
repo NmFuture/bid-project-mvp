@@ -115,3 +115,28 @@ def _s1_parse_inline_scheduler():
     finally:
         app_settings.s1_parse_job_max_attempts = old_attempts
         app_settings.parse_progress_persist_interval_sec = old_interval
+
+
+# 事实表清单只有全局一份（规则页上传），仓库不再自带默认清单。测试要有确定的字段
+# 骨架，就把这份甲方清单快照当夹具装成全局清单；需要「没有清单」的用例自行覆盖
+# settings.fact_specs_override_path 指向不存在的路径。
+FACT_SPECS_FIXTURE_PATH = Path(__file__).resolve().parent / "data" / "technical_fact_field_specs.json"
+
+
+@pytest.fixture(autouse=True)
+def _global_fact_specs(tmp_path_factory):
+    import shutil
+
+    from app.core.config import settings as app_settings
+    from app.services.technical_fact_field_specs import clear_specs_cache
+
+    override_path = tmp_path_factory.mktemp("fact-specs") / "technical_fact_field_specs.override.json"
+    shutil.copyfile(FACT_SPECS_FIXTURE_PATH, override_path)
+    previous = app_settings.fact_specs_override_path
+    app_settings.fact_specs_override_path = override_path
+    clear_specs_cache()
+    try:
+        yield override_path
+    finally:
+        app_settings.fact_specs_override_path = previous
+        clear_specs_cache()

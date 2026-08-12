@@ -69,7 +69,7 @@ from app.services.business_gap_fact_table import (
 )
 from app.services.technical_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION
 from app.services.technical_gap_domain import technical_gap_artifact_is_s7_ready
-from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
+from app.services.technical_gap_repository import mutate_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import (
     build_technical_review_document_content,
     build_technical_review_payload,
@@ -170,6 +170,14 @@ def _seed_technical_gap_project(plan: dict) -> str:
     project = store.create_project({"name": "技术标服务拆分测试项目", "customerName": "测试业主", "bidType": "技术标"})
     project_id = project["id"]
     record = store._require(project_id)
+    # 素材匹配启动前要求目录已确认（R11-B07-03），seed 一个已确认的非空目录
+    record["outline_state"] = {
+        "outlineVersion": 1,
+        "reviewStatus": "confirmed",
+        "generatedAt": now_iso(),
+        "summary": {"totalNodeCount": 1},
+        "nodes": [{"id": "OL-1", "title": "总体方案", "level": 1, "children": []}],
+    }
     record["gap_state"].update(
         {
             "recognitionStatus": "completed",
@@ -466,15 +474,13 @@ def test_technical_gap_material_index_scopes_customer_and_project_by_identity() 
     # 项目定制/附表（空副表约定目录）不进正文素材池；
     # 技术附表输入文件（甲方已填附表）保留在索引里，供附表查表替换。
     assert [item["id"] for item in items] == ["RAW-STANDARD", "RAW-CUSTOMER", "RAW-PROJECT", "RAW-CLIENT-INPUT"]
-    assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件"
+    # 标准文件层按机型目录查询（素材库标准文件目录以机型命名），客户/项目层查各自根。
+    assert raw_files.call_args_list[0].kwargs["folder_path"] == "技术标/标准文件/EW10.0-220上置"
+    assert raw_files.call_args_list[0].kwargs["turbine_model"]["model"] == "EW10.0-220上置"
     assert raw_files.call_args_list[1].kwargs["folder_path"] == "技术标/客户定制"
     assert raw_files.call_args_list[1].kwargs["customer_name"] == "华能集团"
     assert raw_files.call_args_list[2].kwargs["folder_path"] == "技术标/项目定制"
     assert raw_files.call_args_list[2].kwargs["project_id"] == "MATPRJ-001"
-    assert all(
-        call.kwargs["turbine_model"]["model"] == "EW10.0-220上置"
-        for call in raw_files.call_args_list
-    )
 
 
 def test_technical_material_raw_files_use_index_tags_as_source_of_truth() -> None:
@@ -1240,7 +1246,9 @@ def test_opencode_progress_uses_user_facing_structured_parse_message() -> None:
     visible_text = f"{progress['phaseLabel']} {progress['summary']} {latest_event}"
     assert progress["phaseLabel"] == "结构化解析中"
     assert progress["summary"] == "正在识别招标文件中的技术要求和原文依据，已执行 4 分 21 秒。"
-    assert latest_event == "结构化解析仍在执行，已执行 4 分 21 秒。"
+    # 事件写的是「推进了多少」而不是「还活着」：纯心跳不再落事件，否则 80 条事件环
+    # 会被刷满，上传/提取/附表的阶段记录全被挤掉。
+    assert latest_event == "结构化解析已返回 1 段输出，已执行 4 分 21 秒。"
     assert "AI" not in visible_text
     assert "Opencode" not in visible_text
     assert "opencode" not in visible_text
@@ -1927,12 +1935,18 @@ def test_services_use_public_project_state_mutation_api() -> None:
     assert "require_workspace_project_for_update(" in service_sources[Path("app/services/business_gap_repository.py")]
     assert "persist_workspace_project_state(" in service_sources[Path("app/services/business_gap_repository.py")]
     assert "require_workspace_project_for_update(" in service_sources[Path("app/services/technical_gap_repository.py")]
-    assert "persist_workspace_project_state(" in service_sources[Path("app/services/technical_gap_repository.py")]
+    # 技术标写回走带并发校验的公开 API：后台填写 worker 与页面操作会并发写同一项目，
+    # 无条件覆盖会静默吞掉对方的改动。
+    assert (
+        "persist_workspace_project_state_checked("
+        in service_sources[Path("app/services/technical_gap_repository.py")]
+    )
     assert "def require_any_workspace_project_for_update" in workspace_access_source
     assert "require_any_workspace_project_for_update(" in service_sources[Path("app/services/ocr_service.py")]
-    assert "persist_workspace_project_state(" in service_sources[Path("app/services/ocr_service.py")]
+    # 只改自己那几页的模块走按字段写回：整份覆盖会把别人这期间写入的页顶回旧值
+    assert "persist_workspace_project_fields(" in service_sources[Path("app/services/ocr_service.py")]
     assert "from app.services.store import store" not in service_sources[Path("app/services/ocr_service.py")]
-    assert "persist_workspace_project_state(" in service_sources[Path("app/services/business_assembly.py")]
+    assert "persist_workspace_project_fields(" in service_sources[Path("app/services/business_assembly.py")]
     assert "store.persist_project_state" not in service_sources[Path("app/services/business_assembly.py")]
 
 
@@ -1973,7 +1987,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "store.get_document_state(project_id)" not in business_assembly_source
     assert "require_workspace_project_for_update(" in business_assembly_source
     assert "save_fill_generation_result_state(" in business_assembly_source
-    assert "persist_workspace_project_state(" in business_assembly_source
+    assert "persist_workspace_project_fields(" in business_assembly_source
     assert "from app.services.store import store" not in tech_assembly_source
     assert "store.get_project(" not in tech_assembly_source
     assert "store.get_outline_state(project_id)" not in tech_assembly_source
@@ -1984,7 +1998,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "project_parse_input_records(" in tech_assembly_source
     assert "require_workspace_project_for_update(" in tech_assembly_source
     assert "save_fill_generation_result_state(" in tech_assembly_source
-    assert "persist_workspace_project_state(" in tech_assembly_source
+    assert "persist_workspace_project_fields(" in tech_assembly_source
     assert "normalize_bid_type" not in technical_document_format_source
     assert "from app.services.store import store" not in technical_document_format_source
     assert "normalize_bid_type" not in business_parse_assets_source
@@ -2001,7 +2015,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "get_workspace_project_runtime_state(" in business_parse_assets_source
     assert "require_workspace_project_for_update(" in business_parse_assets_source
     assert "update_parse_result_state(" in business_parse_assets_source
-    assert "persist_workspace_project_state(" in business_parse_assets_source
+    assert "persist_workspace_project_fields(" in business_parse_assets_source
     assert "normalize_bid_type" not in project_service_source
     assert "from app.services.store import store" not in project_service_source
     assert "store.get_project_runtime_state(project_id)" not in project_service_source
@@ -2033,7 +2047,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "store.update_template_files(project_id" not in parse_service_source
     assert "self.project_service.bid_type" in parse_service_source
     assert "require_workspace_project_for_update(" in parse_service_source
-    assert "persist_workspace_project_state(" in parse_service_source
+    assert "persist_workspace_project_fields(" in parse_service_source
     assert "project_parse_input_records(" in parse_service_source
     assert "complete_parse_state(" in parse_service_source
     assert "update_parse_progress_state(" in parse_service_source
@@ -2081,7 +2095,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "store.confirm_outline(project_id)" not in directory_flow_source
     assert "require_workspace_project_for_update(" in directory_flow_source
     assert "require_any_workspace_project_for_update(" in directory_flow_source
-    assert "persist_workspace_project_state(" in directory_flow_source
+    assert "persist_workspace_project_fields(" in directory_flow_source
     assert "project_parse_input_records(" in directory_flow_source
     assert "directory_state_with_rule_evidence(" in directory_flow_source
     assert "start_directory_generation_state(project)" in directory_flow_source
@@ -2339,7 +2353,6 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
     assert 'f"技术标/项目素材' not in sources_using_bid_type["technical_gap_service"]
     assert "project_material_root_path(BUSINESS_BID_TYPE" in sources_using_bid_type["business_gap_domain"]
     assert "project_material_root_path(BUSINESS_BID_TYPE" in sources_using_bid_type["business_parse_assets"]
-    assert "project_material_root_path(TECHNICAL_BID_TYPE" in sources_using_bid_type["technical_gap_service"]
     assert 'project.get("bidType") or "商务标"' not in sources_using_bid_type["business_gap_service"]
     assert 'project.get("bidType") or BUSINESS_BID_TYPE' not in sources_using_bid_type["business_gap_service"]
     assert 'bid_type="商务标"' not in sources_using_bid_type["bid_project_service"]
@@ -3837,8 +3850,8 @@ def test_technical_gap_build_facts_stays_in_technical_service() -> None:
         "app.services.technical_gap_service.require_technical_gap_project_for_update",
         wraps=require_technical_gap_project_for_update,
     ) as require_project, patch(
-        "app.services.technical_gap_service.persist_technical_gap_project",
-        wraps=persist_technical_gap_project,
+        "app.services.technical_gap_service.mutate_technical_gap_project",
+        wraps=mutate_technical_gap_project,
     ) as persist_project:
         payload = asyncio.run(technical_gap_service.build_facts(project_id))
 
@@ -3888,9 +3901,14 @@ def test_technical_gap_save_facts_stays_in_technical_service() -> None:
 
     assert payload["status"] == "confirmed"
     assert payload["confirmedBy"] == "技术用户"
-    # 整表 confirm 只升表级状态；字段级"已人工确认"只能由 PATCH 单字段接口产生，
-    # 否则一次保存就把整张表变成 AI 禁区
-    assert payload["fields"][0]["status"] == "extracted"
+    # 整表 confirm 只升表级状态；字段级"人工产出"标记只能由 PATCH 单字段接口产生，
+    # 否则一次保存就把整张表变成 AI 禁区（三态收敛后这层约束落在 sourceRefs 标记上，
+    # 字段状态本身只反映有无取值）
+    assert payload["fields"][0]["status"] == "confirmed"
+    assert all(
+        ref.get("type") not in {"manualEdit", "manualFact"}
+        for ref in payload["fields"][0].get("sourceRefs") or []
+    )
     assert store._require(project_id)["gap_state"]["projectFactTable"]["status"] == "confirmed"
 
 

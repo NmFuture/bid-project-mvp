@@ -67,7 +67,7 @@ export default function ProjectActionMenu({
     <>
       <button
         ref={triggerRef}
-        className="px-1 py-0 !border-0 !bg-transparent text-on-surface-variant hover:text-primary transition-colors"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md !border-0 !bg-transparent text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
         type="button"
         aria-label={`打开 ${project.name || project.id} 的操作菜单`}
         aria-haspopup="menu"
@@ -79,7 +79,7 @@ export default function ProjectActionMenu({
           onToggle()
         }}
       >
-        <span className="material-symbols-outlined text-[20px]">more_vert</span>
+        <span aria-hidden="true" className="material-symbols-outlined text-[20px]">more_vert</span>
       </button>
       {open && position && createPortal(
         <div

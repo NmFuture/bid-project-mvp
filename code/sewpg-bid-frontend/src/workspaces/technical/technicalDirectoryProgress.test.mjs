@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import {
   directoryDisplayPercentage,
@@ -43,6 +43,15 @@ test('keeps first generation and failed retry on template page but moves complet
   assert.match(outlineSource, /technicalOutlineAPI\.regenerate/)
   assert.match(outlineSource, /重新生成目录/)
   assert.match(outlineSource, /DirectoryGenerationProgressModal/)
+})
+
+test('template page shows the active project or default template', () => {
+  const templateSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
+
+  assert.match(templateSource, /uploadedTemplateFiles\.map/)
+  assert.match(templateSource, /fallbackWillBeUsed\s*&&/)
+  assert.match(templateSource, /项目模板/)
+  assert.match(templateSource, /默认模板/)
 })
 
 test('starts a new directory progress epoch after a previous terminal result', () => {
@@ -427,17 +436,83 @@ test('maps internal directory failures to actionable user-facing reasons', () =>
   assert.equal(resultFailure.summary, '目录结果处理失败，请重新生成；如仍失败请联系管理员。')
 })
 
-test('technical directory card renders only the detail line and the runtime line', () => {
-  const pageSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
-  const visibleStatusBindings = pageSource.match(/directoryProgressSummary\.statusText/g) || []
+test('shared technical directory panel renders only the detail line and the runtime line', () => {
+  const panelSource = readFileSync(new URL('./components/TechnicalDirectoryProgressPanel.jsx', import.meta.url), 'utf8')
+  const sharedPanelSource = readFileSync(
+    new URL('../../components/shared/BidProgressPanel.jsx', import.meta.url),
+    'utf8',
+  )
+  const durationSource = readFileSync(new URL('../../utils/progressDuration.js', import.meta.url), 'utf8')
 
-  assert.doesNotMatch(pageSource, /summarizeDirectorySource|directorySourceMeta|directoryStatusLabel/)
-  assert.doesNotMatch(pageSource, /directoryProgressSummary\.steps\.map/)
-  assert.doesNotMatch(pageSource, /estimateDirectoryDisplayPercentage/)
+  assert.doesNotMatch(panelSource, /summarizeDirectorySource|directorySourceMeta|directoryStatusLabel/)
+  assert.doesNotMatch(panelSource, /summary\.steps\.map/)
+  assert.doesNotMatch(panelSource, /estimateDirectoryDisplayPercentage/)
   // 阶段序号与阶段标题不再渲染，卡片只剩「明细 + 耗时」两行
-  assert.doesNotMatch(pageSource, /directoryProgressSummary\.(title|stepText)/)
-  assert.equal(visibleStatusBindings.length, 1)
-  assert.equal((pageSource.match(/directoryProgressSummary\.summary/g) || []).length, 1)
-  assert.match(pageSource, /已运行/)
-  assert.match(pageSource, /总耗时/)
+  assert.doesNotMatch(panelSource, /summary\.(title|stepText)/)
+  // 徽标只留百分比：状态词已经由图标和明细行表达，写成「生成中 · 89%」是重复
+  assert.doesNotMatch(panelSource, /summary\.statusText/)
+  assert.doesNotMatch(sharedPanelSource, /statusText/)
+  assert.match(sharedPanelSource, /\{Math\.floor\(safePercentage\)\}%/)
+  assert.equal((panelSource.match(/summary\.summary/g) || []).length, 1)
+  // 耗时行走五处进度条共用的实现，文案不再各写一份
+  assert.match(panelSource, /progressElapsedLine/)
+  assert.match(durationSource, /已运行/)
+  assert.match(durationSource, /总耗时/)
+})
+
+test('directory generation page and regeneration modal share one progress presentation', () => {
+  const componentUrl = new URL('./components/TechnicalDirectoryProgressPanel.jsx', import.meta.url)
+  const templateSource = readFileSync(new URL('./pages/TechnicalParseResult.jsx', import.meta.url), 'utf8')
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+
+  assert.equal(existsSync(componentUrl), true, '应抽取共用的目录进度展示组件')
+  const componentSource = readFileSync(componentUrl, 'utf8')
+
+  assert.match(templateSource, /<TechnicalDirectoryProgressPanel/)
+  assert.match(outlineSource, /<TechnicalDirectoryProgressPanel/)
+  assert.doesNotMatch(outlineSource, /summary\.steps\.map/)
+  assert.doesNotMatch(outlineSource, /estimateDirectoryDisplayPercentage/)
+  assert.match(componentSource, /directoryDisplayPercentage/)
+  assert.match(componentSource, /directoryElapsedSeconds/)
+  assert.match(componentSource, /BidProgressPanel/)
+})
+
+test('五处进度条共用同一张进度卡片', () => {
+  const shared = new URL('../../components/shared/BidProgressPanel.jsx', import.meta.url)
+  const consumers = [
+    './components/TechnicalDirectoryProgressPanel.jsx',
+    './components/TechnicalGenerationProgressModal.jsx',
+    '../../components/shared/MaterialMatchProgressModal.jsx',
+  ]
+
+  assert.equal(existsSync(shared), true, '应抽取共用的进度展示卡片')
+  for (const consumer of consumers) {
+    const source = readFileSync(new URL(consumer, import.meta.url), 'utf8')
+    assert.match(source, /BidProgressPanel/, `${consumer} 应复用共享进度卡片`)
+    assert.match(source, /progressElapsedLine/, `${consumer} 应展示耗时`)
+  }
+  // 素材匹配曾经写死 68%，改成按真实运行时间估算，绝不假装已完成
+  const materialSource = readFileSync(new URL('../../components/shared/MaterialMatchProgressModal.jsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(materialSource, /running \? 68/)
+})
+
+test('regeneration resets stale terminal progress before opening the modal', () => {
+  const outlineSource = readFileSync(new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url), 'utf8')
+  const handlerStart = outlineSource.indexOf('const handleRegenerateDirectory')
+  const handlerEnd = outlineSource.indexOf('const handleSave', handlerStart)
+  const handlerSource = outlineSource.slice(handlerStart, handlerEnd)
+  const pendingIndex = handlerSource.indexOf('setRegenerationPendingState')
+  const resetIndex = handlerSource.indexOf("status: 'queued'")
+  const openIndex = handlerSource.indexOf('setRegenerationModalOpen(true)')
+  const requestIndex = handlerSource.indexOf('technicalOutlineAPI.regenerate(id)')
+
+  assert.notEqual(pendingIndex, -1, '提交中的状态应与全局任务状态隔离')
+  assert.notEqual(resetIndex, -1, '打开弹窗前应创建新的等待中进度')
+  assert.ok(resetIndex < openIndex, '新进度必须先于弹窗展示')
+  assert.ok(openIndex < requestIndex, '弹窗应在等待接口返回期间展示新进度')
+  assert.doesNotMatch(
+    handlerSource.slice(0, requestIndex),
+    /setDirectoryState/,
+    '接口返回前不得启动全局轮询，避免读回上一轮终态',
+  )
 })

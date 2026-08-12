@@ -5,7 +5,7 @@ import { PageError, PageLoading } from '../../../components/states/PageState'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
-import TechnicalProjectStageProgress from '../components/TechnicalProjectStageProgress'
+import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
@@ -82,10 +82,13 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [onlyofficeError, setOnlyofficeError] = useState('')
   const [savingFallback, setSavingFallback] = useState(false)
   const [technicalPreviewFullscreen, setTechnicalPreviewFullscreen] = useState(false)
+  const [exportVersion, setExportVersion] = useState('marked')
+  const [wordPreparing, setWordPreparing] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
-  const [pdfData, setPdfData] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  // 生成在后台跑，弹窗允许关掉；关掉后不因为「还在运行」被重新弹出来。
+  const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
   const [regenerationStarting, setRegenerationStarting] = useState(false)
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
@@ -165,17 +168,18 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const bidLabel = TECHNICAL_BID_LABEL
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
-  const editorModeLabel = useFallbackEditor ? '文本兜底' : 'OnlyOffice 在线编辑'
   const generationRunning = generationStatus?.status === 'running'
-  const generationProgress = Math.max(0, Math.min(100, Number(generationStatus?.percentage) || 0))
 
   useEffect(() => {
     if (!generationRunning) return undefined
-    const timer = window.setInterval(() => {
-      loadGenerationStatus()
-    }, 1200)
-    return () => window.clearInterval(timer)
-  }, [generationRunning, loadGenerationStatus])
+    return subscribeTechnicalGenerationStatus({
+      fetchStatus: () => technicalGenerateAPI.status(id),
+      onStatus: (payload) => {
+        if (payload?.status === 'running') regenerationRequestedRef.current = true
+        setGenerationStatus(payload)
+      },
+    })
+  }, [generationRunning, id])
 
   useEffect(() => {
     if (generationStatus?.status === 'failed') {
@@ -184,7 +188,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     }
     if (generationStatus?.status !== 'completed' || !regenerationRequestedRef.current) return
     regenerationRequestedRef.current = false
-    setPdfData(null)
     loadDocument({ silent: true })
     showToast?.('技术标正文已重新生成，当前文档已刷新。')
   }, [generationStatus?.status, loadDocument, showToast])
@@ -273,12 +276,25 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     setChatMessages([])
   }
 
+  const handleDownloadWord = async () => {
+    if (wordPreparing) return
+    setWordPreparing(true)
+    try {
+      const response = await technicalDocumentAPI.final(id, exportVersion)
+      const downloaded = triggerDownload(response?.fileUrl, response?.fileName || defaultWordFileName)
+      showToast?.(downloaded ? `${exportVersion === 'clean' ? '清洁版' : '标记版'} Word 已开始下载` : 'Word 已准备完成')
+    } catch (e) {
+      showToast?.(e?.message || 'Word 下载失败', 'error')
+    } finally {
+      setWordPreparing(false)
+    }
+  }
+
   const handlePreparePdf = async () => {
     if (pdfPreparing) return
     setPdfPreparing(true)
     try {
-      const response = await technicalDocumentAPI.finalPdf(id)
-      setPdfData(response)
+      const response = await technicalDocumentAPI.finalPdf(id, exportVersion)
       const downloaded = triggerDownload(response?.fileUrl, response?.fileName || defaultPdfFileName)
       showToast?.(downloaded ? 'PDF 已生成并开始下载' : (response?.message || 'PDF 已生成'))
     } catch (e) {
@@ -298,6 +314,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     if (regenerationStarting || generationRunning) return
     setRegenerationConfirmOpen(false)
     setRegenerationStarting(true)
+    setGenerationModalDismissed(false)
     setGenerationModalOpen(true)
     regenerationRequestedRef.current = true
     try {
@@ -392,7 +409,11 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   )
 
   const renderDocumentEditor = (minHeight = '740px') => {
-    const minHeightClass = minHeight === '740px' ? 'min-h-[740px]' : minHeight === '690px' ? 'min-h-[690px]' : 'min-h-[680px]'
+    const minHeightClass = minHeight === '740px'
+      ? 'min-h-[30rem] xl:min-h-0'
+      : minHeight === '690px'
+        ? 'min-h-[28rem] xl:min-h-0'
+        : 'min-h-[26rem] xl:min-h-0'
     return (
       <>
         <div className={useFallbackEditor ? 'hidden' : 'min-h-0 flex-1'}>
@@ -582,19 +603,61 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   )
 
   const renderProjectWorkspace = () => (
-    <div className="business-ui-shell grid min-h-[885px] grid-cols-1 items-stretch gap-4 xl:min-h-[calc(100vh-4.5rem)] xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
+    <div className="business-ui-shell grid min-h-0 grid-cols-1 items-stretch gap-4 xl:h-[clamp(42rem,calc(100dvh-4.5rem),64rem)] xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
       <section className={`business-panel flex min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-white shadow-[0_1px_2px_rgba(13,33,55,0.05)] ${
         technicalPreviewFullscreen ? 'fixed inset-0 z-[160] rounded-none border-0' : ''
       }`}>
-        <div className="business-section-head flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="business-section-head flex flex-col gap-3 px-3 py-3 sm:px-4">
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}正文预览</h3>
             <p className="mt-1 truncate text-xs text-outline" title={fileName}>{fileName || '未生成文档'}</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${useFallbackEditor ? 'bg-error-container text-on-error-container' : 'bg-secondary-container text-on-secondary-container'}`}>
-              {editorModeLabel}
-            </span>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <label className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-surface-container-high px-2.5 text-xs font-semibold text-on-surface-variant">
+                <span>版本：</span>
+                <select
+                  aria-label="下载版本"
+                  value={exportVersion}
+                  onChange={(event) => setExportVersion(event.target.value)}
+                  disabled={wordPreparing || pdfPreparing}
+                  className="h-6 cursor-pointer border-0 bg-transparent pr-1 text-xs font-semibold text-on-surface focus:outline-none disabled:cursor-not-allowed"
+                >
+                  <option value="marked">标记版</option>
+                  <option value="clean">清洁版</option>
+                </select>
+              </label>
+              <Button
+                type="button"
+                onClick={handleDownloadWord}
+                disabled={wordPreparing}
+                icon="download"
+                size="sm"
+                variant="primary"
+              >
+                {wordPreparing ? '生成中...' : 'Word'}
+              </Button>
+              <Button
+                type="button"
+                onClick={handlePreparePdf}
+                disabled={pdfPreparing}
+                icon="download"
+                size="sm"
+                variant="primary"
+              >
+                {pdfPreparing ? '生成中...' : 'PDF'}
+              </Button>
+              <Button
+                type="button"
+                onClick={handleRequestRegenerate}
+                disabled={regenerationStarting || generationRunning}
+                icon="refresh"
+                size="sm"
+                variant="secondary"
+              >
+                {regenerationStarting || generationRunning ? '重新生成中...' : '重新生成正文'}
+              </Button>
+            </div>
             <IconButton
               type="button"
               aria-label={technicalPreviewFullscreen ? '退出全屏' : '全屏查看'}
@@ -603,51 +666,13 @@ export default function TechnicalCoCreationEditor({ showToast }) {
               onClick={() => setTechnicalPreviewFullscreen((value) => !value)}
               size="sm"
               variant="quiet"
+              className="shrink-0"
             />
-            <Button
-              as="a"
-              href={finalData?.fileUrl || data?.fileUrl || '#'}
-              download={finalData?.fileName || data?.fileName || defaultWordFileName}
-              size="sm"
-              variant="primary"
-            >
-              下载Word
-            </Button>
-            {pdfData?.fileUrl ? (
-              <Button
-                type="button"
-                onClick={() => triggerDownload(pdfData.fileUrl, pdfData.fileName || defaultPdfFileName)}
-                size="sm"
-                variant="primary"
-              >
-                下载PDF
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                onClick={handlePreparePdf}
-                disabled={pdfPreparing}
-                size="sm"
-                variant="primary"
-              >
-                {pdfPreparing ? '生成中...' : '下载PDF'}
-              </Button>
-            )}
-            <Button
-              type="button"
-              onClick={handleRequestRegenerate}
-              disabled={regenerationStarting || generationRunning}
-              icon="refresh"
-              size="sm"
-              variant="secondary"
-            >
-              {regenerationStarting || generationRunning ? '重新生成中...' : '重新生成正文'}
-            </Button>
           </div>
         </div>
-        <div className="min-h-0 flex-1 p-4">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
           {onlyofficeError && (
-            <div className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+            <div role="alert" className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
               {onlyofficeError}
             </div>
           )}
@@ -655,13 +680,13 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </div>
       </section>
 
-      <aside className="flex min-h-[885px] flex-col overflow-hidden xl:h-[calc(100vh-4.5rem)]">
+      <aside className="flex min-h-[36rem] flex-col overflow-hidden xl:h-full xl:min-h-0">
         <section className="business-panel flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_2px_rgba(13,33,55,0.05)]">
-          <div className="business-section-head business-editor-tool-head flex items-center justify-between gap-3 border-b border-surface-container-high px-3 py-2">
+          <div className="business-section-head business-editor-tool-head flex flex-col gap-3 border-b border-surface-container-high px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-2">
               <h3 className="truncate text-base font-semibold text-on-surface">{bidLabel}共创工具</h3>
             </div>
-            <div className="grid w-[176px] shrink-0 grid-cols-2 gap-1 rounded-md bg-surface-container-high p-1">
+            <div role="tablist" aria-label="共创工具" className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-md bg-surface-container-high p-1 sm:w-[176px]">
               {[
                 { key: 'chat', label: 'AI 对话' },
                 { key: 'format', label: '格式设置' },
@@ -669,6 +694,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 <button
                   key={tab.key}
                   type="button"
+                  role="tab"
+                  aria-selected={technicalRightTab === tab.key}
                   onClick={() => setTechnicalRightTab(tab.key)}
                   className={`rounded px-2 py-1.5 text-xs font-semibold transition-colors ${technicalRightTab === tab.key ? 'bg-surface-container-lowest text-primary shadow-sm' : 'text-on-surface-variant hover:bg-surface-dim'}`}
                 >
@@ -703,9 +730,8 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   }
 
   return (
-    <div className="stage-page flex flex-col gap-6 animate-fade-in w-full max-w-none">
+    <div className="stage-page flex w-full max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
       <StageBreadcrumb />
-      <TechnicalProjectStageProgress projectId={id} showToast={showToast} />
       {renderProjectWorkspace()}
       <Dialog
         open={regenerationConfirmOpen}
@@ -734,11 +760,13 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </DialogFooter>
       </Dialog>
       <TechnicalGenerationProgressModal
-        open={generationModalOpen || generationRunning}
+        open={(generationModalOpen || generationRunning) && !generationModalDismissed}
         status={generationStatus}
-        progress={generationProgress}
         completedMessage="技术标正文已重新生成，共创文档已刷新为最新版本。"
-        onClose={() => setGenerationModalOpen(false)}
+        onClose={() => {
+          setGenerationModalDismissed(true)
+          setGenerationModalOpen(false)
+        }}
       />
     </div>
   )

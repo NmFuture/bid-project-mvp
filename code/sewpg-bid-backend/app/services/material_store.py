@@ -34,6 +34,7 @@ from app.services.material_raw_tree_operations import raw_tree_operation
 from app.services.material_upload_operations import upload_raw_files
 from app.services.material_folder_scope import infer_material_tier_from_raw_folder
 from app.services.material_move_operations import move_raw_file, move_raw_folder, rename_raw_folder
+from app.services.material_raw_copy_operations import copy_raw_folder_contents
 from app.services.material_wiki_attachment_operations import (
     delete_wiki_attachment,
     download_wiki_attachment_content,
@@ -71,9 +72,17 @@ class MaterialStore:
             session_factory=async_session,
         )
 
-    async def identity_options(self, *, bid_type: str) -> dict[str, Any]:
+    async def identity_options(
+        self,
+        *,
+        bid_type: str,
+        include_project_store: bool = True,
+        folder_name_as_project_name: bool = False,
+    ) -> dict[str, Any]:
         return await identity_options_operation(
             bid_type=bid_type,
+            include_project_store=include_project_store,
+            folder_name_as_project_name=folder_name_as_project_name,
             ensure_runtime_tables=ensure_material_runtime_tables,
             ensure_raw_material_roots=self._raw_folders.ensure_raw_material_roots,
             session_factory=async_session,
@@ -433,6 +442,27 @@ class MaterialStore:
                 ensure_runtime_tables=ensure_material_runtime_tables,
             ),
             infer_material_tier_from_folder=infer_material_tier_from_raw_folder,
+        )
+
+    async def raw_copy_folder_contents(
+        self,
+        *,
+        source_path: str,
+        target_path: str,
+        bid_type: str,
+        exclude_top_level_names: set[str] | None = None,
+        on_progress: Any = None,
+    ) -> dict[str, Any]:
+        return await copy_raw_folder_contents(
+            source_path=source_path,
+            target_path=target_path,
+            bid_type=bid_type,
+            exclude_top_level_names=exclude_top_level_names,
+            ensure_runtime_tables=ensure_material_runtime_tables,
+            ensure_nested_folder=self._raw_folders.ensure_nested_folder,
+            raw_object_key=raw_object_key,
+            infer_material_tier_from_folder=infer_material_tier_from_raw_folder,
+            on_progress=on_progress,
         )
 
     async def raw_move_folder(self, source_path: str, target_parent_path: str, *, bid_type: str) -> dict[str, Any]:

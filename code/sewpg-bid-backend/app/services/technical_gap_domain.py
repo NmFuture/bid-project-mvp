@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from app.services.bid_document_flow import _add_callback_token, _add_query_param
 
 
 def technical_outline_number_and_title(
@@ -180,6 +183,9 @@ def technical_gap_artifact_onlyoffice_payload(
     project_id: str,
     artifact_id: str,
     file_name: str,
+    file_path: str = "",
+    doc_version: int | None = None,
+    editable: bool = True,
     browser_base_url: str = "",
     onlyoffice_base_url: str = "",
 ) -> dict[str, Any]:
@@ -190,13 +196,29 @@ def technical_gap_artifact_onlyoffice_payload(
         if onlyoffice_base_url
         else browser_url
     )
+    version = int(doc_version or 1)
+    # documentKey 代表一次编辑会话，不跟文件 mtime/大小绑定。status=6 临时保存会改文件，
+    # 但同一编辑器必须继续使用原 key；status=2 最终保存后版本号才递增并开启下一会话。
+    callback_base = onlyoffice_base_url.rstrip("/") or browser_base_url.rstrip("/")
+    callback_url = ""
+    if editable and callback_base:
+        callback_url = _add_callback_token(
+            _add_query_param(
+                f"{callback_base}/api/technical/projects/{project_id}/gaps/artifacts/{artifact_id}/callback",
+                "oo_doc_version",
+                version,
+            )
+        )
+    session_digest = hashlib.sha256(f"{project_id}:{artifact_id}".encode("utf-8")).hexdigest()[:32]
+    document_key = f"gap-{session_digest}-v{version}"
     return {
         "status": "ready",
-        "mode": "view",
+        "mode": "edit" if editable else "view",
         "fileUrl": document_server_url,
         "browserFileUrl": browser_url,
         "documentServerFileUrl": document_server_url,
-        "documentKey": f"{project_id}-{artifact_id}",
+        "callbackUrl": callback_url,
+        "documentKey": document_key,
         "title": file_name,
     }
 
@@ -258,6 +280,9 @@ def refresh_technical_gap_plan_artifact_urls(
                     project_id=project_id,
                     artifact_id=artifact_id,
                     file_name=file_name,
+                    file_path=str(artifact.get("path") or ""),
+                    doc_version=artifact.get("ooDocVersion"),
+                    editable=str(artifact.get("source") or "") == "ai_fill",
                     browser_base_url=browser_base_url,
                     onlyoffice_base_url=onlyoffice_base_url,
                 ),
@@ -277,54 +302,3 @@ def find_technical_gap_plan_item(gap_state: dict[str, Any], gap_id: str) -> dict
         if str(item.get("id") or "") == gap_id:
             return item
     return None
-
-
-def aggregate_technical_gap_fill_quality(
-    results: list[dict[str, Any]],
-    errors: list[dict[str, str]],
-) -> dict[str, Any]:
-    reports = [result.get("qualityReport") for result in results if isinstance(result.get("qualityReport"), dict)]
-    if not reports:
-        return {
-            "status": "failed" if errors else "empty",
-            "coverageRate": 0.0,
-            "correctnessRate": 0.0,
-            "completenessRate": 0.0,
-            "thresholds": {"coverageRate": 0.85, "correctnessRate": 0.85, "completenessRate": 0.85},
-        }
-    expected = sum(int(report.get("expectedFieldCount") or 0) for report in reports)
-    filled = sum(int(report.get("filledFieldCount") or 0) for report in reports)
-    unfilled = sum(int(report.get("unfilledFieldCount") or 0) for report in reports)
-    evidence = sum(int(report.get("evidenceRefCount") or 0) for report in reports)
-    if expected > 0:
-        coverage = filled / expected
-        correctness = min(1.0, evidence / max(1, filled)) if filled else 0.0
-        completeness = max(0.0, (expected - unfilled) / expected)
-    else:
-        coverage = sum(float(report.get("coverageRate") or 0) for report in reports) / len(reports)
-        correctness = sum(float(report.get("correctnessRate") or 0) for report in reports) / len(reports)
-        completeness = sum(float(report.get("completenessRate") or 0) for report in reports) / len(reports)
-    thresholds = {"coverageRate": 0.85, "correctnessRate": 0.85, "completenessRate": 0.85}
-    passed = (
-        not errors
-        and coverage >= thresholds["coverageRate"]
-        and correctness >= thresholds["correctnessRate"]
-        and completeness >= thresholds["completenessRate"]
-    )
-    return {
-        "status": "passed" if passed else "needs_review",
-        "coverageRate": round(coverage, 4),
-        "correctnessRate": round(correctness, 4),
-        "completenessRate": round(completeness, 4),
-        "expectedFieldCount": expected,
-        "filledFieldCount": filled,
-        "unfilledFieldCount": unfilled,
-        "evidenceRefCount": evidence,
-        "taskCount": len(reports),
-        "passedTaskCount": sum(1 for report in reports if report.get("status") == "passed"),
-        "noFillRequiredTaskCount": sum(1 for report in reports if report.get("status") == "no_fill_required"),
-        "needsReviewTaskCount": sum(
-            1 for report in reports if report.get("status") not in FILL_QUALITY_ACCEPTED_STATUSES
-        ),
-        "thresholds": thresholds,
-    }

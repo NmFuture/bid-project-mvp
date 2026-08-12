@@ -1308,6 +1308,70 @@ class DirectoryGenerationTests(unittest.TestCase):
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
         runner.decision_workflow.materialize_appendix_predecisions.assert_called_once()
 
+    def test_failed_chapter_falls_back_to_serial_instead_of_killing_the_run(self) -> None:
+        """单个章节会话最终失败时降级串行接力，不能让整轮目录生成作废。
+
+        合并阶段要求每章判完（decision_workflow.merge_chapter_decisions），
+        所以失败时不做部分合并，改抛 _ChapterParallelUnsupported 让调用方走串行。
+        """
+        self.parallel_outline_patcher.stop()
+        from app.services.outline_generation import (
+            _ChapterParallelUnsupported,
+            _run_parallel_outline_chapters,
+        )
+
+        root = Path(self.temp_dir.name) / "parallel-chapter-failure"
+        root.mkdir(parents=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text("{}", encoding="utf-8")
+        chapter_root = root / "chapters"
+        chapter_root.mkdir()
+        chapters = [
+            {"chapter_id": f"TPL-{index:04d}", "number": f"第{index}章", "title": f"第{index}章"}
+            for index in range(1, 4)
+        ]
+        chapter_manifests: dict[str, Path] = {}
+        for chapter in chapters:
+            chapter_dir = chapter_root / str(chapter["chapter_id"])
+            chapter_dir.mkdir()
+            path = chapter_dir / "s2_input.json"
+            path.write_text(json.dumps({"workDir": str(chapter_dir)}, ensure_ascii=False), encoding="utf-8")
+            chapter_manifests[str(chapter["chapter_id"])] = path
+
+        runner = MagicMock()
+        runner.decision_workflow.chapter_decision_progress.return_value = {"complete": True}
+        runner.review_workflow.decision_appendix_items.return_value = []
+
+        def one_chapter_dies(*_args, **kwargs):
+            if kwargs.get("session_title", "").endswith("第2章"):
+                raise RuntimeError("opencode session error: JSON parsing failed")
+            return {"sessionId": "ses-ok", "opencodeOutput": {}}
+
+        with (
+            patch(
+                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                return_value=(chapters, chapter_manifests, chapter_root, {}),
+            ),
+            patch(
+                "app.services.outline_generation._load_technical_outline_runner",
+                return_value=runner,
+            ),
+            patch(
+                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                return_value={},
+            ),
+            patch(
+                "app.services.outline_generation._outline_chapter_base_urls",
+                return_value=["http://opencode:4096"],
+            ),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            client_class.return_value.run_outline_decision_session.side_effect = one_chapter_dies
+            with self.assertRaises(_ChapterParallelUnsupported):
+                _run_parallel_outline_chapters(manifest_path, {})
+
+        runner.decision_workflow.merge_chapter_decisions.assert_not_called()
+
     def test_parallel_outline_chapter_merge_converts_system_exit_to_runtime_error(self) -> None:
         self.parallel_outline_patcher.stop()
         from app.services.outline_generation import _run_parallel_outline_chapters

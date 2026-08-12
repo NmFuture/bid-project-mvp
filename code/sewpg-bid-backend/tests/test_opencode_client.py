@@ -13,7 +13,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.bid_parse_cancel import ParseCancelledError
-from app.services.opencode_client import OpencodeClient
+from app.services.opencode_client import OUTLINE_DECISION_SESSION_MAX_ATTEMPTS, OpencodeClient
 from app.services.system_settings import system_settings_service
 
 
@@ -452,6 +452,95 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertTrue(result["state"]["complete"])
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "")
         self.assertTrue(callable(send_prompt.call_args.kwargs["assistant_stop_validator"]))
+
+    def test_run_outline_decision_session_retries_transient_session_error(self) -> None:
+        """瞬时流错误重试一次即可续跑：decision-next 会把中断的批次原样带回，不会重复提交。"""
+        client = OpencodeClient()
+        # 第一次会话报错（上游 SSE 帧错乱），第二次正常收尾
+        responses = [
+            {"info": {"error": {"name": "AI_JSONParseError", "message": "JSON parsing failed"}}},
+            {"parts": [{"type": "text", "text": "done"}]},
+        ]
+        validator = MagicMock(side_effect=[
+            {"complete": False, "decidedCount": 7},   # 报错后查落盘状态：确实没判完
+            {"complete": True, "decidedCount": 18},   # 重试后判完
+        ])
+        with (
+            patch.object(
+                client,
+                "create_session",
+                side_effect=[{"id": "ses-try-1"}, {"id": "ses-try-2"}],
+            ) as create_session,
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                side_effect=responses,
+            ) as send_prompt,
+            patch.object(
+                client,
+                "_build_output_trace",
+                return_value={"status": "received", "sessionId": "ses-try-2"},
+            ),
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            result = client.run_outline_decision_session(
+                "chapter prompt",
+                session_title="S2 目录决策·第一章",
+                completion_validator=validator,
+            )
+
+        self.assertEqual(create_session.call_count, 2, "重试必须开新会话，不能复用报错的会话")
+        self.assertEqual(send_prompt.call_count, 2)
+        self.assertEqual(result["sessionId"], "ses-try-2")
+        self.assertTrue(result["state"]["complete"])
+
+    def test_run_outline_decision_session_keeps_result_when_error_arrives_after_completion(self) -> None:
+        """决策以落盘状态为准：错误发生在结果写盘之后时，不该丢掉已经判完的整章。"""
+        client = OpencodeClient()
+        validator = MagicMock(return_value={"complete": True, "decidedCount": 18})
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-late-error"}) as create_session,
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={"info": {"error": {"name": "AI_JSONParseError", "message": "boom"}}},
+            ),
+            patch.object(
+                client,
+                "_build_output_trace",
+                return_value={"status": "received", "sessionId": "ses-late-error"},
+            ),
+        ):
+            result = client.run_outline_decision_session(
+                "chapter prompt",
+                session_title="S2 目录决策·第一章",
+                completion_validator=validator,
+            )
+
+        self.assertEqual(create_session.call_count, 1, "已经判完就不该再开一次会话")
+        self.assertTrue(result["state"]["complete"])
+
+    def test_run_outline_decision_session_gives_up_after_max_attempts(self) -> None:
+        """一直失败要如实抛出，不能无限重试拖死整轮目录生成。"""
+        client = OpencodeClient()
+        validator = MagicMock(return_value={"complete": False, "decidedCount": 0})
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-dead"}) as create_session,
+            patch.object(
+                client,
+                "_send_prompt_with_session_polling",
+                return_value={"info": {"error": {"name": "AI_APICallError", "message": "boom"}}},
+            ),
+            patch("app.services.opencode_client.time.sleep", return_value=None),
+        ):
+            with self.assertRaises(RuntimeError):
+                client.run_outline_decision_session(
+                    "chapter prompt",
+                    session_title="S2 目录决策·第一章",
+                    completion_validator=validator,
+                )
+
+        self.assertEqual(create_session.call_count, OUTLINE_DECISION_SESSION_MAX_ATTEMPTS)
 
     def test_generate_outline_with_trace_uses_fresh_sessions_for_bounded_handoffs(self) -> None:
         client = OpencodeClient()

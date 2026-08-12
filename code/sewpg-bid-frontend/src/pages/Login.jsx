@@ -81,44 +81,29 @@ export default function Login({ onLogin }) {
   }
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-[#05202E]">
-      <div className="absolute inset-0">
-        <div className="absolute top-1/3 -left-40 h-[480px] w-[480px] rounded-full bg-[#0067B6] opacity-25 blur-3xl" />
-        <div
-          className="absolute inset-0 opacity-[0.04]"
-          style={{
-            backgroundImage:
-              'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)',
-            backgroundSize: '48px 48px',
-          }}
-        />
-      </div>
-
-      <div className="relative min-h-screen grid lg:grid-cols-[5fr_4fr] xl:grid-cols-[7fr_5fr]">
-        <div className="hidden lg:flex flex-col justify-between p-12 xl:p-16 text-white">
-          <div className="flex items-center gap-3 animate-float-in">
+    <main className="min-h-[100dvh] overflow-x-hidden bg-brand-deep">
+      <div className="grid min-h-[100dvh] min-w-0 lg:grid-cols-[minmax(0,5fr)_minmax(24rem,4fr)] xl:grid-cols-[minmax(0,7fr)_minmax(26rem,5fr)]">
+        <section className="hidden flex-col justify-between border-r border-white/10 p-12 text-white lg:flex xl:p-16" aria-label="平台介绍">
+          <div className="flex items-center gap-3">
             <span className="inline-flex h-10 items-center rounded-md bg-white px-3 py-1.5 shadow-sm">
-              <img src={enterpriseLogo} alt="上海电气" className="h-7 w-auto object-contain" />
+              <img src={enterpriseLogo} alt="上海电气" width="112" height="28" className="h-7 w-auto object-contain" />
             </span>
             <div className="leading-tight">
-              <div className="text-[15px] font-headline font-semibold tracking-wide">投标智能体平台</div>
-              <div className="text-[11px] text-white/55 mt-0.5">上海电气风电集团股份有限公司</div>
+              <div className="font-headline text-sm font-semibold">投标智能体平台</div>
+              <div className="mt-0.5 text-xs text-white/55">上海电气风电集团股份有限公司</div>
             </div>
           </div>
 
-          <div
-            className="space-y-8 animate-float-in"
-            style={{ animationDelay: '0.08s' }}
-          >
+          <div className="space-y-8">
             <div>
-              <div className="inline-block text-[11px] tracking-[0.18em] text-white/55 uppercase mb-3">
+              <div className="mb-3 inline-block text-xs text-white/55 uppercase">
                 Bid Intelligence Platform
               </div>
-              <h1 className="text-[40px] xl:text-[48px] font-headline font-bold leading-[1.18] text-white">
+              <p className="font-headline text-[40px] font-bold leading-[1.18] text-white">
                 让标书工作
                 <br />
                 回归专业判断
-              </h1>
+              </p>
               <p className="text-[14px] text-white/65 mt-5 max-w-md leading-[1.85]">
                 以 AI 替代重复性事务，把投标团队的精力集中在评分点应答、技术方案与商务谈判上。统一管理素材库与
                 Wiki，技术标与商务标双线协同，全过程审计可溯。
@@ -129,8 +114,9 @@ export default function Login({ onLogin }) {
               {CAPABILITIES.map((cap) => (
                 <div key={cap.text} className="flex items-center gap-3 text-[13px] text-white/75">
                   <span
-                    className="material-symbols-outlined text-[18px] text-[#69c0ff]"
+                    className="material-symbols-outlined text-[18px] text-primary-container"
                     style={{ fontVariationSettings: "'FILL' 1" }}
+                    aria-hidden="true"
                   >
                     {cap.icon}
                   </span>
@@ -140,75 +126,81 @@ export default function Login({ onLogin }) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-[11px] text-white/40">
+          <div className="flex items-center justify-between text-xs text-white/40">
             <span>© 上海电气风电集团股份有限公司</span>
             <span>v 1.0</span>
           </div>
-        </div>
+        </section>
 
-        <div className="flex items-center justify-center p-6 lg:p-12 xl:p-16 bg-white/[0.02]">
-          <div
-            className="w-full max-w-[420px] space-y-6 animate-float-in"
-            style={{ animationDelay: '0.16s' }}
-          >
+        <section className="flex min-w-0 items-center justify-center px-4 py-8 sm:px-6 lg:p-12 xl:p-16" aria-label="账号登录">
+          <div className="min-w-0 w-full max-w-[420px] space-y-6">
             <div className="lg:hidden flex items-center gap-3 text-white">
               <span className="inline-flex h-10 items-center rounded-md bg-white px-3 py-1.5 shadow-sm">
-                <img src={enterpriseLogo} alt="上海电气" className="h-7 w-auto object-contain" />
+                <img src={enterpriseLogo} alt="上海电气" width="112" height="28" className="h-7 w-auto object-contain" />
               </span>
-              <span className="text-[15px] font-headline font-semibold">投标智能体平台</span>
+              <span className="font-headline text-sm font-semibold">投标智能体平台</span>
             </div>
 
-            <div className="rounded-xl bg-white shadow-[0_24px_60px_-20px_rgba(0,0,0,0.5)] p-7 xl:p-8">
+            <div className="rounded-lg border border-white/20 bg-white p-5 shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:p-7 xl:p-8">
               <div className="mb-6">
-                <h2 className="text-[20px] font-headline font-bold text-on-surface">账号登录</h2>
-                <p className="text-[12px] text-on-surface-variant mt-1.5">请使用您的统一身份账号</p>
+                <h1 className="font-headline text-2xl font-semibold text-on-surface">账号登录</h1>
+                <p className="mt-1.5 text-xs text-on-surface-variant">请使用您的统一身份账号</p>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="block text-[12px] font-medium text-on-surface-variant mb-1.5">
+                  <label htmlFor="login-email" className="block text-sm font-medium text-on-surface-variant mb-1.5">
                     邮箱
                   </label>
                   <div className="relative">
-                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-outline pointer-events-none">
+                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-outline pointer-events-none" aria-hidden="true">
                       mail
                     </span>
                     <input
                       type="email"
+                      id="login-email"
+                      name="email"
                       autoComplete="email"
-                      className="w-full h-11 pl-10 pr-4 bg-surface-container-low border-none rounded-lg text-[14px] focus:ring-2 focus:ring-primary/30 transition-all"
-                      placeholder="请输入邮箱"
+                      spellCheck={false}
+                      aria-invalid={Boolean(error)}
+                      aria-describedby={error ? 'login-error' : undefined}
+                      className="h-11 w-full rounded-md border border-outline-variant bg-surface-container-low pl-10 pr-4 text-base text-on-surface transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 lg:text-sm"
+                      placeholder="请输入邮箱…"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[12px] font-medium text-on-surface-variant mb-1.5">
+                  <label htmlFor="login-password" className="block text-sm font-medium text-on-surface-variant mb-1.5">
                     密码
                   </label>
                   <div className="relative">
-                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-outline pointer-events-none">
+                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-outline pointer-events-none" aria-hidden="true">
                       lock
                     </span>
                     <input
                       type="password"
+                      id="login-password"
+                      name="password"
                       autoComplete="current-password"
-                      className="w-full h-11 pl-10 pr-4 bg-surface-container-low border-none rounded-lg text-[14px] focus:ring-2 focus:ring-primary/30 transition-all"
-                      placeholder="请输入密码"
+                      aria-invalid={Boolean(error)}
+                      aria-describedby={error ? 'login-error' : undefined}
+                      className="h-11 w-full rounded-md border border-outline-variant bg-surface-container-low pl-10 pr-4 text-base text-on-surface transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 lg:text-sm"
+                      placeholder="请输入密码…"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                     />
                   </div>
                 </div>
                 {error && (
-                  <div className="rounded-lg border border-error/30 bg-error-container/30 px-3 py-2 text-[12px] text-error animate-fade-in">
+                  <div id="login-error" role="alert" aria-live="assertive" className="rounded-md border border-error/30 bg-error-container/30 px-3 py-2 text-sm text-error">
                     {error}
                   </div>
                 )}
-                <div className="flex items-center justify-between text-[12px] pt-1">
+                <div className="flex items-center justify-between pt-1 text-xs">
                   <label className="flex items-center gap-1.5 text-on-surface-variant cursor-pointer select-none">
-                    <input type="checkbox" className="rounded border-outline" defaultChecked />
+                    <input type="checkbox" name="remember" className="h-4 w-4 rounded border-outline" defaultChecked />
                     保持登录
                   </label>
                   <a className="text-primary font-medium hover:underline" href="#">忘记密码？</a>
@@ -216,7 +208,7 @@ export default function Login({ onLogin }) {
                 <button
                   type="submit"
                   disabled={loading || !email}
-                  className="w-full h-11 bg-gradient-to-r from-[#005995] to-[#0068b7] text-white font-semibold rounded-lg hover:shadow-[0_8px_24px_-8px_rgba(0,62,111,0.5)] transition-all active:scale-[0.99] disabled:opacity-50 disabled:hover:shadow-none"
+                  className="h-11 w-full rounded-md bg-primary text-sm font-semibold text-white transition-colors hover:bg-on-primary-fixed-variant focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading ? '登录中…' : '登录'}
                 </button>
@@ -224,7 +216,7 @@ export default function Login({ onLogin }) {
 
               <div className="flex items-center gap-3 my-5">
                 <div className="flex-1 h-px bg-outline-variant/50" />
-                <span className="text-[11px] text-outline tracking-wide">选择身份登录</span>
+                <span className="text-xs text-outline">选择身份登录</span>
                 <div className="flex-1 h-px bg-outline-variant/50" />
               </div>
 
@@ -237,9 +229,9 @@ export default function Login({ onLogin }) {
                       type="button"
                       onClick={() => handleQuickLogin(account)}
                       disabled={!!loadingRole || loading}
-                      className={`group w-full flex items-center gap-3 rounded-lg border border-outline-variant/50 bg-white px-3 py-2.5 text-left transition-all hover:border-primary hover:bg-primary-fixed/40 disabled:opacity-50 ${isLoading ? 'animate-ring-glow' : ''}`}
+                      className="group flex min-h-12 min-w-0 w-full items-center gap-3 rounded-md border border-outline-variant bg-white px-3 py-2.5 text-left transition-colors hover:border-primary hover:bg-primary-fixed/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <div className="shrink-0 h-10 w-10 rounded-md bg-[#0e3a5b] flex items-center justify-center text-white font-semibold text-[15px]">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-brand-avatar text-sm font-semibold text-white">
                         {account.name[0]}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -247,17 +239,18 @@ export default function Login({ onLogin }) {
                           <span className="text-[14px] font-semibold text-on-surface truncate">
                             {account.name}
                           </span>
-                          <span className="text-[11px] text-outline font-mono">
+                          <span className="font-mono text-xs text-outline">
                             {account.employeeId}
                           </span>
                           <RoleChip role={account.role} showLabel={false} className="ml-auto" />
                         </div>
-                        <div className="text-[12px] text-on-surface-variant truncate mt-0.5">
+                        <div className="mt-0.5 truncate text-xs text-on-surface-variant">
                           {account.title} · {account.department}
                         </div>
                       </div>
                       <span
-                        className={`material-symbols-outlined text-[18px] transition-all ${isLoading ? 'animate-spin-slow text-primary' : 'text-outline group-hover:text-primary group-hover:translate-x-0.5'}`}
+                        className={`material-symbols-outlined text-[18px] ${isLoading ? 'animate-spin-slow text-primary' : 'text-outline group-hover:text-primary'}`}
+                        aria-hidden="true"
                       >
                         {isLoading ? 'progress_activity' : 'chevron_right'}
                       </span>
@@ -267,12 +260,12 @@ export default function Login({ onLogin }) {
               </div>
             </div>
 
-            <p className="text-center text-[11px] text-white/40">
+            <p className="text-center text-xs text-white/40">
               安全声明 · 系统使用情况将留存审计日志
             </p>
           </div>
-        </div>
+        </section>
       </div>
-    </div>
+    </main>
   )
 }
