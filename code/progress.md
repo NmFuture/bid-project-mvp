@@ -367,3 +367,14 @@ npx eslint src/workspaces/business/pages/BusinessGapRecognition.jsx src/workspac
 - `code/sewpg-bid-backend/app/workers/redis_worker.py`
 
 验证结果：提交后自动记录，需结合提交前测试记录确认。
+
+### 2026-08-12 08:47:42 post-commit 89b4e79
+
+提交摘要：fix(技术标): 补 technical_gap_service 缺失的 logger，修复缺口检测 500
+
+变更文件：
+
+- `code/sewpg-bid-backend/app/services/technical_gap_service.py`
+- `code/sewpg-bid-backend/tests/test_technical_gap_service_logger.py`
+
+验证结果：提交后自动记录，需结合提交前测试记录确认。

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import tempfile
 import threading
 from pathlib import Path
@@ -94,6 +95,8 @@ from app.services.technical_gap_state import (
 )
 from app.services.url_utils import onlyoffice_backend_base_url
 
+
+logger = logging.getLogger(__name__)
 
 PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
 
