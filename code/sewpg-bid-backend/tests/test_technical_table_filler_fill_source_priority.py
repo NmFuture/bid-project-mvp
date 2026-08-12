@@ -182,6 +182,37 @@ class PreparePreferredBindingTests(PriorityTestBase):
         by_field = {f["field"]: f for f in brief["targetFields"]}
         self.assertNotIn("preferredRoute", by_field["单机容量"])
 
+    def test_qualifier_field_does_not_poison_concept_match(self) -> None:
+        # 回归（PRJ-0001 实测）：「单机功率曲线考核阈值」「招标单机容量（出口端，MW）」
+        # 这类限定字段的子串命中曾在 rated_power 里制造伪歧义，导致「机组功率」
+        # 与「单机容量」该绑的绑不上。概念命中改为别名精确等价后应唯一绑定。
+        manifest_path = self._write_manifest(
+            projectFactTable={
+                "status": "confirmed",
+                "fields": [
+                    {"label": "单机容量", "value": "10", "unit": "MW", "status": "confirmed"},
+                    {"label": "招标单机容量（出口端，MW）", "value": "10", "status": "confirmed"},
+                    {"label": "单机功率曲线考核阈值", "value": "97", "status": "confirmed"},
+                ],
+            }
+        )
+        brief = self._brief(manifest_path)
+        by_field = {f["field"]: f for f in brief["targetFields"]}
+        self.assertEqual(by_field["单机容量"].get("preferredValue"), "10")
+        self.assertEqual(by_field["单机容量"].get("preferredLabel"), "单机容量")
+
+    def test_parenthetical_label_variant_binds(self) -> None:
+        # 「额定功率（MW）」这类带单位注释的事实表标签，去括号后与别名精确等价 → 绑定
+        manifest_path = self._write_manifest(
+            projectFactTable={
+                "status": "confirmed",
+                "fields": [{"label": "额定功率（MW）", "value": "6.25", "status": "confirmed"}],
+            }
+        )
+        brief = self._brief(manifest_path)
+        by_field = {f["field"]: f for f in brief["targetFields"]}
+        self.assertEqual(by_field["单机容量"].get("preferredValue"), "6.25")
+
 
 class PrepareMaterialTierTests(PriorityTestBase):
     def test_tier_annotations(self) -> None:

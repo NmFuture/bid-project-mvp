@@ -65,7 +65,7 @@ TENDER_SOURCE_ROUTE = "项目招标文件全文"
 C1_CONCEPTS = {
     "model": ["投标机型", "制造厂家/型号", "机型型号"],
     "turbine_type": ["机组类型", "发电机型式", "双馈异步发电机", "双馈"],
-    "rated_power": ["单机容量", "额定功率", "机组额定功率", "单机功率"],
+    "rated_power": ["单机容量", "额定功率", "机组额定功率", "单机功率", "机组功率"],
     "turbine_count": ["机组数量", "机组台数", "台数", "风机数量"],
     "total_capacity": ["总装机容量", "装机容量", "项目容量", "总容量", "标段规模"],
     "rotor_diameter": ["叶轮直径", "风轮直径"],
@@ -5136,11 +5136,29 @@ def brief_fact_table_fields(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _label_norm_forms(text: str) -> set[str]:
+    """标签的规范化形态：整体 norm + 去掉括号注释后的 norm（「额定功率（MW）」→「额定功率」）。"""
+    no_paren = re.sub(r"（[^（）]*）|\([^()]*\)", "", clean(text))
+    return {form for form in (norm(text), norm(no_paren)) if form}
+
+
+def _exact_concepts(text: str) -> set[str]:
+    """别名与标签精确等价（含去括号形态）才算命中概念，不接受子串命中——
+    子串会把「单机功率曲线考核阈值」这类限定字段误并进 rated_power，
+    与「单机容量」形成伪歧义，导致该绑定的绑定不上。"""
+    forms = _label_norm_forms(text)
+    return {
+        concept
+        for concept, aliases in CONCEPTS.items()
+        if any(len(norm(alias)) >= 3 and norm(alias) in forms for alias in aliases)
+    }
+
+
 def match_labeled_fact_value(field: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any] | None:
     """目标字段 → 标签化取值条目（事实表字段/解析字段）的保守匹配。
 
     只做标签语义判断、绝不对值做模糊猜测：规范化标签完全一致，或双方标签
-    命中同一概念（复用 CONCEPTS 同义词典，且匹配上的别名至少 3 个规范化
+    与同一概念别名精确等价（复用 CONCEPTS 同义词典，别名至少 3 个规范化
     字符，避免「台数」「过滤」这类短别名误关联）。同分并列多个不同条目时
     宁缺勿滥不绑定；条目值本身不可用（占位/空值）也不绑定。
     """
@@ -5148,11 +5166,7 @@ def match_labeled_fact_value(field: dict[str, Any], entries: list[dict[str, Any]
     if not label:
         return None
     label_norm = norm(label)
-    label_concepts = {
-        concept
-        for concept in concepts_for(label)
-        if any(len(norm(alias)) >= 3 and (norm(alias) in label_norm or label_norm in norm(alias)) for alias in CONCEPTS.get(concept) or [])
-    }
+    label_concepts = _exact_concepts(label)
     matches: list[tuple[int, dict[str, Any]]] = []
     for entry in entries:
         entry_label = clean(entry.get("label"))
@@ -5165,12 +5179,7 @@ def match_labeled_fact_value(field: dict[str, Any], entries: list[dict[str, Any]
             continue
         if not label_concepts:
             continue
-        entry_concepts = {
-            concept
-            for concept in concepts_for(entry_label)
-            if any(len(norm(alias)) >= 3 and (norm(alias) in entry_norm or entry_norm in norm(alias)) for alias in CONCEPTS.get(concept) or [])
-        }
-        if label_concepts & entry_concepts:
+        if label_concepts & _exact_concepts(entry_label):
             matches.append((1, entry))
     if not matches:
         return None
