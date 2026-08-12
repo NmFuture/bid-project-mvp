@@ -153,6 +153,12 @@ class Settings:
     s1_parse_shard_concurrency: int
     s4_llm_fill_timeout_sec: float | None
     body_fill_concurrency: int
+    s1_appendix_workers: int
+    tech_outline_chapter_workers: int
+    ocr_max_concurrent: int
+    ocr_pdf_batch_size: int
+    business_wiki_ocr_concurrency: int
+    tech_wiki_preview_concurrency: int
     business_template_extractor_enabled: bool
     business_pdf_parse_engine: str
     business_pdf_engine_fallback: str
@@ -256,6 +262,18 @@ settings = Settings(
     # 一键填写（正文+附表）的 compute 并发度；本地安全默认值，5090 实测取值只写
     # docker-compose.5090.yml。使用处另有 1~8 的 clamp 兜底。
     body_fill_concurrency=_int_env("BODY_FILL_CONCURRENCY", 4),
+    # 以下六项此前是各服务模块内的硬编码常量，默认值与原值一致，仅打开调参能力；
+    # 5090 实测取值只写 docker-compose.5090.yml。
+    # S1 附表处理线程池，原为固定单线程。
+    s1_appendix_workers=_int_env("S1_APPENDIX_WORKERS", 1),
+    # 目录生成分章并发线程数；总槽位为本值 +1（projectBasics 占一个）。
+    tech_outline_chapter_workers=_int_env("TECH_OUTLINE_CHAPTER_WORKERS", 6),
+    # OcrService 自身的并发闸；真正的上限仍取决于 vLLM 单实例的批处理能力。
+    ocr_max_concurrent=_int_env("OCR_MAX_CONCURRENT", 8),
+    # 长 PDF 每批送入模型的页数，调大更省往返、调小更省显存。
+    ocr_pdf_batch_size=_int_env("OCR_PDF_BATCH_SIZE", 10),
+    business_wiki_ocr_concurrency=_int_env("BUSINESS_WIKI_OCR_CONCURRENCY", 8),
+    tech_wiki_preview_concurrency=_int_env("TECH_WIKI_PREVIEW_CONCURRENCY", 8),
     business_template_extractor_enabled=_bool_env("BUSINESS_TEMPLATE_EXTRACTOR_ENABLED", True),
     business_pdf_parse_engine=os.getenv("BUSINESS_PDF_PARSE_ENGINE", "docling").strip().lower() or "docling",
     business_pdf_engine_fallback=os.getenv("BUSINESS_PDF_ENGINE_FALLBACK", "none").strip().lower() or "none",

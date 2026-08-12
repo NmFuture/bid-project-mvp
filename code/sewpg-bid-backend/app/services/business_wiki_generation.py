@@ -63,7 +63,7 @@ DEFAULT_REFERENCE_WIKI_PATH = Path(
 BUSINESS_WIKI_OCR_VERSION = 1
 # 商务标 Wiki 素材 OCR 并发度：单素材失败已在 _ensure_business_wiki_ocr_cache 内部隔离，
 # 这里只控制同时进行 OCR 的素材数量，风格对齐技术标 PREVIEW_CONCURRENCY。
-BUSINESS_WIKI_OCR_CONCURRENCY = 8
+BUSINESS_WIKI_OCR_CONCURRENCY = settings.business_wiki_ocr_concurrency
 OCR_IMAGE_EXTS = {item.lstrip(".") for item in IMAGE_SUFFIXES}
 OCR_SOURCE_EXTS = OCR_IMAGE_EXTS
 
