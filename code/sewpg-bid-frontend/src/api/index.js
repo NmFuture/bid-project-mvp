@@ -551,8 +551,6 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/select-material`, { method: 'POST', body: data }),
   confirmReady: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
-  setParentCoverage: (projectId, gid, data) =>
-    request(`/technical/projects/${projectId}/gaps/${gid}/parent-coverage`, { method: 'POST', body: data }),
   setTitleOnly: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/title-only`, { method: 'POST', body: data }),
   submitReview: (projectId) =>
@@ -574,8 +572,6 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/curate`),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
-  saveFactField: (projectId, fieldId, data) =>
-    request(`/technical/projects/${projectId}/gaps/facts/${fieldId}`, { method: 'PATCH', body: data }),
   recheck: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>
@@ -590,13 +586,6 @@ export const technicalGapsAPI = {
       method: 'POST',
       body: data,
     }),
-  aiFillAll: (projectId, data) =>
-    request(`/technical/projects/${projectId}/gaps/ai-fill-all`, {
-      method: 'POST',
-      body: data,
-      timeoutMs: 30 * 60 * 1000,
-      retryCount: 0,
-    }),
   // 一键填写（正文+附表）：提交后台任务，立即返回；执行进度经 bodyFillStatus 轮询
   bodyFill: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/body-fill`, {
@@ -607,11 +596,6 @@ export const technicalGapsAPI = {
     }),
   bodyFillStatus: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/body-fill`),
-  submissions: (projectId) => request(`/technical/projects/${projectId}/materials/submissions`),
-  submitMaterial: (projectId, data) =>
-    request(`/technical/projects/${projectId}/materials/submissions`, { method: 'POST', body: data }),
-  updateMissing: (projectId, missingId, data) =>
-    request(`/technical/projects/${projectId}/materials/missing/${missingId}`, { method: 'PATCH', body: data }),
 }
 
 export const technicalGenerateAPI = {
@@ -755,15 +739,6 @@ export const technicalMaterialsAPI = {
       const qs = new URLSearchParams(cleanQuery(params)).toString()
       return request(`/technical/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
-    move: (id, data) => request(`/technical/materials/wiki/${id}/move`, { method: 'POST', body: data }),
-    uploadAttachment: (id, data) =>
-      request(`/technical/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),
-    deleteAttachment: (id, params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/technical/materials/wiki/attachments/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
-    },
-    refreshSummary: (id, data = {}) =>
-      request(`/technical/materials/wiki/${id}/refresh-summary`, { method: 'POST', body: data }),
     certificateTime: () => request('/technical/materials/wiki/certificate-time'),
     updateCertificateTime: (fileId, data) =>
       request(`/technical/materials/wiki/certificate-time/${fileId}`, { method: 'PATCH', body: data }),

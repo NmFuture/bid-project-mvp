@@ -742,11 +742,23 @@ class FactCurateApiTests(unittest.TestCase):
             if field.get("status") == "unextracted" and field.get("sourceKind") == "tender"
         )
         confirmed_target = next(field for field in fields if str(field.get("value") or "").strip())
-        patch_response = self.client.patch(
-            f"/api/technical/projects/{project_id}/gaps/facts/{confirmed_target['id']}",
-            json={"operator": "测试用户"},
+        # 页面改格子时前端会挂 manualEdit 来源，整表保存原样落库；curator 据此跳过人工值
+        marked_fields = [
+            {
+                **field,
+                "sourceRefs": [
+                    {"type": "manualEdit", "title": "人工修改", "field": field.get("label") or ""},
+                    *(field.get("sourceRefs") or []),
+                ],
+            }
+            if field["id"] == confirmed_target["id"] else field
+            for field in fields
+        ]
+        save_response = self.client.put(
+            f"/api/technical/projects/{project_id}/gaps/facts",
+            json={"fields": marked_fields, "operator": "测试用户"},
         )
-        self.assertEqual(patch_response.status_code, 200, patch_response.text)
+        self.assertEqual(save_response.status_code, 200, save_response.text)
 
         suggestions = [
             {

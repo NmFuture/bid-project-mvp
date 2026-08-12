@@ -328,10 +328,6 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["selectedNode"]["title"], updated_title)
 
-        refreshed = await self.client.post(f"/api/technical/materials/wiki/{node_id}/refresh-summary")
-        self.assertEqual(refreshed.status_code, 200)
-        self.assertIn("summary", refreshed.json())
-
     async def test_audit_settings_and_export_routes_are_available(self) -> None:
         project_id = await self.create_project()
 

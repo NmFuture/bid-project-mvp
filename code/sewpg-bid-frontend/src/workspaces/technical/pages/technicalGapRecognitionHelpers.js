@@ -474,26 +474,6 @@ export const technicalGapDescendants = (item, allItems = []) => {
   return descendants
 }
 
-export const technicalGapParentCoverageState = (item, allItems = []) => {
-  const descendants = technicalGapDescendants(item, allItems)
-  const gapId = String(item?.id || '')
-  // 已按本节点人工设置覆盖的下级；planner 自动判定的覆盖不计入（不由这个按钮撤销）。
-  const manualCovered = descendants.filter(
-    (entry) => String(entry?.coveredByParent || '') === gapId
-      && String(entry?.parentCoverageSource || '') === 'manual',
-  )
-  const hasMaterial = asObjectArray(item?.matchedMaterials).length > 0
-    || currentResolvedArtifacts(item).length > 0
-  return {
-    descendantCount: descendants.length,
-    coveredCount: manualCovered.length,
-    applied: manualCovered.length > 0,
-    hasMaterial,
-    // 有下级 + 本节点自己有素材，才谈得上让下级跟着它写。
-    canApply: descendants.length > 0 && hasMaterial,
-  }
-}
-
 export const appendixTaskForFillTask = (selected, task) => {
   const appendixTasks = asObjectArray(selected?.appendixTasks)
   const blankId = String(task?.blankSource?.id || '').trim()

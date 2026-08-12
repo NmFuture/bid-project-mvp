@@ -17,7 +17,6 @@ from app.services.bid_document_flow import _validate_callback_token, _validate_d
 from app.services.onlyoffice_documents import download_document_from_onlyoffice
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.identity import build_project_identity, build_project_material_scope, canonical_customer
-from app.services.material_folder_scope import project_material_root_path
 from app.services.technical_appendix_source_matrix import (
     apply_appendix_source_matrix_to_plan,
     parse_appendix_source_matrix,
@@ -28,8 +27,6 @@ from app.services.technical_rules_store import (
 )
 from app.services.turbine_models import project_turbine_model
 from app.services.technical_gap_fact_table import (
-    FACT_STATUS_CONFIRMED,
-    FACT_STATUS_NOT_APPLICABLE,
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
     empty_project_fact_table,
@@ -46,7 +43,6 @@ from app.services.bid_runtime_state import count_outline_nodes, now_iso
 from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
     TECHNICAL_WORD_FILL_SKILL_NAME,
-    apply_technical_gap_parent_coverage,
     build_technical_gap_plan_for_project,
     cleanup_prepared_technical_gap_material_files,
     prepare_technical_existing_gap_material_files,
@@ -55,8 +51,6 @@ from app.services.technical_gap_actions import (
     run_technical_ai_fill_for_gap,
 )
 from app.services.technical_gap_domain import (
-    FILL_QUALITY_ACCEPTED_STATUSES,
-    aggregate_technical_gap_fill_quality,
     build_technical_gap_detection_payload,
     check_technical_gap_integrity,
     find_technical_gap_item,
@@ -136,13 +130,6 @@ def _validate_editable_gap_artifact(
     if callback_version is not None and callback_version != current_version:
         raise _StaleArtifactSession("OnlyOffice 编辑会话已过期。")
     return current_version
-
-
-# 字段了结的状态集合：全部字段了结（有值或人工标不适用）后表级 status 自动升 confirmed
-PROJECT_FACT_FIELD_TERMINAL_STATUSES = {
-    FACT_STATUS_CONFIRMED,
-    FACT_STATUS_NOT_APPLICABLE,
-}
 
 
 def default_fact_material_scopes(project: dict[str, Any]) -> list[dict[str, str]]:
@@ -886,42 +873,6 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap not found")
 
-    def set_parent_coverage(
-        self,
-        project_id: str,
-        gap_id: str,
-        data: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        # 人工设「父章节覆盖」（产品需求 2026-07-27）：以本节点为覆盖源，把其后代目录项
-        # 统一标成 covered_by_parent；人工已单独选过素材的子节跳过，可撤销。
-        try:
-            def apply(project: dict[str, Any]) -> dict[str, Any]:
-                gap_state = ensure_technical_gap_state(project)
-                if gap_state["recognitionStatus"] != "completed":
-                    raise ValueError("请先完成缺口识别。")
-                result = apply_technical_gap_parent_coverage(project, gap_id, data or {})
-                self._refresh_gap_integrity(project, gap_state)
-                gap_state["items"] = legacy_technical_gap_items_from_plan(gap_state.get("plan") or {})
-                covered = (data or {}).get("covered", True) is not False
-                applied = result.get("applied") or []
-                skipped = result.get("skipped") or []
-                action = "已设为父章节覆盖" if covered else "已撤销父章节覆盖"
-                message = f"{action}：{len(applied)} 个下级目录项"
-                if skipped:
-                    reason = "已自行选用素材" if covered else "非人工设置"
-                    message += f"，跳过 {len(skipped)} 个（{reason}）"
-                return {
-                    "message": f"{message}。",
-                    "item": copy.deepcopy(result.get("item") or {}),
-                    "applied": applied,
-                    "skipped": skipped,
-                    "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
-                }
-
-            return mutate_technical_gap_project(project_id, apply)
-        except Exception as exc:
-            _raise_gap_error(exc, "Gap not found")
-
     def set_title_only(
         self,
         project_id: str,
@@ -1362,82 +1313,6 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap facts not found")
 
-    async def save_fact_field(
-        self,
-        project_id: str,
-        field_id: str,
-        data: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        try:
-            def apply(project: dict[str, Any]) -> dict[str, Any]:
-                gap_state = ensure_technical_gap_state(project)
-                if gap_state["recognitionStatus"] != "completed":
-                    raise ValueError("请先完成缺口识别，再维护项目事实表。")
-                table = gap_state.get("projectFactTable")
-                if not isinstance(table, dict) or table.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
-                    raise KeyError(field_id)
-                fields = [field for field in (table.get("fields") or []) if isinstance(field, dict)]
-                # 字段定位与前端行 key 一致：优先 id（build 时生成的 FACT-XXXX），其次 key
-                target_index = next(
-                    (
-                        index
-                        for index, field in enumerate(fields)
-                        if str(field.get("id") or "") == str(field_id)
-                        or str(field.get("key") or "") == str(field_id)
-                    ),
-                    None,
-                )
-                if target_index is None:
-                    raise KeyError(field_id)
-                payload = data or {}
-                confirm = bool(payload.get("confirm", True))
-                operator = str(payload.get("operator") or "当前用户")
-                saved_at = now_iso()
-                merged = copy.deepcopy(fields[target_index])
-                if "value" in payload:
-                    merged["value"] = str(payload.get("value") or "")
-                if "status" in payload:
-                    merged["status"] = str(payload.get("status") or "")
-                normalized = normalize_project_fact_field(
-                    merged,
-                    index=target_index + 1,
-                    confirm=confirm,
-                    operator=operator,
-                    saved_at=saved_at,
-                )
-                fields[target_index] = normalized
-                specs, _ = resolve_fact_specs()
-                summary = summarize_project_fact_fields(fields, spec_total=len(specs))
-                all_terminal = bool(fields) and all(
-                    str(field.get("status") or "") in PROJECT_FACT_FIELD_TERMINAL_STATUSES for field in fields
-                )
-                status = str(table.get("status") or "draft")
-                confirmed_at = str(table.get("confirmedAt") or "")
-                confirmed_by = str(table.get("confirmedBy") or "")
-                if all_terminal:
-                    status = "confirmed"
-                    confirmed_at = confirmed_at or saved_at
-                    confirmed_by = operator
-                gap_state["projectFactTable"] = {
-                    **table,
-                    "status": status,
-                    "updatedAt": saved_at,
-                    "confirmedAt": confirmed_at,
-                    "confirmedBy": confirmed_by,
-                    "fields": fields,
-                    "summary": summary,
-                }
-                project["updatedAt"] = saved_at
-                return {
-                    "field": copy.deepcopy(normalized),
-                    "summary": copy.deepcopy(summary),
-                    "status": status,
-                }
-
-            return mutate_technical_gap_project(project_id, apply)
-        except Exception as exc:
-            _raise_gap_error(exc, "Gap fact field not found")
-
     async def curate_facts(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         """提交 AI 匹配填充任务：立即返回，执行交给后台 worker，进度经 curate_status 轮询。
 
@@ -1593,219 +1468,6 @@ class TechnicalGapService:
             "pendingTotal": len(collect_body_fill_targets(gap_state, {})),
             "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
         }
-
-    def ai_fill_all(self, project_id: str, request: Request, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            project = require_technical_gap_project_for_update(project_id)
-            gap_state = ensure_technical_gap_state(project)
-            if gap_state["recognitionStatus"] != "completed":
-                raise ValueError("请先完成缺口识别。")
-            if repair_technical_gap_state_fill_task_skills(gap_state):
-                self._persist_fill_task_skill_repair(project_id)
-            self._require_confirmed_project_fact_table(gap_state)
-            plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
-            payload = data or {}
-            requested_gap_ids = {
-                str(item or "").strip()
-                for item in (payload.get("gapIds") if isinstance(payload.get("gapIds"), list) else [])
-                if str(item or "").strip()
-            }
-            tasks: list[tuple[int, int, int, str, str]] = []
-            for index, item in enumerate(plan.get("items") or [], start=1):
-                if not isinstance(item, dict):
-                    continue
-                gap_id = str(item.get("id") or "")
-                if requested_gap_ids and gap_id not in requested_gap_ids:
-                    continue
-                if str(item.get("decision") or "") != "fill_required":
-                    continue
-                for task_index, task in enumerate(item.get("fillTasks") or [], start=1):
-                    if not isinstance(task, dict):
-                        continue
-                    if str(task.get("status") or "pending") == "completed" and not payload.get("rerun"):
-                        continue
-                    skill = str(task.get("skill") or TECHNICAL_TABLE_FILL_SKILL_NAME)
-                    rank = 0 if skill == TECHNICAL_WORD_FILL_SKILL_NAME else 1
-                    tasks.append((rank, index, task_index, gap_id, str(task.get("id") or "")))
-            tasks.sort(key=lambda item: (item[0], item[1], item[2]))
-            base_data = {key: value for key, value in payload.items() if key not in {"fillTaskId", "gapIds", "rerun"}}
-            url_scope = self._url_scope(request)
-            results: list[dict[str, Any]] = []
-            errors: list[dict[str, str]] = []
-            for _, _, _, gap_id, fill_task_id in tasks:
-                try:
-                    # 每条重新取最新状态跑，跑完只把这一条并回，避免整批用同一份陈旧快照
-                    snapshot = require_technical_gap_project_for_update(project_id)
-                    result = run_technical_ai_fill_for_gap(
-                        snapshot,
-                        gap_id,
-                        {**base_data, "fillTaskId": fill_task_id, "operator": str(payload.get("operator") or "当前用户")},
-                        **url_scope,
-                    )
-                    artifact = result.get("artifact") if isinstance(result.get("artifact"), dict) else {}
-                    artifacts = [
-                        item
-                        for item in (result.get("artifacts") if isinstance(result.get("artifacts"), list) else [artifact])
-                        if isinstance(item, dict) and item
-                    ]
-                    for artifact_item in artifacts:
-                        results.append(
-                            {
-                                "gapId": gap_id,
-                                "artifactId": str(artifact_item.get("id") or ""),
-                                "artifactIds": [
-                                    str(item.get("id") or "") for item in artifacts if str(item.get("id") or "")
-                                ],
-                                "skill": str(artifact_item.get("skill") or ""),
-                                "fileName": str(artifact_item.get("fileName") or ""),
-                                "batchTargetIndex": artifact_item.get("batchTargetIndex") or 0,
-                                "batchTargetCount": artifact_item.get("batchTargetCount") or 0,
-                                "qualityReport": copy.deepcopy(artifact_item.get("qualityReport") or {}),
-                            }
-                        )
-                    filled_item = plan_item_snapshot(snapshot, gap_id)
-                    mutate_technical_gap_project(
-                        project_id,
-                        lambda latest, _gap_id=gap_id, _item=filled_item: apply_filled_gap_item(
-                            latest, _gap_id, _item
-                        ),
-                    )
-                except Exception as exc:  # pragma: no cover - batch must report failures instead of hiding progress
-                    errors.append({"gapId": gap_id, "message": str(exc)})
-
-            def refresh(latest: dict[str, Any]) -> dict[str, Any]:
-                latest_state = ensure_technical_gap_state(latest)
-                self._refresh_gap_integrity(latest, latest_state)
-                latest["updatedAt"] = now_iso()
-                return {
-                    "gapPlan": copy.deepcopy(latest_state.get("plan") or {}),
-                    "projectFactTable": copy.deepcopy(latest_state.get("projectFactTable") or {}),
-                }
-
-            latest_view = mutate_technical_gap_project(project_id, refresh)
-            aggregate = aggregate_technical_gap_fill_quality(results, errors)
-            return {
-                "status": "completed" if not errors else "needs_review",
-                "summary": {
-                    "total": len(results) + len(errors),
-                    "passed": sum(1 for result in results if result.get("qualityReport", {}).get("status") == "passed"),
-                    "noFillRequired": sum(
-                        1
-                        for result in results
-                        if result.get("qualityReport", {}).get("status") == "no_fill_required"
-                    ),
-                    "needsReview": sum(
-                        1
-                        for result in results
-                        if result.get("qualityReport", {}).get("status") not in FILL_QUALITY_ACCEPTED_STATUSES
-                    ),
-                    "failed": len(errors),
-                },
-                "qualityReport": aggregate,
-                "results": results,
-                "errors": errors,
-                "gapPlan": latest_view["gapPlan"],
-                "projectFactTable": latest_view["projectFactTable"],
-            }
-        except Exception as exc:
-            _raise_gap_error(exc, "Gap plan not found")
-
-    async def submissions(self, project_id: str) -> dict[str, Any]:
-        try:
-            project = require_technical_gap_project_for_update(project_id)
-            gap_state = ensure_technical_gap_state(project)
-            submissions = copy.deepcopy(gap_state["submissions"])
-            return {"items": submissions, "total": len(submissions)}
-        except Exception as exc:
-            _raise_gap_error(exc, "Gap submissions not found")
-
-    async def submit_material(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            def apply(project: dict[str, Any]) -> dict[str, Any]:
-                gap_state = ensure_technical_gap_state(project)
-                if gap_state["recognitionStatus"] != "completed":
-                    raise ValueError("请先完成缺口识别。")
-
-                payload = data or {}
-                missing_id = str(payload.get("missingId") or "").strip()
-                files = list(payload.get("files") or [])
-                if not missing_id:
-                    raise ValueError("missingId 不能为空。")
-                if not files:
-                    raise ValueError("至少需要提交一个文件。")
-
-                item = find_technical_gap_item(gap_state, missing_id)
-                receipts: list[dict[str, Any]] = []
-                timestamp = now_iso()
-                for index, file in enumerate(files, start=1):
-                    file_name = str(file.get("name") or f"{missing_id}-{index}.docx").strip() or f"{missing_id}-{index}.docx"
-                    receipt = {
-                        "receiptId": f"mr-{project_id}-{len(gap_state['submissions']) + index}",
-                        "projectId": project_id,
-                        "missingId": missing_id,
-                        "fileId": f"raw-{project_id}-{len(gap_state['submissions']) + index}",
-                        "fileName": file_name,
-                        "storedPath": project_material_root_path(TECHNICAL_BID_TYPE, project_id),
-                        "action": "upload",
-                        "operator": str(payload.get("operator") or "当前用户"),
-                        "submittedAt": timestamp,
-                        "traceId": f"mock-{project_id}-{len(gap_state['submissions']) + index}",
-                        "auditId": f"audit-{project_id}-{len(gap_state['submissions']) + index}",
-                    }
-                    receipts.append(receipt)
-
-                gap_state["submissions"] = receipts + list(gap_state["submissions"])
-                item["latestUploadAt"] = timestamp
-                item["latestSubmissionId"] = receipts[0]["receiptId"]
-                if item["status"] != "resolved":
-                    item["status"] = "checking"
-                plan_item = find_technical_gap_plan_item(gap_state, missing_id)
-                if plan_item is not None:
-                    plan_item["status"] = "filling"
-                    plan_item["latestUploadAt"] = timestamp
-                    plan_item["latestSubmissionId"] = receipts[0]["receiptId"]
-                    plan_item.setdefault("resolvedArtifacts", []).extend(
-                        {
-                            "id": receipt["receiptId"],
-                            "source": "manual_upload",
-                            "fileName": receipt["fileName"],
-                            "path": receipt["storedPath"],
-                            "createdAt": receipt["submittedAt"],
-                            "s7Ready": False,
-                        }
-                        for receipt in receipts
-                    )
-                    if isinstance(gap_state.get("plan"), dict):
-                        gap_state["plan"]["summary"] = summarize_technical_gap_plan(gap_state["plan"])
-                        gap_state["integrity"] = check_technical_gap_integrity(gap_state["plan"])
-                        gap_state["plan"]["integrity"] = gap_state["integrity"]
-                gap_state["submittedForReview"] = False
-                gap_state["reviewConfirmed"] = False
-                gap_state["reviewedAt"] = ""
-                project["review_document_state"] = default_technical_review_document_state(project)
-                project["updatedAt"] = timestamp
-                return {
-                    "message": f"补料提交成功，共 {len(receipts)} 个文件。",
-                    "item": copy.deepcopy(item),
-                    "receipts": receipts,
-                    "payload": self._gap_filling_payload(project_id, project, gap_state),
-                    "traceId": receipts[0]["traceId"],
-                }
-
-            return mutate_technical_gap_project(project_id, apply)
-        except Exception as exc:
-            _raise_gap_error(exc, "Gap not found")
-
-    async def patch_missing(
-        self,
-        project_id: str,
-        missing_id: str,
-        data: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        try:
-            return await self.update_gap(project_id, missing_id, data or {})
-        except Exception as exc:
-            _raise_gap_error(exc, "Gap not found")
 
 
 technical_gap_service = TechnicalGapService()
