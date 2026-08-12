@@ -8,6 +8,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
+from app.core.config import settings
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.material_cleaned_artifact import cleaned_artifact_is_current
 from app.services.material_cleaning import is_cleanable_material, is_deep_convertible_material
@@ -36,7 +37,7 @@ from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx
 logger = logging.getLogger(__name__)
 
 PREVIEW_EXT_FIELD = "techWikiPreview"
-PREVIEW_CONCURRENCY = 8
+PREVIEW_CONCURRENCY = settings.tech_wiki_preview_concurrency
 LOCAL_FALLBACK_POINT_LIMIT = 5
 # 同一文件 LLM 预览连续失败达到上限后，fallback 置为终态（retryable=False），
 # 避免 LLM 持续不可用时每次刷新都对同一批节点重打 LLM、标签永远卡在「待重试」。
