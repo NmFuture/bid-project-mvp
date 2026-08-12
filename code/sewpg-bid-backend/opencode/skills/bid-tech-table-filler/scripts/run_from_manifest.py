@@ -59,7 +59,7 @@ TENDER_SOURCE_ROUTE = "项目招标文件全文"
 C1_CONCEPTS = {
     "model": ["投标机型", "制造厂家/型号", "机型型号"],
     "turbine_type": ["机组类型", "发电机型式", "双馈异步发电机", "双馈"],
-    "rated_power": ["单机容量", "额定功率", "机组额定功率", "单机功率"],
+    "rated_power": ["单机容量", "额定功率", "机组额定功率", "单机功率", "机组功率"],
     "turbine_count": ["机组数量", "机组台数", "台数", "风机数量"],
     "total_capacity": ["总装机容量", "装机容量", "项目容量", "总容量", "标段规模"],
     "rotor_diameter": ["叶轮直径", "风轮直径"],
@@ -3175,14 +3175,20 @@ FILL_PLAN_FILENAME = "fill_plan.json"
 
 # 填写铁律：写进 brief 约束 agent 的取值行为（与 SKILL.md 的契约一致）。
 FILL_BRIEF_RULES = (
+    "取值来源优先级：L1 项目事实表 > L2 附表填写规则命中/人工指定素材（tier=2）> L3 其他来源（tier=3）；targetField 带 preferredValue 时必须取该值（确需偏离要在 reason 里写充分理由），高优先级来源有依据时禁止用低优先级来源。",
     "不编造：任何填写值必须能在素材、事实表或招标文件原文中找到依据，找不到依据的格子必须 action=manual。",
     "不确定的字段不要猜：action=manual，脚本会写入 [待人工补充：字段名] 并黄高亮。",
     "响应单元格只写数值或结论本身，不要写单位；单位由脚本按单位列口径写入。",
     "机型字段只写英数字型号编码，不写「上置/下置」等中文布局后缀。",
     "素材范围锁定本简报 materials 列表（manifest 给定内容），禁止读取列表之外的文件。",
-    "每个非 manual 格子必须带 evidence.excerpt（来源文件原文原句）；脚本会按 excerpt 在 sourcePath 中校验，命中不了强制降级 manual。",
+    "有文件来源（素材/招标文件）的非 manual 格子必须带 evidence.excerpt（来源文件原文原句）；脚本会按 excerpt 在 sourcePath 中校验，命中不了强制降级 manual。",
+    "无文件路由（factTable/parseFields/projectTurbineModel）的格子不要求 excerpt，但填的值必须与对应事实表/解析字段的值一致（单位归一后），不一致强制降级 manual。",
     "招标要求值 requirementValue 是明确具体值时优先直抄。",
 )
+
+# 无文件路由：取值来自 manifest payload（事实表/解析字段/投标机型），
+# apply 阶段对这些路由不做 excerpt 原文摘录校验，改做值一致性校验。
+FILELESS_EVIDENCE_ROUTES = ("factTable", "parseFields", "projectTurbineModel")
 
 
 class PlanValidationError(RuntimeError):
@@ -3192,6 +3198,19 @@ class PlanValidationError(RuntimeError):
     def __init__(self, errors: list[dict[str, Any]]) -> None:
         self.errors = errors
         super().__init__(f"fill plan validation failed with {len(errors)} error(s)")
+
+
+def brief_material_tier(material: dict[str, Any], route: str) -> int:
+    """取值来源分级（L2/L3）：2=附表填写规则命中（素材自带 sourceRouting）
+    或人工最终指定（referenceMaterials/selectedReferenceMaterials；规则命中的
+    素材也会经此路进入，同属「指定来源」），招标文件全文只在规则要求时给入、
+    同列 2；3=其余（素材索引/上游推荐等补充线索）。判定只用 manifest 里现有
+    的 route 与 sourceRouting，不新造数据源。"""
+    if route in {"referenceMaterial", "tenderDocument"}:
+        return 2
+    if isinstance(material.get("sourceRouting"), dict) and material.get("sourceRouting"):
+        return 2
+    return 3
 
 
 def brief_material_entry(material: dict[str, Any], manifest_dir: Path, route: str) -> dict[str, Any]:
@@ -3217,6 +3236,7 @@ def brief_material_entry(material: dict[str, Any], manifest_dir: Path, route: st
         "id": clean(material.get("id") or material.get("materialId")),
         "name": material_label(material) or (effective.name if effective else ""),
         "route": route,
+        "tier": brief_material_tier(material, route),
         "path": str(effective) if effective else "",
         "ocrTextPath": str(ocr_text) if ocr_text else "",
         "originalPath": str(original) if original else "",
@@ -3255,8 +3275,166 @@ def brief_fact_table_fields(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def brief_target_field(field: dict[str, Any]) -> dict[str, Any]:
+def _label_norm_forms(text: str) -> set[str]:
+    """标签的规范化形态：整体 norm + 去掉括号注释后的 norm（「额定功率（MW）」→「额定功率」）。"""
+    no_paren = re.sub(r"（[^（）]*）|\([^()]*\)", "", clean(text))
+    return {form for form in (norm(text), norm(no_paren)) if form}
+
+
+def _exact_concepts(text: str) -> set[str]:
+    """别名与标签精确等价（含去括号形态）才算命中概念，不接受子串命中——
+    子串会把「单机功率曲线考核阈值」这类限定字段误并进 rated_power，
+    与「单机容量」形成伪歧义，导致该绑定的绑定不上。"""
+    forms = _label_norm_forms(text)
     return {
+        concept
+        for concept, aliases in CONCEPTS.items()
+        if any(len(norm(alias)) >= 3 and norm(alias) in forms for alias in aliases)
+    }
+
+
+def match_labeled_fact_value(field: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """目标字段 → 标签化取值条目（事实表字段/解析字段）的保守匹配。
+
+    只做标签语义判断、绝不对值做模糊猜测：规范化标签完全一致，或双方标签
+    与同一概念别名精确等价（复用 CONCEPTS 同义词典，别名至少 3 个规范化
+    字符，避免「台数」「过滤」这类短别名误关联）。同分并列多个不同条目时
+    宁缺勿滥不绑定；条目值本身不可用（占位/空值）也不绑定。
+    """
+    label = clean(field.get("field"))
+    if not label:
+        return None
+    label_norm = norm(label)
+    label_concepts = _exact_concepts(label)
+    matches: list[tuple[int, dict[str, Any]]] = []
+    for entry in entries:
+        entry_label = clean(entry.get("label"))
+        entry_value = clean(entry.get("value"))
+        if not entry_label or not usable_value(entry_value):
+            continue
+        entry_norm = norm(entry_label)
+        if entry_norm == label_norm:
+            matches.append((2, entry))
+            continue
+        if not label_concepts:
+            continue
+        if label_concepts & _exact_concepts(entry_label):
+            matches.append((1, entry))
+    if not matches:
+        return None
+    best = max(score for score, _ in matches)
+    top = [entry for score, entry in matches if score == best]
+    # 同分并列且标签/值不同 → 判不出唯一来源，不绑定（宁缺勿滥）
+    if len({(norm(entry["label"]), norm(entry["value"])) for entry in top}) > 1:
+        return None
+    return top[0]
+
+
+_LAYOUT_SUFFIX_RE = re.compile(r"(上置|下置|内置|外置)$")
+
+
+def _numeric_with_unit(text: str, unit: str) -> tuple[float | None, str]:
+    """数值 + 单位拆分：值内单位后缀优先，其次显式单位列单位。"""
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z/%μ°².³]+|吨)?", clean(text))
+    if match:
+        suffix = match.group(2) or ""
+        suffix = "t" if suffix == "吨" else norm(suffix)
+        return float(match.group(1)), suffix or norm(unit)
+    return parse_float(text), norm(unit)
+
+
+def fact_values_consistent(plan_value: str, plan_unit: str, fact_value: str, fact_unit: str) -> bool:
+    """计划值与事实表/解析字段值的一致性：文本逐字（忽略大小写/空白/标点，
+    机型布局后缀等价），或数值经同族单位换算后相等；换算不了的一律判不一致
+    （保守，宁可降级人工核对）。"""
+    left, right = clean(plan_value), clean(fact_value)
+    if not left or not right:
+        return False
+    left_text, right_text = _LAYOUT_SUFFIX_RE.sub("", left), _LAYOUT_SUFFIX_RE.sub("", right)
+    if left_text == right_text or norm(left_text) == norm(right_text):
+        return True
+    left_num, left_unit = _numeric_with_unit(left, plan_unit)
+    right_num, right_unit = _numeric_with_unit(right, fact_unit)
+    if left_num is None or right_num is None:
+        return False
+    if left_unit == right_unit:
+        return math.isclose(left_num, right_num, rel_tol=1e-9, abs_tol=1e-9)
+    factor = _UNIT_CONVERSIONS.get((left_unit, right_unit))
+    if factor is not None:
+        return math.isclose(left_num * factor, right_num, rel_tol=1e-9, abs_tol=1e-9)
+    reverse = _UNIT_CONVERSIONS.get((right_unit, left_unit))
+    if reverse is not None:
+        return math.isclose(right_num * reverse, left_num, rel_tol=1e-9, abs_tol=1e-9)
+    return False
+
+
+def parse_field_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """manifest parseFields 归一成标签化取值条目（键名与 extract_manifest_parse_facts
+    的读取口径一致），供 apply 阶段的值一致性校验使用。"""
+    entries: list[dict[str, Any]] = []
+    for item in object_items(manifest.get("parseFields")):
+        label = clean(item.get("label") or item.get("title") or item.get("key") or item.get("id"))
+        value = clean(item.get("value") or item.get("keyValue") or "")
+        if label and value:
+            entries.append({"label": label, "value": value, "unit": clean(item.get("unit"))})
+    return entries
+
+
+def turbine_model_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """投标机型 payload 的标量叶子值（键名 Kw/MW 后缀推断单位），供
+    projectTurbineModel 路由的值一致性校验使用。"""
+    project = manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {}
+    entries: list[dict[str, Any]] = []
+    for key, value in project.items():
+        if isinstance(value, (dict, list)):
+            continue
+        text = clean(value)
+        if not text:
+            continue
+        key_text = clean(key).lower()
+        unit = "kW" if key_text.endswith("kw") else ("MW" if key_text.endswith("mw") else "")
+        entries.append({"label": clean(key), "value": text, "unit": unit})
+    return entries
+
+
+def fileless_route_value_downgrade(
+    manifest: dict[str, Any],
+    field: dict[str, Any],
+    route: str,
+    value_text: str,
+    plan_unit: str,
+    fact_match: dict[str, Any] | None,
+) -> str:
+    """无文件路由（factTable/parseFields/projectTurbineModel）的取值校验：
+    不要求 excerpt 原文摘录（payload 是结构化字段拼不出原文），改为值一致性
+    校验——填的值必须与对应来源条目的值一致（单位归一后），找不到对应条目
+    或不一致都按冲突降级 manual。返回降级原因，空串=通过。"""
+    field_label = clean(field.get("field"))
+    if route == "factTable":
+        if fact_match is None:
+            return f"事实表中找不到与「{field_label}」对应的字段，无法核对取值"
+        if not fact_values_consistent(value_text, plan_unit, fact_match["value"], fact_match["unit"]):
+            return f"与事实表值不一致：事实表「{fact_match['label']}」= {fact_match['value']}{fact_match['unit']}"
+        return ""
+    if route == "parseFields":
+        parse_match = match_labeled_fact_value(field, parse_field_entries(manifest))
+        if parse_match is None:
+            return f"解析字段中找不到与「{field_label}」对应的条目，无法核对取值"
+        if not fact_values_consistent(value_text, plan_unit, parse_match["value"], parse_match["unit"]):
+            return f"与解析字段值不一致：解析字段「{parse_match['label']}」= {parse_match['value']}{parse_match['unit']}"
+        return ""
+    if route == "projectTurbineModel":
+        entries = turbine_model_entries(manifest)
+        if not entries:
+            return "投标机型信息为空，无法核对取值"
+        if not any(fact_values_consistent(value_text, plan_unit, entry["value"], entry["unit"]) for entry in entries):
+            return f"与投标机型信息不一致：机型信息中找不到值 {value_text}{plan_unit}"
+        return ""
+    return ""
+
+
+def brief_target_field(field: dict[str, Any], preferred: dict[str, Any] | None = None) -> dict[str, Any]:
+    entry = {
         "targetFieldId": clean(field.get("id")),
         "tableIndex": field.get("tableIndex"),
         "rowIndex": field.get("rowIndex"),
@@ -3269,6 +3447,13 @@ def brief_target_field(field: dict[str, Any]) -> dict[str, Any]:
         "unit": clean(field.get("unit")),
         "group": clean(field.get("group")),
     }
+    if preferred is not None:
+        # L1 事实表预绑定：命中的字段必须优先取事实表值
+        entry["preferredRoute"] = "factTable"
+        entry["preferredValue"] = clean(preferred.get("value"))
+        entry["preferredUnit"] = clean(preferred.get("unit"))
+        entry["preferredLabel"] = clean(preferred.get("label"))
+    return entry
 
 
 def run_prepare(manifest_path: Path) -> dict[str, Any]:
@@ -3283,6 +3468,7 @@ def run_prepare(manifest_path: Path) -> dict[str, Any]:
     output_file = output_path_for_target(manifest, manifest_path, spec)
     fields = extract_target_fields(spec)
     materials = collect_brief_materials(manifest, manifest_path.parent)
+    fact_fields = brief_fact_table_fields(manifest)
     brief = {
         "schemaVersion": BRIEF_SCHEMA_VERSION,
         "blankDocxPath": str(source_docx),
@@ -3290,9 +3476,9 @@ def run_prepare(manifest_path: Path) -> dict[str, Any]:
         "planFile": str(manifest_path.with_name(FILL_PLAN_FILENAME)),
         "title": spec.title,
         "appendixId": spec.appendix_id,
-        "targetFields": [brief_target_field(field) for field in fields],
+        "targetFields": [brief_target_field(field, match_labeled_fact_value(field, fact_fields)) for field in fields],
         "materials": materials,
-        "factTableFields": brief_fact_table_fields(manifest),
+        "factTableFields": fact_fields,
         "parseFields": manifest.get("parseFields") if isinstance(manifest.get("parseFields"), list) else [],
         "projectTurbineModel": manifest.get("projectTurbineModel") if isinstance(manifest.get("projectTurbineModel"), dict) else {},
         "rules": list(FILL_BRIEF_RULES),
@@ -3525,17 +3711,28 @@ def plan_fill_decision(
     evidence = fill.get("evidence") if isinstance(fill.get("evidence"), dict) else {}
     excerpt = clean(evidence.get("excerpt"))
     source_path = first_existing_path((evidence.get("sourcePath"),), manifest_dir)
+    route = clean(evidence.get("sourceRoute"))
+    plan_unit = clean(fill.get("unit")) or clean(field.get("unit"))
+    # L1 事实表优先：与 prepare 相同的确定性匹配在 apply 复算（manifest 是
+    # 唯一事实来源），命中时计划值必须与事实表值一致，偏离按冲突降级 manual。
+    fact_match = match_labeled_fact_value(field, brief_fact_table_fields(manifest))
     downgrade = ""
     if not usable_value(value_text):
         downgrade = f"计划值不可用（空值/占位/纯单位）：{value_text or '（空）'}"
-    elif not excerpt:
-        downgrade = "缺少 evidence.excerpt，无法溯源"
+    elif source_path is None and route in FILELESS_EVIDENCE_ROUTES:
+        # 无文件路由：不做 excerpt 原文摘录，改值一致性校验
+        downgrade = fileless_route_value_downgrade(manifest, field, route, value_text, plan_unit, fact_match)
     else:
-        corpus = evidence_corpus_text(manifest, evidence, manifest_dir)
-        if corpus is None:
-            downgrade = f"证据来源不可读：{clean(evidence.get('sourcePath')) or clean(evidence.get('sourceRoute')) or '（未声明）'}"
-        elif not excerpt_hit(excerpt, corpus):
-            downgrade = "证据未命中：excerpt 在其声明的来源文本中原样找不到"
+        if fact_match is not None and not fact_values_consistent(value_text, plan_unit, fact_match["value"], fact_match["unit"]):
+            downgrade = f"事实表优先：应以事实表值 {fact_match['value']}{fact_match['unit']} 为准（事实表字段「{fact_match['label']}」）"
+        elif not excerpt:
+            downgrade = "缺少 evidence.excerpt，无法溯源"
+        else:
+            corpus = evidence_corpus_text(manifest, evidence, manifest_dir)
+            if corpus is None:
+                downgrade = f"证据来源不可读：{clean(evidence.get('sourcePath')) or route or '（未声明）'}"
+            elif not excerpt_hit(excerpt, corpus):
+                downgrade = "证据未命中：excerpt 在其声明的来源文本中原样找不到"
     if not downgrade:
         plan_candidate = {
             "factId": f"{field_id}-PLAN",
