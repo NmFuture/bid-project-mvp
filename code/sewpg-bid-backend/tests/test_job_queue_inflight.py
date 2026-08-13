@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from app.core.config import settings
 from app.services import job_queue
 
 
@@ -47,7 +51,7 @@ def test_mark_and_clear_job_inflight() -> None:
 def test_recover_processing_job_moves_payload_back_atomically() -> None:
     client = MagicMock()
     raw_payload = json.dumps({"id": "run-1:continue", "type": "s1_parse_continue"})
-    client.eval.side_effect = [raw_payload, None]
+    client.eval.side_effect = [["requeued", raw_payload], None]
 
     with patch.object(job_queue, "get_redis_client", return_value=client):
         recovered = job_queue.recover_processing_jobs(job_queue.QUEUE_KEY)
@@ -62,6 +66,41 @@ def test_recover_processing_job_moves_payload_back_atomically() -> None:
         job_queue.INFLIGHT_KEY,
         job_queue.JOB_KEY_PREFIX,
     )
+    # 重试上限必须真的传给脚本，否则死循环没有出口
+    assert first_call.args[8] == max(1, settings.redis_job_max_recover_attempts)
+
+
+def test_recover_processing_job_abandoned_is_not_counted_as_recovered() -> None:
+    """反复崩溃的任务由脚本判死后，恢复计数不能把它算成"又放回队列了"。"""
+    client = MagicMock()
+    client.eval.side_effect = [["abandoned", "job-poison"], None]
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        recovered = job_queue.recover_processing_jobs(job_queue.QUEUE_KEY)
+
+    assert recovered == 0
+    assert client.eval.call_count == 2
+
+
+def test_recover_inflight_job_marked_failed_after_attempt_cap() -> None:
+    client = MagicMock()
+    client.hgetall.return_value = {
+        "run-1:continue": json.dumps(
+            {"id": "run-1:continue", "type": "s1_parse_continue", "projectId": "project-1"},
+            ensure_ascii=False,
+        )
+    }
+    client.hincrby.return_value = settings.redis_job_max_recover_attempts + 1
+    pipe = client.pipeline.return_value
+
+    with patch.object(job_queue, "get_redis_client", return_value=client):
+        recovered = job_queue.recover_inflight_jobs("s1_parse_continue", job_queue.QUEUE_KEY)
+
+    assert recovered == 0
+    pipe.rpush.assert_not_called()
+    mapping = pipe.hset.call_args.kwargs["mapping"]
+    assert mapping["status"] == "failed"
+    assert "不再自动重试" in mapping["message"]
 
 
 def test_recover_inflight_docling_job_requeues_original_payload() -> None:
@@ -80,6 +119,7 @@ def test_recover_inflight_docling_job_requeues_original_payload() -> None:
             ensure_ascii=False,
         )
     }
+    client.hincrby.return_value = 1
     pipe = client.pipeline.return_value
 
     with patch.object(job_queue, "get_redis_client", return_value=client):
@@ -274,3 +314,39 @@ def test_latest_terminal_job_of_type_returns_none_when_missing_or_broken() -> No
 
     with patch.object(job_queue, "get_redis_client", return_value=None):
         assert job_queue.latest_terminal_job_of_type("material_cleaning") is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.getenv("BID_RUN_INTEGRATION") != "1", reason="requires Redis")
+def test_repeatedly_crashing_job_is_abandoned_by_recovery_script() -> None:
+    """真 Redis 下验证恢复脚本的重试上限——这是"崩溃→重启→原样重跑"死循环的唯一出口。"""
+    client = job_queue.get_redis_client()
+    assert client is not None
+
+    queue_key = "bid:jobs:test-recover"
+    processing_key = job_queue.processing_queue_key(queue_key)
+    job_id = "poison-job-1"
+    job_key = job_queue.JOB_KEY_PREFIX + job_id
+    payload = json.dumps({"id": job_id, "type": "fill_generation", "projectId": "PRJ-TEST"})
+    max_attempts = max(1, settings.redis_job_max_recover_attempts)
+
+    client.delete(queue_key, processing_key, job_key)
+    try:
+        # 前 max_attempts 轮：每轮模拟一次 worker 崩溃，任务应当被放回队列继续重试。
+        for expected_attempt in range(1, max_attempts + 1):
+            client.lpush(processing_key, payload)
+            assert job_queue.recover_processing_jobs(queue_key) == 1
+            assert client.lrange(queue_key, 0, -1) == [payload]
+            assert client.hget(job_key, "status") == "queued"
+            assert int(client.hget(job_key, "recoverAttempts")) == expected_attempt
+            client.delete(queue_key)
+
+        # 再崩一次就越过上限：不再放回队列，任务如实标失败。
+        client.lpush(processing_key, payload)
+        assert job_queue.recover_processing_jobs(queue_key) == 0
+        assert client.lrange(queue_key, 0, -1) == []
+        assert client.lrange(processing_key, 0, -1) == []
+        assert client.hget(job_key, "status") == "failed"
+        assert "不再自动重试" in client.hget(job_key, "message")
+    finally:
+        client.delete(queue_key, processing_key, job_key)

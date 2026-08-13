@@ -75,18 +75,28 @@ _ENQUEUE_INTERNAL_JOB_SCRIPT = (
     "redis.call('expire', KEYS[1], ARGV[6]) "
     "redis.call('rpush', KEYS[2], ARGV[7]) return 1"
 )
+# 捞回残留任务时同时记账：连续崩在同一份输入上的任务不再放回队列，直接判死。
+# 否则 worker 被 OOM killer 杀掉后重启、又把同一任务原样捞回来再跑，会无限循环。
 _RECOVER_PROCESSING_JOB_SCRIPT = (
     "local payload = redis.call('rpop', KEYS[1]) "
     "if not payload then return nil end "
-    "redis.call('lpush', KEYS[2], payload) "
     "local ok, job = pcall(cjson.decode, payload) "
-    "if ok and job['id'] then "
-    "local job_id = tostring(job['id']) "
-    "redis.call('hdel', KEYS[3], job_id) "
+    "local job_id = nil "
+    "if ok and job['id'] then job_id = tostring(job['id']) end "
+    "if not job_id then "
+    "redis.call('lpush', KEYS[2], payload) "
+    "return {'requeued', payload} end "
     "local job_key = ARGV[1] .. job_id "
+    "local attempts = redis.call('hincrby', job_key, 'recoverAttempts', 1) "
+    "redis.call('hdel', KEYS[3], job_id) "
+    "if attempts > tonumber(ARGV[4]) then "
+    "redis.call('hset', job_key, 'status', 'failed', 'updatedAt', ARGV[2], 'message', ARGV[5]) "
+    "redis.call('expire', job_key, ARGV[3]) "
+    "return {'abandoned', job_id} end "
+    "redis.call('lpush', KEYS[2], payload) "
     "redis.call('hset', job_key, 'status', 'queued', 'updatedAt', ARGV[2]) "
-    "redis.call('expire', job_key, ARGV[3]) end "
-    "return payload"
+    "redis.call('expire', job_key, ARGV[3]) "
+    "return {'requeued', payload}"
 )
 _REQUEUE_PROCESSING_JOB_SCRIPT = (
     "local removed = redis.call('lrem', KEYS[2], 1, ARGV[1]) "
@@ -792,15 +802,25 @@ def _parse_iso(value: str) -> datetime | None:
 
 
 def recover_processing_jobs(queue_key: str) -> int:
-    """把 BLMOVE 留在 processing 列表中的任务原子放回原队列。"""
+    """把 BLMOVE 留在 processing 列表中的任务原子放回原队列。
+
+    反复异常中断的任务不再放回：超过 redis_job_max_recover_attempts 次就判为失败。
+    这条上限是"worker 崩溃→重启→原样重跑"死循环的唯一出口。
+    """
 
     client = get_redis_client()
     if client is None:
         return 0
+    max_attempts = max(1, int(settings.redis_job_max_recover_attempts))
+    abandon_message = (
+        f"任务连续 {max_attempts + 1} 次异常中断（worker 崩溃或被系统终止），已判定为失败，不再自动重试。"
+        "请检查该项目的输入体量与 worker 内存配额后重新发起。"
+    )
     recovered = 0
+    abandoned = 0
     while True:
         try:
-            payload = client.eval(
+            outcome = client.eval(
                 _RECOVER_PROCESSING_JOB_SCRIPT,
                 3,
                 processing_queue_key(queue_key),
@@ -809,15 +829,29 @@ def recover_processing_jobs(queue_key: str) -> int:
                 JOB_KEY_PREFIX,
                 _now_iso(),
                 settings.redis_job_result_ttl_sec,
+                max_attempts,
+                abandon_message,
             )
         except RedisError as exc:
             logger.warning("Failed to recover processing jobs from %s: %s", queue_key, exc)
             break
-        if not payload:
+        if not outcome:
             break
+        state = str(outcome[0]) if isinstance(outcome, (list, tuple)) and outcome else ""
+        if state == "abandoned":
+            abandoned += 1
+            logger.error(
+                "Job %s exceeded %s recovery attempts and was marked failed; not requeued to %s.",
+                str(outcome[1]),
+                max_attempts,
+                queue_key,
+            )
+            continue
         recovered += 1
     if recovered:
         logger.warning("Recovered %s processing job(s) to %s.", recovered, queue_key)
+    if abandoned:
+        logger.error("Abandoned %s repeatedly failing job(s) from %s.", abandoned, queue_key)
     return recovered
 
 
@@ -835,6 +869,11 @@ def recover_inflight_jobs(job_type: str, queue_key: str) -> int:
         logger.warning("Failed to scan in-flight jobs for recovery: %s", exc)
         return 0
 
+    max_attempts = max(1, int(settings.redis_job_max_recover_attempts))
+    abandon_message = (
+        f"任务连续 {max_attempts + 1} 次异常中断（worker 崩溃或被系统终止），已判定为失败，不再自动重试。"
+        "请检查该项目的输入体量与 worker 内存配额后重新发起。"
+    )
     recovered = 0
     for job_id, raw in (entries or {}).items():
         try:
@@ -861,6 +900,23 @@ def recover_inflight_jobs(job_type: str, queue_key: str) -> int:
 
         updated_at = _now_iso()
         try:
+            # 与 processing 队列共用同一个计数器：任务在两条恢复路径之间来回也照样受上限约束。
+            attempts = client.hincrby(_job_key(resolved_job_id), "recoverAttempts", 1)
+            if attempts > max_attempts:
+                pipe = client.pipeline()
+                pipe.hdel(INFLIGHT_KEY, job_id)
+                pipe.hset(
+                    _job_key(resolved_job_id),
+                    mapping={"status": "failed", "updatedAt": updated_at, "message": abandon_message},
+                )
+                pipe.expire(_job_key(resolved_job_id), settings.redis_job_result_ttl_sec)
+                pipe.execute()
+                logger.error(
+                    "In-flight job %s exceeded %s recovery attempts and was marked failed.",
+                    resolved_job_id,
+                    max_attempts,
+                )
+                continue
             pipe = client.pipeline()
             pipe.rpush(queue_key, json.dumps(job, ensure_ascii=False, separators=(",", ":")))
             pipe.hdel(INFLIGHT_KEY, job_id)

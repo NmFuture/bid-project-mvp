@@ -404,6 +404,22 @@ def _handle_fill_progress(
         )
         return
 
+    if stage == "restoring_media":
+        media_count = int(meta.get("mediaCount") or 0)
+        media_mb = int(meta.get("mediaBytes") or 0) / 1024 / 1024
+        _update_fill_generation(
+            project_id,
+            percentage=95,
+            summary=f"正在把 {media_count} 张图片按原件字节写入成稿（约 {media_mb:.0f} MB）。",
+            tasks=_fill_tasks("done", "done", "running", bid_type),
+            event_message=(
+                f"进入成稿写出阶段：全链路只处理正文结构，图片保持素材原件不变，"
+                f"此刻按原字节归位 {media_count} 张、约 {media_mb:.0f} MB。"
+            ),
+            event_step="restoring_media",
+        )
+        return
+
     if stage == "calling_caption_number":
         _update_fill_generation(
             project_id,

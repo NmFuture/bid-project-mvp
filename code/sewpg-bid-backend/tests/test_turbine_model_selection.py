@@ -13,8 +13,14 @@ from docx import Document
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.document_processing.technical_document.assembly import MediaVault
 from app.main import app
 from app.core.config import settings
+
+
+def _write_empty_media_vault(work_dir: Path) -> str:
+    """假组装器也要交出图片索引：真组装器把图片旁路后由它记账，成稿归位全靠它。"""
+    return str(MediaVault().save(work_dir / "media_vault.json"))
 from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
 from app.services.bid_runtime_state import now_iso
 from app.services.store import store
@@ -351,6 +357,7 @@ class TurbineModelSelectionTests(unittest.TestCase):
                 "schema_version": "bid-tech-assembly-v1",
                 "outputFile": str(output_file),
                 "planFile": str(plan_file),
+                "mediaVaultFile": _write_empty_media_vault(output_file.parent),
                 "assemblyReport": str(report),
                 "needsReview": str(review),
                 "summary": {"total": 0, "byStatus": {}, "usedPathCount": 0},

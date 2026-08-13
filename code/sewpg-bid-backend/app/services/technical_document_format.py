@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import BASE_DIR
+from app.document_processing.technical_document.assembly import MediaVault, strip_media
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.onlyoffice_documents import document_path
 from app.services.workspace_project_access import get_workspace_project_runtime_state
@@ -48,6 +49,7 @@ def apply_technical_document_format_preset(
     from app.services.tech_assembly import (
         _prepare_tech_format_outline,
         _prepare_toc_json as _prepare_technical_toc_json,
+        _restore_delivered_document,
         _run_local_tech_format_cleaner,
     )
 
@@ -60,11 +62,20 @@ def apply_technical_document_format_preset(
     output_path = work_dir / f"{source_path.stem}.{preset_key}.formatted.docx"
     manifest_path = work_dir / f"tech_format_{preset_key}_input.json"
     style_spec_path = _prepare_technical_format_style_spec(preset_key, style_overrides or {}, work_dir)
+
+    # 成稿动辄几百 MB，其中 97% 是格式切换根本不碰的图片字节。先把它们旁路掉，
+    # 清洗只面对几 MB 的 XML，切换完再按原字节归位，排版和图片与原稿完全一致。
+    vault = MediaVault()
+    light_source = work_dir / f"{source_path.stem}.{preset_key}.light.docx"
+    light_output = work_dir / f"{source_path.stem}.{preset_key}.formatted.light.docx"
+    strip_media(source_path, light_source, vault)
+    vault_path = vault.save(work_dir / f"media_vault_{preset_key}.json")
+
     manifest = {
         "schemaVersion": "bid-tech-format-clean-manifest-v1",
-        "inputFile": str(source_path),
+        "inputFile": str(light_source),
         "outlineFile": str(outline_path),
-        "outputFile": str(output_path),
+        "outputFile": str(light_output),
         "projectName": str(project.get("name") or project_id),
         "formatPreset": preset_key,
         "styleSpecPath": str(style_spec_path),
@@ -72,9 +83,14 @@ def apply_technical_document_format_preset(
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
     result = _run_local_tech_format_cleaner(manifest_path)
-    formatted_path = Path(str(result.get("outputFile") or output_path)).expanduser()
-    if not formatted_path.exists():
-        raise RuntimeError(f"技术标格式切换未生成输出文件：{formatted_path}")
+    formatted_light = Path(str(result.get("outputFile") or light_output)).expanduser()
+    if not formatted_light.exists():
+        raise RuntimeError(f"技术标格式切换未生成输出文件：{formatted_light}")
+    formatted_path = _restore_delivered_document(
+        light_path=formatted_light,
+        delivered_path=output_path,
+        vault_path=vault_path,
+    )
     shutil.copy2(formatted_path, source_path)
     return {
         "preset": preset_key,

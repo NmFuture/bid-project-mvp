@@ -30,6 +30,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+from .docx_package import read_parts, rewrite_parts
 from .numbering_fixer import (
     enforce_no_auto_numbering_on_numbered_headings,
     strip_numPr_from_body,
@@ -156,15 +157,16 @@ def insert_toc_field(doc: Document) -> None:
 # ---------- Step 2: 强制更新域 ----------
 
 def force_update_fields(docx_path: Path) -> None:
-    """在 word/settings.xml 注入 <w:updateFields w:val="true"/>，让 Word 打开时自动更新 TOC 域。"""
-    with zipfile.ZipFile(docx_path, "r") as zin:
-        names = zin.namelist()
-        data = {n: zin.read(n) for n in names}
+    """在 word/settings.xml 注入 <w:updateFields w:val="true"/>，让 Word 打开时自动更新 TOC 域。
 
-    if "word/settings.xml" not in data:
+    只重写 settings.xml 这一个部件：改的是几 KB，没有理由把整包图片解压进内存再压回去。
+    """
+    parts = read_parts(docx_path, {"word/settings.xml"})
+    settings_xml = parts.get("word/settings.xml")
+    if settings_xml is None:
         return
 
-    text = data["word/settings.xml"].decode("utf-8", errors="replace")
+    text = settings_xml.decode("utf-8", errors="replace")
     if "<w:updateFields" in text:
         return  # 已有
 
@@ -175,13 +177,7 @@ def force_update_fields(docx_path: Path) -> None:
         text,
         count=1,
     )
-    data["word/settings.xml"] = text.encode("utf-8")
-
-    tmp = docx_path.with_suffix(".tmp.docx")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
-        for name in names:
-            zout.writestr(name, data[name])
-    shutil.move(str(tmp), str(docx_path))
+    rewrite_parts(docx_path, {"word/settings.xml": text.encode("utf-8")})
 
 
 # ---------- Step 3: 页眉文本替换 ----------
@@ -195,18 +191,21 @@ def replace_header_text(docx_path: Path, project_name: str) -> None:
       - 如 header 里存在非 project_name 的中文项目句，替换为 {project_name}投标文件-技术部分
     """
     with zipfile.ZipFile(docx_path, "r") as zin:
-        names = zin.namelist()
-        data = {n: zin.read(n) for n in names}
+        header_names = {
+            name
+            for name in zin.namelist()
+            if name.startswith("word/header") and name.endswith(".xml")
+        }
+    # 只读页眉部件：页眉一共几 KB，没有理由为它把整包图片拉进内存。
+    data = read_parts(docx_path, header_names)
 
-    changed = False
+    updates: dict[str, bytes] = {}
     # 已知要替换的关键片段
     replacements = [
         ("投标文件-技术卷", "投标文件-技术部分"),
     ]
 
     for name in list(data.keys()):
-        if not (name.startswith("word/header") and name.endswith(".xml")):
-            continue
         text = data[name].decode("utf-8", errors="replace")
 
         # 把所有连续 w:t 的文本抽出来拼一下看
@@ -233,17 +232,9 @@ def replace_header_text(docx_path: Path, project_name: str) -> None:
             )
 
         if new_text != text:
-            data[name] = new_text.encode("utf-8")
-            changed = True
+            updates[name] = new_text.encode("utf-8")
 
-    if not changed:
-        return
-
-    tmp = docx_path.with_suffix(".hdr.docx")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
-        for name in names:
-            zout.writestr(name, data[name])
-    shutil.move(str(tmp), str(docx_path))
+    rewrite_parts(docx_path, updates)
 
 
 # ---------- Step 4: Heading rFonts 兜底刷 ----------

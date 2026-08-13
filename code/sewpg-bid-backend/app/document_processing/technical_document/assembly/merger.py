@@ -45,7 +45,8 @@ from docx.oxml.ns import qn
 from copy import deepcopy
 
 from .parse_toc import display_chapter_no
-from .preprocess import preprocess
+from .media_vault import MediaVault, restore_media, strip_media
+from .preprocess import preprocess_doc
 from .numbering_fixer import (
     enforce_no_auto_numbering_on_numbered_headings,
     _paragraph_heading_level,
@@ -229,6 +230,20 @@ def _collect_heading_titles(doc, target_set: set) -> None:
             target_set.add(_normalize_title_for_dedup(pure))
 
 
+def _open_material(src: Path, prep_dir: Path, params: dict, vault: MediaVault):
+    """剥离图片字节后打开素材，并就地做完预处理。
+
+    素材体积的 97% 是图片，而合并全程一个字节都不改它们。先把这些字节换成占位符
+    登记进 vault，后面的 XML 处理就只面对几百 KB；原始字节等成稿写出时再原样归位。
+    整份素材因此只需要解析一次，不再"存一次再重开"。
+    """
+    light_path = prep_dir / f"{_hash_path(src)}_{src.name}"
+    strip_media(src, light_path, vault)
+    doc = Document(str(light_path))
+    preprocess_doc(doc, params)
+    return doc
+
+
 def _derive_parent_chapter(entry: dict) -> str:
     """根据 toc entry 推导父章节号（用于 inject_prefix_to_headings）。
 
@@ -250,13 +265,22 @@ def merge(
     prep_dir: Path,
     out_path: Path,
     progress_callback: Callable[[int, int], None] | None = None,
+    vault: MediaVault | None = None,
 ) -> dict:
     """progress_callback(done, total)：正文遍历是整条组装里最长的一段，逐条回传真实计数，
-    让上层进度条有可核对的量化数据而不是纯时间估算。节流交给调用方。"""
+    让上层进度条有可核对的量化数据而不是纯时间估算。节流交给调用方。
+
+    vault 收集所有被旁路的图片字节来源。产物 out_path 是只含 XML 的轻量稿，调用方
+    在整条链路收尾时用同一个 vault 做一次 restore_media 才得到最终成稿。
+    """
     os.makedirs(os.fspath(prep_dir), exist_ok=True)
+    if vault is None:
+        vault = MediaVault()
 
     # 打开母版并清空 body（只保留 sectPr）
-    master_doc = Document(str(template_path))
+    master_light = prep_dir / f"master_{_hash_path(template_path)}_{template_path.name}"
+    strip_media(template_path, master_light, vault)
+    master_doc = Document(str(master_light))
     _master_doc_clear_body(master_doc)
     prune_unused_styles(master_doc)
     composer = BatchComposer(master_doc)
@@ -288,10 +312,8 @@ def merge(
                 stats["errors"] += 1
                 warning_counts["MATERIAL_MISSING"] += 1
                 continue
-            prep = prep_dir / f"cover_{_hash_path(src)}_{src.name}"
             try:
-                preprocess(src, prep, params)
-                sub = Document(str(prep))
+                sub = _open_material(src, prep_dir, params, vault)
                 composer.append(sub)
                 stats["cover_merged"] += 1
                 log.info(f"合并封面: {src.name}")
@@ -442,11 +464,10 @@ def merge(
 
                 size_mb = os.path.getsize(os.fspath(src)) / 1024 / 1024
                 if size_mb > 100:
-                    log.warning(f"  [{i}] 合并超大素材 ({size_mb:.0f} MB): {src.name}")
+                    log.info(f"  [{i}] 超大素材走图片旁路 ({size_mb:.0f} MB): {src.name}")
 
-                prep = prep_dir / f"{_hash_path(src)}_{src.name}"
                 try:
-                    preprocess(src, prep, params)
+                    sub_doc = _open_material(src, prep_dir, params, vault)
                 except Exception as e:
                     log.exception(f"  [{i}] preprocess 失败 {src.name}: {e}")
                     stats["errors"] += 1
@@ -459,7 +480,6 @@ def merge(
                 # remove_first_if_match 只对本条 entry 首份成功素材启用（避免前序失败
                 # 漏去重，也避免叠加场景下多份素材首 heading 都被删）。
                 try:
-                    sub_doc = Document(str(prep))
                     material_heading_titles: set[str] = set()
                     _collect_heading_titles(sub_doc, material_heading_titles)
                     is_chapter_master = str(
@@ -504,13 +524,9 @@ def merge(
                         stats.setdefault("material_headings_demoted", 0)
                         stats["material_headings_demoted"] += remap_stats.get("demoted", 0)
 
-                    # 保存处理后的副本
-                    inj_path = prep_dir / f"inj_{_hash_path(src)}_{src.name}"
-                    sub_doc.save(str(inj_path))
-                    # 重新打开用于 compose；先隔离 section，避免 landscape 串扰
-                    sub_doc2 = Document(str(inj_path))
-                    _isolate_section(sub_doc2)
-                    composer.append(sub_doc2)
+                    # 先隔离 section，避免 landscape 串扰，再直接合并这份内存文档
+                    _isolate_section(sub_doc)
+                    composer.append(sub_doc)
                     material_heading_l1_offset = next_material_heading_l1_offset
                     seen_titles_by_parent.setdefault(parent_chapter, set()).update(
                         material_heading_titles
@@ -554,7 +570,15 @@ def merge(
         if count
     ]
 
-    log.info(f"merged → {out_path} ({os.path.getsize(os.fspath(out_path)) / 1024 / 1024:.1f} MB)")
+    stats["media_bypassed"] = len(vault)
+    stats["media_bypassed_bytes"] = vault.total_bytes()
+    log.info(
+        "merged → %s (轻量稿 %.1f MB，旁路图片 %d 张 / %.0f MB 待归位)",
+        out_path,
+        os.path.getsize(os.fspath(out_path)) / 1024 / 1024,
+        len(vault),
+        vault.total_bytes() / 1024 / 1024,
+    )
     log.info(f"stats: {stats}")
     return stats
 
@@ -575,7 +599,12 @@ def main():
     if args.params and args.params.exists():
         params = json.loads(args.params.read_text(encoding="utf-8"))
 
-    result = merge(args.template, plan, args.lib, params, args.prep_dir, args.out)
+    vault = MediaVault()
+    merged_light = args.out.with_name(f"{args.out.stem}.light{args.out.suffix}")
+    result = merge(args.template, plan, args.lib, params, args.prep_dir, merged_light, vault=vault)
+    # CLI 直接出成稿：把旁路的图片字节归位，调用方拿到的就是完整文档。
+    restore_media(merged_light, args.out, vault)
+    merged_light.unlink(missing_ok=True)
     if args.result:
         args.result.parent.mkdir(parents=True, exist_ok=True)
         args.result.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
