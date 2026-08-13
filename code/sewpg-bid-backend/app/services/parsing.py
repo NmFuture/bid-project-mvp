@@ -6594,6 +6594,107 @@ def _technical_shard_tasks(skill_manifest_path: Path, profile: ParseProfile) -> 
     return tasks
 
 
+def _validation_error_task_key(item: Any) -> str:
+    """把一条 finalize 校验错误映射回负责它的分片 key，无法归属时返回空串。
+
+    finalize 的 validationErrors 只带 targetKey，technicalInterpretation 要靠错误自带的
+    rowNo 反查所属分片，否则无法知道该重跑哪一个会话。
+    """
+    from agentic.checklist import shard_of_row  # noqa: PLC0415 - 仅技术标分片路径需要
+
+    if not isinstance(item, dict):
+        return ""
+    target_key = str(item.get("targetKey") or "").strip()
+    if target_key == "projectBasics":
+        return "projectBasics"
+    if target_key != "technicalInterpretation":
+        return ""
+    raw_row_no = item.get("rowNo")
+    if isinstance(raw_row_no, bool) or not isinstance(raw_row_no, int):
+        text = str(raw_row_no or "").strip()
+        if not text.isdigit():
+            return ""
+        raw_row_no = int(text)
+    try:
+        return str(shard_of_row(int(raw_row_no)))
+    except RuntimeError:
+        return ""
+
+
+def _technical_submission_fingerprints(skill_manifest_path: Path) -> dict[str, str]:
+    """按 task key 取提交内容指纹，用于判断修复轮是否真的重新落盘。
+
+    settle() 只看提交文件里有没有该 key。修复会话失败时上一轮的提交仍在文件里，
+    会被判成 succeeded，让 shardResults/repairedShards 把「没修好」记成「已修复」。
+    """
+    from agentic.paths import load_manifest as load_skill_manifest  # noqa: PLC0415
+    from agentic.submission_store import load as load_submissions  # noqa: PLC0415
+
+    try:
+        manifest = load_skill_manifest(skill_manifest_path)
+        payload = load_submissions(skill_manifest_path, manifest)
+    except (OSError, ValueError, RuntimeError):
+        return {}
+    targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+    shards = payload.get("shards") if isinstance(payload.get("shards"), dict) else {}
+    fingerprints: dict[str, str] = {}
+    for raw_key, entry in shards.items():
+        if not isinstance(entry, dict):
+            continue
+        fingerprints[str(raw_key)] = json.dumps(
+            [entry.get("updatedAt"), entry.get("submittedRowNos")],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    if targets.get("projectBasics") is not None:
+        fingerprints["projectBasics"] = json.dumps(
+            targets.get("projectBasics"), ensure_ascii=False, sort_keys=True
+        )
+    return fingerprints
+
+
+def _validation_error_text(item: Any) -> str:
+    """把一条 finalize 校验错误压成可读文案，供告警和前端展示。"""
+    if not isinstance(item, dict):
+        return str(item).strip()
+    row_no = str(item.get("rowNo") or "").strip()
+    field_key = str(item.get("fieldKey") or "").strip()
+    locator = f"清单第 {row_no} 行" if row_no else field_key
+    message = str(item.get("message") or item.get("code") or "").strip()
+    if locator and message:
+        return f"{locator}：{message}"
+    return message or locator or str(item).strip()
+
+
+def _shard_repair_prompt(task: dict[str, Any], validation_errors: list[Any]) -> str:
+    """在原分片提示后追加本分片未通过的校验项，供修复轮定向回查。"""
+    related = [
+        item
+        for item in validation_errors
+        if _validation_error_task_key(item) == str(task["key"])
+    ]
+    if not related:
+        return str(task["prompt"])
+    lines: list[str] = []
+    for item in related:
+        field = str(item.get("fieldKey") or "").strip()
+        row_no = str(item.get("rowNo") or "").strip()
+        locator = f"清单第 {row_no} 行" if row_no else (f"字段 {field}" if field else "")
+        message = str(item.get("message") or item.get("code") or "").strip()
+        evidence_ids = [str(eid).strip() for eid in (item.get("evidenceIds") or []) if str(eid).strip()]
+        detail = f"- {locator}：{message}" if locator else f"- {message}"
+        if evidence_ids:
+            detail += f"（已引用证据：{'、'.join(evidence_ids)}）"
+        lines.append(detail)
+    return (
+        f"{task['prompt']}\n\n"
+        "## 上一轮提交未通过 finalize 校验，请修正后重新提交\n\n"
+        + "\n".join(lines)
+        + "\n\n请回查上述证据原文，确保提交值能被证据文本直接支撑；"
+        "确实无法支撑时按 missing 或 needs_spec 提交，不要沿用上一轮的值。"
+    )
+
+
 def _run_technical_sharded_parse_skill(
     skill_manifest_path: Path,
     *,
@@ -6676,37 +6777,105 @@ def _run_technical_sharded_parse_skill(
             + "；".join(f"{item['label']}：{item['error']}" for item in failures[:3])
         )
 
-    finalize_payload = _run_s1parse_cli("finalize", skill_manifest_path)
-    resolved = _resolve_skill_structured_result(
-        finalize_payload,
-        local_result=local_result,
-        profile=profile,
-    )
-    structured = resolved.get("structured") if isinstance(resolved.get("structured"), dict) else {}
+    def finalize_once() -> tuple[dict[str, Any], Any, dict[str, Any], str, list[Any]]:
+        finalize_payload = _run_s1parse_cli("finalize", skill_manifest_path)
+        finalized = _resolve_skill_structured_result(
+            finalize_payload,
+            local_result=local_result,
+            profile=profile,
+        )
+        finalized_structured = (
+            finalized.get("structured") if isinstance(finalized.get("structured"), dict) else {}
+        )
+        finalized_workflow = copy.deepcopy(
+            finalized_structured.get("workflow")
+            if isinstance(finalized_structured.get("workflow"), dict)
+            else {}
+        )
+        stage = str(finalized_workflow.get("stage") or "").strip()
+        raw_errors = (
+            finalized_workflow.get("validationErrors") or finalized_workflow.get("missingTargets") or []
+        )
+        errors = list(raw_errors) if isinstance(raw_errors, list) else [raw_errors]
+        return finalized, finalized_structured, finalized_workflow, stage, errors
+
+    resolved, structured, workflow, workflow_stage, validation_errors = finalize_once()
+
+    repair_keys: list[str] = []
+    if workflow_stage != "finalized":
+        # 只重跑校验失败字段所属的分片，已通过的分片产出保持不动。提交文件按分片 merge，
+        # 这里绝不能 reset_submissions，否则整轮产出会被清空。
+        task_keys = {str(task["key"]) for task in tasks}
+        repair_keys = sorted(
+            {_validation_error_task_key(item) for item in validation_errors} & task_keys
+        )
+        if repair_keys:
+            logger.warning("S1 技术标 finalize 校验失败，进入修复轮：%s。", repair_keys)
+            before_repair = _technical_submission_fingerprints(skill_manifest_path)
+            repair_results = settle(
+                run_wave(
+                    [
+                        {**task, "prompt": _shard_repair_prompt(task, validation_errors)}
+                        for task in tasks
+                        if str(task["key"]) in repair_keys
+                    ]
+                )
+            )
+            # settle 以提交文件为准，修复会话失败时上一轮提交仍在，会被判成成功。
+            # 用提交指纹确认这一轮确实重新落盘，没落盘的分片不算修复过。
+            after_repair = _technical_submission_fingerprints(skill_manifest_path)
+            stale_keys = {
+                key for key in repair_keys if before_repair.get(key) == after_repair.get(key)
+            }
+            if stale_keys:
+                logger.warning("S1 技术标修复轮未产生新的提交：%s。", sorted(stale_keys))
+            repair_results = [
+                {
+                    **item,
+                    "status": "failed",
+                    "error": item["error"] or "修复轮未产生新的提交（沿用上一轮结果）。",
+                }
+                if item["key"] in stale_keys
+                else item
+                for item in repair_results
+            ]
+            repair_keys = [key for key in repair_keys if key not in stale_keys]
+            by_key = {item["key"]: item for item in results}
+            for item in repair_results:
+                by_key[item["key"]] = item
+            results = [by_key[task["key"]] for task in tasks]
+            failures = [item for item in results if item["status"] != "succeeded"]
+            _raise_if_parse_cancelled(cancel_check)
+            resolved, structured, workflow, workflow_stage, validation_errors = finalize_once()
+
     if isinstance(structured, dict):
-        workflow = copy.deepcopy(structured.get("workflow") if isinstance(structured.get("workflow"), dict) else {})
-        workflow_stage = str(workflow.get("stage") or "").strip()
-        if workflow_stage != "finalized":
-            failure_details = workflow.get("validationErrors") or workflow.get("missingTargets") or []
-            if isinstance(failure_details, list):
-                failure_message = "；".join(str(item) for item in failure_details if str(item).strip())
-            else:
-                failure_message = str(failure_details).strip()
-            if not failure_message:
-                failure_message = f"workflow.stage={workflow_stage or 'missing'}"
-            raise RuntimeError(f"S1 技术标分片 finalize 校验失败：{failure_message}")
         workflow["mode"] = "opencode-agentic-navigation-sharded"
         workflow["shardConcurrency"] = max_workers
         workflow["shardResults"] = copy.deepcopy(results)
         workflow["failedShards"] = [item["key"] for item in failures]
+        if repair_keys:
+            workflow["repairedShards"] = repair_keys
+        if workflow_stage != "finalized":
+            workflow["validationErrors"] = copy.deepcopy(validation_errors)
         structured["workflow"] = workflow
 
-    if failures:
-        message = "部分技术解读分片未完成，对应清单行按未找到输出：" + "；".join(
-            f"{item['label']}（{item['error'][:120]}）" for item in failures
+    messages: list[str] = []
+    if workflow_stage != "finalized":
+        # 内容校验失败不回落到单会话链路：单会话没有同一道 finalize 校验，换链路只会拿到一份
+        # 未经校验的结果。这里保留已通过的分片产出，把未通过项显式带回给调用方。
+        detail = "；".join(
+            text for text in (_validation_error_text(item) for item in validation_errors) if text
+        ) or f"workflow.stage={workflow_stage or 'missing'}"
+        logger.warning("S1 技术标 finalize 校验在修复轮后仍未通过：%s", detail)
+        messages.append(
+            f"技术标 finalize 校验未通过（已修复重跑 {len(repair_keys)} 个分片）：{detail}"
         )
-        return resolved, message
-    return resolved, ""
+    if failures:
+        messages.append(
+            "部分技术解读分片未完成，对应清单行按未找到输出："
+            + "；".join(f"{item['label']}（{item['error'][:120]}）" for item in failures)
+        )
+    return resolved, "；".join(messages)
 
 
 def _run_parse_skill(
