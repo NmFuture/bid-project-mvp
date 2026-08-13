@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { technicalDocumentAPI, technicalGenerateAPI } from '../../../api'
+import { technicalDocumentAPI, technicalGenerateAPI, technicalScoreIndexAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
+import TechnicalScoreIndexProgressModal from '../components/TechnicalScoreIndexProgressModal'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
+import { isScoreIndexProgressRunning } from '../technicalScoreIndexProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
@@ -91,6 +93,11 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
   const [regenerationStarting, setRegenerationStarting] = useState(false)
+  const [scoreIndexStatus, setScoreIndexStatus] = useState(null)
+  const [scoreIndexModalOpen, setScoreIndexModalOpen] = useState(false)
+  const [scoreIndexModalDismissed, setScoreIndexModalDismissed] = useState(false)
+  const [scoreIndexStarting, setScoreIndexStarting] = useState(false)
+  const scoreIndexRequestedRef = useRef(false)
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
   const [chatMessages, setChatMessages] = useState(() => [...INITIAL_TECHNICAL_CHAT_MESSAGES])
   const [chatInput, setChatInput] = useState('')
@@ -138,13 +145,25 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     }
   }, [id])
 
+  const loadScoreIndexStatus = useCallback(async () => {
+    try {
+      const payload = await technicalScoreIndexAPI.status(id)
+      if (isScoreIndexProgressRunning(payload)) scoreIndexRequestedRef.current = true
+      setScoreIndexStatus(payload)
+      return payload
+    } catch {
+      return null
+    }
+  }, [id])
+
   useEffect(() => {
     const timer = setTimeout(() => {
       loadDocument()
       loadGenerationStatus()
+      loadScoreIndexStatus()
     }, 0)
     return () => clearTimeout(timer)
-  }, [loadDocument, loadGenerationStatus])
+  }, [loadDocument, loadGenerationStatus, loadScoreIndexStatus])
 
   useEffect(() => {
     chatRequestVersionRef.current += 1
@@ -169,6 +188,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
   const generationRunning = generationStatus?.status === 'running'
+  const scoreIndexRunning = isScoreIndexProgressRunning(scoreIndexStatus)
 
   useEffect(() => {
     if (!generationRunning) return undefined
@@ -191,6 +211,34 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     loadDocument({ silent: true })
     showToast?.('技术标正文已重新生成，当前文档已刷新。')
   }, [generationStatus?.status, loadDocument, showToast])
+
+  useEffect(() => {
+    if (!scoreIndexRunning) return undefined
+    return subscribeTechnicalGenerationStatus({
+      fetchStatus: () => technicalScoreIndexAPI.status(id),
+      onStatus: (payload) => {
+        if (isScoreIndexProgressRunning(payload)) scoreIndexRequestedRef.current = true
+        setScoreIndexStatus(payload)
+      },
+    })
+  }, [scoreIndexRunning, id])
+
+  useEffect(() => {
+    if (scoreIndexStatus?.status === 'failed') {
+      // 只对本次会话发起的任务提示；页面加载时读到的历史失败态不该再弹一次。
+      if (scoreIndexRequestedRef.current) {
+        showToast?.('章节索引重新生成失败，当前成稿未被修改。', 'error')
+      }
+      scoreIndexRequestedRef.current = false
+      return
+    }
+    if (scoreIndexStatus?.status !== 'completed' || !scoreIndexRequestedRef.current) return
+    scoreIndexRequestedRef.current = false
+    // 索引跳过时后端没换文件，重载只会白刷一次预览，因此只在真的改了成稿时刷新。
+    if (!scoreIndexStatus?.output?.applied) return
+    loadDocument({ silent: true })
+    showToast?.('章节索引已重新生成，当前文档已刷新。')
+  }, [scoreIndexStatus?.status, scoreIndexStatus?.output?.applied, loadDocument, showToast])
 
   useEffect(() => {
     if (!technicalPreviewFullscreen) return undefined
@@ -304,14 +352,35 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     }
   }
 
+  const handleRegenerateScoreIndex = async () => {
+    if (scoreIndexStarting || scoreIndexRunning || generationRunning) return
+    setTechnicalPreviewFullscreen(false)
+    setScoreIndexStarting(true)
+    setScoreIndexModalDismissed(false)
+    setScoreIndexModalOpen(true)
+    scoreIndexRequestedRef.current = true
+    try {
+      const payload = await technicalScoreIndexAPI.run(id)
+      setScoreIndexStatus(payload)
+      showToast?.(payload?.message || '已开始重新生成章节索引。')
+    } catch (e) {
+      scoreIndexRequestedRef.current = false
+      setScoreIndexModalOpen(false)
+      showToast?.(e?.message || '重新生成章节索引失败', 'error')
+    } finally {
+      setScoreIndexStarting(false)
+    }
+  }
+
   const handleRequestRegenerate = () => {
-    if (regenerationStarting || generationRunning) return
+    // 两条链路都以成稿为最终产物，不能并行；后端也会 409 拦一次。
+    if (regenerationStarting || generationRunning || scoreIndexRunning) return
     setTechnicalPreviewFullscreen(false)
     setRegenerationConfirmOpen(true)
   }
 
   const handleConfirmRegenerate = async () => {
-    if (regenerationStarting || generationRunning) return
+    if (regenerationStarting || generationRunning || scoreIndexRunning) return
     setRegenerationConfirmOpen(false)
     setRegenerationStarting(true)
     setGenerationModalDismissed(false)
@@ -649,8 +718,18 @@ export default function TechnicalCoCreationEditor({ showToast }) {
               </Button>
               <Button
                 type="button"
+                onClick={handleRegenerateScoreIndex}
+                disabled={scoreIndexStarting || scoreIndexRunning || generationRunning}
+                icon="refresh"
+                size="sm"
+                variant="secondary"
+              >
+                {scoreIndexStarting || scoreIndexRunning ? '重新生成中...' : '重新生成索引'}
+              </Button>
+              <Button
+                type="button"
                 onClick={handleRequestRegenerate}
-                disabled={regenerationStarting || generationRunning}
+                disabled={regenerationStarting || generationRunning || scoreIndexRunning}
                 icon="refresh"
                 size="sm"
                 variant="secondary"
@@ -766,6 +845,14 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         onClose={() => {
           setGenerationModalDismissed(true)
           setGenerationModalOpen(false)
+        }}
+      />
+      <TechnicalScoreIndexProgressModal
+        open={(scoreIndexModalOpen || scoreIndexRunning) && !scoreIndexModalDismissed}
+        status={scoreIndexStatus}
+        onClose={() => {
+          setScoreIndexModalDismissed(true)
+          setScoreIndexModalOpen(false)
         }}
       />
     </div>

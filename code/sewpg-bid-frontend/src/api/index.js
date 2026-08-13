@@ -608,6 +608,16 @@ export const technicalGenerateAPI = {
     }),
 }
 
+export const technicalScoreIndexAPI = {
+  status: (projectId) => request(`/technical/projects/${projectId}/score-index`),
+  run: (projectId) =>
+    request(`/technical/projects/${projectId}/score-index/run`, {
+      method: 'POST',
+      timeoutMs: 10 * 60 * 1000,
+      retryCount: 0,
+    }),
+}
+
 export const technicalDocumentAPI = {
   get: (projectId) => request(`/technical/projects/${projectId}/document`),
   save: (projectId, data) =>
