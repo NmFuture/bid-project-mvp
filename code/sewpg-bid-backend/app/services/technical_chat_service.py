@@ -132,6 +132,9 @@ def _send_technical_chat_prompt(
             title,
             prompt,
             tools=TECHNICAL_CHAT_DISABLED_TOOLS,
+            # B3 回收例外：共创对话会话绑定到项目状态、跨轮复用（见 TechnicalChatService.chat），
+            # 不能用完即删；会话最终由 opencode_data 卷清理策略兜底。
+            keep_session=True,
         ))
         result["baseUrl"] = configured_client.base_url
         return result
@@ -166,6 +169,7 @@ def _send_technical_chat_prompt(
                     f"{title}（默认模型重试）",
                     new_session_prompt or prompt,
                     tools=TECHNICAL_CHAT_DISABLED_TOOLS,
+                    keep_session=True,  # 同上：多轮共创对话会话需保留
                 ))
                 result["baseUrl"] = fallback_client.base_url
             result["fallbackModelUsed"] = True

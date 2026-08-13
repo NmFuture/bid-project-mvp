@@ -2673,3 +2673,230 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         for status in (400, 404, 500):
             exc = httpx.HTTPStatusError("err", request=request, response=httpx.Response(status, request=request))
             self.assertFalse(engine_errors.is_recoverable_poll_error(exc), status)
+
+
+class OpencodeEngineSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
+    """B3（engine-05）：delete_session 协议实现与终态回收保证。"""
+
+    @staticmethod
+    def _http_client_with_delete_response(response: object) -> MagicMock:
+        client = MagicMock()
+        client.__aenter__.return_value = client
+        client.delete = AsyncMock(return_value=response)
+        return client
+
+    async def test_delete_session_sends_delete_request(self) -> None:
+        client = OpencodeEngine(base_url="http://opencode:4096")
+        request = httpx.Request("DELETE", "http://opencode:4096/session/ses-del")
+        http_client = self._http_client_with_delete_response(httpx.Response(200, request=request))
+
+        with patch("app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client):
+            await client.delete_session("ses-del")
+
+        http_client.delete.assert_awaited_once_with("http://opencode:4096/session/ses-del")
+
+    async def test_delete_session_404_is_idempotent(self) -> None:
+        client = OpencodeEngine(base_url="http://opencode:4096")
+        request = httpx.Request("DELETE", "http://opencode:4096/session/ses-gone")
+        http_client = self._http_client_with_delete_response(httpx.Response(404, request=request))
+
+        with patch("app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client):
+            await client.delete_session("ses-gone")  # 不抛：会话已不存在视为回收成功
+
+    async def test_delete_session_5xx_raises_explicitly(self) -> None:
+        client = OpencodeEngine(base_url="http://opencode:4096")
+        request = httpx.Request("DELETE", "http://opencode:4096/session/ses-err")
+        http_client = self._http_client_with_delete_response(httpx.Response(500, request=request))
+
+        with patch("app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client):
+            with self.assertRaisesRegex(RuntimeError, "ses-err"):
+                await client.delete_session("ses-err")
+
+    async def test_delete_session_quietly_logs_and_never_raises(self) -> None:
+        client = OpencodeEngine(base_url="http://opencode:4096")
+        with (
+            patch.object(client, "delete_session", side_effect=RuntimeError("boom")),
+            self.assertLogs("app.services.agent_engine.opencode_engine", level="WARNING") as logs,
+        ):
+            await client.delete_session_quietly("ses-quiet")
+
+        self.assertTrue(any("ses-quiet" in line for line in logs.output))
+
+    async def test_send_text_prompt_recycles_session_by_default(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-once"}),
+            patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": "回复"}]}),
+            patch.object(client, "delete_session_quietly") as delete,
+        ):
+            result = await client.send_text_prompt("一次性任务", "prompt")
+
+        self.assertEqual(result["sessionId"], "ses-once")
+        delete.assert_awaited_once_with("ses-once")
+
+    async def test_send_text_prompt_recycles_session_on_error(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-fail"}),
+            patch.object(client, "send_prompt", side_effect=RuntimeError("生成失败")),
+            patch.object(client, "delete_session_quietly") as delete,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "生成失败"):
+                await client.send_text_prompt("一次性任务", "prompt")
+
+        delete.assert_awaited_once_with("ses-fail")
+
+    async def test_send_text_prompt_keep_session_skips_recycle(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-chat"}),
+            patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": "回复"}]}),
+            patch.object(client, "delete_session_quietly") as delete,
+        ):
+            result = await client.send_text_prompt("多轮对话", "prompt", keep_session=True)
+
+        self.assertEqual(result["sessionId"], "ses-chat")
+        delete.assert_not_called()
+
+
+class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
+    """B3（engine-05）：编排层在会话终态（成功/失败/取消）调用 delete_session 回收。"""
+
+    @staticmethod
+    async def _passthrough_extractor(response: dict) -> dict:
+        return {"echo": response}
+
+    async def test_traced_session_recycles_on_success(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-trace-ok"}),
+            patch.object(client, "_send_prompt_with_session_polling", return_value={"parts": []}),
+            patch.object(client, "delete_session") as delete,
+        ):
+            result = await client._orchestrator._run_traced_session(
+                session_title="任务",
+                prompt_text="prompt",
+                extractor=self._passthrough_extractor,
+            )
+
+        self.assertIn("opencodeOutput", result)
+        delete.assert_awaited_once_with("ses-trace-ok")
+
+    async def test_traced_session_recycles_on_failure(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-trace-err"}),
+            patch.object(client, "_send_prompt_with_session_polling", side_effect=RuntimeError("轮询失败")),
+            patch.object(client, "delete_session") as delete,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "轮询失败"):
+                await client._orchestrator._run_traced_session(
+                    session_title="任务",
+                    prompt_text="prompt",
+                    extractor=self._passthrough_extractor,
+                )
+
+        delete.assert_awaited_once_with("ses-trace-err")
+
+    async def test_traced_session_recycles_on_cancel(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-trace-cancel"}),
+            patch.object(client, "abort_session", return_value=True),
+            patch.object(client, "delete_session") as delete,
+        ):
+            with self.assertRaises(ParseCancelledError):
+                await client._orchestrator._run_traced_session(
+                    session_title="任务",
+                    prompt_text="prompt",
+                    cancel_check=lambda: True,
+                    extractor=self._passthrough_extractor,
+                    abort_on_cancel=True,
+                )
+
+        delete.assert_awaited_once_with("ses-trace-cancel")
+
+    async def test_recycle_failure_does_not_mask_business_result(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-recycle-err"}),
+            patch.object(client, "_send_prompt_with_session_polling", return_value={"parts": []}),
+            patch.object(client, "delete_session", side_effect=RuntimeError("回收失败")),
+        ):
+            result = await client._orchestrator._run_traced_session(
+                session_title="任务",
+                prompt_text="prompt",
+                extractor=self._passthrough_extractor,
+            )
+
+        self.assertIn("opencodeOutput", result)
+
+    async def test_shard_session_recycles_on_success(self) -> None:
+        client = OpencodeEngine()
+        with (
+            patch.object(client, "create_session", return_value={"id": "ses-shard"}),
+            patch.object(client, "_send_prompt_with_session_polling", return_value={"parts": []}),
+            patch.object(client, "delete_session") as delete,
+        ):
+            result = await client._orchestrator.run_tender_parse_shard_with_trace("prompt")
+
+        self.assertIn("opencodeOutput", result)
+        delete.assert_awaited_once_with("ses-shard")
+
+    async def test_decision_session_recycles_every_attempt(self) -> None:
+        client = OpencodeEngine()
+        responses = [
+            {"info": {"error": {"name": "StreamError", "data": {"message": "帧错乱"}}}},
+            {},
+        ]
+        # 第 1 次调用是报错路径的落盘核查（未判完 → 触发重试），第 2 次是重试成功后的终态校验。
+        decision_states = iter([{"complete": False}, {"complete": True}])
+
+        async def fake_polling(*_args: object, **_kwargs: object) -> dict:
+            return responses.pop(0)
+
+        with (
+            patch.object(client, "create_session", side_effect=[{"id": "ses-try-1"}, {"id": "ses-try-2"}]),
+            patch.object(client, "_send_prompt_with_session_polling", side_effect=fake_polling),
+            patch.object(client, "delete_session") as delete,
+            patch("app.services.agent_engine.orchestrator.asyncio.sleep"),
+        ):
+            result = await client._orchestrator.run_outline_decision_session(
+                "prompt",
+                session_title="章节决策",
+                completion_validator=lambda: next(decision_states),
+            )
+
+        self.assertEqual(result["sessionId"], "ses-try-2")
+        self.assertEqual([call.args[0] for call in delete.await_args_list], ["ses-try-1", "ses-try-2"])
+
+    async def test_outline_handoff_and_finalize_sessions_all_recycled(self) -> None:
+        client = OpencodeEngine()
+        handoff_states = iter([{"complete": False}, {"complete": True}])
+
+        async def fake_polling(session_id: str, *_args: object, **kwargs: object) -> dict:
+            validator = kwargs.get("assistant_stop_validator")
+            if validator is not None:
+                validated = validator()
+                return {"_assistantStopValidation": validated}
+            return {"parts": [{"type": "text", "text": '{"summary":"ok","nodes":[]}'}]}
+
+        with (
+            patch.object(
+                client,
+                "create_session",
+                side_effect=[{"id": "ses-handoff-1"}, {"id": "ses-handoff-2"}, {"id": "ses-final"}],
+            ),
+            patch.object(client, "_send_prompt_with_session_polling", side_effect=fake_polling),
+            patch.object(client, "delete_session") as delete,
+        ):
+            await client._orchestrator.generate_outline_with_trace(
+                "prompt",
+                handoff_prompt_factory=lambda index: f"接力 {index}",
+                handoff_state_callback=lambda _index: next(handoff_states),
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in delete.await_args_list],
+            ["ses-handoff-1", "ses-handoff-2", "ses-final"],
+        )

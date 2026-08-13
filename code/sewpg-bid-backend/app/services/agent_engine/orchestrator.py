@@ -376,6 +376,21 @@ class AgentOrchestrator:
     def __init__(self, engine: Any) -> None:
         self.engine = engine
 
+    async def _recycle_session(self, session_id: str) -> None:
+        """会话终态回收（B3）：任务终态（成功/失败/取消）即删服务端会话。
+
+        回收失败只告警不阻断主流程（harness-04）；留痕不依赖服务端会话存活
+        （trace 已在收割时落库）。唯一刻意保留的例外是 technical_chat_service
+        的多轮共创对话会话（`send_text_prompt(keep_session=True)`），不走这里。
+        """
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return
+        try:
+            await self.engine.delete_session(session_id)
+        except Exception as exc:  # noqa: BLE001 - 回收失败不掩盖业务结果
+            logger.warning("会话 %s 终态回收失败（不阻断主流程）：%s", session_id, exc)
+
     # ------------------------------------------------------------------
     # early completion 计划构建
     # ------------------------------------------------------------------
@@ -515,64 +530,68 @@ class AgentOrchestrator:
         for attempt in range(1, OUTLINE_DECISION_SESSION_MAX_ATTEMPTS + 1):
             session = await engine.create_session(session_title)
             session_id = str(session.get("id") or "")
-            if session_ready_callback:
-                session_ready_callback(
-                    {
-                        "sessionId": session_id,
-                        "providerId": engine.provider_id,
-                        "modelId": engine.model_id,
-                        "sessionPhase": session_phase,
-                    }
+            try:
+                if session_ready_callback:
+                    session_ready_callback(
+                        {
+                            "sessionId": session_id,
+                            "providerId": engine.provider_id,
+                            "modelId": engine.model_id,
+                            "sessionPhase": session_phase,
+                        }
+                    )
+                response = await engine._send_prompt_with_session_polling(
+                    session_id,
+                    prompt_text,
+                    stream_callback=stream_callback or (lambda _details: None),
+                    assistant_stop_validator=completion_validator,
                 )
-            response = await engine._send_prompt_with_session_polling(
-                session_id,
-                prompt_text,
-                stream_callback=stream_callback or (lambda _details: None),
-                assistant_stop_validator=completion_validator,
-            )
-            info = response.get("info") if isinstance(response.get("info"), dict) else {}
-            session_error = info.get("error")
-            if session_error:
-                error_text = engine._format_response_error(session_error)
-                # 决策以持久化状态为准：报错不等于没判完。
-                persisted = self._safe_decision_state(completion_validator)
-                if persisted is not None and bool(persisted.get("complete")):
+                info = response.get("info") if isinstance(response.get("info"), dict) else {}
+                session_error = info.get("error")
+                if session_error:
+                    error_text = engine._format_response_error(session_error)
+                    # 决策以持久化状态为准：报错不等于没判完。
+                    persisted = self._safe_decision_state(completion_validator)
+                    if persisted is not None and bool(persisted.get("complete")):
+                        logger.warning(
+                            "S2 决策会话报错但本章已判完，采用落盘结果：%s：%s",
+                            session_title,
+                            error_text,
+                        )
+                        return {
+                            "sessionId": session_id,
+                            "state": persisted,
+                            "opencodeOutput": engine._build_output_trace(session_id, response),
+                        }
+                    if attempt >= OUTLINE_DECISION_SESSION_MAX_ATTEMPTS:
+                        raise RuntimeError(error_text)
+                    delay = _OUTLINE_DECISION_RETRY_DELAYS_SEC[
+                        min(attempt - 1, len(_OUTLINE_DECISION_RETRY_DELAYS_SEC) - 1)
+                    ]
                     logger.warning(
-                        "S2 决策会话报错但本章已判完，采用落盘结果：%s：%s",
+                        "S2 决策会话失败，%s 秒后开新会话续跑（第 %s/%s 次）：%s：%s",
+                        delay,
+                        attempt,
+                        OUTLINE_DECISION_SESSION_MAX_ATTEMPTS,
                         session_title,
                         error_text,
                     )
-                    return {
-                        "sessionId": session_id,
-                        "state": persisted,
-                        "opencodeOutput": engine._build_output_trace(session_id, response),
-                    }
-                if attempt >= OUTLINE_DECISION_SESSION_MAX_ATTEMPTS:
-                    raise RuntimeError(error_text)
-                delay = _OUTLINE_DECISION_RETRY_DELAYS_SEC[
-                    min(attempt - 1, len(_OUTLINE_DECISION_RETRY_DELAYS_SEC) - 1)
-                ]
-                logger.warning(
-                    "S2 决策会话失败，%s 秒后开新会话续跑（第 %s/%s 次）：%s：%s",
-                    delay,
-                    attempt,
-                    OUTLINE_DECISION_SESSION_MAX_ATTEMPTS,
-                    session_title,
-                    error_text,
-                )
-                await asyncio.sleep(delay)
-                continue
-            state = response.get("_assistantStopValidation")
-            if not isinstance(state, dict):
-                state = completion_validator()
-            if not bool(state.get("complete")):
-                # 会话自己收尾但没判完：交给上层的串行接力，重试同一个提示词只会重复空转。
-                raise RuntimeError(f"S2 决策会话未完成：{session_title}")
-            return {
-                "sessionId": session_id,
-                "state": state,
-                "opencodeOutput": engine._build_output_trace(session_id, response),
-            }
+                    await asyncio.sleep(delay)
+                    continue
+                state = response.get("_assistantStopValidation")
+                if not isinstance(state, dict):
+                    state = completion_validator()
+                if not bool(state.get("complete")):
+                    # 会话自己收尾但没判完：交给上层的串行接力，重试同一个提示词只会重复空转。
+                    raise RuntimeError(f"S2 决策会话未完成：{session_title}")
+                return {
+                    "sessionId": session_id,
+                    "state": state,
+                    "opencodeOutput": engine._build_output_trace(session_id, response),
+                }
+            finally:
+                # B3：每次尝试（含失败重试的旧会话）终态即回收。
+                await self._recycle_session(session_id)
         raise RuntimeError(f"S2 决策会话未完成：{session_title}")
 
     @staticmethod
@@ -612,75 +631,83 @@ class AgentOrchestrator:
                 session = await engine.create_session(f"S2 目录决策·接力 {handoff_index}")
                 handoff_session_id = str(session.get("id") or "")
                 handoff_session_ids.append(handoff_session_id)
-                if session_ready_callback:
-                    session_ready_callback(
-                        {
-                            "sessionId": handoff_session_id,
-                            "providerId": engine.provider_id,
-                            "modelId": engine.model_id,
-                            "sessionPhase": "decision_handoff",
-                            "sessionIndex": handoff_index,
-                        }
+                try:
+                    if session_ready_callback:
+                        session_ready_callback(
+                            {
+                                "sessionId": handoff_session_id,
+                                "providerId": engine.provider_id,
+                                "modelId": engine.model_id,
+                                "sessionPhase": "decision_handoff",
+                                "sessionIndex": handoff_index,
+                            }
+                        )
+                    validated_handoff_state: dict[str, Any] = {}
+
+                    def validate_handoff_stop() -> dict[str, Any]:
+                        state = handoff_state_callback(handoff_index)
+                        validated_handoff_state.update(state)
+                        return state
+
+                    handoff_response = await engine._send_prompt_with_session_polling(
+                        handoff_session_id,
+                        handoff_prompt_factory(handoff_index),
+                        stream_callback=stream_callback,
+                        early_completion=self._build_early_completion_plan("s2outline-decision-batch"),
+                        assistant_stop_validator=validate_handoff_stop,
                     )
-                validated_handoff_state: dict[str, Any] = {}
-
-                def validate_handoff_stop() -> dict[str, Any]:
-                    state = handoff_state_callback(handoff_index)
-                    validated_handoff_state.update(state)
-                    return state
-
-                handoff_response = await engine._send_prompt_with_session_polling(
-                    handoff_session_id,
-                    handoff_prompt_factory(handoff_index),
-                    stream_callback=stream_callback,
-                    early_completion=self._build_early_completion_plan("s2outline-decision-batch"),
-                    assistant_stop_validator=validate_handoff_stop,
-                )
-                handoff_info = (
-                    handoff_response.get("info")
-                    if isinstance(handoff_response.get("info"), dict)
-                    else {}
-                )
-                if handoff_info.get("error"):
-                    raise RuntimeError(engine._format_response_error(handoff_info["error"]))
-                handoff_state = validated_handoff_state or handoff_state_callback(handoff_index)
-                if not isinstance(handoff_state, dict) or "complete" not in handoff_state:
-                    raise RuntimeError("S2 目录接力状态回调未返回 complete。")
-                if bool(handoff_state["complete"]):
-                    break
+                    handoff_info = (
+                        handoff_response.get("info")
+                        if isinstance(handoff_response.get("info"), dict)
+                        else {}
+                    )
+                    if handoff_info.get("error"):
+                        raise RuntimeError(engine._format_response_error(handoff_info["error"]))
+                    handoff_state = validated_handoff_state or handoff_state_callback(handoff_index)
+                    if not isinstance(handoff_state, dict) or "complete" not in handoff_state:
+                        raise RuntimeError("S2 目录接力状态回调未返回 complete。")
+                    if bool(handoff_state["complete"]):
+                        break
+                finally:
+                    # B3：每个接力会话用完即回收（sessionIds 留痕在 output_trace）。
+                    await self._recycle_session(handoff_session_id)
             else:
                 raise RuntimeError("S2 目录决策接力超过 256 个会话，已停止以避免无限循环。")
 
         session = await engine.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
-        if session_ready_callback:
-            session_ready_callback(
-                {
-                    "sessionId": session_id,
-                    "providerId": engine.provider_id,
-                    "modelId": engine.model_id,
-                    "sessionPhase": "finalize" if handoff_session_ids else "full",
-                    "sessionIndex": len(handoff_session_ids) + 1,
-                }
+        try:
+            if session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": engine.provider_id,
+                        "modelId": engine.model_id,
+                        "sessionPhase": "finalize" if handoff_session_ids else "full",
+                        "sessionIndex": len(handoff_session_ids) + 1,
+                    }
+                )
+            response = await engine._send_prompt_with_session_polling(
+                session_id,
+                prompt_text,
+                stream_callback=stream_callback,
+                early_completion=self._build_early_completion_plan(
+                    early_tool_command,
+                    terminal_validator=terminal_validator,
+                ),
             )
-        response = await engine._send_prompt_with_session_polling(
-            session_id,
-            prompt_text,
-            stream_callback=stream_callback,
-            early_completion=self._build_early_completion_plan(
-                early_tool_command,
-                terminal_validator=terminal_validator,
-            ),
-        )
-        parsed = await self._extract_outline_json(response)
-        output_trace = engine._build_output_trace(session_id, response)
-        if handoff_session_ids:
-            output_trace["sessionIds"] = [*handoff_session_ids, session_id]
-            output_trace["handoffSessionCount"] = len(handoff_session_ids)
-        return {
-            **parsed,
-            "opencodeOutput": output_trace,
-        }
+            parsed = await self._extract_outline_json(response)
+            output_trace = engine._build_output_trace(session_id, response)
+            if handoff_session_ids:
+                output_trace["sessionIds"] = [*handoff_session_ids, session_id]
+                output_trace["handoffSessionCount"] = len(handoff_session_ids)
+            return {
+                **parsed,
+                "opencodeOutput": output_trace,
+            }
+        finally:
+            # B3：终态即回收。
+            await self._recycle_session(session_id)
 
     async def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
         result = await self.generate_draft_sections_with_trace(prompt_text)
@@ -705,41 +732,45 @@ class AgentOrchestrator:
         engine = self.engine
         session = await engine.create_session(session_title)
         session_id = str(session.get("id") or "")
-        if abort_on_cancel:
-            try:
-                if session_ready_callback:
-                    session_ready_callback(
-                        {
-                            "sessionId": session_id,
-                            "providerId": engine.provider_id,
-                            "modelId": engine.model_id,
-                        }
-                    )
-                if cancel_check is not None and cancel_check():
-                    raise ParseCancelledError("解析已取消。")
-            except ParseCancelledError:
-                await engine.abort_session(session_id)
-                raise
-        elif session_ready_callback:
-            session_ready_callback(
-                {
-                    "sessionId": session_id,
-                    "providerId": engine.provider_id,
-                    "modelId": engine.model_id,
-                }
+        try:
+            if abort_on_cancel:
+                try:
+                    if session_ready_callback:
+                        session_ready_callback(
+                            {
+                                "sessionId": session_id,
+                                "providerId": engine.provider_id,
+                                "modelId": engine.model_id,
+                            }
+                        )
+                    if cancel_check is not None and cancel_check():
+                        raise ParseCancelledError("解析已取消。")
+                except ParseCancelledError:
+                    await engine.abort_session(session_id)
+                    raise
+            elif session_ready_callback:
+                session_ready_callback(
+                    {
+                        "sessionId": session_id,
+                        "providerId": engine.provider_id,
+                        "modelId": engine.model_id,
+                    }
+                )
+            response = await engine._send_prompt_with_session_polling(
+                session_id,
+                prompt_text,
+                stream_callback=stream_callback,
+                early_completion=self._build_early_completion_plan(early_tool_command),
+                cancel_check=cancel_check,
             )
-        response = await engine._send_prompt_with_session_polling(
-            session_id,
-            prompt_text,
-            stream_callback=stream_callback,
-            early_completion=self._build_early_completion_plan(early_tool_command),
-            cancel_check=cancel_check,
-        )
-        parsed = await extractor(response)
-        return {
-            **parsed,
-            "opencodeOutput": engine._build_output_trace(session_id, response),
-        }
+            parsed = await extractor(response)
+            return {
+                **parsed,
+                "opencodeOutput": engine._build_output_trace(session_id, response),
+            }
+        finally:
+            # B3：成功/失败/取消终态统一回收（取消路径内部已 abort，这里兜底删除）。
+            await self._recycle_session(session_id)
 
     async def generate_draft_sections_with_trace(
         self,
@@ -943,28 +974,32 @@ class AgentOrchestrator:
         session = await engine.create_session(title)
         session_id = str(session.get("id") or "")
         try:
-            if session_ready_callback:
-                session_ready_callback(
-                    {
-                        "sessionId": session_id,
-                        "providerId": engine.provider_id,
-                        "modelId": engine.model_id,
-                    }
-                )
-            if cancel_check is not None and cancel_check():
-                raise ParseCancelledError("解析已取消。")
-        except ParseCancelledError:
-            await engine.abort_session(session_id)
-            raise
-        # 传入 stream_callback 以启用轮询与 idle 监管；不挂提前完成计划，
-        # 分片会话没有 finalize 这种唯一终止命令，走通用完成判定即可。
-        response = await engine._send_prompt_with_session_polling(
-            session_id,
-            prompt_text,
-            stream_callback=stream_callback or (lambda _details: None),
-            cancel_check=cancel_check,
-        )
-        return {"opencodeOutput": engine._build_output_trace(session_id, response)}
+            try:
+                if session_ready_callback:
+                    session_ready_callback(
+                        {
+                            "sessionId": session_id,
+                            "providerId": engine.provider_id,
+                            "modelId": engine.model_id,
+                        }
+                    )
+                if cancel_check is not None and cancel_check():
+                    raise ParseCancelledError("解析已取消。")
+            except ParseCancelledError:
+                await engine.abort_session(session_id)
+                raise
+            # 传入 stream_callback 以启用轮询与 idle 监管；不挂提前完成计划，
+            # 分片会话没有 finalize 这种唯一终止命令，走通用完成判定即可。
+            response = await engine._send_prompt_with_session_polling(
+                session_id,
+                prompt_text,
+                stream_callback=stream_callback or (lambda _details: None),
+                cancel_check=cancel_check,
+            )
+            return {"opencodeOutput": engine._build_output_trace(session_id, response)}
+        finally:
+            # B3：分片会话终态（成功/失败/取消）即回收。
+            await self._recycle_session(session_id)
 
     async def review_business_commitments_with_trace(
         self,
@@ -973,12 +1008,16 @@ class AgentOrchestrator:
         engine = self.engine
         session = await engine.create_session("商务标承诺语义复核")
         session_id = str(session.get("id") or "")
-        response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
-        parsed = await self._extract_commitment_review_json(response)
-        return {
-            **parsed,
-            "opencodeOutput": engine._build_output_trace(session_id, response),
-        }
+        try:
+            response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
+            parsed = await self._extract_commitment_review_json(response)
+            return {
+                **parsed,
+                "opencodeOutput": engine._build_output_trace(session_id, response),
+            }
+        finally:
+            # B3：终态即回收。
+            await self._recycle_session(session_id)
 
     async def review_business_attachment_templates_with_trace(
         self,
@@ -987,12 +1026,16 @@ class AgentOrchestrator:
         engine = self.engine
         session = await engine.create_session("商务标附件模板语义校验")
         session_id = str(session.get("id") or "")
-        response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
-        parsed = await self._extract_business_template_review_json(response)
-        return {
-            **parsed,
-            "opencodeOutput": engine._build_output_trace(session_id, response),
-        }
+        try:
+            response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
+            parsed = await self._extract_business_template_review_json(response)
+            return {
+                **parsed,
+                "opencodeOutput": engine._build_output_trace(session_id, response),
+            }
+        finally:
+            # B3：终态即回收。
+            await self._recycle_session(session_id)
 
     async def extract_business_templates_with_trace(
         self,

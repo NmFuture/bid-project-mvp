@@ -56,6 +56,11 @@ class OpencodeEngine:
       idle 监管（服务重启 ≠ 模型 stall）；预算耗尽抛 `PollReconnectExhaustedError`。
     重试次数/退避为配置项（`OPENCODE_SEND_PROMPT_MAX_RETRIES` 等，默认值本地安全）。
 
+    B3（engine-05）落地会话生命周期回收：`delete_session`（DELETE /session/{id}，
+    404 幂等、其余失败显式抛错）；编排层在会话终态经 `delete_session_quietly`
+    回收（失败只告警不阻断）。唯一刻意保留的是 technical_chat_service 的
+    多轮共创对话会话（`send_text_prompt(keep_session=True)`）。
+
     A1（engine-02）后本类只剩引擎/传输层职责（改造方案 §1 A 层）：
     会话生命周期、轮询监管（idle 超时/心跳/取消）、「bash 工具完成」事件检测与
     提前收割框架、输出留痕。全部业务编排（`run_bid_*` / `_extract_*_json` /
@@ -263,24 +268,32 @@ class OpencodeEngine:
         prompt_text: str,
         *,
         tools: dict[str, bool] | None = None,
+        keep_session: bool = False,
     ) -> dict[str, Any]:
+        """建会话发单条 prompt。`keep_session=False`（默认）终态即删服务端会话（B3）；
+        `keep_session=True` 只用于跨轮复用会话的调用方（technical_chat_service 共创对话）。
+        """
         session = await self.create_session(title)
         session_id = str(session.get("id") or "")
-        response = (
-            await self.send_prompt(session_id, prompt_text)
-            if tools is None
-            else await self.send_prompt(session_id, prompt_text, tools=tools)
-        )
-        info = response.get("info") if isinstance(response.get("info"), dict) else {}
-        if info.get("error"):
-            raise RuntimeError(self._format_response_error(info["error"]))
-        return {
-            "sessionId": session_id,
-            "providerId": self.provider_id,
-            "modelId": self.model_id,
-            "reply": self.extract_text_response(response),
-            "opencodeOutput": self._build_output_trace(session_id, response),
-        }
+        try:
+            response = (
+                await self.send_prompt(session_id, prompt_text)
+                if tools is None
+                else await self.send_prompt(session_id, prompt_text, tools=tools)
+            )
+            info = response.get("info") if isinstance(response.get("info"), dict) else {}
+            if info.get("error"):
+                raise RuntimeError(self._format_response_error(info["error"]))
+            return {
+                "sessionId": session_id,
+                "providerId": self.provider_id,
+                "modelId": self.model_id,
+                "reply": self.extract_text_response(response),
+                "opencodeOutput": self._build_output_trace(session_id, response),
+            }
+        finally:
+            if not keep_session:
+                await self.delete_session_quietly(session_id)
 
     # ------------------------------------------------------------------
     # 业务编排门面（A1）：实现见 agent_engine/orchestrator.py 的 AgentOrchestrator，
@@ -441,6 +454,33 @@ class OpencodeEngine:
                 return bool(response.json())
         except (httpx.HTTPError, ValueError):
             return False
+
+    async def delete_session(self, session_id: str) -> None:
+        """删除服务端会话（B3，协议方法）：DELETE /session/{id}。
+
+        404 幂等（会话已不存在视为回收成功）；其余失败显式抛错不吞。
+        终态回收路径用 `delete_session_quietly`（失败只告警不阻断主流程）。
+        """
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+                response = await client.delete(f"{self.base_url}/session/{session_id}")
+            if response.status_code == 404:
+                return
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"futurecode 删除 session 失败（{session_id}）：{self._short_http_error(exc)}"
+            ) from exc
+
+    async def delete_session_quietly(self, session_id: str) -> None:
+        """终态回收入口（harness-04）：回收失败只告警，不阻断主流程。"""
+        try:
+            await self.delete_session(session_id)
+        except Exception as exc:  # noqa: BLE001 - 回收失败不掩盖业务结果
+            logger.warning("futurecode session %s 回收失败（不阻断主流程）：%s", session_id, exc)
 
     @staticmethod
     async def _wait_worker_stop(worker_task: asyncio.Task[None], timeout: float) -> bool:

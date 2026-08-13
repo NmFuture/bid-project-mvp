@@ -180,9 +180,13 @@ class TechnicalReportContractTests(unittest.TestCase):
             prompts.append(prompt)
             return {"parts": [{"type": "text", "text": "{}"}]}
 
+        async def fake_delete_session_quietly(_session_id: str) -> None:
+            return None
+
         fake_client = types.SimpleNamespace(
             create_session=fake_create_session,
             send_prompt=fake_send_prompt,
+            delete_session_quietly=fake_delete_session_quietly,
         )
 
         asyncio.run(repair(fake_client, "broken", "assembly"))

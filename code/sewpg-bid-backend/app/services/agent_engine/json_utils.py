@@ -166,13 +166,18 @@ async def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
 {raw_content}
 """.strip()
     session = await self.create_session("JSON repair")
-    response = await self.send_prompt(str(session.get("id") or ""), repair_prompt)
-    text_parts = [
-        str(part.get("text") or "")
-        for part in response.get("parts") or []
-        if part.get("type") == "text"
-    ]
-    content = "\n".join(part for part in text_parts if part).strip()
-    if not content:
-        raise RuntimeError("futurecode 返回的 JSON 无法解析。")
-    return content
+    session_id = str(session.get("id") or "")
+    try:
+        response = await self.send_prompt(session_id, repair_prompt)
+        text_parts = [
+            str(part.get("text") or "")
+            for part in response.get("parts") or []
+            if part.get("type") == "text"
+        ]
+        content = "\n".join(part for part in text_parts if part).strip()
+        if not content:
+            raise RuntimeError("futurecode 返回的 JSON 无法解析。")
+        return content
+    finally:
+        # B3：修复会话一次性使用，终态即回收（失败只告警）。
+        await self.delete_session_quietly(session_id)
