@@ -6351,8 +6351,8 @@ def _run_s1parse_cli(command: str, skill_manifest_path: Path, *extra: str) -> di
 
 
 # 分片会话的并发槽位。全局 _OPENCODE_REQUEST_SLOTS 默认只有 1（compose 默认值），
-# 会把并发分片重新压回串行，所以分片走独立槽位池，由 S1_PARSE_SHARD_CONCURRENCY 控制。
-_S1_SHARD_REQUEST_SLOTS = threading.BoundedSemaphore(max(1, settings.s1_parse_shard_concurrency))
+# 会把并发分片重新压回串行，所以分片走独立槽位池，由项目级 OPENCODE_MAX_CONCURRENCY 控制。
+_S1_SHARD_REQUEST_SLOTS = threading.BoundedSemaphore(max(1, settings.opencode_max_concurrency))
 
 
 # 进度条第一行展示的条款数每次都要读提交文件，读盘节流到这个间隔，
@@ -6618,7 +6618,7 @@ def _run_technical_sharded_parse_skill(
     tasks = _technical_shard_tasks(skill_manifest_path, profile)
     _raise_if_parse_cancelled(cancel_check)
 
-    max_workers = max(1, min(len(tasks), settings.s1_parse_shard_concurrency))
+    max_workers = max(1, min(len(tasks), settings.opencode_max_concurrency))
     logger.info(
         "S1 技术标分片解析启动：%s 个分片，并发度 %s。",
         len(tasks),

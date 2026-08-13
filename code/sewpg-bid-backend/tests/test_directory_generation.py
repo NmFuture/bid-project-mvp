@@ -1308,6 +1308,60 @@ class DirectoryGenerationTests(unittest.TestCase):
             self.assertIs(call.kwargs["request_slots"], _TECH_OUTLINE_REQUEST_SLOTS)
         runner.decision_workflow.materialize_appendix_predecisions.assert_called_once()
 
+    def test_parallel_outline_chapters_caps_workers_by_project_opencode_concurrency(self) -> None:
+        self.parallel_outline_patcher.stop()
+        from app.services.outline_generation import _run_parallel_outline_chapters
+
+        root = Path(self.temp_dir.name) / "parallel-project-limit"
+        root.mkdir(parents=True)
+        manifest_path = root / "s2_input.json"
+        manifest_path.write_text("{}", encoding="utf-8")
+        chapter_root = root / "chapters"
+        chapter_root.mkdir()
+        chapters = [
+            {"chapter_id": f"TPL-{index:04d}", "number": str(index), "title": f"第{index}章"}
+            for index in range(1, 6)
+        ]
+        chapter_manifests: dict[str, Path] = {}
+        for chapter in chapters:
+            chapter_dir = chapter_root / str(chapter["chapter_id"])
+            chapter_dir.mkdir()
+            path = chapter_dir / "s2_input.json"
+            path.write_text(json.dumps({"workDir": str(chapter_dir)}), encoding="utf-8")
+            chapter_manifests[str(chapter["chapter_id"])] = path
+
+        runner = MagicMock()
+        runner.decision_workflow.chapter_decision_progress.return_value = {"complete": True}
+        runner.review_workflow.decision_appendix_items.return_value = [{"appendix_id": "APP-1"}]
+        runner.decision_workflow.appendix_decision_progress.return_value = {"complete": True, "decidedCount": 1}
+        worker_counts: list[int] = []
+        slots: list[object] = []
+
+        def recording_executor(*, max_workers: int, **_kwargs: object) -> RealThreadPoolExecutor:
+            worker_counts.append(max_workers)
+            return RealThreadPoolExecutor(max_workers=max_workers)
+
+        with (
+            patch("app.services.outline_generation._prepare_outline_chapter_workspaces", return_value=(chapters, chapter_manifests, chapter_root, {})),
+            patch("app.services.outline_generation._load_technical_outline_runner", return_value=runner),
+            patch("app.services.outline_generation.system_settings_service.get_opencode_model_config_sync", return_value={}),
+            patch("app.services.outline_generation._outline_chapter_base_urls", return_value=["http://opencode:4096"]),
+            patch("app.services.outline_generation.ThreadPoolExecutor", side_effect=recording_executor),
+            patch("app.services.outline_generation.settings.opencode_max_concurrency", 3),
+            patch("app.services.outline_generation.OpencodeClient") as client_class,
+        ):
+            def make_client(**kwargs: object) -> MagicMock:
+                slots.append(kwargs["request_slots"])
+                client = MagicMock()
+                client.run_outline_decision_session.return_value = {"sessionId": "ses", "opencodeOutput": {}}
+                return client
+
+            client_class.side_effect = make_client
+            _run_parallel_outline_chapters(manifest_path, {})
+
+        self.assertEqual(worker_counts, [3])
+        self.assertEqual(len({id(item) for item in slots}), 1)
+
     def test_failed_chapter_falls_back_to_serial_instead_of_killing_the_run(self) -> None:
         """单个章节会话最终失败时降级串行接力，不能让整轮目录生成作废。
 
