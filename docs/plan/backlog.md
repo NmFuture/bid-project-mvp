@@ -23,3 +23,15 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] F2: 一个 stalled 测试改由 prompt 返回后 grace 等待路径抛出（原主循环 idle 路径），异常类型与 trace 结构一致，review 判语义等价
 - [ ] F5: `AgentEngine` 协议与 `OpencodeEngine` 实现结构仍不一致（`run_session` vs `send_prompt`、`create_session -> str` vs `dict`、缺 `delete_session`）；C 波次接新内核前需对齐 → 已排入 engine-09（PoC 接线前置）与 engine-05（delete_session 实现）
 - [ ] 并发冒烟（S1 分片并行）需 dev 环境验证，本地未覆盖
+
+## engine-08（review 01 + 复验，2026-08-13，结论 pass）
+
+- [x] ~~P2-1~~ 已修复（8feb7f6）：协议注释校正（终态为 `agent_end`，官方无 `agent_settled`/`willRetry`）
+- [x] ~~P2-2~~ 已修复（8feb7f6）：`create_subprocess_exec` 加 `limit=8MiB`（finalize 大 stdout 收割），PoC 需真实大输出复核
+- [ ] P3-1: run 中外部 abort 要等 idle 超时才退出（pi_engine.py:469 附近）
+- [ ] P3-2: `session.events` 缓冲只增不减
+- [ ] P3-3: 空 title 会让真实 pi 退出
+- [ ] P3-4: 乱序响应/CRLF 容错等少数路径无测试
+- [ ] 未经真实 Pi 验证（协议按 rpc.md 2026-08-13 快照），留 engine-09 PoC 核对事件 schema
+- [ ] `tools` 按请求开关 Pi RPC 不支持，`run_session` 收到非 None 抛 ValueError——orchestrator 接入时带 tools 的链路不能切 pi
+- [ ] provider/model 未接 DB 系统设置链路；会话绑定创建它的事件循环（编排层需同一线程桥接内 create+run）；`--no-session` 不落盘无 resume
