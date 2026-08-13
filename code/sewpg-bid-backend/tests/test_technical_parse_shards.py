@@ -33,6 +33,7 @@ from agentic import nav_store  # noqa: E402
 from agentic.paths import load_manifest, nav_store_path  # noqa: E402
 from agentic.submission_store import load as load_submissions  # noqa: E402
 from agentic.submission_store import shard_progress, submit  # noqa: E402
+from app.services.agent_engine.base import EngineRunResult  # noqa: E402
 
 
 RUNNER = SKILL_SCRIPTS / "run_from_manifest.py"
@@ -548,11 +549,19 @@ class ShardedOrchestrationTests(unittest.TestCase):
             if result.returncode != 0:
                 raise RuntimeError(result.stderr)
 
-        class FakeClient:
-            def __init__(self, *_args, **_kwargs) -> None:
-                pass
+        class FakeEngine:
+            """协议级 fake 引擎：分片链路（engine-09 起）只经 AgentEngine 协议方法驱动。"""
 
-            async def run_tender_parse_shard_with_trace(self, prompt: str, **_kwargs) -> dict:
+            engine_name = "fake"
+
+            def __init__(self) -> None:
+                self._seq = 0
+
+            async def create_session(self, title: str) -> str:
+                self._seq += 1
+                return f"ses-{self._seq}"
+
+            async def run_session(self, session_id: str, prompt: str, **_kwargs) -> EngineRunResult:
                 match = re.search(r"--shard (\S+)", prompt)
                 key = match.group(1) if match else "projectBasics"
                 with seen_lock:
@@ -561,7 +570,11 @@ class ShardedOrchestrationTests(unittest.TestCase):
                     raise RuntimeError(f"injected failure for {key}")
                 if key in silent:
                     # 会话「正常结束」，但什么都没提交
-                    return {"opencodeOutput": {"sessionId": f"ses-{key}", "status": "completed"}}
+                    return EngineRunResult(
+                        session_id=session_id,
+                        reply_text="",
+                        trace={"sessionId": session_id, "status": "completed"},
+                    )
                 if key == "projectBasics":
                     payload = [
                         {"key": field_key, "label": field_key, "status": "missing",
@@ -583,9 +596,25 @@ class ShardedOrchestrationTests(unittest.TestCase):
                         rows = rows[:1]
                     cli("submit", str(manifest_path), "technicalInterpretation",
                         json.dumps(rows, ensure_ascii=False), "--shard", key)
-                return {"opencodeOutput": {"sessionId": f"ses-{key}", "status": "completed"}}
+                return EngineRunResult(
+                    session_id=session_id,
+                    reply_text="",
+                    trace={"sessionId": session_id, "status": "completed"},
+                )
 
-        return FakeClient, seen
+            async def abort_session(self, session_id: str) -> bool:
+                return True
+
+            async def delete_session(self, session_id: str) -> None:
+                return None
+
+        created_kwargs: list[dict] = []
+
+        def fake_create(**kwargs):
+            created_kwargs.append(kwargs)
+            return FakeEngine()
+
+        return fake_create, seen, created_kwargs
 
     def _run(
         self,
@@ -598,9 +627,9 @@ class ShardedOrchestrationTests(unittest.TestCase):
         from app.services import parsing
         from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
 
-        fake_cls, seen = self._fake_client_class(failing_shards, silent_shards, partial_shards)
+        fake_create, seen, _created_kwargs = self._fake_client_class(failing_shards, silent_shards, partial_shards)
         local_result = {"items": [], "structured": {}}
-        with patch.object(parsing, "OpencodeEngine", fake_cls):
+        with patch.object(parsing.AgentEngineFactory, "create", side_effect=fake_create):
             resolved, message = parsing._run_technical_sharded_parse_skill(
                 self.manifest_path,
                 local_result=local_result,
@@ -631,7 +660,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
         from app.services import parsing
         from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
 
-        fake_cls, _seen = self._fake_client_class()
+        fake_create, _seen, _created_kwargs = self._fake_client_class()
         original_cli = parsing._run_s1parse_cli
 
         def failed_finalize(command: str, manifest_path: Path, *args: str) -> dict:
@@ -650,7 +679,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
             self.output_path.write_text(json.dumps(failed_result, ensure_ascii=False), encoding="utf-8")
             return {"outputFile": str(self.output_path)}
 
-        with patch.object(parsing, "OpencodeEngine", fake_cls), patch.object(
+        with patch.object(parsing.AgentEngineFactory, "create", side_effect=fake_create), patch.object(
             parsing,
             "_run_s1parse_cli",
             side_effect=failed_finalize,
@@ -673,16 +702,8 @@ class ShardedOrchestrationTests(unittest.TestCase):
             "baseUrl": "https://llm.example.com/v1",
             "modelId": "test-model",
         }
-        fake_cls, seen = self._fake_client_class()
-        initialized_configs: list[dict | None] = []
-        original_init = fake_cls.__init__
-
-        def capture_init(client, *args, **kwargs) -> None:
-            initialized_configs.append(kwargs.get("model_config"))
-            original_init(client, *args, **kwargs)
-
-        fake_cls.__init__ = capture_init
-        with patch.object(parsing, "OpencodeEngine", fake_cls), patch.object(
+        fake_create, seen, created_kwargs = self._fake_client_class()
+        with patch.object(parsing.AgentEngineFactory, "create", side_effect=fake_create), patch.object(
             parsing.system_settings_service,
             "get_opencode_model_config_sync",
             return_value=model_config,
@@ -695,8 +716,8 @@ class ShardedOrchestrationTests(unittest.TestCase):
 
         load_model_config.assert_called_once_with()
         self.assertEqual(sorted(seen), sorted(["projectBasics", *shard_keys()]))
-        self.assertEqual(len(initialized_configs), 7)
-        self.assertTrue(all(config is model_config for config in initialized_configs))
+        self.assertEqual(len(created_kwargs), 7)
+        self.assertTrue(all(kwargs.get("model_config") is model_config for kwargs in created_kwargs))
 
     def test_failed_shard_is_retried_then_surfaced_without_killing_the_run(self) -> None:
         broken = shard_keys()[0]

@@ -1,7 +1,8 @@
 """CodexEngine 单测（engine-07，C1）：mock `codex exec` 子进程事件流，不依赖真实 CLI。
 
 覆盖：CLI_FLAGS/ENV_VARS 参数拼装、command_execution → ToolCompletedEvent 事件映射、
-on_tool_completed 提前收割（含回调改写 stdout）、--resume 续跑、ErrorPattern 错误归类、
+on_tool_completed 提前收割（含回调改写 stdout）、`exec resume` 续跑（含 0.147.0
+`agent_message` 类型键校准）、ErrorPattern 错误归类、
 cancel/abort/delete 的进程回收、idle 超时、provider/tools 会话级固定降级、
 factory 的 codex 分支注册。
 """
@@ -195,7 +196,7 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(argv[argv.index("--model") + 1], "gpt-5-codex")
         self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
         self.assertEqual(argv[argv.index("-c") + 1], "model_reasoning_effort=high")
-        self.assertNotIn("--resume", argv)  # 首跑无 thread_id
+        self.assertNotIn("resume", argv[2:])  # 首跑无 thread_id
         self.assertEqual(argv[-1], "做点什么")
         self.assertEqual(harness.calls[0]["env"]["CODEX_HOME"], "/tmp/codex-home")
 
@@ -245,9 +246,29 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reply_text, "解析完成")
         self.assertEqual(len(result.tool_outputs), 1)
         self.assertEqual(result.trace["sessionId"], session_id)
-        # thread_id 从 thread.started 捕获，第二次 run 走 --resume
+        # thread_id 从 thread.started 捕获，第二次 run 走 exec resume 子命令
+        # （engine-09 PoC 校准，codex 0.147.0：`exec resume <id>`，非 --resume 选项；
+        # resume 无 --sandbox，用 -c sandbox_mode= 等价注入）
         resume_argv = harness.calls[1]["argv"]
-        self.assertEqual(resume_argv[resume_argv.index("--resume") + 1], "thread-42")
+        self.assertEqual(resume_argv[2:4], ["resume", "thread-42"])
+        self.assertNotIn("--sandbox", resume_argv)
+        self.assertIn('sandbox_mode="workspace-write"', resume_argv)
+
+    async def test_agent_message_item_type_alias_maps_to_reply(self) -> None:
+        """engine-09 PoC 校准（codex 0.147.0 实测）：assistant 文本 item 类型改名 agent_message。"""
+        engine = CodexEngine()
+        session_id = await engine.create_session("t")
+        process = _FakeProcess(
+            [
+                _thread_started(),
+                {"type": "item.completed", "item": {"id": "i1", "type": "agent_message", "text": "新版键"}},
+                _turn_completed(),
+            ]
+        )
+        with _ExecHarness(process):
+            result = await engine.run_session(session_id, "p")
+
+        self.assertEqual(result.reply_text, "新版键")
 
     async def test_failed_command_is_not_reported(self) -> None:
         engine = CodexEngine()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import logging
 import types
 import tempfile
 import unittest
@@ -170,23 +171,28 @@ class TechnicalReportContractTests(unittest.TestCase):
         self.assertNotIn("needs_review", content)
 
     def test_repair_examples_keep_technical_reports_empty_and_business_reports_unchanged(self) -> None:
-        repair = load_isolated_function(AGENT_ENGINE_JSON_UTILS, "_repair_json_payload")
+        repair = load_isolated_function(
+            AGENT_ENGINE_JSON_UTILS,
+            "_repair_json_payload",
+            dependencies=("_delete_session_quietly",),
+            namespace_overrides={"logger": logging.getLogger("test.json_utils")},
+        )
         prompts: list[str] = []
 
-        async def fake_create_session(_title: str) -> dict:
-            return {"id": "repair"}
+        async def fake_create_session(_title: str) -> str:
+            return "repair"
 
-        async def fake_send_prompt(_session_id: str, prompt: str) -> dict:
+        async def fake_run_session(_session_id: str, prompt: str, **_kwargs: object):
             prompts.append(prompt)
-            return {"parts": [{"type": "text", "text": "{}"}]}
+            return types.SimpleNamespace(reply_text="{}")
 
-        async def fake_delete_session_quietly(_session_id: str) -> None:
+        async def fake_delete_session(_session_id: str) -> None:
             return None
 
         fake_client = types.SimpleNamespace(
             create_session=fake_create_session,
-            send_prompt=fake_send_prompt,
-            delete_session_quietly=fake_delete_session_quietly,
+            run_session=fake_run_session,
+            delete_session=fake_delete_session,
         )
 
         asyncio.run(repair(fake_client, "broken", "assembly"))

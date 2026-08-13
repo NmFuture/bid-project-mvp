@@ -34,7 +34,9 @@ from app.services.document_parse_quality import evaluate_document_nav_quality
 from app.services.docling_engine import DoclingParseEngine
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
+from app.services.agent_engine.factory import AgentEngineFactory
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.agent_engine.orchestrator import AgentOrchestrator
 from app.services.parse_profiles import (
     BUSINESS_PARSE_PROFILE,
     TECHNICAL_PARSE_PROFILE,
@@ -6500,11 +6502,13 @@ def _run_technical_shard_session(
 ) -> dict[str, Any]:
     key = str(task["key"])
     try:
-        client = OpencodeEngine(
+        # engine-09 C3：分片链路经工厂取引擎（AGENT_ENGINE=codex|pi 可切换，
+        # 默认恒为 opencode），编排走 AgentOrchestrator 协议级入口。
+        engine = AgentEngineFactory.create(
             model_config=model_config,
             request_slots=_S1_SHARD_REQUEST_SLOTS,
         )
-        _run_coroutine_blocking(client.run_tender_parse_shard_with_trace(
+        _run_coroutine_blocking(AgentOrchestrator(engine).run_tender_parse_shard_with_trace(
             task["prompt"],
             title=f"S1 技术标解析 · {task['label']}",
             stream_callback=lambda details: aggregator.on_stream(key, details),

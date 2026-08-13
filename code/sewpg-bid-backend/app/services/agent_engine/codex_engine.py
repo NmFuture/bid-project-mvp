@@ -4,7 +4,9 @@
 `CLI_FLAGS` / `ENV_VARS`），错误输出经 `ERROR_PATTERNS` 归类成统一异常。
 
 会话模型：**一个 session ≈ 一个 exec 进程**——每次 `run_session` 起一个
-`codex exec ... --json` 子进程（续跑带 `--resume <thread_id>`），`abort` = kill
+`codex exec ... --json` 子进程（续跑用子命令 `codex exec resume <thread_id>`，
+engine-09 PoC 按 0.147.0 实测校准：旧快照的 `--resume <id>` 选项已移除；
+resume 无 `--sandbox` 选项，用 `-c sandbox_mode=` 等价注入），`abort` = kill
 进程；进程在 run 结束 / abort / delete 后必被回收（`wait()` 收尸）。
 进程池上限已并入全局并发预算（B4/engine-06，方案 §7）：`run_session` 从
 `AGENT_CONCURRENCY_BUDGET` 派生池取许可，持到进程回收后释放；孤儿回收之外
@@ -19,7 +21,8 @@ provider 降级（方案 §3 注 / §6 风险，显式记录）：Codex 的 prov
 事件协议（`codex exec --json` JSONL）：`thread.started`（捕获 thread_id）、
 `item.completed`（`command_execution` → ToolCompletedEvent；`assistant_message`
 → 回复文本）、`turn.completed` / `turn.failed` / `error`。新版本的 item 类型键
-从 `item_type` 改名 `type`，两者都认。
+从 `item_type` 改名 `type`，两者都认；0.147.0 起 assistant 文本 item 类型改名
+`agent_message`（engine-09 PoC 实测），与 `assistant_message` 都认。
 """
 from __future__ import annotations
 
@@ -52,6 +55,10 @@ CODEX_PROGRESS_HEARTBEAT_SECONDS = 10.0
 CODEX_CANCEL_POLL_SECONDS = 0.5
 CODEX_KILL_GRACE_SECONDS = 5.0
 CODEX_STDERR_TAIL_CHARS = 8192  # stderr 排干只留尾部，供报错详情
+# stdout 行缓冲上限：asyncio 子进程流默认 64KiB，而 item.completed 单条 JSONL 携带
+# bash 工具完整 aggregated_output——finalize 大 stdout 恰是提前收割载荷，超限会让
+# readline 抛 ValueError。对齐 pi_engine 的 8MiB（engine-08 P2-2 同类修复）。
+CODEX_STDOUT_STREAM_LIMIT_BYTES = 8 * 1024 * 1024
 
 # 进程池上限 = 全局并发预算（B4）：一个 session 一个 exec 进程，
 # 与 opencode 请求槽 / S1 分片 / 目录章节共享同一总量。
@@ -177,6 +184,7 @@ class CodexEngine:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
+                    limit=CODEX_STDOUT_STREAM_LIMIT_BYTES,  # 工具完整 stdout 单行可能超 64KiB 默认值
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -231,13 +239,22 @@ class CodexEngine:
     # 命令与环境拼装（CLI_FLAGS / ENV_VARS 映射的消费点）
     # ------------------------------------------------------------------
     def _build_exec_argv(self, state: _CodexSessionState, prompt_text: str) -> list[str]:
-        argv = [self.cli_path, "exec", *self.BASE_FLAGS]
+        argv = [self.cli_path, "exec"]
+        if state.thread_id:
+            # 命令拼法校准（engine-09 PoC，codex 0.147.0 实测）：resume 是 exec 的
+            # 子命令（`codex exec resume <id> [prompt]`），旧快照的 `--resume <id>`
+            # 选项已移除（报 unexpected argument）。
+            argv += ["resume", state.thread_id]
+        argv.extend(self.BASE_FLAGS)
         for attr, render in self.CLI_FLAGS:
             value = str(getattr(self, attr) or "").strip()
-            if value:
-                argv.extend(render(value))
-        if state.thread_id:
-            argv.extend(["--resume", state.thread_id])
+            if not value:
+                continue
+            if state.thread_id and attr == "sandbox_mode":
+                # resume 子命令无 --sandbox 选项（0.147.0），用 -c 等价注入。
+                argv.extend(["-c", f'sandbox_mode="{value}"'])
+                continue
+            argv.extend(render(value))
         argv.append(prompt_text)
         return argv
 
@@ -436,7 +453,9 @@ class CodexEngine:
         # item 类型键：旧版 item_type，新版 type。
         item_type = str(item.get("item_type") or item.get("type") or "")
         item_id = str(item.get("id") or f"item-{len(state.messages)}")
-        if item_type == "assistant_message":
+        if item_type in ("assistant_message", "agent_message"):
+            # 事件 schema 校准（engine-09 PoC，codex 0.147.0 实测）：assistant 文本
+            # item 类型已改名 agent_message，两键都认。
             text = str(item.get("text") or "").strip()
             if not text:
                 return None

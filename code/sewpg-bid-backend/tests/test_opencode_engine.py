@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.agent_engine import errors as engine_errors
 from app.services.agent_engine import orchestrator
+from app.services.agent_engine.base import EngineRunResult
 from app.services.agent_engine.opencode_engine import OUTLINE_DECISION_SESSION_MAX_ATTEMPTS, OpencodeEngine
 from app.services.system_settings import system_settings_service
 
@@ -102,13 +103,13 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
         prompts: list[str] = []
 
-        def fake_send_prompt(_session_id: str, prompt: str) -> dict:
+        def fake_run_session(_session_id: str, prompt: str, **_kwargs: object) -> EngineRunResult:
             prompts.append(prompt)
-            return {"parts": [{"type": "text", "text": "{}"}]}
+            return EngineRunResult(session_id=_session_id, reply_text="{}")
 
         with (
-            patch.object(client, "create_session", return_value={"id": "repair"}),
-            patch.object(client, "send_prompt", side_effect=fake_send_prompt),
+            patch.object(client, "create_session", return_value="repair"),
+            patch.object(client, "run_session", side_effect=fake_run_session),
         ):
             await client._repair_json_payload("broken", "assembly")
             await client._repair_json_payload("broken", "business_format")
@@ -187,7 +188,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         ):
             session = await client.create_session("技术标素材预览")
 
-        self.assertEqual(session["id"], "ses-recovered")
+        self.assertEqual(session, "ses-recovered")
         self.assertEqual(http_client.post.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.5, 1.0])
 
@@ -205,7 +206,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         ):
             session = await client.create_session("技术标素材预览")
 
-        self.assertEqual(session["id"], "ses-after-503")
+        self.assertEqual(session, "ses-after-503")
         self.assertEqual(http_client.post.call_count, 2)
         sleep.assert_called_once_with(0.5)
 
@@ -266,7 +267,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             client,
             "create_session",
-            return_value={"id": "session-default-tools"},
+            return_value="session-default-tools",
         ), patch.object(
             client,
             "send_prompt",
@@ -435,7 +436,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-outline"}),
+            patch.object(client, "create_session", return_value="ses-outline"),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -463,7 +464,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
         validator = MagicMock(return_value={"complete": True, "decidedCount": 18})
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-chapter-1"}),
+            patch.object(client, "create_session", return_value="ses-chapter-1"),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -502,7 +503,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 client,
                 "create_session",
-                side_effect=[{"id": "ses-try-1"}, {"id": "ses-try-2"}],
+                side_effect=["ses-try-1", "ses-try-2"],
             ) as create_session,
             patch.object(
                 client,
@@ -532,7 +533,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
         validator = MagicMock(return_value={"complete": True, "decidedCount": 18})
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-late-error"}) as create_session,
+            patch.object(client, "create_session", return_value="ses-late-error") as create_session,
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -558,7 +559,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
         validator = MagicMock(return_value={"complete": False, "decidedCount": 0})
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-dead"}) as create_session,
+            patch.object(client, "create_session", return_value="ses-dead") as create_session,
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -595,9 +596,9 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
                 client,
                 "create_session",
                 side_effect=[
-                    {"id": "ses-checkpoint-1"},
-                    {"id": "ses-checkpoint-2"},
-                    {"id": "ses-final"},
+                    "ses-checkpoint-1",
+                    "ses-checkpoint-2",
+                    "ses-final",
                 ],
             ) as create_session,
             patch.object(
@@ -1014,7 +1015,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-wiki"}),
+            patch.object(client, "create_session", return_value="ses-wiki"),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -1036,7 +1037,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-gap"}),
+            patch.object(client, "create_session", return_value="ses-gap"),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -1071,7 +1072,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-s1"}),
+            patch.object(client, "create_session", return_value="ses-s1"),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -1150,7 +1151,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-template-agentic"}),
+            patch.object(client, "create_session", return_value="ses-template-agentic"),
             patch.object(
                 client,
                 "_send_prompt_with_session_polling",
@@ -1185,7 +1186,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
             raise ParseCancelledError("解析已取消。")
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-template-cancel"}),
+            patch.object(client, "create_session", return_value="ses-template-cancel"),
             patch.object(client, "send_prompt") as send_prompt,
             patch.object(client, "abort_session", return_value=True) as abort_session,
         ):
@@ -1574,7 +1575,7 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         client = OpencodeEngine()
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses_cancel_ready_probe"}),
+            patch.object(client, "create_session", return_value="ses_cancel_ready_probe"),
             patch.object(client, "send_prompt") as send_prompt,
             patch.object(client, "abort_session", return_value=True) as abort_session,
         ):
@@ -2725,7 +2726,7 @@ class OpencodeEngineSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_text_prompt_recycles_session_by_default(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-once"}),
+            patch.object(client, "create_session", return_value="ses-once"),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": "回复"}]}),
             patch.object(client, "delete_session_quietly") as delete,
         ):
@@ -2737,7 +2738,7 @@ class OpencodeEngineSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_text_prompt_recycles_session_on_error(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-fail"}),
+            patch.object(client, "create_session", return_value="ses-fail"),
             patch.object(client, "send_prompt", side_effect=RuntimeError("生成失败")),
             patch.object(client, "delete_session_quietly") as delete,
         ):
@@ -2749,7 +2750,7 @@ class OpencodeEngineSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_text_prompt_keep_session_skips_recycle(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-chat"}),
+            patch.object(client, "create_session", return_value="ses-chat"),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": "回复"}]}),
             patch.object(client, "delete_session_quietly") as delete,
         ):
@@ -2769,7 +2770,7 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_traced_session_recycles_on_success(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-trace-ok"}),
+            patch.object(client, "create_session", return_value="ses-trace-ok"),
             patch.object(client, "_send_prompt_with_session_polling", return_value={"parts": []}),
             patch.object(client, "delete_session") as delete,
         ):
@@ -2785,7 +2786,7 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_traced_session_recycles_on_failure(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-trace-err"}),
+            patch.object(client, "create_session", return_value="ses-trace-err"),
             patch.object(client, "_send_prompt_with_session_polling", side_effect=RuntimeError("轮询失败")),
             patch.object(client, "delete_session") as delete,
         ):
@@ -2801,7 +2802,7 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_traced_session_recycles_on_cancel(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-trace-cancel"}),
+            patch.object(client, "create_session", return_value="ses-trace-cancel"),
             patch.object(client, "abort_session", return_value=True),
             patch.object(client, "delete_session") as delete,
         ):
@@ -2819,7 +2820,7 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_recycle_failure_does_not_mask_business_result(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-recycle-err"}),
+            patch.object(client, "create_session", return_value="ses-recycle-err"),
             patch.object(client, "_send_prompt_with_session_polling", return_value={"parts": []}),
             patch.object(client, "delete_session", side_effect=RuntimeError("回收失败")),
         ):
@@ -2834,13 +2835,22 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_shard_session_recycles_on_success(self) -> None:
         client = OpencodeEngine()
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-shard"}),
-            patch.object(client, "_send_prompt_with_session_polling", return_value={"parts": []}),
+            patch.object(client, "create_session", return_value="ses-shard"),
+            patch.object(
+                client,
+                "run_session",
+                return_value=EngineRunResult(
+                    session_id="ses-shard",
+                    reply_text="",
+                    trace={"sessionId": "ses-shard", "status": "received"},
+                ),
+            ) as run_session,
             patch.object(client, "delete_session") as delete,
         ):
             result = await client._orchestrator.run_tender_parse_shard_with_trace("prompt")
 
         self.assertIn("opencodeOutput", result)
+        run_session.assert_awaited_once()
         delete.assert_awaited_once_with("ses-shard")
 
     async def test_decision_session_recycles_every_attempt(self) -> None:
@@ -2856,7 +2866,7 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
             return responses.pop(0)
 
         with (
-            patch.object(client, "create_session", side_effect=[{"id": "ses-try-1"}, {"id": "ses-try-2"}]),
+            patch.object(client, "create_session", side_effect=["ses-try-1", "ses-try-2"]),
             patch.object(client, "_send_prompt_with_session_polling", side_effect=fake_polling),
             patch.object(client, "delete_session") as delete,
             patch("app.services.agent_engine.orchestrator.asyncio.sleep"),
@@ -2885,7 +2895,7 @@ class OrchestratorSessionRecycleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 client,
                 "create_session",
-                side_effect=[{"id": "ses-handoff-1"}, {"id": "ses-handoff-2"}, {"id": "ses-final"}],
+                side_effect=["ses-handoff-1", "ses-handoff-2", "ses-final"],
             ),
             patch.object(client, "_send_prompt_with_session_polling", side_effect=fake_polling),
             patch.object(client, "delete_session") as delete,

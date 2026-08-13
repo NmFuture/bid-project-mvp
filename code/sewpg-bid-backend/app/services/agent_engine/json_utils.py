@@ -1,14 +1,21 @@
 """JSON 修复/解析公共能力（改造方案 §5，引擎无关，三引擎复用）。
 
 函数体自 `app/services/opencode_client.py`（现 `opencode_engine.py`）纯移动，未改逻辑。
-`_repair_json_payload` 需发起一次模型会话修复 JSON，与引擎耦合：第一个参数 `self`
-即引擎实例（`OpencodeEngine` 以类属性引用本函数，保持原访问形态）。
+`_repair_json_payload` 需发起一次模型会话修复 JSON：第一个参数 `self` 即引擎实例
+（`OpencodeEngine` 以类属性引用本函数，保持原访问形态）。engine-09 C3（engine-05
+P3-2 解耦）起修复会话只经 AgentEngine 协议方法（create_session / run_session /
+delete_session）驱动，回收优先旧名 `delete_session_quietly`、缺失时回退协议
+`delete_session`——三引擎（含未绑定门面旧名的 codex/pi）走 repair 路径不炸。
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_json_payload(content: str) -> dict[str, Any]:
@@ -165,19 +172,29 @@ async def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
 原始内容：
 {raw_content}
 """.strip()
-    session = await self.create_session("JSON repair")
-    session_id = str(session.get("id") or "")
+    session_id = str(await self.create_session("JSON repair") or "").strip()
     try:
-        response = await self.send_prompt(session_id, repair_prompt)
-        text_parts = [
-            str(part.get("text") or "")
-            for part in response.get("parts") or []
-            if part.get("type") == "text"
-        ]
-        content = "\n".join(part for part in text_parts if part).strip()
+        result = await self.run_session(session_id, repair_prompt)
+        content = str(getattr(result, "reply_text", "") or "").strip()
         if not content:
             raise RuntimeError("futurecode 返回的 JSON 无法解析。")
         return content
     finally:
         # B3：修复会话一次性使用，终态即回收（失败只告警）。
-        await self.delete_session_quietly(session_id)
+        await _delete_session_quietly(self, session_id)
+
+
+async def _delete_session_quietly(engine: Any, session_id: str) -> None:
+    """修复会话回收（engine-05 P3-2 解耦）：优先门面旧名 `delete_session_quietly`
+    （自带「失败只告警」），缺失时回退协议 `delete_session`；任何回收失败都只告警，
+    不掩盖业务结果。"""
+    if not session_id:
+        return
+    delete = getattr(engine, "delete_session_quietly", None)
+    if delete is not None:
+        await delete(session_id)
+        return
+    try:
+        await engine.delete_session(session_id)
+    except Exception as exc:  # noqa: BLE001 - 回收失败不掩盖业务结果
+        logger.warning("JSON repair 会话 %s 回收失败（不阻断主流程）：%s", session_id, exc)

@@ -17,6 +17,7 @@ from app.services.agent_engine import orchestrator as agent_orchestrator
 from app.services.agent_engine import trace as trace_utils
 from app.services.agent_engine.base import (
     EarlyCompletionPlan,
+    EngineRunResult,
     ToolCompletedEvent,
     iter_completed_bash_tool_events,
 )
@@ -120,7 +121,12 @@ class OpencodeEngine:
         )
         self._orchestrator = agent_orchestrator.AgentOrchestrator(self)
 
-    async def create_session(self, title: str) -> dict[str, Any]:
+    async def create_session(self, title: str) -> str:
+        """创建会话，返回会话 id（AgentEngine 协议形态，engine-09 C3 对齐）。
+
+        A0~B4 返回服务端原始 dict；C3 起按协议（base.AgentEngine）只返回 id，
+        与 CodexEngine/PiEngine 形态一致，编排层不再依赖 opencode 私有响应结构。
+        """
         for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
             try:
                 async with self._request_slot():
@@ -130,7 +136,11 @@ class OpencodeEngine:
                             json={"title": title},
                         )
                         response.raise_for_status()
-                        return response.json()
+                        payload = response.json()
+                        session_id = str(payload.get("id") or "").strip() if isinstance(payload, dict) else ""
+                        if not session_id:
+                            raise RuntimeError("futurecode 创建 session 返回缺少 id。")
+                        return session_id
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 if await self._retry_session_create(exc, attempt):
                     continue
@@ -282,8 +292,7 @@ class OpencodeEngine:
         """建会话发单条 prompt。`keep_session=False`（默认）终态即删服务端会话（B3）；
         `keep_session=True` 只用于跨轮复用会话的调用方（technical_chat_service 共创对话）。
         """
-        session = await self.create_session(title)
-        session_id = str(session.get("id") or "")
+        session_id = await self.create_session(title)
         try:
             response = (
                 await self.send_prompt(session_id, prompt_text)
@@ -303,6 +312,80 @@ class OpencodeEngine:
         finally:
             if not keep_session:
                 await self.delete_session_quietly(session_id)
+
+    # ------------------------------------------------------------------
+    # AgentEngine 协议入口（engine-09 C3 对齐，engine-03 F5 收尾）
+    # ------------------------------------------------------------------
+    async def run_session(
+        self,
+        session_id: str,
+        prompt_text: str,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        tools: dict[str, bool] | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        on_tool_completed: Callable[[ToolCompletedEvent], bool] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> EngineRunResult:
+        """协议级「跑一次会话」：内部复用 `_send_prompt_with_session_polling`。
+
+        语义映射：
+        - `on_tool_completed` → 最小 EarlyCompletionPlan（in-loop 收割 + 停会话），
+          回调可改写 `event.stdout` 作为收割产物（与 codex/pi 引擎同一口径）；
+          编排层带完整轮询相位（wait_after_prompt_return 等）的链路仍走
+          `_send_prompt_with_session_polling(early_completion=...)`，不经本方法。
+        - provider/model 为实例级固定（构造时从系统设置/环境解析），按请求传入
+          且与实例不一致时记 warning 忽略；轮询链路不接按请求 tools（同记 warning）。
+        - 会话级错误（info.error）显式抛 RuntimeError（协议引擎同为失败即抛）。
+        """
+        if provider_id and provider_id != self.provider_id:
+            logger.warning(
+                "opencode 引擎 provider 为实例级固定（%s），run_session(provider_id=%s) 已忽略。",
+                self.provider_id,
+                provider_id,
+            )
+        if model_id and model_id != self.model_id:
+            logger.warning(
+                "opencode 引擎 model 为实例级固定（%s），run_session(model_id=%s) 已忽略。",
+                self.model_id,
+                model_id,
+            )
+        if tools:
+            logger.warning("opencode 轮询链路不支持按请求 tools 开关，run_session(tools=...) 已忽略。")
+        plan = None
+        if on_tool_completed is not None:
+            plan = EarlyCompletionPlan(
+                display_label="tool",
+                tool_completed_factory=lambda: on_tool_completed,
+                stop_on_early_complete=True,
+                stop_label="受控命令提前收割",
+                completion_source="tool",
+                completion_trace_text="受控命令已完成，后端提前收割其 stdout 作为会话结果。",
+            )
+        response = await self._send_prompt_with_session_polling(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            early_completion=plan,
+            cancel_check=cancel_check,
+        )
+        info = response.get("info") if isinstance(response.get("info"), dict) else {}
+        if info.get("error"):
+            raise RuntimeError(self._format_response_error(info["error"]))
+        tool_outputs = list(
+            iter_completed_bash_tool_events(await self._best_effort_messages(session_id))
+        )
+        return EngineRunResult(
+            session_id=session_id,
+            reply_text=self.extract_text_response(response),
+            tool_outputs=tool_outputs,
+            trace=self._build_output_trace(session_id, response),
+        )
+
+    async def list_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """AgentEngine 协议方法（`list_session_messages` 的协议名，旧名保留）。"""
+        return await self.list_session_messages(session_id)
 
     # ------------------------------------------------------------------
     # 业务编排门面（A1）：实现见 agent_engine/orchestrator.py 的 AgentOrchestrator，

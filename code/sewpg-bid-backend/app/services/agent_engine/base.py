@@ -77,6 +77,32 @@ class EarlyCompletionPlan:
         return event.stdout
 
 
+def tool_completed_callback_from_plan(
+    plan: EarlyCompletionPlan | None,
+) -> Callable[[ToolCompletedEvent], bool] | None:
+    """EarlyCompletionPlan → 协议级 on_tool_completed 回调（engine-07 遗留适配，engine-09 C3 接线）。
+
+    协议引擎（codex/pi）只有「事件流内收割」一个相位，工厂只取一次回调；
+    计划的轮询相位字段（wait_after_prompt_return / grace_wait_running_tool /
+    on_idle_stalled / on_assistant_stopped）是 opencode HTTP 轮询的实现细节，
+    协议引擎在事件流内即时收割、无从映射，由调用方知晓（带这些相位的链路
+    目前只由 OpencodeEngine 驱动）。这里保留收割判定与产物语义：业务回调判
+    True 后以 `plan.harvest_payload` 回填产物（含 produce_payload 终态校验
+    产物），引擎以事件当前 stdout 收割。
+    """
+    if plan is None or plan.tool_completed_factory is None:
+        return None
+    callback = plan.tool_completed_factory()
+
+    def on_tool_completed(event: ToolCompletedEvent) -> bool:
+        if not callback(event):
+            return False
+        event.stdout = plan.harvest_payload(event)
+        return True
+
+    return on_tool_completed
+
+
 def iter_completed_bash_tool_events(
     messages: list[dict[str, Any]],
 ) -> Iterable[ToolCompletedEvent]:

@@ -88,7 +88,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-s1-early"}),
+            patch.object(client, "create_session", return_value="ses-s1-early"),
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
         ):
@@ -131,7 +131,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
                 return finalized
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-s1-wait"}),
+            patch.object(client, "create_session", return_value="ses-s1-wait"),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", side_effect=list_messages),
             patch("app.services.agent_engine.opencode_engine.asyncio.sleep", return_value=None),
@@ -160,7 +160,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-s1-stall"}),
+            patch.object(client, "create_session", return_value="ses-s1-stall"),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", return_value=running_messages),
             patch.object(client, "_session_polling_idle_timeout", return_value=0.2),
@@ -196,7 +196,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-btplnav-early"}),
+            patch.object(client, "create_session", return_value="ses-btplnav-early"),
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
         ):
@@ -219,7 +219,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-btplnav-stall"}),
+            patch.object(client, "create_session", return_value="ses-btplnav-stall"),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", return_value=running_messages),
             patch.object(client, "_session_polling_idle_timeout", return_value=0.2),
@@ -260,7 +260,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with (
-                patch.object(client, "create_session", return_value={"id": "ses-s2-early"}),
+                patch.object(client, "create_session", return_value="ses-s2-early"),
                 patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
                 patch.object(client, "list_session_messages", return_value=messages),
                 patch.object(client, "abort_session", side_effect=abort_session) as abort_mock,
@@ -305,7 +305,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with (
-                patch.object(client, "create_session", return_value={"id": "ses-s2-validator"}),
+                patch.object(client, "create_session", return_value="ses-s2-validator"),
                 patch.object(client, "send_prompt", side_effect=blocked_send_prompt),
                 patch.object(client, "list_session_messages", return_value=messages),
                 patch.object(client, "abort_session", side_effect=abort_session) as abort_mock,
@@ -337,7 +337,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-s2-stall"}),
+            patch.object(client, "create_session", return_value="ses-s2-stall"),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", return_value=running_messages),
             patch.object(client, "_session_polling_idle_timeout", return_value=0.2),
@@ -375,7 +375,7 @@ class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(client, "create_session", return_value={"id": "ses-factcurate"}),
+            patch.object(client, "create_session", return_value="ses-factcurate"),
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
         ):

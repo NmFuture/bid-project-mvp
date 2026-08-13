@@ -11,7 +11,9 @@
 `PI_RPC_PROTOCOL` 指向 pi-mono 仓库 `packages/coding-agent/docs/rpc.md` 的
 2026-08-13 快照。要点：
 
-- 启动：`pi --mode rpc [--provider P] [--model M] [--no-session] [-n title]`。
+- 启动：`pi --mode rpc [--no-extensions] [--provider P] [--model M] [--no-session]`
+  （engine-09 PoC 按 pi 0.73.1 实测校准：快照里的 `-n title` 是非法选项，已移除；
+  headless 默认 `--no-extensions`，坏扩展会在 RPC 启动时杀掉进程）。
 - 传输：stdin/stdout 严格 JSONL（LF 分隔，容忍行尾 ``\\r``）；命令可带 `id`，
   响应 `{"type":"response","command":...,"success":bool,"data":...,"error":...}`
   回带同一 `id`。
@@ -79,6 +81,7 @@ PI_COMMAND_ENV_VAR = "PI_COMMAND"
 PI_PROVIDER_ENV_VAR = "PI_PROVIDER_ID"
 PI_MODEL_ENV_VAR = "PI_MODEL_ID"
 PI_IDLE_TIMEOUT_ENV_VAR = "PI_IDLE_TIMEOUT_SEC"
+PI_NO_EXTENSIONS_ENV_VAR = "PI_NO_EXTENSIONS"
 
 
 @dataclass
@@ -138,10 +141,14 @@ class PiEngine:
         heartbeat_interval_sec: float = PI_PROGRESS_HEARTBEAT_SECONDS,
         rpc_timeout_sec: float = PI_RPC_COMMAND_TIMEOUT_SECONDS,
         request_slots: Any | None = None,
+        disable_extensions: bool | None = None,
     ) -> None:
         self.pi_command = (
             pi_command or os.getenv(PI_COMMAND_ENV_VAR, "").strip() or "pi"
         )
+        if disable_extensions is None:
+            disable_extensions = os.getenv(PI_NO_EXTENSIONS_ENV_VAR, "1").strip() not in {"0", "false", "no"}
+        self.disable_extensions = disable_extensions
         self.provider_id = (
             provider_id if provider_id is not None else os.getenv(PI_PROVIDER_ENV_VAR, "").strip()
         )
@@ -161,11 +168,18 @@ class PiEngine:
     # AgentEngine 协议
     # ------------------------------------------------------------------
     async def create_session(self, title: str) -> str:
-        argv = [self.pi_command, "--mode", "rpc", "--no-session", "-n", str(title or "")]
+        # 命令拼法校准（engine-09 PoC，pi 0.73.1 实测）：rpc.md 快照里的 `-n title`
+        # 在真实 CLI 是非法选项（进程直接退出、握手失败）；`--no-session` 不落盘，
+        # title 本无持久化意义，仅留引擎日志。用户环境坏扩展会在 RPC 启动时炸掉
+        # 进程，headless 场景默认 `--no-extensions`（PI_NO_EXTENSIONS=0 可关）。
+        argv = [self.pi_command, "--mode", "rpc", "--no-session"]
+        if self.disable_extensions:
+            argv.append("--no-extensions")
         if self.provider_id:
             argv += ["--provider", self.provider_id]
         if self.model_id:
             argv += ["--model", self.model_id]
+        logger.info("pi rpc session 启动（title=%s）：%s", str(title or ""), argv)
         # 进程池上限 = 全局并发预算（B4）：许可从 spawn 前持到 _terminate_session
         # 回收；非阻塞轮询，取消落在等待窗口时不持有许可（同 OpencodeEngine._request_slot）。
         while not self._request_slots.acquire(blocking=False):

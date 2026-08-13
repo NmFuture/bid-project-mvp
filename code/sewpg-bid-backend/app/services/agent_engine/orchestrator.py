@@ -28,8 +28,10 @@ from typing import Any, Awaitable, Callable
 from app.services.agent_engine import json_utils
 from app.services.agent_engine.base import (
     EarlyCompletionPlan,
+    EngineRunResult,
     ToolCompletedEvent,
     iter_completed_bash_tool_events,
+    tool_completed_callback_from_plan,
 )
 from app.services.bid_parse_cancel import ParseCancelledError
 
@@ -528,8 +530,7 @@ class AgentOrchestrator:
         """
         engine = self.engine
         for attempt in range(1, OUTLINE_DECISION_SESSION_MAX_ATTEMPTS + 1):
-            session = await engine.create_session(session_title)
-            session_id = str(session.get("id") or "")
+            session_id = await engine.create_session(session_title)
             try:
                 if session_ready_callback:
                     session_ready_callback(
@@ -628,8 +629,7 @@ class AgentOrchestrator:
             if handoff_prompt_factory is None or handoff_state_callback is None:
                 raise ValueError("handoff prompt factory and state callback must be provided together")
             for handoff_index in range(1, 257):
-                session = await engine.create_session(f"S2 目录决策·接力 {handoff_index}")
-                handoff_session_id = str(session.get("id") or "")
+                handoff_session_id = await engine.create_session(f"S2 目录决策·接力 {handoff_index}")
                 handoff_session_ids.append(handoff_session_id)
                 try:
                     if session_ready_callback:
@@ -674,8 +674,7 @@ class AgentOrchestrator:
             else:
                 raise RuntimeError("S2 目录决策接力超过 256 个会话，已停止以避免无限循环。")
 
-        session = await engine.create_session("S2 目录生成")
-        session_id = str(session.get("id") or "")
+        session_id = await engine.create_session("S2 目录生成")
         try:
             if session_ready_callback:
                 session_ready_callback(
@@ -730,8 +729,7 @@ class AgentOrchestrator:
     ) -> dict[str, Any]:
         """「建会话 → 轮询 → 结果校验 → 留痕」的公共编排骨架。"""
         engine = self.engine
-        session = await engine.create_session(session_title)
-        session_id = str(session.get("id") or "")
+        session_id = await engine.create_session(session_title)
         try:
             if abort_on_cancel:
                 try:
@@ -969,18 +967,21 @@ class AgentOrchestrator:
 
         分片会话的产出是 s1parse submit 写进提交文件的副作用，不是返回值——
         finalize 由后端在所有分片汇合后统一执行，所以这里不解析业务 JSON，只回传 trace。
+
+        engine-09 C3：本链路只通过 AgentEngine 协议方法（create_session /
+        run_session / abort_session / delete_session）与引擎交互，
+        opencode / codex / pi 均可驱动（经 AgentEngineFactory 切换）。
         """
         engine = self.engine
-        session = await engine.create_session(title)
-        session_id = str(session.get("id") or "")
+        session_id = await engine.create_session(title)
         try:
             try:
                 if session_ready_callback:
                     session_ready_callback(
                         {
                             "sessionId": session_id,
-                            "providerId": engine.provider_id,
-                            "modelId": engine.model_id,
+                            "providerId": self._engine_provider_id(),
+                            "modelId": self._engine_model_id(),
                         }
                     )
                 if cancel_check is not None and cancel_check():
@@ -988,26 +989,60 @@ class AgentOrchestrator:
             except ParseCancelledError:
                 await engine.abort_session(session_id)
                 raise
-            # 传入 stream_callback 以启用轮询与 idle 监管；不挂提前完成计划，
+            # 传入 stream_callback 以启用监管（idle 超时/心跳）；不挂提前完成计划，
             # 分片会话没有 finalize 这种唯一终止命令，走通用完成判定即可。
-            response = await engine._send_prompt_with_session_polling(
+            result = await self._run_protocol_session(
                 session_id,
                 prompt_text,
                 stream_callback=stream_callback or (lambda _details: None),
                 cancel_check=cancel_check,
             )
-            return {"opencodeOutput": engine._build_output_trace(session_id, response)}
+            return {"opencodeOutput": result.trace}
         finally:
             # B3：分片会话终态（成功/失败/取消）即回收。
             await self._recycle_session(session_id)
+
+    async def _run_protocol_session(
+        self,
+        session_id: str,
+        prompt_text: str,
+        *,
+        early_tool_command: str = "",
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> EngineRunResult:
+        """协议级会话入口（engine-09 C3）：编排层只经 `engine.run_session` 驱动。
+
+        EarlyCompletionPlan → 协议级 on_tool_completed 适配（engine-07 遗留）：
+        计划经 `tool_completed_callback_from_plan` 折成回调，收割判定与产物语义
+        保留；opencode 轮询专有相位（wait_after_prompt_return / grace / stall
+        文案）是 HTTP 轮询实现细节，协议引擎在事件流内即时收割，无从映射——
+        带这些相位的链路（三条 finalize）目前只由 OpencodeEngine 驱动。
+        """
+        plan = self._build_early_completion_plan(early_tool_command)
+        return await self.engine.run_session(
+            session_id,
+            prompt_text,
+            stream_callback=stream_callback,
+            on_tool_completed=tool_completed_callback_from_plan(plan),
+            cancel_check=cancel_check,
+        )
+
+    def _engine_provider_id(self) -> str:
+        """session_ready 留痕用 provider：协议引擎无 provider_id 属性时回退引擎名。"""
+        return str(
+            getattr(self.engine, "provider_id", "") or getattr(self.engine, "engine_name", "") or ""
+        )
+
+    def _engine_model_id(self) -> str:
+        return str(getattr(self.engine, "model_id", "") or "")
 
     async def review_business_commitments_with_trace(
         self,
         prompt_text: str,
     ) -> dict[str, Any]:
         engine = self.engine
-        session = await engine.create_session("商务标承诺语义复核")
-        session_id = str(session.get("id") or "")
+        session_id = await engine.create_session("商务标承诺语义复核")
         try:
             response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
             parsed = await self._extract_commitment_review_json(response)
@@ -1024,8 +1059,7 @@ class AgentOrchestrator:
         prompt_text: str,
     ) -> dict[str, Any]:
         engine = self.engine
-        session = await engine.create_session("商务标附件模板语义校验")
-        session_id = str(session.get("id") or "")
+        session_id = await engine.create_session("商务标附件模板语义校验")
         try:
             response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
             parsed = await self._extract_business_template_review_json(response)
@@ -1248,7 +1282,7 @@ class AgentOrchestrator:
         if not content:
             raise RuntimeError(empty_message)
         try:
-            return engine._parse_json_payload(content)
+            return json_utils._parse_json_payload(content)
         except RuntimeError as exc:
             if response.get("_earlyCompletion"):
                 snippet = engine._shorten_text(content, limit=420)
@@ -1259,8 +1293,13 @@ class AgentOrchestrator:
                 snippet = engine._shorten_text(content, limit=420)
                 raise RuntimeError(f"futurecode 工具执行失败：{snippet}。") from exc
             try:
-                repaired = await engine._repair_json_payload(content, repair_kind)
-                return engine._parse_json_payload(repaired)
+                # engine-05 P3-2 解耦：协议引擎（codex/pi）未绑定门面旧名
+                # `_repair_json_payload` 时直接走 json_utils 的协议实现。
+                repair_fn = getattr(engine, "_repair_json_payload", None)
+                if repair_fn is None:
+                    repair_fn = lambda raw, kind: json_utils._repair_json_payload(engine, raw, kind)  # noqa: E731
+                repaired = await repair_fn(content, repair_kind)
+                return json_utils._parse_json_payload(repaired)
             except RuntimeError as repair_error:
                 snippet = engine._shorten_text(content, limit=420)
                 raise RuntimeError(
