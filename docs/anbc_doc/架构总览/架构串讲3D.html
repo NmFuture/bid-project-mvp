@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>投标平台 · 技术标架构 3D 串讲</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#1a2333; --muted:#5c6b82; --line:#e3e8ef;
+  --accent:#2563eb; --shadow:0 1px 3px rgba(15,23,42,.06);
+  --biz:#2563eb; --tech:#0e9f6e; --material:#d97706; --shared:#7c3aed;
+  --engine:#db2777; --fe:#0891b2; --sys:#475569;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0e1420; --panel:#161e2d; --ink:#e6ecf5; --muted:#93a3ba; --line:#26324a;
+    --accent:#5b93ff; --biz:#5b93ff; --tech:#2fbf8f; --shared:#a78bfa; --shadow:none; }
+}
+:root[data-theme="dark"]{ --bg:#0e1420; --panel:#161e2d; --ink:#e6ecf5; --muted:#93a3ba; --line:#26324a;
+  --accent:#5b93ff; --biz:#5b93ff; --tech:#2fbf8f; --shared:#a78bfa; --shadow:none; }
+:root[data-theme="light"]{ --bg:#f6f7f9; --panel:#ffffff; --ink:#1a2333; --muted:#5c6b82; --line:#e3e8ef;
+  --accent:#2563eb; --biz:#2563eb; --tech:#0e9f6e; --shared:#7c3aed; --shadow:0 1px 3px rgba(15,23,42,.06); }
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+#stage{position:fixed;inset:0;}
+#stage canvas{display:block;width:100%;height:100%;}
+
+/* ===== header ===== */
+#hud{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:10px 18px;background:color-mix(in srgb,var(--panel) 78%,transparent);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line);}
+#hud .title{font-size:16px;font-weight:700;white-space:nowrap;}
+#hud .title .sub{font-size:11.5px;font-weight:400;color:var(--muted);margin-left:8px;}
+#hud .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;}
+#hud button{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:9px;
+  padding:5px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;box-shadow:var(--shadow);}
+#hud button:hover{border-color:var(--accent);color:var(--accent);}
+#hud button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+#progress{display:flex;align-items:center;gap:8px;padding:0 4px;}
+#dots{display:flex;gap:5px;flex-wrap:wrap;max-width:180px;}
+#dots i{width:9px;height:9px;border-radius:50%;background:var(--line);cursor:pointer;transition:transform .15s,background .15s;}
+#dots i:hover{transform:scale(1.35);}
+#dots i.on{background:var(--accent);transform:scale(1.3);}
+#pnum{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+/* ===== caption ===== */
+#caption{position:fixed;left:18px;bottom:18px;z-index:20;max-width:460px;
+  background:color-mix(in srgb,var(--panel) 72%,transparent);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:14px;padding:14px 18px;box-shadow:0 8px 30px rgba(15,23,42,.12);
+  pointer-events:none;}
+#capNum{font-size:11px;color:var(--accent);font-weight:700;letter-spacing:1px;margin-bottom:2px;}
+#capTitle{margin:0 0 6px;font-size:16px;}
+#capBody{margin:0;font-size:13px;color:var(--ink);}
+
+/* ===== legend ===== */
+#legend{position:fixed;right:18px;bottom:18px;z-index:20;display:flex;flex-direction:column;gap:4px;
+  background:color-mix(in srgb,var(--panel) 72%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:11.5px;color:var(--muted);pointer-events:none;}
+#legend b{color:var(--ink);font-size:12px;}
+#legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px;vertical-align:-1px;}
+
+/* ===== help panel ===== */
+#helpPanel{position:fixed;top:60px;right:18px;z-index:30;width:330px;
+  background:color-mix(in srgb,var(--panel) 88%,transparent);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:14px;padding:14px 18px;
+  box-shadow:0 12px 36px rgba(15,23,42,.16);font-size:12.5px;}
+#helpPanel[hidden]{display:none;}
+#helpPanel h3{margin:0 0 8px;font-size:13.5px;}
+#helpPanel table{border-collapse:collapse;width:100%;}
+#helpPanel td{padding:2.5px 0;color:var(--muted);vertical-align:top;line-height:1.55;}
+#helpPanel td.k{white-space:nowrap;padding-right:10px;color:var(--ink);font-weight:600;}
+#helpPanel kbd{display:inline-block;background:var(--line);border-radius:4px;padding:0 5px;
+  font-family:inherit;font-size:11px;line-height:1.7;margin:0 1px;}
+#helpPanel .tip{margin:10px 0 0;padding-top:8px;border-top:1px dashed var(--line);color:var(--muted);font-size:11.5px;}
+@media (max-width:760px){ #helpPanel{right:10px;left:10px;width:auto;top:52px;} }
+
+/* ===== fallback ===== */
+#fallback{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:var(--bg);}
+#fallback[hidden]{display:none;}
+#fallback .card{max-width:520px;margin:20px;padding:28px 32px;border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:var(--shadow);}
+#fallback h2{margin:0 0 10px;font-size:18px;}
+#fallback p{margin:6px 0;color:var(--muted);font-size:13.5px;}
+#fallback code{background:var(--line);border-radius:5px;padding:1px 6px;font-size:12px;}
+
+@media (max-width:760px){
+  #hud{padding:8px 10px;gap:8px;}
+  #hud .title{font-size:13.5px;} #hud .title .sub{display:none;}
+  #hud button{padding:4px 9px;font-size:11.5px;}
+  #caption{left:10px;right:10px;bottom:10px;max-width:none;padding:10px 14px;}
+  #capTitle{font-size:14px;} #capBody{font-size:12px;}
+  #legend{display:none;}
+}
+
+/* ===== 隐藏界面模式（H 键 / 🙈 按钮）：只留纯净画布 ===== */
+#hud,#caption,#legend,#helpPanel{transition:opacity .25s;}
+body.ui-hidden #hud,body.ui-hidden #caption,body.ui-hidden #legend,body.ui-hidden #helpPanel{
+  opacity:0;pointer-events:none;}
+</style>
+</head>
+<body>
+<header id="hud">
+  <div class="title">投标平台 · 技术标架构 3D 串讲<span class="sub">平铺交互地图：按钮 → API → 服务 → Skill，连线即调用</span></div>
+  <div class="controls">
+    <button id="btnPrev" title="上一站（←）">⏮ 上一站</button>
+    <button id="btnPlay" title="播放 / 暂停（空格）">⏸ 暂停</button>
+    <button id="btnNext" title="下一站（→）">下一站 ⏭</button>
+    <span id="progress"><span id="dots"></span><span id="pnum">1/14</span></span>
+    <button id="btnRotate" title="地图缓慢自转开关（默认关，避免运镜眩晕）">⟳ 自转</button>
+    <button id="btnFree" title="自由视角：拖拽旋转 / 滚轮缩放 / 右键平移 / WASD+QE 移动；切站时自动回到全局俯视">🖱 自由视角</button>
+    <button id="btnHelp" title="查看自由视角与快捷键说明">?</button>
+    <button id="btnUI" title="隐藏 / 显示全部界面文字（H），截图或投影时用">🙈 隐藏界面</button>
+    <button id="btnFull" title="进入 / 退出全屏（F）">⛶ 全屏</button>
+    <button id="btnTheme" title="暗 / 亮色切换">🌙 暗色</button>
+  </div>
+</header>
+<div id="stage"></div>
+<aside id="caption">
+  <div id="capNum"></div>
+  <h2 id="capTitle"></h2>
+  <p id="capBody"></p>
+</aside>
+<aside id="legend"><b>图例 · 执行主体</b>
+  <span><i style="background:#db2777"></i>AI（opencode agent + Skill）</span>
+  <span><i style="background:#2563eb"></i>脚本（确定性服务 / 受控命令）</span>
+  <span><i style="background:#d97706"></i>人工（页面操作 / 确认确权）</span>
+  <span><i style="background:#64748b"></i>数据落点（存储 / 队列）</span>
+</aside>
+<aside id="helpPanel" hidden>
+  <h3>操作说明 · 自由视角与快捷键</h3>
+  <table>
+    <tr><td class="k">左键拖拽</td><td>环绕旋转（自由视角）</td></tr>
+    <tr><td class="k">右键拖拽</td><td>平移视角（自由视角）</td></tr>
+    <tr><td class="k">滚轮</td><td>缩放（自由视角）</td></tr>
+    <tr><td class="k"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td><td>前后左右平移（自由视角）</td></tr>
+    <tr><td class="k"><kbd>Q</kbd>/<kbd>E</kbd> 或 <kbd>R</kbd>/<kbd>F</kbd></td><td>下降 / 上升（自由视角）</td></tr>
+    <tr><td class="k"><kbd>Shift</kbd></td><td>按住加速移动</td></tr>
+    <tr><td class="k">方向键</td><td>自由视角下＝前后左右平移；导览模式下 ←/→ ＝ 上一站 / 下一站</td></tr>
+    <tr><td class="k">触屏</td><td>单指旋转 · 双指缩放</td></tr>
+    <tr><td class="k"><kbd>空格</kbd></td><td>播放 / 暂停</td></tr>
+    <tr><td class="k"><kbd>H</kbd></td><td>隐藏 / 显示全部界面文字（截图、投影用）</td></tr>
+    <tr><td class="k"><kbd>F</kbd></td><td>全屏切换（自由视角下 F 仍是下降）</td></tr>
+    <tr><td class="k">⟳ 自转</td><td>地图缓慢自转开关（导览模式）</td></tr>
+  </table>
+  <p class="tip">开启「自由视角」后相机由你接管；点击站点圆点、上/下一站或播放，会自动回到固定的全局俯视图——导览模式切站只点亮相关节点与连线，镜头不动。</p>
+</aside>
+<div id="fallback" hidden>
+  <div class="card">
+    <h2>无法启动 3D 视图</h2>
+    <p>当前浏览器或环境不支持 WebGL，3D 串讲页无法渲染。</p>
+    <p>请换用支持 WebGL 的现代浏览器（Chrome / Edge / Safari / Firefox 最新版），并确认未禁用硬件加速。</p>
+    <p>串讲文字内容可直接阅读同目录的 <code>04-技术标操作串讲.md</code> 与 <code>05-Harness基建.md</code>。</p>
+  </div>
+</div>
+<script src="lib/three.min.js"></script>
+<script>
+/* ============================================================
+ * 数据区：节点 / 边 / 站点 / 文案 —— 与渲染逻辑分离，维护只改这里
+ * 事实来源：04-技术标操作串讲.md、05-Harness基建.md、_data/*.json
+ * ========================================================== */
+'use strict';
+
+/* 执行主体配色：AI=opencode agent+Skill ｜ 脚本=确定性服务/受控命令 ｜ 人工=页面操作/确认 ｜ 数据落点=存储与队列。
+   层级（L1~L5）不再用颜色区分，底板统一中性色。 */
+const EXEC_COLORS = { ai: 0xdb2777, script: 0x2563eb, human: 0xd97706, store: 0x64748b };
+const PLATE_COLOR = 0x64748b;
+
+/* 五层平铺为横向条带（左→右 L1→数据落点），h 为积木高度；wide 节点跨两格；ex 为执行主体。 */
+const LAYERS = [
+  { id: 'base', name: '数据落点', sub: 'Postgres / MinIO / 共享卷 / Redis', h: 1.0, nodes: [
+    { id: 'postgres', label: 'Postgres', sub: '项目 / 素材', ex: 'store' },
+    { id: 'minio',    label: 'MinIO',    sub: '文件对象', ex: 'store' },
+    { id: 'sharevol', label: '共享卷',   sub: 'agent 产物', ex: 'store' },
+    { id: 'redis',    label: 'Redis',    sub: '任务队列 + 锁', ex: 'store' },
+  ]},
+  { id: 'L5', name: 'L5 智能层', sub: 'opencode agent + bid-tech-* Skill（LLM）', h: 1.15, nodes: [
+    { id: 'opencode', label: 'opencode_client', sub: '后端唯一 LLM 出口', wide: true, ex: 'ai' },
+    { id: 'skill_parser', label: 'bid-tech-tender-structured-parser', sub: 'S1 招标解析', ex: 'ai' },
+    { id: 'skill_outline', label: 'bid-tech-outline-generator', sub: 'S2 目录生成', ex: 'ai' },
+    { id: 'skill_gap', label: 'bid-tech-gap-planner', sub: 'S3 缺口计划', ex: 'ai' },
+    { id: 'skill_table', label: 'bid-tech-table-filler', sub: '附表原样填写', ex: 'ai' },
+    { id: 'skill_word', label: 'bid-tech-word-placeholder-filler', sub: '占位符填写', ex: 'ai' },
+    { id: 'skill_fact', label: 'bid-tech-fact-curator', sub: '事实表复核（只产建议）', ex: 'ai' },
+    { id: 'skill_asm', label: 'bid-tech-assembler', sub: 'S4 正文装配', ex: 'ai' },
+    { id: 'skill_fmt', label: 'bid-tech-format-cleaner', sub: '成稿格式清洗', ex: 'ai' },
+    { id: 'skill_wiki', label: 'bid-tech-wiki-material-builder', sub: '素材 Wiki 构建', ex: 'ai' },
+    { id: 'skill_tag', label: 'bid-tech-tag-importer', sub: '标签导入模糊兜底', ex: 'ai' },
+  ]},
+  { id: 'L4', name: 'L4 服务层', sub: 'app/services/technical_*（确定性逻辑）', h: 1.15, nodes: [
+    { id: 'parsing', label: 'parsing', sub: 'S1 解析核心 · 分片并行', ex: 'script' },
+    { id: 'outline_generation', label: 'outline_generation', sub: '目录引擎 · 6章+1附表并行', ex: 'script' },
+    { id: 'gap_service', label: 'technical_gap_service', sub: '缺口域总门面', ex: 'script' },
+    { id: 'gap_planner', label: 'technical_gap_planner', sub: '计划构建 + 终审', ex: 'script' },
+    { id: 'gap_ai_fill', label: 'technical_gap_ai_fill', sub: 'AI 填写执行器', ex: 'script' },
+    { id: 'gap_fact', label: 'technical_gap_fact_table', sub: '项目事实表构建', ex: 'script' },
+    { id: 'tech_assembly', label: 'tech_assembly', sub: 'S4 正文装配', ex: 'script' },
+    { id: 'doc_service', label: 'technical_document_service', sub: '共创文档 + 格式预设', ex: 'script' },
+    { id: 'material_store', label: 'technical_material_store', sub: '素材库门面', ex: 'script' },
+    { id: 'material_index', label: 'technical_material_index', sub: '三级目录索引（tag 真值）', ex: 'script' },
+    { id: 'wiki_gen', label: 'technical_wiki_generation', sub: 'Wiki 生成（纯确定性）', ex: 'script' },
+    { id: 'ocr_service', label: 'ocr_service', sub: 'OCR 引擎', ex: 'script' },
+    { id: 'cert_time', label: 'material_certificate_time', sub: '证书台账 / 有效期', ex: 'script' },
+  ]},
+  { id: 'L3', name: 'L3 路由层', sub: 'app/api/routes/technical.py（技术标端点总入口）', h: 1.0, nodes: [
+    { id: 'routes', label: 'routes/technical.py', sub: '技术标端点总入口', wide: true, ex: 'script' },
+  ]},
+  { id: 'L2', name: 'L2 API 封装', sub: 'src/api/index.js（technical*API）', h: 1.0, nodes: [
+    { id: 'api_js', label: 'src/api/index.js', sub: 'technical*API 封装', wide: true, ex: 'script' },
+  ]},
+  { id: 'L1', name: 'L1 页面层', sub: 'workspaces/technical/pages/*.jsx（按钮文案）', h: 1.15, nodes: [
+    { id: 'page_parse', label: '解析页', sub: '/parse/technical', ex: 'human' },
+    { id: 'page_dir', label: '目录生成', sub: '/template-directory', ex: 'human' },
+    { id: 'page_outline', label: '目录审核', sub: '/outline', ex: 'human' },
+    { id: 'page_gaps', label: '缺口页', sub: '/gaps', ex: 'human' },
+    { id: 'page_editor', label: '共创编辑', sub: '/editor · OnlyOffice', ex: 'human' },
+    { id: 'page_materials', label: '素材库', sub: '/materials/raw', ex: 'human' },
+    { id: 'page_wiki', label: 'Wiki', sub: '/materials/wiki', ex: 'human' },
+    { id: 'page_certs', label: '证书台账', sub: '/materials/certificates', ex: 'human' },
+  ]},
+];
+
+/* 上下游细线（飞行到对应站点时点亮为流动光线） */
+const EDGES = [
+  { id: 'e_p_parse',  a: 'page_parse',  b: 'api_js' },
+  { id: 'e_p_dir',    a: 'page_dir',    b: 'api_js' },
+  { id: 'e_p_outline',a: 'page_outline',b: 'api_js' },
+  { id: 'e_p_gaps',   a: 'page_gaps',   b: 'api_js' },
+  { id: 'e_p_editor', a: 'page_editor', b: 'api_js' },
+  { id: 'e_p_mats',   a: 'page_materials', b: 'api_js' },
+  { id: 'e_p_wiki',   a: 'page_wiki',   b: 'api_js' },
+  { id: 'e_p_certs',  a: 'page_certs',  b: 'api_js' },
+  { id: 'a_r',        a: 'api_js', b: 'routes' },
+  { id: 'e_r_parsing', a: 'routes', b: 'parsing' },
+  { id: 'e_r_outline', a: 'routes', b: 'outline_generation' },
+  { id: 'e_r_gap',     a: 'routes', b: 'gap_service' },
+  { id: 'e_r_assembly',a: 'routes', b: 'tech_assembly' },
+  { id: 'e_r_doc',     a: 'routes', b: 'doc_service' },
+  { id: 'e_r_mat',     a: 'routes', b: 'material_store' },
+  { id: 'e_r_wiki',    a: 'routes', b: 'wiki_gen' },
+  { id: 'e_r_cert',    a: 'routes', b: 'cert_time' },
+  { id: 'e_gap_planner', a: 'gap_service', b: 'gap_planner' },
+  { id: 'e_gap_fill',    a: 'gap_service', b: 'gap_ai_fill' },
+  { id: 'e_gap_fact',    a: 'gap_service', b: 'gap_fact' },
+  { id: 'e_ms_idx',      a: 'material_store', b: 'material_index' },
+  { id: 'e_parse_oc',  a: 'parsing', b: 'opencode' },
+  { id: 'e_outline_oc',a: 'outline_generation', b: 'opencode' },
+  { id: 'e_planner_oc',a: 'gap_planner', b: 'opencode' },
+  { id: 'e_fill_oc',   a: 'gap_ai_fill', b: 'opencode' },
+  { id: 'e_fact_oc',   a: 'gap_fact', b: 'opencode' },
+  { id: 'e_asm_oc',    a: 'tech_assembly', b: 'opencode' },
+  { id: 'e_wiki_oc',   a: 'wiki_gen', b: 'opencode' },
+  { id: 'e_cert_ocr',  a: 'cert_time', b: 'ocr_service' },
+  { id: 'e_oc_parser', a: 'opencode', b: 'skill_parser' },
+  { id: 'e_oc_outline',a: 'opencode', b: 'skill_outline' },
+  { id: 'e_oc_gap',    a: 'opencode', b: 'skill_gap' },
+  { id: 'e_oc_table',  a: 'opencode', b: 'skill_table' },
+  { id: 'e_oc_word',   a: 'opencode', b: 'skill_word' },
+  { id: 'e_oc_fact',   a: 'opencode', b: 'skill_fact' },
+  { id: 'e_oc_asm',    a: 'opencode', b: 'skill_asm' },
+  { id: 'e_oc_fmt',    a: 'opencode', b: 'skill_fmt' },
+  { id: 'e_oc_wiki',   a: 'opencode', b: 'skill_wiki' },
+  { id: 'e_oc_tag',    a: 'opencode', b: 'skill_tag' },
+  { id: 'e_parse_vol',  a: 'parsing', b: 'sharevol' },
+  { id: 'e_parse_minio',a: 'parsing', b: 'minio' },
+  { id: 'e_fact_pg',    a: 'gap_fact', b: 'postgres' },
+  { id: 'e_ms_pg',      a: 'material_store', b: 'postgres' },
+  { id: 'e_ms_minio',   a: 'material_store', b: 'minio' },
+  { id: 'e_doc_minio',  a: 'doc_service', b: 'minio' },
+  { id: 'e_ocr_pg',     a: 'ocr_service', b: 'postgres' },
+  { id: 'e_oc_vol',     a: 'opencode', b: 'sharevol' },
+  { id: 'e_r_redis',    a: 'routes', b: 'redis' },
+];
+
+/* 相机固定在全局垂直俯视机位 OVERVIEW_CAM；切站只点亮、不动镜头。
+   站点字段：hi=手工点亮清单；edges=点亮的调用连线（连线两端节点会自动并入点亮）。 */
+const OVERVIEW_CAM = { look: [0, 0, 0], dist: 58 };
+const STATIONS = [
+  { title: '全景 · 平铺交互地图', dwell: 8,
+    hi: [], edges: [],
+    body: '地图从左到右六层：页面 → API 封装 → 路由 → 服务 → 智能层（LLM）→ 数据落点，弧线就是真实调用。铁律只有一条：按钮不直接碰 AI——服务备好任务清单交给 agent 执行 Skill，产物经共享卷回传，再由服务收口落库。' },
+  { title: 'S0/S1 解析页 · 上传并解析', dwell: 7,
+    hi: ['page_parse'],
+    edges: ['e_p_parse', 'a_r', 'e_r_parsing'],
+    body: '投标入口：上传招标文件，先落「暂存草稿」再后台解析，接口立即返回、前端轮询进度。这是全系统唯一「先建项目再决策」的环节——决策前项目始终是暂存态，放弃零成本。' },
+  { title: 'L5 · bid-tech-tender-structured-parser（分片并行）', dwell: 7,
+    hi: ['parsing', 'opencode', 'skill_parser', 'sharevol'],
+    edges: ['e_parse_oc', 'e_oc_parser', 'e_parse_vol'],
+    body: '服务层把长文档分片、并行喂给解析 Skill，产出全链路统一的结构化契约，并把附表空表、承诺函等后续环节的目标载体一并物化。扫描件由 OCR 托底，分片之外保留单会话兜底。' },
+  { title: '参与决策 → 素材库归集（暂存态概念）', dwell: 7,
+    hi: ['page_parse', 'material_store', 'postgres', 'minio'],
+    edges: ['e_p_parse', 'a_r', 'e_r_mat', 'e_ms_pg', 'e_ms_minio'],
+    body: '解析结果由人拍板：「参与」则草稿转正、进入素材归集；「不参与」则删除草稿、流程终止。附表空表是否「纳入素材库」也在此逐项确认——它决定后续 AI 填表的目标载体从哪来。' },
+  { title: 'S2 目录生成 · 全系统唯一真 SSE', dwell: 7,
+    hi: ['page_dir', 'outline_generation', 'opencode', 'skill_outline', 'redis'],
+    edges: ['e_p_dir', 'a_r', 'e_r_outline', 'e_outline_oc', 'e_oc_outline', 'e_r_redis'],
+    body: '目录由生成 Skill 按章节并行产出，经任务队列入队并带项目级互斥。它的进度是全系统唯一的 SSE 实时推送（断线自动回退轮询）——实时性只花在等待感最强的地方。' },
+  { title: '目录审核 · 「进入素材匹配」连发', dwell: 7,
+    hi: ['page_outline', 'routes', 'gap_service'],
+    edges: ['e_p_outline', 'a_r', 'e_r_gap'],
+    body: '目录树的人工编辑全在前端，保存时才提交。「进入素材匹配」是最关键的衔接按钮：一次点击串起保存目录 → 确认目录 → 触发缺口识别 → 跳转缺口页。' },
+  { title: 'L5 初判 + L4 确定性终审（四态决策）', dwell: 7.5,
+    hi: ['gap_service', 'gap_planner', 'opencode', 'skill_gap'],
+    edges: ['e_gap_planner', 'e_planner_oc', 'e_oc_gap'],
+    body: '「候选 ≠ 决策」：AI 先产初判计划，服务层纯函数规则引擎再做确定性终审，每次读取都重算，结论可复现、可审计。每个缺口定为四态之一：直接定案 / 人工选材 / AI 填写 / 人工补料。' },
+  { title: '缺口页 · 四态分流处理', dwell: 7.5,
+    hi: ['page_gaps', 'gap_service'],
+    edges: ['e_p_gaps', 'a_r', 'e_r_gap', 'e_gap_planner', 'e_gap_fill', 'e_gap_fact'],
+    body: '全前端最重的页面，按四态分流：定案一键确认、选材人工挑卡片、填写交 AI、缺料人工上传即选用。所有 AI 产物必须经双栏对比复核通过才算定案——AI 起草，人定稿。' },
+  { title: '附表 AI 填写链路（空表 + 来源矩阵 → 填写 Skill）', dwell: 7.5,
+    hi: ['gap_ai_fill', 'opencode', 'skill_table', 'skill_word'],
+    edges: ['e_gap_fill', 'e_fill_oc', 'e_oc_table', 'e_oc_word'],
+    body: '输入契约两件套：解析阶段物化的附表空表 +「客户×附表 → 素材来源」路由表。执行器按来源把活分给不同填写 Skill，产物自带质量报告；标黄待补处由人收尾。' },
+  { title: '项目事实表 · AI 只产建议、人定稿', dwell: 7,
+    hi: ['gap_fact', 'opencode', 'skill_fact', 'postgres'],
+    edges: ['e_gap_fact', 'e_fact_oc', 'e_oc_fact', 'e_fact_pg'],
+    body: '从事实素材抽取「标签:值」，每个值带来源与确认态。AI 复核只产待确认建议，人工定稿才落库——这是「AI 建议不直接生效」原则的典型样本。' },
+  { title: 'S4 正文装配 · tech_assembly + format-cleaner', dwell: 7,
+    hi: ['tech_assembly', 'opencode', 'skill_asm', 'skill_fmt', 'redis'],
+    edges: ['e_r_assembly', 'e_asm_oc', 'e_oc_asm', 'e_oc_fmt', 'e_r_redis'],
+    body: '汇聚点：确认过的目录、各缺口定案产物、Wiki 导出在此会合，由装配 Skill 组装正文、格式清洗成稿。走异步队列，带项目级互斥与陈旧保护，重复点击不会叠加出脏结果。' },
+  { title: '共创编辑 · OnlyOffice + 格式预设 + 导出', dwell: 7,
+    hi: ['page_editor', 'doc_service', 'minio'],
+    edges: ['e_p_editor', 'a_r', 'e_r_doc', 'e_doc_minio'],
+    body: '人在环中收尾：OnlyOffice 在线编辑为主，失败自动降级兜底编辑器；排版预设一键套用，右栏 AI 只答疑、不动稿。导出就是两颗按钮：下载 Word / 下载 PDF。' },
+  { title: '旁路 · 素材库 / Wiki / 证书台账', dwell: 8,
+    hi: ['page_materials', 'page_wiki', 'page_certs', 'material_store', 'material_index', 'wiki_gen', 'cert_time', 'ocr_service'],
+    edges: ['e_p_mats', 'e_p_wiki', 'e_p_certs', 'e_r_mat', 'e_ms_idx', 'e_r_wiki', 'e_wiki_oc', 'e_oc_wiki', 'e_r_cert', 'e_cert_ocr', 'e_ocr_pg'],
+    body: '三条旁路持续喂养主链路：素材库以三级目录索引为标签真值；Wiki 纯确定性镜像索引、不经 LLM；证书台账增量识别，为附表供结构化数据。准则：主链路不等旁路，旁路随时可重建。' },
+  { title: '收尾 · Harness 全景（单出口 + 契约化交换）', dwell: 9,
+    hi: ['opencode', 'sharevol', 'redis'],
+    edges: ['e_oc_vol'],
+    body: '所有 LLM 调用只有一个出口，大文件只走共享卷，长任务有监管与提前收口——主干闭环成立。欠账集中在四件工程卫生：客户端巨石化、并发治理割裂、会话只建不删、智能层端口无鉴权，不伤骨架。' },
+];
+
+/* ============================================================
+ * 渲染区：以下逻辑不直接出现文案，维护内容改上面数据区即可
+ * ========================================================== */
+(function () {
+  /* ---- WebGL 降级 ---- */
+  var stage = document.getElementById('stage');
+  var renderer;
+  try {
+    if (!window.WebGLRenderingContext) throw new Error('WebGL unsupported');
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    if (!renderer.getContext()) throw new Error('no context');
+  } catch (e) {
+    document.getElementById('fallback').hidden = false;
+    return;
+  }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  stage.appendChild(renderer.domElement);
+
+  var UP = new THREE.Vector3(0, 1, 0);
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
+  camera.position.set(0, 48, 48); // 占位初值，启动时会被全景机位覆盖
+  camera.lookAt(0, 0, 0);
+  var rig = new THREE.Group();          // 地图（自转只转它）
+  scene.add(rig);
+
+  /* ---- 光影：半球环境光 + 主平行光（PCF 软阴影） + 弱补光 ---- */
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+  var hemi = new THREE.HemisphereLight(0xffffff, 0xdde3ec, 0.95);
+  scene.add(hemi);
+  var dir1 = new THREE.DirectionalLight(0xffffff, 1.55);
+  dir1.position.set(34, 40, -8); // 侧后方位，默认机位能看到投向左侧的阴影
+  dir1.castShadow = true;
+  dir1.shadow.mapSize.set(2048, 2048);
+  dir1.shadow.camera.left = -52; dir1.shadow.camera.right = 52;
+  dir1.shadow.camera.top = 52; dir1.shadow.camera.bottom = -52;
+  dir1.shadow.camera.near = 8; dir1.shadow.camera.far = 130;
+  dir1.shadow.camera.updateProjectionMatrix(); // 改完正交范围必须重算投影矩阵，否则只覆盖默认 ±5
+  dir1.shadow.bias = -0.0004;
+  dir1.shadow.normalBias = 0.03;
+  scene.add(dir1);
+  var dir2 = new THREE.DirectionalLight(0xffffff, 0.5);
+  dir2.position.set(-24, 18, -28);
+  scene.add(dir2);
+
+  /* ---- 主题 ---- */
+  var themeOverride = null; // 'light' | 'dark' | null(跟随系统)
+  function isDark() {
+    if (themeOverride) return themeOverride === 'dark';
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+  var lineMats = [];
+  var plateMats = [];
+  var labelRedraws = [];
+  var groundMat = null, gridHelper = null, bgTex = null;
+  var SCENE_THEME = {
+    light: { bgTop: '#fbfcfe', bgBot: '#eceff4', fog: 0xeceff4, hemiI: 0.78, hemiGnd: 0xdde3ec, dirI: 1.9, fillI: 0.45, ground: 0xdfe5ee, grid: 0xb6c0d0, gridOp: 0.18, line: 0x9aa7ba, plateOp: 0.12 },
+    dark:  { bgTop: '#121a29', bgBot: '#0a0f18', fog: 0x0a0f18, hemiI: 0.45, hemiGnd: 0x1a2232, dirI: 1.25, fillI: 0.28, ground: 0x151d2c, grid: 0x36435f, gridOp: 0.22, line: 0x4a5b7a, plateOp: 0.11 },
+  };
+  /* 场景背景：极淡纵向渐变（CanvasTexture，非 shader） */
+  function makeBgTexture(top, bot) {
+    var cv = document.createElement('canvas');
+    cv.width = 4; cv.height = 512;
+    var ctx = cv.getContext('2d');
+    var g = ctx.createLinearGradient(0, 0, 0, 512);
+    g.addColorStop(0, top); g.addColorStop(1, bot);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 4, 512);
+    var t = new THREE.CanvasTexture(cv);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+  /* 地面承接盘贴图：径向渐隐 */
+  function makeGroundTexture(hex) {
+    var r = (hex >> 16) & 255, g = (hex >> 8) & 255, b = hex & 255;
+    var rgb = r + ',' + g + ',' + b;
+    var S = 512, cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    var ctx = cv.getContext('2d');
+    var gr = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    gr.addColorStop(0, 'rgba(' + rgb + ',1)');
+    gr.addColorStop(0.55, 'rgba(' + rgb + ',0.85)');
+    gr.addColorStop(1, 'rgba(' + rgb + ',0)');
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, S, S);
+    var t = new THREE.CanvasTexture(cv);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+  function applySceneTheme() {
+    var dark = isDark();
+    var T = dark ? SCENE_THEME.dark : SCENE_THEME.light;
+    if (bgTex) bgTex.dispose();
+    bgTex = makeBgTexture(T.bgTop, T.bgBot);
+    scene.background = bgTex;
+    scene.fog = new THREE.Fog(T.fog, 95, 280);
+    hemi.intensity = T.hemiI;
+    hemi.groundColor.setHex(T.hemiGnd);
+    dir1.intensity = T.dirI;
+    dir2.intensity = T.fillI;
+    for (var i = 0; i < lineMats.length; i++) lineMats[i].color.setHex(T.line);
+    for (var j = 0; j < plateMats.length; j++) plateMats[j].opacity = T.plateOp;
+    for (var k = 0; k < labelRedraws.length; k++) labelRedraws[k](dark);
+    if (groundMat) {
+      if (groundMat.map) groundMat.map.dispose();
+      groundMat.map = makeGroundTexture(T.ground);
+      groundMat.needsUpdate = true;
+    }
+    if (gridHelper) {
+      gridHelper.material.color.setHex(T.grid);
+      gridHelper.material.opacity = T.gridOp;
+    }
+  }
+
+  /* ---- 文字贴图：2.5x CanvasTexture 圆角胶囊，左侧域色条，亮/暗双主题 ---- */
+  function makeLabelSprite(title, sub, scaleW, accent) {
+    var dpr = 2.5, W = 380;
+    var accentCss = '#' + ('00000' + accent.toString(16)).slice(-6);
+    var cv = document.createElement('canvas');
+    var ctx = cv.getContext('2d');
+    var f1 = '600 30px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif';
+    var f2 = '400 22px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif';
+    var barW = 6, textX = 12 + barW + 13;
+    var maxTextW = W - textX - 18;
+    function wrap(text, font) {
+      ctx.font = font;
+      var lines = [], cur = '';
+      for (var i = 0; i < text.length; i++) {
+        var ch = text[i];
+        if (cur && ctx.measureText(cur + ch).width > maxTextW) { lines.push(cur); cur = ch; }
+        else cur += ch;
+      }
+      if (cur) lines.push(cur);
+      return lines.slice(0, 2);
+    }
+    var l1 = wrap(title, f1);
+    var l2 = sub ? wrap(sub, f2) : [];
+    var H = 20 + l1.length * 38 + (l2.length ? 6 + l2.length * 27 : 0) + 14;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    function rr(x, y, w, h, r) {
+      ctx.beginPath();
+      if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); return; }
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+    function draw(dark) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.scale(dpr, dpr);
+      // 底衬圆角胶囊
+      rr(1, 1, W - 2, H - 2, Math.min(16, H / 2 - 1));
+      ctx.fillStyle = dark ? 'rgba(17,25,40,0.86)' : 'rgba(255,255,255,0.93)';
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = dark ? 'rgba(148,163,190,0.32)' : 'rgba(100,116,139,0.26)';
+      ctx.stroke();
+      // 左侧域色条
+      rr(5.5, 5.5, barW, H - 11, 3);
+      ctx.fillStyle = accentCss;
+      ctx.fill();
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = dark ? '#eef2f9' : '#1a2333';
+      ctx.font = f1;
+      var y = 18;
+      for (var i = 0; i < l1.length; i++) { ctx.fillText(l1[i], textX, y); y += 38; }
+      if (l2.length) {
+        y += 4; ctx.fillStyle = dark ? '#9fb0c8' : '#5c6b82'; ctx.font = f2;
+        for (var j = 0; j < l2.length; j++) { ctx.fillText(l2[j], textX, y); y += 27; }
+      }
+    }
+    draw(isDark());
+    var tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4; tex.minFilter = THREE.LinearMipmapLinearFilter;
+    var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
+    var sp = new THREE.Sprite(mat);
+    var w = scaleW || 4.4;
+    sp.scale.set(w, w * H / W, 1);
+    labelRedraws.push(function (dark) { draw(dark); tex.needsUpdate = true; });
+    return sp;
+  }
+
+  /* ---- 布局：六层横向条带（左→右：页面→API→路由→服务→智能→数据落点），每层单列一字排开 ---- */
+  var CELLX = 3.6, CELLZ = 3.3, STRIP_GAP = 3.2;
+  var FLAT_ORDER = [ // 条带顺序；每层一列，节点沿纵向逐个排开，读图即读清单
+    { id: 'L1', cols: 1 }, { id: 'L2', cols: 1 }, { id: 'L3', cols: 1 },
+    { id: 'L4', cols: 1 }, { id: 'L5', cols: 1 }, { id: 'base', cols: 1 },
+  ];
+  var nodePos = {}, nodeMat = {}, nodeLabelMat = {}, nodeGloss = {};
+  var plateGroup = new THREE.Group(); rig.add(plateGroup);
+  var layerById = {}; LAYERS.forEach(function (l) { layerById[l.id] = l; });
+
+  /* 圆角积木：圆角矩形 footprint 拉伸 + 小倒角（核心 ExtrudeGeometry，无 addons） */
+  function roundedBlockGeo(w, h, d, r) {
+    r = Math.min(r, w / 2 - 0.02, d / 2 - 0.02);
+    var s = new THREE.Shape();
+    var x0 = -w / 2, y0 = -d / 2;
+    s.moveTo(x0 + r, y0);
+    s.lineTo(x0 + w - r, y0);
+    s.quadraticCurveTo(x0 + w, y0, x0 + w, y0 + r);
+    s.lineTo(x0 + w, y0 + d - r);
+    s.quadraticCurveTo(x0 + w, y0 + d, x0 + w - r, y0 + d);
+    s.lineTo(x0 + r, y0 + d);
+    s.quadraticCurveTo(x0, y0 + d, x0, y0 + d - r);
+    s.lineTo(x0, y0 + r);
+    s.quadraticCurveTo(x0, y0, x0 + r, y0);
+    var bev = 0.055;
+    var geo = new THREE.ExtrudeGeometry(s, {
+      depth: h - bev * 2, bevelEnabled: true,
+      bevelThickness: bev, bevelSize: 0.045, bevelSegments: 3,
+      curveSegments: 6, steps: 1,
+    });
+    geo.rotateX(-Math.PI / 2);        // 拉伸轴转到 +Y，footprint 落在 XZ
+    geo.translate(0, -h / 2 + bev, 0); // 含倒角总高 h，几何中心归零
+    return geo;
+  }
+
+  // 第一遍：算每条带的尺寸与 x 中心（整体以原点居中）
+  var strips = [], totalW = 0;
+  FLAT_ORDER.forEach(function (cfg) {
+    var layer = layerById[cfg.id];
+    var n = layer.nodes.length;
+    var cols = Math.min(cfg.cols, n);
+    var rows = Math.ceil(n / cols);
+    var w = cols * CELLX + 3.4, d = rows * CELLZ + 3.4;
+    strips.push({ layer: layer, cols: cols, rows: rows, w: w, d: d });
+    totalW += w;
+  });
+  totalW += STRIP_GAP * (strips.length - 1);
+  var cursor = -totalW / 2;
+  strips.forEach(function (st) { st.x = cursor + st.w / 2; cursor += st.w + STRIP_GAP; });
+
+  strips.forEach(function (st) {
+    var layer = st.layer, nodes = layer.nodes, n = nodes.length;
+    var plateW = st.w, plateD = st.d;
+
+    // 半透明平板（双面、可承接阴影）+ 描边；层级不配色，统一中性色
+    var plateMat = new THREE.MeshStandardMaterial({
+      color: PLATE_COLOR, transparent: true, opacity: 0.15,
+      roughness: 0.35, metalness: 0.05, side: THREE.DoubleSide, depthWrite: false,
+    });
+    plateMats.push(plateMat);
+    var plate = new THREE.Mesh(new THREE.BoxGeometry(plateW, 0.14, plateD), plateMat);
+    plate.position.set(st.x, 0, 0);
+    plate.receiveShadow = true;
+    plateGroup.add(plate);
+    var edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(plate.geometry),
+      new THREE.LineBasicMaterial({ color: PLATE_COLOR, transparent: true, opacity: 0.55, toneMapped: false })
+    );
+    edges.position.copy(plate.position);
+    plateGroup.add(edges);
+    // 层标签立牌：放在条带前沿（朝向默认机位一侧）
+    var lsp = makeLabelSprite(layer.name, layer.sub, 5.6, PLATE_COLOR);
+    lsp.position.set(st.x, 1.15, plateD / 2 + 2.1);
+    plateGroup.add(lsp);
+
+    // 节点积木：条带内按列（X）× 行（Z）网格排布，末行居中
+    var dense = n > 8; // 密集条带（L4/L5）：标签缩小并竖向错位，全景防重叠
+    var idx = 0;
+    for (var r2 = 0; r2 < st.rows; r2++) {
+      var count = Math.min(st.cols, n - r2 * st.cols);
+      var z = (r2 - (st.rows - 1) / 2) * CELLZ;
+      for (var c = 0; c < count; c++) {
+        var nd = nodes[idx++];
+        var x = st.x + (c - (count - 1) / 2) * CELLX;
+        var color = EXEC_COLORS[nd.ex] || PLATE_COLOR;
+        var w = nd.wide ? Math.min(plateW - 3, 6.6) : 2.5;
+        var d = nd.wide ? 2.3 : 2.25;
+        var blockH = layer.h;
+        var yC = 0.07 + blockH / 2; // 平板上表面 0.07
+        var mat = new THREE.MeshStandardMaterial({
+          color: color, roughness: 0.48, metalness: 0.08,
+          emissive: color, emissiveIntensity: 0.06,
+          transparent: true, opacity: 0.98,
+        });
+        var mesh = new THREE.Mesh(roundedBlockGeo(w, blockH, d, 0.26), mat);
+        mesh.position.set(x, yC, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        rig.add(mesh);
+        nodePos[nd.id] = mesh.position.clone(); // 连线锚在积木中心
+        nodeMat[nd.id] = mat;
+        // 顶部细微高光片
+        var gloss = new THREE.Mesh(
+          roundedBlockGeo(w * 0.82, 0.045, d * 0.82, 0.14),
+          new THREE.MeshStandardMaterial({
+            color: 0xffffff, transparent: true, opacity: 0.24,
+            roughness: 0.16, metalness: 0.05, depthWrite: false,
+          })
+        );
+        gloss.position.set(x, 0.07 + blockH + 0.02, z);
+        rig.add(gloss);
+        nodeGloss[nd.id] = gloss.material;
+        var sp = makeLabelSprite(nd.label, nd.sub, nd.wide ? 5.2 : (dense ? 3.3 : 3.5), color);
+        var lift = dense ? ((r2 + c) % 2) * 1.15 : 0;
+        sp.position.set(x, 0.07 + blockH + sp.scale.y / 2 + 0.24 + lift, z);
+        nodeLabelMat[nd.id] = sp.material;
+        rig.add(sp);
+      }
+    }
+  });
+
+  /* ---- 地面：柔和圆形承接盘（径向渐隐、承接阴影）+ 极淡细网格（不随塔自转） ---- */
+  groundMat = new THREE.MeshStandardMaterial({
+    transparent: true, roughness: 0.96, metalness: 0, depthWrite: false,
+  });
+  var ground = new THREE.Mesh(new THREE.CircleGeometry(52, 72), groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.55;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  gridHelper = new THREE.GridHelper(72, 36, 0xb6c0d0, 0xb6c0d0);
+  gridHelper.position.y = -0.53;
+  gridHelper.material.transparent = true;
+  gridHelper.material.opacity = 0.18;
+  gridHelper.material.toneMapped = false;
+  scene.add(gridHelper);
+
+  /* ---- 交互连线：积木中心到中心的二次贝塞尔弧线，端点统一没入块体，距离越远弧越高 ---- */
+  var edgeById = {};
+  EDGES.forEach(function (e) {
+    var a = nodePos[e.a], b = nodePos[e.b];
+    if (!a || !b) return;
+    var a2 = a.clone(), b2 = b.clone();
+    var dist = a2.distanceTo(b2);
+    var liftH = THREE.MathUtils.clamp(dist * 0.16, 0.9, 3.6) + 0.9;
+    var mid = a2.clone().add(b2).multiplyScalar(0.5);
+    mid.y = Math.max(a2.y, b2.y) + liftH;
+    var curve = new THREE.QuadraticBezierCurve3(a2, mid, b2);
+    var pts = curve.getPoints(26);
+    var mat = new THREE.LineBasicMaterial({ color: 0x9aa7ba, transparent: true, opacity: 0.3, toneMapped: false });
+    lineMats.push(mat);
+    var line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+    rig.add(line);
+    edgeById[e.id] = { pts: pts, curve: curve, a: e.a, b: e.b };
+  });
+
+  /* ---- 站点高亮：emissive 脉冲 + 流动光线 ---- */
+  var hiSet = {};
+  var flowGroup = new THREE.Group(); rig.add(flowGroup);
+  var pulses = [];
+  var pulseGeo = new THREE.SphereGeometry(0.13, 12, 12);
+  function rebuildFlow(edgeIds) {
+    while (flowGroup.children.length) {
+      var ch = flowGroup.children.pop();
+      flowGroup.remove(ch);
+      if (ch.material) ch.material.dispose();
+      if (ch.geometry && ch.geometry !== pulseGeo) ch.geometry.dispose();
+    }
+    pulses = [];
+    edgeIds.forEach(function (id, k) {
+      var ed = edgeById[id];
+      if (!ed) return;
+      var mat = new THREE.LineBasicMaterial({ color: 0xffc94d, transparent: true, opacity: 0.95, toneMapped: false });
+      flowGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ed.pts), mat));
+      var pm = new THREE.MeshBasicMaterial({ color: 0xffe29a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+      var p = new THREE.Mesh(pulseGeo, pm);
+      p.userData = { curve: ed.curve, phase: k * 0.37 };
+      flowGroup.add(p);
+      pulses.push(p);
+    });
+  }
+
+  /* ---- 相机：固定全局垂直俯视，切站不动相机、只点亮 ---- */
+  var cur = 0, playing = true, freeView = false, autoRotate = false;
+  var curPos = new THREE.Vector3(0, 48, 48), curLook = new THREE.Vector3(0, 0, 0);
+  var dwellTimer = 0;
+
+  /* 全局垂直俯视（带 0.06 微倾角，保证 lookAt 朝向稳定、地图长边横置）。
+     相机永远停在全景机位；切站只更新高亮与旁白，零运镜。 */
+  var VIEW_DIR = new THREE.Vector3(0, 1, 0.06).normalize();
+  function resolveCam(cam, outP, outL) {
+    outL.fromArray(cam.look);
+    outP.copy(outL).addScaledVector(VIEW_DIR, cam.dist);
+  }
+
+  /* ---- DOM ---- */
+  var capNum = document.getElementById('capNum');
+  var capTitle = document.getElementById('capTitle');
+  var capBody = document.getElementById('capBody');
+  var pnum = document.getElementById('pnum');
+  var dotsBox = document.getElementById('dots');
+  var dots = [];
+  STATIONS.forEach(function (st, i) {
+    var d = document.createElement('i');
+    d.title = (i + 1) + '. ' + st.title;
+    d.addEventListener('click', function () { goToStation(i, { takeover: true }); });
+    dotsBox.appendChild(d);
+    dots.push(d);
+  });
+
+  function updateCaption() {
+    var st = STATIONS[cur];
+    capNum.textContent = '第 ' + (cur + 1) + ' / ' + STATIONS.length + ' 站';
+    capTitle.textContent = st.title;
+    capBody.textContent = st.body;
+    pnum.textContent = (cur + 1) + '/' + STATIONS.length;
+    dots.forEach(function (d, i) { d.classList.toggle('on', i === cur); });
+  }
+
+  function goToStation(i, opts) {
+    opts = opts || {};
+    cur = ((i % STATIONS.length) + STATIONS.length) % STATIONS.length;
+    if (opts.takeover && freeView) setFreeView(false, true); // 退出自由视角，回到全局俯视
+    var st = STATIONS[cur];
+    // 相机锚回全局全景机位（瞬移，无飞行）
+    resolveCam(OVERVIEW_CAM, curPos, curLook);
+    dwellTimer = 0;
+    // 点亮：手工清单 ∪ 本站点亮连线的两端节点（连到的节点全部点亮）
+    hiSet = {};
+    (st.hi || []).forEach(function (id) { hiSet[id] = true; });
+    (st.edges || []).forEach(function (id) {
+      var ed = edgeById[id];
+      if (ed) { hiSet[ed.a] = true; hiSet[ed.b] = true; }
+    });
+    rebuildFlow(st.edges || []);
+    updateCaption();
+  }
+
+  /* ---- 自由视角（手写轨道控制，无 OrbitControls addon） ---- */
+  var freeTarget = new THREE.Vector3(0, 0, 0);
+  var sph = { theta: 0.7, phi: 1.1, radius: 40 };
+  var curLookWorld = new THREE.Vector3(0, 0, 0);
+  function setFreeView(on, silent) {
+    if (on === freeView) return;
+    freeView = on;
+    document.getElementById('btnFree').classList.toggle('on', on);
+    if (on) {
+      setPlaying(false);
+      freeTarget.copy(curLookWorld);
+      var off = camera.position.clone().sub(freeTarget);
+      sph.radius = Math.max(6, off.length());
+      sph.theta = Math.atan2(off.x, off.z);
+      sph.phi = Math.acos(THREE.MathUtils.clamp(off.y / sph.radius, -1, 1));
+    } else if (!silent) {
+      goToStation(cur); // 回到全局俯视（相机由 goToStation 锚回全景机位）
+    }
+  }
+  (function bindOrbit() {
+    var el = renderer.domElement, dragMode = null, lx = 0, ly = 0;
+    el.addEventListener('contextmenu', function (e) { if (freeView) e.preventDefault(); });
+    el.addEventListener('pointerdown', function (e) {
+      if (!freeView) return;
+      dragMode = e.button === 2 ? 'pan' : 'rotate';
+      lx = e.clientX; ly = e.clientY;
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!dragMode || !freeView) return;
+      var dx = e.clientX - lx, dy = e.clientY - ly;
+      lx = e.clientX; ly = e.clientY;
+      if (dragMode === 'pan') {
+        // 沿相机右/上方向平移观察点，尺度随距离
+        var s = sph.radius * 0.0016;
+        var m = camera.matrixWorld.elements;
+        freeTarget.x += (-m[0] * dx + m[4] * dy) * s;
+        freeTarget.y += (-m[1] * dx + m[5] * dy) * s;
+        freeTarget.z += (-m[2] * dx + m[6] * dy) * s;
+        freeTarget.y = THREE.MathUtils.clamp(freeTarget.y, -2, 40);
+      } else {
+        sph.theta -= dx * 0.0055;
+        sph.phi = THREE.MathUtils.clamp(sph.phi - dy * 0.0055, 0.12, 1.52);
+      }
+    });
+    el.addEventListener('pointerup', function () { dragMode = null; });
+    el.addEventListener('pointercancel', function () { dragMode = null; });
+    el.addEventListener('wheel', function (e) {
+      if (!freeView) return;
+      e.preventDefault();
+      sph.radius = THREE.MathUtils.clamp(sph.radius * (1 + e.deltaY * 0.001), 7, 120);
+    }, { passive: false });
+    // 移动端双指缩放
+    var pinch = 0;
+    el.addEventListener('touchmove', function (e) {
+      if (!freeView || e.touches.length !== 2) return;
+      var dx = e.touches[0].clientX - e.touches[1].clientX;
+      var dy = e.touches[0].clientY - e.touches[1].clientY;
+      var d = Math.hypot(dx, dy);
+      if (pinch > 0) sph.radius = THREE.MathUtils.clamp(sph.radius * pinch / d, 7, 120);
+      pinch = d;
+    }, { passive: true });
+    el.addEventListener('touchend', function () { pinch = 0; });
+  })();
+
+  /* ---- 自由视角键盘移动（WASD 平移 / QE、RF 升降 / Shift 加速 / 方向键） ---- */
+  var moveKeys = {};
+  function applyKeyboardMove(dt) {
+    var kx = 0, kz = 0, ky = 0;
+    if (moveKeys.KeyW || moveKeys.ArrowUp) kz += 1;
+    if (moveKeys.KeyS || moveKeys.ArrowDown) kz -= 1;
+    if (moveKeys.KeyD || moveKeys.ArrowRight) kx += 1;
+    if (moveKeys.KeyA || moveKeys.ArrowLeft) kx -= 1;
+    if (moveKeys.KeyE || moveKeys.KeyR) ky += 1;
+    if (moveKeys.KeyQ || moveKeys.KeyF) ky -= 1;
+    if (!kx && !ky && !kz) return;
+    var boost = (moveKeys.ShiftLeft || moveKeys.ShiftRight) ? 3 : 1;
+    var spd = 12 * boost * dt * THREE.MathUtils.clamp(sph.radius / 36, 0.4, 2.2);
+    var fx = -Math.sin(sph.theta), fz = -Math.cos(sph.theta); // 相机朝向（XZ）
+    var rx = Math.cos(sph.theta), rz = -Math.sin(sph.theta);  // 相机右方（XZ）
+    freeTarget.x += (fx * kz + rx * kx) * spd;
+    freeTarget.z += (fz * kz + rz * kx) * spd;
+    freeTarget.y = THREE.MathUtils.clamp(freeTarget.y + ky * spd, -2, 40);
+  }
+
+  /* ---- 控件 ---- */
+  var btnPlay = document.getElementById('btnPlay');
+  function setPlaying(on) {
+    playing = on;
+    btnPlay.textContent = on ? '⏸ 暂停' : '▶ 播放';
+    btnPlay.classList.toggle('on', on);
+  }
+  btnPlay.addEventListener('click', function () {
+    if (!playing && freeView) setFreeView(false, true);
+    setPlaying(!playing);
+  });
+  document.getElementById('btnPrev').addEventListener('click', function () { goToStation(cur - 1, { takeover: true }); });
+  document.getElementById('btnNext').addEventListener('click', function () { goToStation(cur + 1, { takeover: true }); });
+  document.getElementById('btnFree').addEventListener('click', function () { setFreeView(!freeView); });
+  var helpPanel = document.getElementById('helpPanel');
+  document.getElementById('btnHelp').addEventListener('click', function () {
+    helpPanel.hidden = !helpPanel.hidden;
+    this.classList.toggle('on', !helpPanel.hidden);
+  });
+  var btnRotate = document.getElementById('btnRotate');
+  btnRotate.addEventListener('click', function () {
+    autoRotate = !autoRotate;
+    btnRotate.classList.toggle('on', autoRotate);
+  });
+  var btnTheme = document.getElementById('btnTheme');
+  function applyThemeButton() { btnTheme.textContent = isDark() ? '☀️ 亮色' : '🌙 暗色'; }
+  btnTheme.addEventListener('click', function () {
+    themeOverride = isDark() ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', themeOverride);
+    applySceneTheme(); applyThemeButton();
+  });
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+      if (!themeOverride) { applySceneTheme(); applyThemeButton(); }
+    });
+  }
+
+  /* ---- 隐藏界面（H / 🙈）与全屏（F / ⛶） ---- */
+  var btnUI = document.getElementById('btnUI');
+  function setUIHidden(on) {
+    document.body.classList.toggle('ui-hidden', on);
+    btnUI.classList.toggle('on', on);
+    btnUI.textContent = on ? '👁 显示界面' : '🙈 隐藏界面';
+  }
+  btnUI.addEventListener('click', function () {
+    setUIHidden(!document.body.classList.contains('ui-hidden'));
+  });
+  var btnFull = document.getElementById('btnFull');
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      if (document.exitFullscreen) document.exitFullscreen();
+    } else if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen();
+    }
+  }
+  btnFull.addEventListener('click', toggleFullscreen);
+  document.addEventListener('fullscreenchange', function () {
+    btnFull.classList.toggle('on', !!document.fullscreenElement);
+    btnFull.textContent = document.fullscreenElement ? '⛶ 退出全屏' : '⛶ 全屏';
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === ' ') { e.preventDefault(); btnPlay.click(); return; }
+    if (e.code === 'KeyH') { setUIHidden(!document.body.classList.contains('ui-hidden')); return; }
+    if (freeView) {
+      // 自由视角：方向键与 WASD/QE 均用于移动，不切站（F 此时仍是下降）
+      if (e.key.indexOf('Arrow') === 0) e.preventDefault();
+      moveKeys[e.code] = true;
+    } else if (e.key === 'ArrowRight') goToStation(cur + 1, { takeover: true });
+    else if (e.key === 'ArrowLeft') goToStation(cur - 1, { takeover: true });
+    else if (e.code === 'KeyF') toggleFullscreen();
+  });
+  document.addEventListener('keyup', function (e) { moveKeys[e.code] = false; });
+  window.addEventListener('blur', function () { moveKeys = {}; });
+
+  /* ---- resize / 页面隐藏暂停 ---- */
+  function resize() {
+    var w = stage.clientWidth || window.innerWidth;
+    var h = stage.clientHeight || window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  var rafId = 0, running = false;
+  var last = performance.now();
+  function animate(now) {
+    rafId = requestAnimationFrame(animate);
+    var dt = Math.min((now - last) / 1000, 0.05); last = now;
+    var t = now / 1000;
+
+    if (autoRotate && !freeView) rig.rotation.y += dt * 0.055;
+
+    if (!freeView) {
+      if (playing) {
+        dwellTimer += dt;
+        if (dwellTimer > (STATIONS[cur].dwell || 6.5)) goToStation(cur + 1);
+      }
+      var rot = rig.rotation.y;
+      var tmpP = curPos.clone().applyAxisAngle(UP, rot);
+      var tmpL = curLook.clone().applyAxisAngle(UP, rot);
+      camera.position.copy(tmpP);
+      curLookWorld.copy(tmpL);
+      camera.lookAt(tmpL);
+    } else {
+      applyKeyboardMove(dt);
+      var sp = sph;
+      camera.position.set(
+        freeTarget.x + sp.radius * Math.sin(sp.phi) * Math.sin(sp.theta),
+        freeTarget.y + sp.radius * Math.cos(sp.phi),
+        freeTarget.z + sp.radius * Math.sin(sp.phi) * Math.cos(sp.theta)
+      );
+      camera.lookAt(freeTarget);
+      curLookWorld.copy(freeTarget);
+    }
+
+    // 高亮节点 emissive 脉冲；有站点高亮时调暗其余节点与标签
+    var anyHi = false;
+    for (var k0 in hiSet) { anyHi = true; break; }
+    var fade = Math.min(1, dt * 5);
+    for (var id in nodeMat) {
+      var m = nodeMat[id], hi = !!hiSet[id];
+      // 高亮：柔和正弦呼吸
+      m.emissiveIntensity = hi ? 0.5 + 0.22 * Math.sin(t * 2.6) : 0.06;
+      var tOp = anyHi ? (hi ? 0.98 : 0.30) : 0.98;
+      m.opacity += (tOp - m.opacity) * fade;
+      m.depthWrite = tOp > 0.5; // 调暗的节点不写深度，避免挡住高亮目标
+      var gm = nodeGloss[id];
+      if (gm) gm.opacity = m.opacity * 0.26; // 高光片随本体一起调暗
+      var lm = nodeLabelMat[id];
+      var tLo = anyHi ? (hi ? 1 : 0.16) : 1;
+      lm.opacity += (tLo - lm.opacity) * fade;
+    }
+    // 流动光线脉冲（沿弧线行走）
+    for (var i = 0; i < pulses.length; i++) {
+      var p = pulses[i], u = p.userData;
+      var k = (t * 0.55 + u.phase) % 1;
+      p.position.copy(u.curve.getPoint(k));
+      p.material.opacity = 0.55 + 0.45 * Math.sin(k * Math.PI);
+    }
+
+    renderer.render(scene, camera);
+  }
+  function startLoop() {
+    if (running) return;
+    running = true; last = performance.now();
+    rafId = requestAnimationFrame(animate);
+  }
+  function stopLoop() {
+    running = false;
+    cancelAnimationFrame(rafId);
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) stopLoop(); else startLoop();
+  });
+
+  /* ---- 启动：初始即全局全景俯视（不自转），点击站点/播放只点亮、不动镜头 ---- */
+  applySceneTheme();
+  applyThemeButton();
+  setPlaying(false);
+  resolveCam(OVERVIEW_CAM, curPos, curLook); // 首帧即全景机位
+  camera.position.copy(curPos);
+  camera.lookAt(curLook);
+  var startIdx = parseInt((location.hash || '').slice(1), 10); // 支持 #站号 直达（1 起）
+  goToStation(isNaN(startIdx) ? 0 : startIdx - 1);
+  startLoop();
+})();
+</script>
+</body>
+</html>

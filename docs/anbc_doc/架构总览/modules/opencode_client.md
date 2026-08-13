@@ -5,12 +5,12 @@
 | 源文件 | `code/sewpg-bid-backend/app/services/opencode_client.py` |
 | 层级 | 服务层 |
 | 领域 | 解析与AI引擎 |
-| 行数 | ~600 |
+| 行数 | 2817 |
 
 **职责**: opencode（LLM Agent 运行时）的 HTTP 客户端：建会话、发 prompt、轮询会话进度、抽取结构化回复。后端所有 LLM 调用的唯一出口。
 
 ## Input（输入）
-- 构造参数缺省从 `system_settings_service.get_opencode_model_config_sync()`（系统设置页可改）回退到 `core.config`（`OPENCODE_BASE_URL`=http://opencode:4096、模型默认 big-pickle、超时 1800s）。
+- 构造参数缺省从 `system_settings_service.get_opencode_model_config_sync()`（系统设置页可改）回退到 `core.config`（`OPENCODE_BASE_URL`=http://opencode:4096、模型默认 deepseek-v4-flash、超时 1800s）。
 - `send_text_prompt(title, prompt_text)`、`generate_outline_with_trace(prompt, callbacks)`、`generate_draft_sections_with_trace(...)` 等：调用方拼好的 prompt 文本。
 
 ## Output（输出）

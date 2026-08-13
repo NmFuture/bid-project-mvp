@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 源文件 | `workspaces/{business/pages/BusinessGapRecognition.jsx(2277), technical/pages/TechnicalGapRecognition.jsx(1674)+helpers(js)}` |
+| 源文件 | `workspaces/{business/pages/BusinessGapRecognition.jsx(2275), technical/pages/TechnicalGapRecognition.jsx(3565)+helpers(js)}` |
 | 层级 | 前端页面 |
 | 领域 | 共享 |
 
@@ -15,4 +15,4 @@
 - **下游**: `{track}GapsAPI`（全部缺口端点）、`{track}MaterialsAPI`（selectable/预览）、`{track}GenerateAPI`、`{track}StagesAPI`、OnlyOfficeEmbed（产物预览）、MaterialMatchProgressModal。
 
 ## 中间数据与状态
-- 缺口列表与选中项、AI 填写进行中状态（已知问题：质量警示 helper 曾为死代码，见 20260708 复盘 §四.3）。
+- 缺口列表与选中项、AI 填写进行中状态（已知问题 2026-08-12 复核：`resultSummaryForItem` 仍为零引用死代码；`qualityReport` 的黄标统计已接入批量复核按钮提示，但缺口页逐条质量警示 UI 仍缺，见 20260708 复盘 §四.3 与 `docs/plan/tasks/frontend-01.md`）。

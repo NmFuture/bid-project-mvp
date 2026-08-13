@@ -7,7 +7,7 @@
 | 领域 | 基础设施与通用 |
 | 行数 | 1099 |
 
-**职责**: 两个角色合一：① `PeripheralError`——全后端统一业务异常（status_code+detail+code+extra，`app_main` 全局映射为 JSON 响应）；② 外围模块的轻量状态承接与 fixture 数据（历史遗留的内存 PeripheralStore，正被真实实现替换）。
+**职责**: 两个角色合一：① `PeripheralError`——全后端统一业务异常（status_code+detail+code+extra，`app_main` 全局映射为 JSON 响应）；② 外围模块的轻量状态承接与 fixture 数据（内存 `PeripheralStore` 已被 `material_store.MaterialStore` 替换完毕，全仓零真实调用方，**待删除**，见 `docs/plan/tasks/deadcode-01.md`）。
 
 ## Input / Output
 - `PeripheralError.to_payload()`：`{detail, code, ...extra}`。
