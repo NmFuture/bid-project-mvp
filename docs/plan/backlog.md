@@ -16,3 +16,10 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] F2: `OpencodeEngine` 门面委托用 `*args/**kwargs`（opencode_engine.py:222-277），丢失显式签名信息；两个方法保留显式签名、口径不一
 - [ ] F3: 表征测试覆盖缺口：btplnav 的 prompt 返回后等待相位、s2 多候选去重路径无直接用例
 - [ ] F4: graft 模块卡片（graft/app/services/opencode_client.md）仍指向旧模块，engine-01 改名遗留；docs/anbc_doc 模块卡片描述旧结构，待后续任务统一同步
+
+## engine-03（review 01 + 复验，2026-08-13，结论 pass）
+
+- [x] ~~F1 (blocking)~~ 已修复（486d16e）：`_request_slot` 非阻塞轮询，取消不再泄漏信号量许可，附 2 个回归测试
+- [ ] F2: 一个 stalled 测试改由 prompt 返回后 grace 等待路径抛出（原主循环 idle 路径），异常类型与 trace 结构一致，review 判语义等价
+- [ ] F5: `AgentEngine` 协议与 `OpencodeEngine` 实现结构仍不一致（`run_session` vs `send_prompt`、`create_session -> str` vs `dict`、缺 `delete_session`）；C 波次接新内核前需对齐 → 已排入 engine-09（PoC 接线前置）与 engine-05（delete_session 实现）
+- [ ] 并发冒烟（S1 分片并行）需 dev 环境验证，本地未覆盖
