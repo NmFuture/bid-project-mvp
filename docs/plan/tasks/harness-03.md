@@ -7,6 +7,8 @@ depends-on: [harness-06]
 
 # harness-03：send_prompt 中途重试与断线恢复（短板 3）
 
+> 已由 engine-04（波次 B2）接管，以 engine-* 为准；本文件保留现状证据。
+
 ## objective
 
 生成中途（send_prompt 及轮询阶段）的可恢复错误支持重试/续跑，长任务（上限 1800s）不再一次抖动整轮作废。

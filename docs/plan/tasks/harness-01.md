@@ -7,6 +7,8 @@ depends-on: []
 
 # harness-01：opencode_client 拆分 + early_tool_command 注册机制（短板 1）
 
+> 已由 engine-01（协议边界+改名）与 engine-02（early completion 泛化）细化接管，以 engine-* 为准；本文件保留现状证据。
+
 ## objective
 
 把 2817 行的 `opencode_client.py` 按职责拆成模块；业务命令特判（early_tool_command）从硬编码 if 链改为注册表，新增 agent 任务不再改公共客户端。

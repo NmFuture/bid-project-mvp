@@ -7,6 +7,8 @@ depends-on: []
 
 # harness-05：opencode 端口鉴权与资源限额（短板 5）
 
+> 已由 engine-10（波次 D1）接管，以 engine-* 为准；本文件保留现状证据。
+
 ## objective
 
 堵住「4096 映射宿主机 + 客户端无鉴权 + 容器内 bash allow + 无资源限额」的内网任意执行面。

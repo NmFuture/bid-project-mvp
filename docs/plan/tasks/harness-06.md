@@ -7,6 +7,8 @@ depends-on: [harness-01]
 
 # harness-06：客户端异步化（短板 6）
 
+> 已由 engine-03（波次 B1）接管，以 engine-* 为准；本文件保留现状证据。
+
 ## objective
 
 把 opencode_client 从「同步 httpx.Client + 每会话 daemon 线程轮询」改为 async（httpx.AsyncClient + asyncio 任务），消除 daemon 线程静默死亡的竞态。

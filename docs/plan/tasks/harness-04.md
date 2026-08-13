@@ -7,6 +7,8 @@ depends-on: [harness-01]
 
 # harness-04：会话生命周期回收（短板 4）
 
+> 已由 engine-05（波次 B3）接管，以 engine-* 为准；本文件保留现状证据。
+
 ## objective
 
 会话用完即删（DELETE session），并给 `opencode_data` 卷建立清理策略，消除无限增长。
