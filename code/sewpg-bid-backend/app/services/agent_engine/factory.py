@@ -2,13 +2,14 @@
 
 配置分层遵守根 AGENTS.md：代码默认值本地安全，恒为 `opencode`；
 5090 若要切引擎只写 `docker-compose.5090.yml`，不回流改默认值。
-pi 由 engine-08（C2）落地；codex 由 engine-07（C1）落地，此处显式抛 NotImplementedError。
+codex 由 engine-07（C1）落地；pi 由 engine-08（C2）落地。
 """
 from __future__ import annotations
 
 import os
 
 from app.services.agent_engine.base import AgentEngine
+from app.services.agent_engine.codex_engine import CodexEngine
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.agent_engine.pi_engine import PiEngine
 
@@ -27,10 +28,8 @@ class AgentEngineFactory:
         )
         if name == DEFAULT_AGENT_ENGINE:
             return OpencodeEngine()
+        if name == "codex":
+            return CodexEngine()
         if name == "pi":
             return PiEngine()
-        if name == "codex":
-            raise NotImplementedError(
-                "AGENT_ENGINE=codex 尚未实现（engine-07 落地）；当前可用：opencode/pi。"
-            )
         raise ValueError(f"未知 AGENT_ENGINE 取值：{name}（可选：opencode/codex/pi）。")
