@@ -17,6 +17,7 @@ from app.services.technical_directory_service import technical_directory_service
 from app.services.technical_chat_service import technical_chat_service
 from app.services.technical_document_service import technical_document_service
 from app.services.technical_generation_service import technical_generation_service
+from app.services.technical_score_index_flow import technical_score_index_service
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_audit_service import technical_audit_service
 from app.services.technical_event_service import technical_event_service
@@ -529,6 +530,21 @@ async def run_technical_fill_generation(
     user: dict[str, Any] = Depends(current_user),
 ) -> JSONResponse:
     return await technical_generation_service.run(project_id, request, data, user)
+
+
+@router.get("/api/technical/projects/{project_id}/score-index")
+async def get_technical_score_index(project_id: str) -> dict[str, Any]:
+    return await technical_score_index_service.status(project_id)
+
+
+@router.post("/api/technical/projects/{project_id}/score-index/run")
+async def run_technical_score_index(
+    project_id: str,
+    request: Request,
+    data: dict[str, Any] = Body(default_factory=dict),
+    user: dict[str, Any] = Depends(current_user),
+) -> JSONResponse:
+    return await technical_score_index_service.run(project_id, request, data, user)
 
 
 @router.get("/api/technical/projects/{project_id}/coverage")

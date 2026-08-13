@@ -204,6 +204,16 @@ def _run_job(job: dict[str, Any]) -> bool:
             _run_fill_generation_job(project_id, data, user, bid_type=bid_type)
             project_state = _runtime_state(project_id)
             final_state = project_state.get("fill_state") if isinstance(project_state.get("fill_state"), dict) else {}
+        elif job_type == "score_index_xref":
+            from app.services.technical_score_index_flow import run_score_index_job
+
+            run_score_index_job(project_id, data, user)
+            project_state = _runtime_state(project_id)
+            final_state = (
+                project_state.get("score_index_state")
+                if isinstance(project_state.get("score_index_state"), dict)
+                else {}
+            )
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
             from app.services.material_wiki_auto import on_material_cleaning_job_finished
