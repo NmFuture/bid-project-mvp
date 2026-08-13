@@ -945,6 +945,149 @@ class ValidationErrorRoutingTests(unittest.TestCase):
         self.assertEqual(_validation_error_task_key({"targetKey": "somethingElse"}), "")
 
 
+class TechnicalSingleSessionFinalizeGuardTests(unittest.TestCase):
+    """单会话链路必须过与分片链路同一道 finalize 门槛，否则回落即绕过证据校验。"""
+
+    @staticmethod
+    def _result(*, mode: str, stage: str) -> dict:
+        return {"items": [], "structured": {"workflow": {"mode": mode, "stage": stage}}}
+
+    def test_single_session_without_finalized_stage_needs_guard(self) -> None:
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        self.assertTrue(
+            _needs_technical_s1_finalize_guard(
+                profile=TECHNICAL_PARSE_PROFILE,
+                structured_result=self._result(mode="opencode-agentic-navigation", stage="failed"),
+            )
+        )
+
+    def test_single_session_already_finalized_skips_guard(self) -> None:
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        self.assertFalse(
+            _needs_technical_s1_finalize_guard(
+                profile=TECHNICAL_PARSE_PROFILE,
+                structured_result=self._result(mode="opencode-agentic-navigation", stage="finalized"),
+            )
+        )
+
+    def test_sharded_result_is_not_finalized_twice(self) -> None:
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        # 分片链路在编排内已经 finalize 过，再跑一次纯属浪费
+        self.assertFalse(
+            _needs_technical_s1_finalize_guard(
+                profile=TECHNICAL_PARSE_PROFILE,
+                structured_result=self._result(
+                    mode="opencode-agentic-navigation-sharded", stage="failed"
+                ),
+            )
+        )
+
+    def test_business_profile_is_untouched(self) -> None:
+        from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        self.assertFalse(
+            _needs_technical_s1_finalize_guard(
+                profile=BUSINESS_PARSE_PROFILE,
+                structured_result=self._result(mode="opencode-agentic-navigation", stage="failed"),
+            )
+        )
+
+    def test_non_agentic_result_is_not_finalized(self) -> None:
+        """本地兜底结果没走过 prepare/submit，跑 finalize 只会用空输出覆盖已算好的结果。"""
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        for structured_result in (
+            {"items": [], "structured": {"categories": [{"label": "本地结果"}]}},
+            {"items": [], "structured": {"workflow": {}}},
+            self._result(mode="opencode-skill", stage=""),
+        ):
+            self.assertFalse(
+                _needs_technical_s1_finalize_guard(
+                    profile=TECHNICAL_PARSE_PROFILE, structured_result=structured_result
+                ),
+                structured_result,
+            )
+
+    def test_guard_surfaces_validation_failure(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        structured = {"workflow": {"stage": "failed"}}
+        resolved = {"items": [], "structured": structured}
+        errors = [
+            {
+                "targetKey": "projectBasics",
+                "fieldKey": "projectUnit",
+                "message": "提交值与引用证据文本不一致。",
+            }
+        ]
+        with patch.object(
+            parsing,
+            "_finalize_technical_and_validate",
+            return_value=(resolved, structured, {"stage": "failed"}, "failed", errors),
+        ):
+            guarded, warning = parsing._apply_technical_s1_finalize_guard(
+                Path("s1_parse_manifest.json"), {"items": []}, TECHNICAL_PARSE_PROFILE
+            )
+
+        self.assertIn("finalize 校验未通过（单会话链路）", warning)
+        self.assertIn("提交值与引用证据文本不一致", warning)
+        self.assertEqual(guarded["structured"]["workflow"]["validationErrors"], errors)
+        self.assertTrue(guarded["structured"]["workflow"]["backendFinalizeGuardApplied"])
+
+    def test_guard_marks_result_when_validation_passes(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        structured = {"workflow": {"stage": "finalized"}}
+        resolved = {"items": [], "structured": structured}
+        with patch.object(
+            parsing,
+            "_finalize_technical_and_validate",
+            return_value=(resolved, structured, {"stage": "finalized"}, "finalized", []),
+        ):
+            guarded, warning = parsing._apply_technical_s1_finalize_guard(
+                Path("s1_parse_manifest.json"), {"items": []}, TECHNICAL_PARSE_PROFILE
+            )
+
+        self.assertEqual(warning, "")
+        self.assertTrue(guarded["structured"]["workflow"]["backendFinalizeGuardApplied"])
+        self.assertNotIn("validationErrors", guarded["structured"]["workflow"])
+
+    def test_guard_failure_keeps_the_original_result(self) -> None:
+        """收口本身失败时不能把已经拿到的解析结果打掉，但必须显式告警。"""
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        original = {"items": [{"rowNo": 1}], "structured": {"workflow": {"stage": "running"}}}
+        with patch.object(
+            parsing,
+            "_finalize_technical_and_validate",
+            side_effect=RuntimeError("finalize exited 1"),
+        ):
+            guarded, warning = parsing._apply_technical_s1_finalize_guard(
+                Path("s1_parse_manifest.json"), original, TECHNICAL_PARSE_PROFILE
+            )
+
+        self.assertIs(guarded, original)
+        self.assertIn("收口失败", warning)
+        self.assertIn("finalize exited 1", warning)
+
+
 class DeterministicCliTests(unittest.TestCase):
     def test_s1parse_subprocess_timeout_is_reported_as_runtime_error(self) -> None:
         from unittest.mock import patch
