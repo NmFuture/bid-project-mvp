@@ -35,3 +35,14 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] 未经真实 Pi 验证（协议按 rpc.md 2026-08-13 快照），留 engine-09 PoC 核对事件 schema
 - [ ] `tools` 按请求开关 Pi RPC 不支持，`run_session` 收到非 None 抛 ValueError——orchestrator 接入时带 tools 的链路不能切 pi
 - [ ] provider/model 未接 DB 系统设置链路；会话绑定创建它的事件循环（编排层需同一线程桥接内 create+run）；`--no-session` 不落盘无 resume
+
+## engine-07（review 01 + 复验，2026-08-13，结论 pass）
+
+- [x] ~~F1 (P1 blocking)~~ 已修复（2d9f4a8）：EOF 后先 `_reap_process`（wait）再读 returncode，附真实时序回归用例
+- [x] ~~F2 (P2)~~ 已修复（2d9f4a8）：stderr 伴随 drain task（有界尾部 8KB），防管道缓冲写满假停滞
+- [x] ~~F3/F4~~ 顺手修复（2d9f4a8）：ERROR_PATTERNS 词边界；未配 model 时按请求 model_id 也记 warning
+- [ ] F5: 同会话并发 run 无防护（state.process 覆盖）；prompt 未加 `--` 分隔——当前编排层串行不触发
+- [ ] F6: heartbeat/idle 与 opencode_engine 是第二份内联拷贝，待 §5 SessionMonitor 收敛
+- [ ] 未做真实 CLI 联通验证（本机无 codex CLI），留 engine-09 PoC；新版 codex CLI 的 `exec resume` 子命令拼法与事件键名需按实际版本校准
+- [ ] 消息日志与 trace 在引擎进程内存，后端重启即失；resume 只依赖 codex 侧 thread 持久化
+- [ ] orchestrator 的 EarlyCompletionPlan 链路目前只接 OpencodeEngine；C3 接 S1 分片需编排层做一次 plan→协议回调适配

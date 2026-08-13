@@ -1,7 +1,7 @@
 ---
 id: engine-07
 scope: AgentEngine / CodexEngine
-status: pending
+status: done
 depends-on: [engine-02]
 ---
 
