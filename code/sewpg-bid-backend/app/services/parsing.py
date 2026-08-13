@@ -6695,6 +6695,39 @@ def _shard_repair_prompt(task: dict[str, Any], validation_errors: list[Any]) -> 
     )
 
 
+def _finalize_technical_and_validate(
+    skill_manifest_path: Path,
+    *,
+    local_result: dict[str, Any],
+    profile: ParseProfile,
+) -> tuple[dict[str, Any], Any, dict[str, Any], str, list[Any]]:
+    """确定性执行一次 s1parse finalize 并读回校验状态。
+
+    分片链路与单会话链路共用这一处实现，两条链路的证据门槛因此不会各自漂移。
+    返回 (resolved, structured, workflow, stage, validationErrors)。
+    """
+    finalize_payload = _run_s1parse_cli("finalize", skill_manifest_path)
+    finalized = _resolve_skill_structured_result(
+        finalize_payload,
+        local_result=local_result,
+        profile=profile,
+    )
+    finalized_structured = (
+        finalized.get("structured") if isinstance(finalized.get("structured"), dict) else {}
+    )
+    finalized_workflow = copy.deepcopy(
+        finalized_structured.get("workflow")
+        if isinstance(finalized_structured.get("workflow"), dict)
+        else {}
+    )
+    stage = str(finalized_workflow.get("stage") or "").strip()
+    raw_errors = (
+        finalized_workflow.get("validationErrors") or finalized_workflow.get("missingTargets") or []
+    )
+    errors = list(raw_errors) if isinstance(raw_errors, list) else [raw_errors]
+    return finalized, finalized_structured, finalized_workflow, stage, errors
+
+
 def _run_technical_sharded_parse_skill(
     skill_manifest_path: Path,
     *,
@@ -6778,26 +6811,11 @@ def _run_technical_sharded_parse_skill(
         )
 
     def finalize_once() -> tuple[dict[str, Any], Any, dict[str, Any], str, list[Any]]:
-        finalize_payload = _run_s1parse_cli("finalize", skill_manifest_path)
-        finalized = _resolve_skill_structured_result(
-            finalize_payload,
+        return _finalize_technical_and_validate(
+            skill_manifest_path,
             local_result=local_result,
             profile=profile,
         )
-        finalized_structured = (
-            finalized.get("structured") if isinstance(finalized.get("structured"), dict) else {}
-        )
-        finalized_workflow = copy.deepcopy(
-            finalized_structured.get("workflow")
-            if isinstance(finalized_structured.get("workflow"), dict)
-            else {}
-        )
-        stage = str(finalized_workflow.get("stage") or "").strip()
-        raw_errors = (
-            finalized_workflow.get("validationErrors") or finalized_workflow.get("missingTargets") or []
-        )
-        errors = list(raw_errors) if isinstance(raw_errors, list) else [raw_errors]
-        return finalized, finalized_structured, finalized_workflow, stage, errors
 
     resolved, structured, workflow, workflow_stage, validation_errors = finalize_once()
 
@@ -6998,6 +7016,57 @@ def _business_validation_report_path(skill_manifest_path: Path, workflow: dict[s
     if workflow_path:
         return Path(workflow_path)
     return skill_manifest_path.with_name("validation_report.json")
+
+
+def _needs_technical_s1_finalize_guard(
+    *,
+    profile: ParseProfile,
+    structured_result: dict[str, Any],
+) -> bool:
+    """技术标单会话链路要不要补一次后端 finalize 校验。
+
+    分片链路在编排内已经跑过 finalize 并检查过 stage；单会话链路此前完全依赖模型自觉
+    调用 validate/finalize，模型没调、或调完没通过仍返回结果时后端不会发现，导致同一份
+    解析目标因为链路不同而拥有不同的证据门槛。
+    """
+    if profile.key == "business":
+        return False
+    workflow = _workflow_from_result(structured_result)
+    # 只认 agentic 单会话产物。分片链路（...-sharded）在编排内已经 finalize 过；本地兜底
+    # 结果没走过 prepare/submit，对它跑 finalize 只会拿空输出覆盖掉已经算好的结构化结果。
+    if str(workflow.get("mode") or "").strip() != "opencode-agentic-navigation":
+        return False
+    return str(workflow.get("stage") or "").strip() != "finalized"
+
+
+def _apply_technical_s1_finalize_guard(
+    skill_manifest_path: Path,
+    structured_result: dict[str, Any],
+    profile: ParseProfile,
+) -> tuple[dict[str, Any], str]:
+    """给技术标单会话结果补一次后端 finalize，未通过时保留结果并显式告警。"""
+    try:
+        resolved, structured, workflow, stage, validation_errors = _finalize_technical_and_validate(
+            skill_manifest_path,
+            local_result=structured_result,
+            profile=profile,
+        )
+    except Exception as exc:  # noqa: BLE001 - 收口失败不能把已拿到的解析结果打掉
+        message = f"技术标单会话 finalize 收口失败，结果未经后端校验：{exc}"
+        logger.warning("S1 技术标单会话 finalize 收口失败：%s", exc)
+        return structured_result, message
+    if isinstance(structured, dict):
+        workflow["backendFinalizeGuardApplied"] = True
+        if stage != "finalized":
+            workflow["validationErrors"] = copy.deepcopy(validation_errors)
+        structured["workflow"] = workflow
+    if stage != "finalized":
+        detail = "；".join(
+            text for text in (_validation_error_text(item) for item in validation_errors) if text
+        ) or f"workflow.stage={stage or 'missing'}"
+        logger.warning("S1 技术标单会话 finalize 校验未通过：%s", detail)
+        return resolved, f"技术标 finalize 校验未通过（单会话链路）：{detail}"
+    return resolved, ""
 
 
 def _needs_business_s1_finalize_guard(
@@ -7636,6 +7705,18 @@ def parse_tender_documents(
             )
             if finalize_warning:
                 skill_warning = f"{skill_warning}；{finalize_warning}" if skill_warning else finalize_warning
+        if _needs_technical_s1_finalize_guard(profile=profile, structured_result=structured_result):
+            structured_result, technical_finalize_warning = _apply_technical_s1_finalize_guard(
+                skill_manifest_path,
+                structured_result,
+                profile,
+            )
+            if technical_finalize_warning:
+                skill_warning = (
+                    f"{skill_warning}；{technical_finalize_warning}"
+                    if skill_warning
+                    else technical_finalize_warning
+                )
     except BaseException:
         # 主链路已经失败，这里只负责回收附表线程，避免解析结束后还有线程在往项目目录写文件。
         # 附表自身的异常只记日志，不能盖掉原始失败原因。
