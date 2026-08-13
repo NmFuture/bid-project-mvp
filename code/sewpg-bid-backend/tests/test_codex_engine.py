@@ -539,10 +539,13 @@ class CodexFactoryTests(unittest.TestCase):
             engine = AgentEngineFactory.create()
         self.assertIsInstance(engine, OpencodeEngine)
 
-    def test_factory_pi_still_not_implemented(self) -> None:
+    def test_factory_pi_returns_pi_engine(self) -> None:
+        """engine-08 合入后 pi 分支已落地（合并语义更新，原断言 NotImplementedError）。"""
+        from app.services.agent_engine.pi_engine import PiEngine
+
         with patch.dict(os.environ, {"AGENT_ENGINE": "pi"}):
-            with self.assertRaises(NotImplementedError):
-                AgentEngineFactory.create()
+            engine = AgentEngineFactory.create()
+        self.assertIsInstance(engine, PiEngine)
 
 
 if __name__ == "__main__":
