@@ -24,11 +24,11 @@
 
 ### P2（non-blocking）
 
-- **P2-1：pi 两处校准与 codex 行缓冲上限无单测锁定。** codex 的 resume 拼法与 `agent_message` 键已有测试，但：pi 的 `-n title` 移除与默认 `--no-extensions`（`pi_engine.py:170-181`）在 `test_pi_engine.py:160-169` 只断言 `argv[:3]` 与 provider/model，不锁定新 argv 形态（也不锁 `PI_NO_EXTENSIONS=0` 的关闭分支）；codex 的 `limit=8MiB`（`codex_engine.py:104,187`）无任何断言。这三处都是「按真实 CLI 实测漂移修复」的点，恰恰是未来快照/版本再漂移时最需要测试兜底的。建议补：pi argv 全量断言（含 `--no-extensions` 默认在、`PI_NO_EXTENSIONS=0` 时不在、无 `-n`）；codex `create_subprocess_exec` 的 `limit` kwarg 断言。
+- **P2-1：pi 两处校准与 codex 行缓冲上限无单测锁定。** ~~codex 的 resume 拼法与 `agent_message` 键已有测试，但：pi 的 `-n title` 移除与默认 `--no-extensions`（`pi_engine.py:170-181`）在 `test_pi_engine.py:160-169` 只断言 `argv[:3]` 与 provider/model，不锁定新 argv 形态（也不锁 `PI_NO_EXTENSIONS=0` 的关闭分支）；codex 的 `limit=8MiB`（`codex_engine.py:104,187`）无任何断言。~~ **已处理（94daf29，复验通过）**：pi argv 改全量精确断言（含 `--no-extensions` 默认在、`assertNotIn("-n")`），新增 `PI_NO_EXTENSIONS=0` 关闭分支用例；codex 新增 `create_subprocess_exec` 的 `limit` 传参断言（harness 记录 kwargs，断言实测值 == 常量且常量 ≥ 8MiB，删掉 `limit=` 即红，非自证式）。
 
 ### P3（non-blocking）
 
-- **P3-1：PoC 文档测试计数笔误。** `docs/plan/reviews/engine-09-poc.md`「进生产建议」写「2386 passed（基线 2368 + 新增 18）」，commit message 与本地复跑均为 **2387**（漏算了 codex 新增的 1 例 agent_message 测试）。文档数字改 2387 即可。
+- **P3-1：PoC 文档测试计数笔误。** ~~`docs/plan/reviews/engine-09-poc.md`「进生产建议」写「2386 passed（基线 2368 + 新增 18）」，commit message 与本地复跑均为 **2387**。~~ **已处理（94daf29）**：文档改为「2387 passed（基线 2368 + 新增 19）」，与实测一致。
 - **P3-2：默认路径错误语义有一处有意的行为变化，记录备查。** 分片会话 opencode 路径现在 `info.error` 即抛 RuntimeError（`opencode_engine.py:373-375`），接线前是把错误文本留在 trace 里返回「succeeded」、靠 silent-shard 检测兜底。新行为汇入 `parsing.py:6520` 既有 failed→重试路径，且更符合根 AGENTS.md「失败要显式暴露」，判为改进而非回归；边缘情形：已 submit 成功后才 info.error 的分片会被判 failed 重跑（重提交幂等，影响可忽略）。
 - **P3-3：run_session 每次结束多一次 `_best_effort_messages` GET**（`opencode_engine.py:376-378`），分片与 repair 路径都会多打一次 opencode HTTP；best-effort 吞错、开销可忽略，仅登记。
 - **P3-4：适配器收割顺序与 opencode 轮询不一致（当前无触发方）。** `tool_completed_callback_from_plan` 在回调内即 harvest（base.py:97-101），而 opencode 轮询 in-loop 是先停会话再 `harvest_payload`（opencode_engine.py:741-750）；带 produce_payload 的 s2 链路若未来切协议引擎，「停→校验」顺序会反转成「校验→停」。docstring 已声明相位不映射，分片链路 plan 为空、无生产调用方，登记为未来接线时的检查点。
@@ -36,4 +36,13 @@
 
 ## 结论
 
-**pass**。默认路径（AGENT_ENGINE 缺省 = opencode）分片链路逐步核对等价，唯一行为差异（P3-2）是有意的显式失败改进；协议对齐语义保持且有测试锁定；codex/pi 真实 CLI 校准与 PoC 记录完整覆盖 §8 判据；全量复跑 2387 passed / 0 failed 与声称一致。P2-1（pi/行缓冲校准点补测试）建议随下一波次顺手补上，不阻断合入。
+**pass**。默认路径（AGENT_ENGINE 缺省 = opencode）分片链路逐步核对等价，唯一行为差异（P3-2）是有意的显式失败改进；协议对齐语义保持且有测试锁定；codex/pi 真实 CLI 校准与 PoC 记录完整覆盖 §8 判据；全量复跑 2387 passed / 0 failed 与声称一致。
+
+## 复验（94daf29，2026-08-14）
+
+- 改动为纯测试 + 文档笔误（3 文件，+33/-8），与 P2-1/P3-1 的处理建议一一对应，无超范围改动。
+- 断言有效性核对：pi argv 精确全量等值断言 + `assertNotIn("-n")`（引擎改回旧拼法即红）；opt-in 用例经 `patch.dict` 在构造期注入 `PI_NO_EXTENSIONS=0`，`_engine()` 不传 `disable_extensions`，env 分支被真实走到；codex limit 断言取 harness 记录的实测 kwargs，删掉引擎侧 `limit=` 即 None != 常量而红——均非自证式。
+- 抽查复跑 `test_pi_engine.py`（26）+ `test_codex_engine.py`（29）+ `test_agent_engine_wiring.py`（18）：**73 passed / 0 failed**；新增 2 例与「2389 = 2387 + 2」的声称一致。
+- P2-1、P3-1 均已在上方标注已处理；其余 P3（P3-2~P3-5）为登记项，无需处理。
+
+**最终结论：pass**，无未关闭 blocking/P2 项。
