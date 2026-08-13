@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.services.bid_outline_state import save_generated_outline_state
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
+from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.file_utils import run_awaitable_sync
 from app.services.parsing import IMAGE_SUFFIXES, _ocr_fallback_text
@@ -45,7 +46,9 @@ TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 TECH_OUTLINE_HANDOFF_DECISION_UNITS = 1
 TECH_OUTLINE_CHAPTER_WORKERS = settings.tech_outline_chapter_workers
 TECH_OUTLINE_TOTAL_WORKERS = TECH_OUTLINE_CHAPTER_WORKERS + 1
-_TECH_OUTLINE_REQUEST_SLOTS = threading.BoundedSemaphore(TECH_OUTLINE_TOTAL_WORKERS)
+# 章节决策会话的并发池：B4（engine-06）起从全局并发预算派生，章节数（+1 附表）
+# 只是预算内的上限，总并发恒 ≤ AGENT_CONCURRENCY_BUDGET，不再与各池叠加。
+_TECH_OUTLINE_REQUEST_SLOTS = AGENT_CONCURRENCY_BUDGET.derive(TECH_OUTLINE_TOTAL_WORKERS)
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 
 logger = logging.getLogger(__name__)

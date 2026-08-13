@@ -2354,8 +2354,8 @@ class BidParseService:
                         phase_label="等待自动重试",
                         stale_after_seconds=int(delay) + 300,
                     )
-                    # 重试等待会阻塞当前 worker/本地线程；opencode 请求并发默认 8
-                    # （settings.opencode_max_concurrency），单项目的解析任务本身串行执行，
+                    # 重试等待会阻塞当前 worker/本地线程；opencode 请求并发上限为全局预算
+                    # （settings.agent_concurrency_budget，默认 8），单项目的解析任务本身串行执行，
                     # 短暂阻塞只影响本项目，可接受。
                     time.sleep(delay)
                     continue

@@ -147,7 +147,12 @@ class Settings:
     opencode_provider_id: str
     opencode_model_id: str
     opencode_timeout_sec: float
-    opencode_max_concurrency: int
+    # B4（engine-06）：全局 Agent 并发预算（单一事实）。引擎默认请求槽、S1 分片槽、
+    # 目录章节槽与进程型引擎（codex/pi）进程池全部从它派生，总并发恒 ≤ 预算。
+    # 取代 OPENCODE_MAX_CONCURRENCY——原配置只限默认请求槽一个池，不代表总量，
+    # 直接当预算回落会把 S1 分片压回串行，故不做旧值回落。默认值本地安全；
+    # 5090 实测取值只写 docker-compose.5090.yml。
+    agent_concurrency_budget: int
     # B2（engine-04）：send_prompt 重发与轮询断线重连预算，默认值本地安全；
     # 5090 实测取值只写 docker-compose.5090.yml。
     opencode_send_prompt_max_retries: int
@@ -254,7 +259,7 @@ settings = Settings(
     opencode_provider_id=_configured_opencode_provider_id,
     opencode_model_id=_configured_opencode_model_id,
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
-    opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 8),
+    agent_concurrency_budget=_int_env("AGENT_CONCURRENCY_BUDGET", 8),
     # B2（engine-04）：send_prompt 只对「确认未送达」（连接未建立）重发，默认 2 次；
     # 轮询断线重连默认 6 次、退避合计约 23s，覆盖常规服务重启窗口。
     opencode_send_prompt_max_retries=_non_negative_int_env("OPENCODE_SEND_PROMPT_MAX_RETRIES", 2),

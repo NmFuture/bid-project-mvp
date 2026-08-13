@@ -33,6 +33,7 @@ from app.services.document_parse_engine import create_document_parse_engine
 from app.services.document_parse_quality import evaluate_document_nav_quality
 from app.services.docling_engine import DoclingParseEngine
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
+from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.parse_profiles import (
     BUSINESS_PARSE_PROFILE,
@@ -6355,9 +6356,10 @@ def _run_s1parse_cli(command: str, skill_manifest_path: Path, *extra: str) -> di
     return payload
 
 
-# 分片会话的并发槽位。全局 _OPENCODE_REQUEST_SLOTS 默认只有 1（compose 默认值），
-# 会把并发分片重新压回串行，所以分片走独立槽位池，由 S1_PARSE_SHARD_CONCURRENCY 控制。
-_S1_SHARD_REQUEST_SLOTS = threading.BoundedSemaphore(max(1, settings.s1_parse_shard_concurrency))
+# 分片会话的并发池：B4（engine-06）起从全局并发预算派生（agent_engine/concurrency.py），
+# S1_PARSE_SHARD_CONCURRENCY 只是预算内的分片上限；预算、分片、目录章节三池共享
+# 同一总量，总并发恒 ≤ AGENT_CONCURRENCY_BUDGET，不再叠加超发。
+_S1_SHARD_REQUEST_SLOTS = AGENT_CONCURRENCY_BUDGET.derive(max(1, settings.s1_parse_shard_concurrency))
 
 
 # 进度条第一行展示的条款数每次都要读提交文件，读盘节流到这个间隔，

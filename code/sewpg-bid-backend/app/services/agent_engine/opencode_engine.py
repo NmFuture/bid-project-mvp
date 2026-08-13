@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -21,6 +20,7 @@ from app.services.agent_engine.base import (
     ToolCompletedEvent,
     iter_completed_bash_tool_events,
 )
+from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.system_settings import opencode_llm_config_active, system_settings_service
 
@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 OPENCODE_PROGRESS_HEARTBEAT_SECONDS = 10.0
 OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS = 10.0
 
-_OPENCODE_REQUEST_SLOTS = threading.BoundedSemaphore(settings.opencode_max_concurrency)
+# B4（engine-06）：默认请求槽 = 全局并发预算本身（不另设 cap）；S1 分片槽与
+# 目录章节槽从同一预算派生（见 parsing.py / outline_generation.py），总并发恒 ≤ 预算。
+# 历史导出入口保留 `_OPENCODE_REQUEST_SLOTS` 名字（tests 与旧调用方从这里取）。
+_OPENCODE_REQUEST_SLOTS = AGENT_CONCURRENCY_BUDGET.derive()
 _SESSION_CREATE_RETRY_DELAYS_SEC = (0.5, 1.0, 2.0, 4.0, 8.0, 8.0)
 # 与 errors.RETRYABLE_HTTP_STATUS_CODES 同源（B2 起唯一事实在 errors.py）。
 _SESSION_CREATE_RETRYABLE_STATUS_CODES = engine_errors.RETRYABLE_HTTP_STATUS_CODES
@@ -60,6 +63,11 @@ class OpencodeEngine:
     404 幂等、其余失败显式抛错）；编排层在会话终态经 `delete_session_quietly`
     回收（失败只告警不阻断）。唯一刻意保留的是 technical_chat_service 的
     多轮共创对话会话（`send_text_prompt(keep_session=True)`）。
+
+    B4（engine-06）落地并发治理统一：默认请求槽不再是独立信号量池，而是
+    全局并发预算 `AGENT_CONCURRENCY_BUDGET` 派生的 `BudgetPool`
+    （`agent_engine/concurrency.py`）；S1 分片与目录章节池从同一预算派生，
+    进程型引擎（codex/pi）进程池也并入该预算，总并发恒 ≤ `AGENT_CONCURRENCY_BUDGET`。
 
     A1（engine-02）后本类只剩引擎/传输层职责（改造方案 §1 A 层）：
     会话生命周期、轮询监管（idle 超时/心跳/取消）、「bash 工具完成」事件检测与
@@ -151,13 +159,14 @@ class OpencodeEngine:
 
     @asynccontextmanager
     async def _request_slot(self) -> Any:
-        """并发预算闸门（threading.BoundedSemaphore，跨线程/跨循环共享）。
+        """并发预算闸门（BudgetPool，threading 原语，跨线程/跨循环共享）。
 
         非阻塞轮询获取：取消落在等待窗口时协程直接退出、不持有许可——
         `asyncio.to_thread(acquire)` 的阻塞等待无法被取消，executor 线程随后
-        acquire 成功却无人 release，许可永久泄漏（预算默认 1 时进程级挂死）。
+        acquire 成功却无人 release，许可永久泄漏（预算为 1 时进程级挂死）。
         不换 asyncio.Semaphore：它有循环亲和性，引擎实例跨事件循环复用会炸。
-        B4（engine-06）才统一并发治理；预算原语与取值保持不变。
+        B4（engine-06）后 `self._request_slots` 是从全局预算派生的 `BudgetPool`
+        （见 agent_engine/concurrency.py），本方法的获取/释放语义不变。
         """
         while not self._request_slots.acquire(blocking=False):
             await asyncio.sleep(0.1)

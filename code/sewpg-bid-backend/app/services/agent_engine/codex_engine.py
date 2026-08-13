@@ -6,7 +6,9 @@
 会话模型：**一个 session ≈ 一个 exec 进程**——每次 `run_session` 起一个
 `codex exec ... --json` 子进程（续跑带 `--resume <thread_id>`），`abort` = kill
 进程；进程在 run 结束 / abort / delete 后必被回收（`wait()` 收尸）。
-进程池上限与孤儿回收属 engine-06 并发预算范围，本类只保证终态必回收。
+进程池上限已并入全局并发预算（B4/engine-06，方案 §7）：`run_session` 从
+`AGENT_CONCURRENCY_BUDGET` 派生池取许可，持到进程回收后释放；孤儿回收之外
+不再有独立的进程池常量。
 
 provider 降级（方案 §3 注 / §6 风险，显式记录）：Codex 的 provider 由
 `~/.codex/config.toml` 的 `model_provider` 表与登录态决定，不是按请求可切换的
@@ -40,6 +42,7 @@ from app.services.agent_engine.base import (
     EngineRunResult,
     ToolCompletedEvent,
 )
+from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
 from app.services.bid_parse_cancel import ParseCancelledError
 
 
@@ -49,6 +52,10 @@ CODEX_PROGRESS_HEARTBEAT_SECONDS = 10.0
 CODEX_CANCEL_POLL_SECONDS = 0.5
 CODEX_KILL_GRACE_SECONDS = 5.0
 CODEX_STDERR_TAIL_CHARS = 8192  # stderr 排干只留尾部，供报错详情
+
+# 进程池上限 = 全局并发预算（B4）：一个 session 一个 exec 进程，
+# 与 opencode 请求槽 / S1 分片 / 目录章节共享同一总量。
+_CODEX_PROCESS_SLOTS = AGENT_CONCURRENCY_BUDGET.derive()
 
 
 @dataclass
@@ -103,6 +110,7 @@ class CodexEngine:
         sandbox_mode: str | None = None,
         codex_home: str | None = None,
         timeout_sec: float | None = None,
+        request_slots: Any | None = None,
     ) -> None:
         # 配置默认值走环境变量，本地安全：不装 codex CLI 时引擎仍可实例化，
         # 只有真正 run 时才在 create_subprocess_exec 处报「未安装」。
@@ -121,6 +129,9 @@ class CodexEngine:
             min(float(timeout_sec or settings.opencode_timeout_sec), 900.0),
         )
         self._sessions: dict[str, _CodexSessionState] = {}
+        self._request_slots = (
+            request_slots if request_slots is not None else _CODEX_PROCESS_SLOTS
+        )
 
     # ------------------------------------------------------------------
     # AgentEngine 协议
@@ -154,34 +165,41 @@ class CodexEngine:
             shlex.join(argv[:-1]),
             len(prompt_text),
         )
+        # 进程池上限 = 全局并发预算（B4）：许可从 spawn 前持到进程回收后。
+        # 非阻塞轮询，取消落在等待窗口时不持有许可（语义同 OpencodeEngine._request_slot）。
+        while not self._request_slots.acquire(blocking=False):
+            await asyncio.sleep(0.1)
         try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                f"codex CLI 未安装或不在 PATH（{self.cli_path}）。"
-            ) from exc
-        except OSError as exc:
-            raise RuntimeError(f"codex CLI 启动失败：{exc}") from exc
-        state.process = process
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    f"codex CLI 未安装或不在 PATH（{self.cli_path}）。"
+                ) from exc
+            except OSError as exc:
+                raise RuntimeError(f"codex CLI 启动失败：{exc}") from exc
+            state.process = process
 
-        try:
-            return await self._pump_events(
-                state,
-                process,
-                stream_callback=stream_callback,
-                on_tool_completed=on_tool_completed,
-                cancel_check=cancel_check,
-            )
+            try:
+                return await self._pump_events(
+                    state,
+                    process,
+                    stream_callback=stream_callback,
+                    on_tool_completed=on_tool_completed,
+                    cancel_check=cancel_check,
+                )
+            finally:
+                # 终态必回收：无论正常/收割/取消/异常，进程引用出表并确保已收尸。
+                state.process = None
+                await self._reap_process(process)
         finally:
-            # 终态必回收：无论正常/收割/取消/异常，进程引用出表并确保已收尸。
-            state.process = None
-            await self._reap_process(process)
+            self._request_slots.release()
 
     async def list_messages(self, session_id: str) -> list[dict[str, Any]]:
         state = self._sessions.get(str(session_id or ""))

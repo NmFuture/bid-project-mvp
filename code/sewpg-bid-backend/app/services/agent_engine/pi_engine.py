@@ -3,8 +3,9 @@
 会话模型：**一个 session = 一个 `pi --mode rpc` 常驻进程**（Pi RPC 单进程只承载
 一个会话，多会话 = 多进程）。引擎持有显式进程表，`abort_session` /
 `delete_session` / `run_session` 终态路径（提前收割、取消、idle 超时、运行出错）
-都会把进程回收（先 RPC `abort` 再 kill + reap），不留孤儿。进程池上限属 B4
-（engine-06）范围，本类不做。
+都会把进程回收（先 RPC `abort` 再 kill + reap），不留孤儿。进程池上限已并入
+全局并发预算（B4/engine-06，方案 §7）：`create_session` spawn 前从
+`AGENT_CONCURRENCY_BUDGET` 派生池取许可，`_terminate_session` 回收时释放。
 
 协议依据（事件协议版本显式记录，升级 Pi 前必须核对）：
 `PI_RPC_PROTOCOL` 指向 pi-mono 仓库 `packages/coding-agent/docs/rpc.md` 的
@@ -46,9 +47,14 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from app.services.agent_engine.base import EngineRunResult, ToolCompletedEvent
+from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
 from app.services.bid_parse_cancel import ParseCancelledError
 
 logger = logging.getLogger(__name__)
+
+# 进程池上限 = 全局并发预算（B4）：常驻 RPC 进程与 opencode 请求槽 / S1 分片 /
+# 目录章节共享同一总量，一个许可 = 一个并发会话进程。
+_PI_PROCESS_SLOTS = AGENT_CONCURRENCY_BUDGET.derive()
 
 # 事件协议版本（显式记录）：pi-mono packages/coding-agent/docs/rpc.md，2026-08-13 快照。
 # 升级 Pi 二进制前核对该文档的事件/命令 schema 是否漂移。
@@ -131,6 +137,7 @@ class PiEngine:
         idle_timeout_sec: float | None = None,
         heartbeat_interval_sec: float = PI_PROGRESS_HEARTBEAT_SECONDS,
         rpc_timeout_sec: float = PI_RPC_COMMAND_TIMEOUT_SECONDS,
+        request_slots: Any | None = None,
     ) -> None:
         self.pi_command = (
             pi_command or os.getenv(PI_COMMAND_ENV_VAR, "").strip() or "pi"
@@ -146,6 +153,9 @@ class PiEngine:
         self.rpc_timeout = max(0.1, float(rpc_timeout_sec))
         self._sessions: dict[str, _PiSession] = {}
         self._request_seq = itertools.count(1)
+        self._request_slots = (
+            request_slots if request_slots is not None else _PI_PROCESS_SLOTS
+        )
 
     # ------------------------------------------------------------------
     # AgentEngine 协议
@@ -156,10 +166,18 @@ class PiEngine:
             argv += ["--provider", self.provider_id]
         if self.model_id:
             argv += ["--model", self.model_id]
+        # 进程池上限 = 全局并发预算（B4）：许可从 spawn 前持到 _terminate_session
+        # 回收；非阻塞轮询，取消落在等待窗口时不持有许可（同 OpencodeEngine._request_slot）。
+        while not self._request_slots.acquire(blocking=False):
+            await asyncio.sleep(0.1)
         try:
             process = await self._spawn_process(argv)
         except OSError as exc:
+            self._request_slots.release()
             raise RuntimeError(f"Pi RPC 进程启动失败（{self.pi_command}）：{exc}") from exc
+        except Exception:
+            self._request_slots.release()
+            raise
         session_id = f"pi-{uuid.uuid4().hex[:12]}"
         session = _PiSession(
             session_id=session_id,
@@ -350,32 +368,35 @@ class PiEngine:
         )
 
     async def _terminate_session(self, session_id: str) -> bool:
-        """回收会话进程：RPC abort（尽力）→ kill → reap → 关 reader。幂等。"""
+        """回收会话进程：RPC abort（尽力）→ kill → reap → 关 reader → 归还预算许可。幂等。"""
         session = self._sessions.pop(session_id, None)
         if session is None:
             return False
         session.terminating = True
-        process = session.process
-        if process.returncode is None and session.exit_status is None:
-            try:
-                await self._rpc(session, {"type": "abort"}, timeout=PI_ABORT_TIMEOUT_SECONDS)
-            except Exception as exc:  # abort 失败不阻断回收
-                logger.warning("pi session %s RPC abort 失败，直接 kill：%s", session_id, exc)
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:  # pragma: no cover - 进程已退出
-                pass
-        with suppress(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(process.wait()), PI_PROCESS_STOP_TIMEOUT_SECONDS)
-        if process.returncode is None:  # pragma: no cover - kill 未生效的兜底告警
-            logger.warning("pi session %s 进程在 kill 后未退出。", session_id)
-        reader = session.reader_task
-        if reader is not None and not reader.done():
-            reader.cancel()
-            with suppress(asyncio.CancelledError):
-                await reader
-        return True
+        try:
+            process = session.process
+            if process.returncode is None and session.exit_status is None:
+                try:
+                    await self._rpc(session, {"type": "abort"}, timeout=PI_ABORT_TIMEOUT_SECONDS)
+                except Exception as exc:  # abort 失败不阻断回收
+                    logger.warning("pi session %s RPC abort 失败，直接 kill：%s", session_id, exc)
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:  # pragma: no cover - 进程已退出
+                    pass
+            with suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(process.wait()), PI_PROCESS_STOP_TIMEOUT_SECONDS)
+            if process.returncode is None:  # pragma: no cover - kill 未生效的兜底告警
+                logger.warning("pi session %s 进程在 kill 后未退出。", session_id)
+            reader = session.reader_task
+            if reader is not None and not reader.done():
+                reader.cancel()
+                with suppress(asyncio.CancelledError):
+                    await reader
+            return True
+        finally:
+            self._request_slots.release()  # 进程许可与进程同生死；pop 保证只归还一次
 
     # ------------------------------------------------------------------
     # RPC 收发（JSONL，id 关联）
