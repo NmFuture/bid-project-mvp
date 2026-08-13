@@ -1,5 +1,8 @@
 # engine-08 review 01（PiEngine / f18b219）
 
+> **复验（2026-08-13，fix commit `8feb7f6`）**：P2-1、P2-2 均已修复，见下方各条目标注；
+> 抽查复跑 `tests/test_pi_engine.py` **25 passed**（原 23 + 新增 2）。最终结论维持 **pass**。
+
 - 评审对象：commit `f18b219`（`pi_engine.py` 新建 626 行、`factory.py` +6/-3、`tests/test_pi_engine.py` 新建 540 行 / 23 用例）
 - 对照：`base.py` AgentEngine 协议（§3）、改造方案 §4.3 / §6 C2 / §7、pi-mono 官方 `packages/coding-agent/docs/rpc.md` 及源码（`cli/args.ts`、`packages/agent/src/types.ts`，2026-08-13 main）
 - 复跑：worktree 内全量 `pytest -m "not integration"`：**2299 passed, 0 failed**（183s），与开发者声称一致
@@ -19,14 +22,14 @@
 
 ## Findings
 
-### P2-1（non-blocking，PoC 前必须复核）：协议快照记录含不实事件 `agent_settled`
+### P2-1（non-blocking，**已修复 @ 8feb7f6**）：协议快照记录含不实事件 `agent_settled`
 
 - 位置：`pi_engine.py:20`（docstring）、`:544-549`
 - 事实：核对 pi-mono 官方 `docs/rpc.md` 与 `packages/agent/src/types.ts` 的 `AgentEvent` 联合类型（2026-08-13 main），事件表中**不存在 `agent_settled`**；运行终态事件就是 `agent_end`，且 `agent_end` 载荷只有 `messages`，**没有 `willRetry` 字段**（`willRetry` 在 `auto_compaction_end` 上）。docstring 注释「以 rpc.md 快照为准 agent_settled 必发」不成立。
 - 影响：功能不受影响——`:547` 的 `agent_end and not willRetry` 兜底在真实协议下恒真，settled 判定实际靠它；`agent_settled` 分支是死代码。但「事件协议版本显式记录」是任务要求，记录内容有误会在升级 Pi 核对时误导。
 - 建议：修正 docstring 与 `:548` 注释（终态 = `agent_end`；`willRetry` 判断可删或注明来源字段），PoC（engine-09）真实联通时复核事件序列。
 
-### P2-2（non-blocking）：stdout 行缓冲默认 64KiB 上限，大输出会让 reader 异常退出
+### P2-2（non-blocking，**已修复 @ 8feb7f6**）：stdout 行缓冲默认 64KiB 上限，大输出会让 reader 异常退出
 
 - 位置：`pi_engine.py:338`（`create_subprocess_exec` 未传 `limit`）、`:405`（`readline`）
 - 事实：asyncio 子进程流默认 `limit=2**16`。`tool_execution_end`/`message_end` 单条 JSONL 携带完整 bash stdout，而本引擎的收割载荷恰恰就是 finalize 命令的完整 stdout；超过 64KiB 时 `readline` 抛 `ValueError`，reader 走通用异常分支退出，run 以「进程意外退出（returncode=None）」报错——进程其实活着，错误文案也误导。
@@ -56,3 +59,11 @@
 - `git show f18b219` 全量 diff 逐行核对（本文件上述行号基于 worktree HEAD）。
 - 官方协议核对来源：`docs/rpc.md`、`src/cli/args.ts`、`packages/agent/src/types.ts`（earendil-works/pi @ main，2026-08-13）。
 - 全量测试复跑：worktree `code/sewpg-bid-backend`，CI 对齐环境变量，**2299 passed / 0 failed / 30 deselected**。
+
+## 复验（fix commit `8feb7f6`，2026-08-13）
+
+- **P2-1 已修复**：docstring 改为「`agent_end` 为运行终态、载荷无 `willRetry`、官方无 `agent_settled`」；两处分支注释改为防御写法说明；功能代码未动（符合修复建议）。
+- **P2-2 已修复**：新增 `PI_RPC_STREAM_LIMIT_BYTES = 8MiB` 常量（注释说明动机），`create_subprocess_exec(..., limit=...)` 显式传入；补 2 条单测（limit 传参断言、256KiB 单行载荷完整收割）。大输出用例经 fake 验证折叠逻辑，真实 readline 上限仍留 PoC 复核（与常量注释一致）。
+- 抽查复跑 `tests/test_pi_engine.py`：**25 passed**（原 23 + 新增 2）；开发者报全量 2301 passed / 0 failed，未重跑全量。
+- 新 commit 未引入新问题；P3-1~P3-4 维持 non-blocking 留待后续。
+- **最终结论：pass**（P2 清零，P3 不阻断）。
