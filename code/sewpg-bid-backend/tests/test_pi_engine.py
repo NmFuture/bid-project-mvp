@@ -162,12 +162,26 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(session_id.startswith("pi-"))
         self.assertIn(session_id, engine._sessions)
-        argv = process.argv
-        self.assertEqual(argv[:3], ["pi-fake", "--mode", "rpc"])
-        self.assertIn("--no-session", argv)
-        self.assertEqual(argv[argv.index("--provider") + 1], "p0")
-        self.assertEqual(argv[argv.index("--model") + 1], "m0")
+        # argv 全量形态锁定（engine-09 review P2-1，pi 0.73.1 实测校准）：
+        # `-n title` 是非法选项不得出现；headless 默认 --no-extensions。
+        self.assertEqual(
+            process.argv,
+            ["pi-fake", "--mode", "rpc", "--no-session", "--no-extensions", "--provider", "p0", "--model", "m0"],
+        )
+        self.assertNotIn("-n", process.argv)
         self.assertEqual(len(process.commands("get_state")), 1)  # 握手
+        await engine.delete_session(session_id)
+
+    async def test_create_session_extensions_opt_in_via_env(self) -> None:
+        """PI_NO_EXTENSIONS=0（或构造参数）关闭 --no-extensions（engine-09 review P2-1）。"""
+        with patch.dict(os.environ, {"PI_NO_EXTENSIONS": "0"}):
+            engine = self._engine()
+        process = FakePiProcess()
+
+        session_id = await self._create(engine, process)
+
+        self.assertNotIn("--no-extensions", process.argv)
+        self.assertNotIn("-n", process.argv)
         await engine.delete_session(session_id)
 
     async def test_create_session_handshake_timeout_kills_process(self) -> None:

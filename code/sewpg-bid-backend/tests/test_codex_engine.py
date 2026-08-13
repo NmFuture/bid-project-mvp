@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.services.agent_engine import codex_engine as codex_module
 from app.services.agent_engine.base import ToolCompletedEvent, iter_completed_bash_tool_events
-from app.services.agent_engine.codex_engine import CodexEngine
+from app.services.agent_engine.codex_engine import CODEX_STDOUT_STREAM_LIMIT_BYTES, CodexEngine
 from app.services.agent_engine.factory import AgentEngineFactory
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.bid_parse_cancel import ParseCancelledError
@@ -144,7 +144,7 @@ class _ExecHarness:
         )
 
     async def _spawn(self, *argv: str, **kwargs: Any) -> _FakeProcess:
-        self.calls.append({"argv": list(argv), "env": kwargs.get("env")})
+        self.calls.append({"argv": list(argv), "env": kwargs.get("env"), "limit": kwargs.get("limit")})
         return self.processes[len(self.calls) - 1]
 
     def __enter__(self) -> "_ExecHarness":
@@ -253,6 +253,17 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resume_argv[2:4], ["resume", "thread-42"])
         self.assertNotIn("--sandbox", resume_argv)
         self.assertIn('sandbox_mode="workspace-write"', resume_argv)
+
+    async def test_run_session_spawns_with_raised_stream_limit(self) -> None:
+        """stdout 行缓冲上限锁定（engine-09 review P2-1）：工具完整 aggregated_output
+        单行可超 asyncio 默认 64KiB，create_subprocess_exec 必须显式放大 limit。"""
+        engine = CodexEngine()
+        session_id = await engine.create_session("t")
+        with _ExecHarness(_FakeProcess([_turn_completed()])) as harness:
+            await engine.run_session(session_id, "p")
+
+        self.assertEqual(harness.calls[0]["limit"], CODEX_STDOUT_STREAM_LIMIT_BYTES)
+        self.assertGreaterEqual(CODEX_STDOUT_STREAM_LIMIT_BYTES, 8 * 1024 * 1024)
 
     async def test_agent_message_item_type_alias_maps_to_reply(self) -> None:
         """engine-09 PoC 校准（codex 0.147.0 实测）：assistant 文本 item 类型改名 agent_message。"""

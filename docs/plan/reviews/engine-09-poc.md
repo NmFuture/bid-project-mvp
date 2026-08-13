@@ -59,6 +59,6 @@
 
 ## AGENT_ENGINE 进生产建议
 
-- **接线本身可进生产**：默认 `opencode` 不变，全量测试 2386 passed 0 failed（基线 2368 + 新增 18），opencode 路径行为零变化（表征测试全绿）。
+- **接线本身可进生产**：默认 `opencode` 不变，全量测试 2387 passed 0 failed（基线 2368 + 新增 19），opencode 路径行为零变化（表征测试全绿）。
 - **codex/pi 定位为实验性引擎**：dev 环境可经 `AGENT_ENGINE` 启用观察；5090 生产切换（只写 `docker-compose.5090.yml`）前需补：多分片并发真实冒烟、大输出/超长会话压测、pi 会话进程长期孤儿观察。
 - 候选优先级：**pi > codex**——pi 与 opencode 同模型下产物逐行一致、耗时最低（53s vs 70s），RPC 常驻进程模型最接近 opencode serve；codex 单会话一个 exec 进程、冷启动慢（136–209s）且事件键随 CLI 版本漂移，适合作为备用内核。
