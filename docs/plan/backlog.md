@@ -71,3 +71,15 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] P3-3: 架构总览文档（05-Harness基建.md 等）仍描述旧三池，漂移待统一更新
 - [ ] Pi 会话创建后永不 terminate/delete 时许可与进程同生命周期滞留（即进程泄漏本身，孤儿回收归 engine-09/后续）
 - [ ] 并发冒烟（S1 分片真实并行观察峰值 ≤ 预算）需 dev/5090 环境
+
+## engine-09（review 01 + 复验，2026-08-14，结论 pass；PoC 记录留存 docs/plan/reviews/engine-09-poc.md）
+
+- [x] ~~engine-03 F5 / engine-05 P3-2 / engine-07 接线遗留 / engine-08 校准项~~ 已随本任务关闭（协议对齐 + plan→回调适配 + repair 协议兜底 + 真实 CLI 校准）
+- [x] ~~P2-1~~ 已修复（94daf29）：pi argv 形态/codex 8MiB limit 测试锁定；P3-1 PoC 文档笔误已修
+- [ ] P3-2: 默认路径有意行为变化——分片会话 info.error 即抛 RuntimeError（原留 trace 靠 silent-shard 兜底），汇入既有 failed→重试路径，判为改进，备查
+- [ ] P3-3: run_session 每次多一次 best-effort GET，开销可忽略
+- [ ] P3-4: 适配器在回调内即 harvest，与 opencode 轮询「先停会话再 harvest」顺序相反；当前无带 produce_payload 的协议链路触发，未来检查点
+- [ ] P3-5: `_run_protocol_session(early_tool_command=...)` 暂无传非空值的调用方
+- [ ] 三条 finalize 链路（带轮询相位）仍只由 opencode 驱动；codex/pi 只接了 S1 分片
+- [ ] 多分片真实并发冒烟、大输出/超长会话压测需 dev/5090（5090 切引擎前必做）
+- [ ] PoC 结论：语义等价通过；候选优先级 pi > codex；AGENT_ENGINE 默认恒 opencode 不变

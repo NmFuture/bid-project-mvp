@@ -1,7 +1,7 @@
 ---
 id: engine-09
 scope: AgentEngine / 换内核 PoC
-status: pending
+status: done
 depends-on: [engine-07, engine-08]
 ---
 
