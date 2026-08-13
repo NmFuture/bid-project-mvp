@@ -46,3 +46,11 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] 未做真实 CLI 联通验证（本机无 codex CLI），留 engine-09 PoC；新版 codex CLI 的 `exec resume` 子命令拼法与事件键名需按实际版本校准
 - [ ] 消息日志与 trace 在引擎进程内存，后端重启即失；resume 只依赖 codex 侧 thread 持久化
 - [ ] orchestrator 的 EarlyCompletionPlan 链路目前只接 OpencodeEngine；C3 接 S1 分片需编排层做一次 plan→协议回调适配
+
+## engine-04（review 01，2026-08-13，结论 pass）
+
+- [ ] P3-1: 4xx 确定性错误也归入 `PromptDeliveryUncertainError`，文案对 4xx 场景轻微误导（行为正确，可按 HTTPStatusError 区分确定性拒绝）
+- [ ] P3-2: 断线计时未覆盖首次失败请求自身的等待（最长 5s 计入 idle，分钟级 idle 下影响可忽略）
+- [ ] P3-3: `PollReconnectExhaustedError` 抛出路径不取消在飞 worker（刻意设计，与既有 session-error 路径一致，无泄漏）
+- [ ] 断线重连预算约 23s/次：opencode 重启超窗会显式失败（非 stall），需要更长容忍在 5090 配置层调 `OPENCODE_POLL_RECONNECT_*`
+- [ ] worker 内 POST 读超时终结本轮（PromptDeliveryUncertainError），会话可能服务端跑完但产物无人回收；「投递不确定 → 转纯轮询等终态」补齐建议单独立项

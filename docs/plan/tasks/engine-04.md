@@ -1,7 +1,7 @@
 ---
 id: engine-04
 scope: AgentEngine / 重试与断线恢复
-status: pending
+status: done
 depends-on: [engine-03]
 ---
 
