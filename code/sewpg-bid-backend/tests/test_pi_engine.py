@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.services.agent_engine.factory import AgentEngineFactory
-from app.services.agent_engine.pi_engine import PI_RPC_PROTOCOL, PiEngine
+from app.services.agent_engine.pi_engine import PI_RPC_PROTOCOL, PI_RPC_STREAM_LIMIT_BYTES, PiEngine
 from app.services.bid_parse_cancel import ParseCancelledError
 
 
@@ -526,6 +526,48 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(responses[0]["id"], "ui-1")
         self.assertTrue(responses[0]["cancelled"])
         await engine.delete_session(session_id)
+
+    # ------------------------------------------------------------------
+    # stdout 行缓冲上限（review P2-2）
+    # ------------------------------------------------------------------
+    async def test_spawn_process_raises_stream_limit(self) -> None:
+        engine = self._engine()
+        with patch(
+            "app.services.agent_engine.pi_engine.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=FakePiProcess()),
+        ) as spawn:
+            await engine._spawn_process(["pi-fake", "--mode", "rpc"])
+        self.assertEqual(spawn.call_args.kwargs.get("limit"), PI_RPC_STREAM_LIMIT_BYTES)
+        self.assertGreaterEqual(PI_RPC_STREAM_LIMIT_BYTES, 8 * 1024 * 1024)
+
+    async def test_oversized_single_line_tool_output_is_harvested(self) -> None:
+        # 超 64KiB（asyncio 默认行缓冲）的单条 JSONL：finalize 完整 stdout 即收割载荷。
+        big_output = "X" * (256 * 1024)
+        events = [
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call-big",
+                "toolName": "bash",
+                "args": {"command": "s1parse-finalize"},
+            },
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call-big",
+                "toolName": "bash",
+                "result": {"content": [{"type": "text", "text": big_output}]},
+                "isError": False,
+            },
+        ]
+        engine = self._engine()
+        process = FakePiProcess({"prompt": _prompt_handler(events)})
+        session_id = await self._create(engine, process)
+
+        result = await engine.run_session(
+            session_id, "run", on_tool_completed=lambda event: True
+        )
+
+        self.assertEqual(result.reply_text, big_output)
+        self.assertEqual(len(result.tool_outputs[0].stdout), 256 * 1024)
 
 
 class PiEngineFactoryTests(unittest.TestCase):

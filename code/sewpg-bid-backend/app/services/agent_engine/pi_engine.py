@@ -17,7 +17,8 @@
 - 命令：`prompt` / `abort` / `get_state` / `get_messages` / `set_model`。
 - 事件：`message_update`（text/thinking delta）、`message_end`、
   `tool_execution_start|update|end`（bash 工具完成事件映射来源）、
-  `agent_end` / `agent_settled`（运行终态）、`auto_retry_end`（最终失败）。
+  `agent_end`（运行终态，载荷只有 `messages`，无 `willRetry` 字段；
+  官方 AgentEvent 联合类型无 `agent_settled`）、`auto_retry_end`（最终失败）。
 - 扩展 UI 对话请求（`extension_ui_request`）在 headless 下自动回 `cancelled`，
   避免 agent 侧无限等待。
 
@@ -59,6 +60,11 @@ PI_ABORT_TIMEOUT_SECONDS = 5.0
 PI_PROCESS_STOP_TIMEOUT_SECONDS = 10.0
 PI_DEFAULT_IDLE_TIMEOUT_SECONDS = 300.0
 _RUN_POLL_MAX_SECONDS = 0.5
+
+# stdout 行缓冲上限：asyncio 子进程流默认 64KiB，而 `tool_execution_end`/`message_end`
+# 单条 JSONL 携带 bash 工具完整 stdout——finalize 命令的完整 stdout 恰是提前收割载荷，
+# 超限会让 readline 抛 ValueError。显式放大到 8MiB（PoC 用大输出用例复核）。
+PI_RPC_STREAM_LIMIT_BYTES = 8 * 1024 * 1024
 
 # headless 下会阻塞 agent 的扩展 UI 对话方法（自动回 cancelled）。
 _DIALOG_UI_METHODS = frozenset({"select", "confirm", "input", "editor"})
@@ -340,6 +346,7 @@ class PiEngine:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,  # 不混入 stdout 的 JSONL；退出码经 returncode 观察
+            limit=PI_RPC_STREAM_LIMIT_BYTES,  # 默认 64KiB 装不下工具完整 stdout（收割载荷）
         )
 
     async def _terminate_session(self, session_id: str) -> bool:
@@ -542,10 +549,14 @@ class PiEngine:
                 state.harvested = completed
             return
         if event_type == "agent_settled":
+            # 防御分支：官方 AgentEvent 联合类型无此事件（2026-08-13 快照），
+            # 真实协议下不会触发；保留以兼容未来/分叉版本可能的 settled 事件。
             state.settled = True
             return
         if event_type == "agent_end" and not event.get("willRetry"):
-            # 兼容未发 agent_settled 的协议版本（以 rpc.md 快照为准 agent_settled 必发）。
+            # 运行终态以 agent_end 为准；官方载荷无 willRetry 字段（willRetry 在
+            # compaction_end 上），`not event.get("willRetry")` 在真实协议下恒真，
+            # 判断保留为防御写法。
             state.settled = True
             return
         if event_type == "auto_retry_end" and not event.get("success"):
