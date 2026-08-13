@@ -13,8 +13,8 @@
 
 ### P2（blocking）
 
-1. **pi `create_session` 握手窗口的 asyncio 取消会双泄漏（预算许可 + 进程）**
-   位置：`pi_engine.py:192-199`。
+1. **pi `create_session` 握手窗口的 asyncio 取消会双泄漏（预算许可 + 进程）** —— ✅ 已修复（复验通过，fix commit dd321ab）
+   位置：`pi_engine.py:192-199`（原状）。
    握手 `await self._rpc(session, {"type": "get_state"}, ...)` 的失败清理写的是
    `except Exception`，而 `asyncio.CancelledError` 自 3.8 起继承 BaseException——
    create_session 任务在握手窗口被取消时，不走 `_terminate_session`：会话留在
@@ -29,6 +29,19 @@
    注：codex/pi 尚未接入生产解析链路（engine-09 PoC 待派发），所以不定 P1；但本任务
    宣称「取消落在等待窗口不泄漏（engine-03 F1 语义保持）」，留着这条已知取消泄漏路径
    不应合入。
+
+   **复验（dd321ab）**：修复正确。
+   - spawn 窗口 `except BaseException` 归还许可并原样 re-raise；握手窗口
+     `except BaseException` → `_terminate_session`（杀进程 + 出表 + finally 归还许可）
+     → 非 RuntimeError 原样 re-raise，CancelledError 不被吞、不包装。
+   - `run_session` 主体（含 set_model/prompt 两次 RPC）整体包
+     `try/except asyncio.CancelledError` → `_terminate_session` 后 re-raise；
+     `_terminate_session` pop 幂等，内部终态路径已回收时外层为 no-op，不会重复归还。
+   - 新增 4 用例断言真实：握手失败/握手取消/run 取消均断言 `process.killed`、
+     `_sessions == {}`、许可归还且 `assertRaises(CancelledError)` 确认取消不被吞；
+     codex run 进行中取消断言 kill + 许可归还（KILL_GRACE patch 到 0.2s 控时）。
+   - 抽查复跑：`pytest tests/test_agent_concurrency_budget.py tests/test_pi_engine.py
+     tests/test_codex_engine.py` → **69 passed**（budget 17 = 13 + 新增 4）。
 
 ### P2（non-blocking）
 
@@ -54,11 +67,13 @@
    仍以 OPENCODE_MAX_CONCURRENCY（默认 1）/ 三池互不知晓为「现状」。harness-02 作为
    历史证据不动是合理的；这两份架构总览属现状描述，建议后续波次顺手更新，不阻塞。
 
-4. **测试覆盖小缺口**
+4. **测试覆盖小缺口** —— ✅ 已补齐（dd321ab）
    13 用例覆盖面整体良好（见「核查结论」4），未覆盖：pi 握手失败（Exception 路径）
    归还许可、codex run 进行中（spawn 之后）取消的许可归还、以及 P2-1 的握手取消路径。
    前两条路径读代码确认正确（codex 外层 finally / pi `_terminate_session` finally），
    但缺对应用例，修复 P2-1 时建议一并补。
+   复验：dd321ab 新增 4 用例精确覆盖上述全部缺口，断言含进程回收 + 许可归还 +
+   取消不吞，见 P2-1 复验注记。
 
 ## 核查结论（针对 review 要点）
 
@@ -91,7 +106,10 @@
 
 ## 结论
 
-**blocked**。仅 P2-1 一条 blocking：pi `create_session` 握手取消的许可泄漏，一行级修复
-（`except BaseException` 或 try/finally 兜底 `_terminate_session`），建议同步处理
-`run_session` 的同类路径并补对应用例。修完可直通，无需复审全量。P2-2 的部署告知与
-5090 取值跟进随晋级流程走，P3 不阻塞。
+~~**blocked**~~ → **pass**（复验通过，fix commit dd321ab）。
+
+唯一 blocking 项 P2-1 已修复：pi `create_session` spawn/握手窗口 `except BaseException`
+兜底 `_terminate_session`，`run_session` 主体包 CancelledError 回收，许可与进程双回收、
+幂等、取消不吞；新增 4 用例断言真实，抽查复跑 69 passed（开发者自报全量
+2368 passed = 前轮 2364 + 4，未全量重跑）。剩余 P2-2（部署告知 + 5090 取值跟进）随晋级
+流程走，P3-3（架构文档漂移）不阻塞。
