@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 CODEX_PROGRESS_HEARTBEAT_SECONDS = 10.0
 CODEX_CANCEL_POLL_SECONDS = 0.5
 CODEX_KILL_GRACE_SECONDS = 5.0
+CODEX_STDERR_TAIL_CHARS = 8192  # stderr 排干只留尾部，供报错详情
 
 
 @dataclass
@@ -81,9 +82,9 @@ class CodexEngine:
     # CLI 错误输出归类（ErrorPattern，对齐 errors.py 归一化风格）：
     # 按序匹配，命中即归类；兜底走 _classify_failure 的通用文案。
     ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-        (re.compile(r"401|unauthorized|invalid api key|authentication", re.I),
+        (re.compile(r"\b401\b|unauthorized|invalid api key|authentication", re.I),
          "codex CLI 认证失败：请检查登录态或 API Key。"),
-        (re.compile(r"429|rate.?limit|quota|insufficient", re.I),
+        (re.compile(r"\b429\b|rate.?limit|quota|insufficient (quota|funds|credits)", re.I),
          "codex CLI 触发限流或额度不足，请稍后重试。"),
         (re.compile(r"model[_ ]not[_ ]found|does not exist|unknown model", re.I),
          "codex CLI 模型不存在，请检查 CODEX_MODEL_ID 配置。"),
@@ -244,10 +245,11 @@ class CodexEngine:
                 "run_session(provider_id=%s) 已忽略。",
                 provider_id,
             )
-        if model_id and self.model_id and model_id != self.model_id:
+        if model_id and model_id != self.model_id:
+            # 实例未配模型时固定为 CLI 默认模型，按请求传入同样记 warning（review F4）。
             logger.warning(
                 "codex 引擎 model 为会话级固定（%s），run_session(model_id=%s) 已忽略。",
-                self.model_id,
+                self.model_id or "CLI 默认",
                 model_id,
             )
         if tools:
@@ -272,70 +274,84 @@ class CodexEngine:
         started_at = time.monotonic()
         last_activity = started_at
         last_heartbeat = started_at
+        # stderr 伴随排干（review F2）：运行期间无人读 stderr，子进程写满管道缓冲
+        # （POSIX 通常 64KB）会阻塞在 write 上，stdout 断流被误判 idle。攒尾部供报错详情。
+        stderr_sink: list[str] = []
+        drain_task = asyncio.create_task(
+            self._drain_stderr(process.stderr, stderr_sink),
+            name=f"codex-stderr-{state.session_id}",
+        )
 
-        while True:
-            if cancel_check is not None and cancel_check():
-                await self._terminate_process(process)
-                state.process = None
-                raise ParseCancelledError("解析已取消。")
-            try:
-                raw_line = await asyncio.wait_for(
-                    process.stdout.readline(),  # type: ignore[union-attr]
-                    timeout=CODEX_CANCEL_POLL_SECONDS,
-                )
-            except TimeoutError:
-                if process.returncode is not None and process.stdout.at_eof():  # type: ignore[union-attr]
-                    break
-                now = time.monotonic()
-                if now - last_activity > self.idle_timeout:
+        try:
+            while True:
+                if cancel_check is not None and cancel_check():
                     await self._terminate_process(process)
                     state.process = None
-                    raise RuntimeError(
-                        f"codex idle timeout after {int(self.idle_timeout)} seconds without new output; "
-                        f"check session {state.session_id} tool calls."
+                    raise ParseCancelledError("解析已取消。")
+                try:
+                    raw_line = await asyncio.wait_for(
+                        process.stdout.readline(),  # type: ignore[union-attr]
+                        timeout=CODEX_CANCEL_POLL_SECONDS,
                     )
-                if stream_callback is not None and now - last_heartbeat >= CODEX_PROGRESS_HEARTBEAT_SECONDS:
-                    self._emit_progress(
-                        stream_callback,
-                        state,
-                        heartbeat=True,
-                        elapsed_seconds=now - started_at,
-                    )
-                    last_heartbeat = now
-                continue
-            if not raw_line:  # EOF：进程退出且 stdout 读尽
-                break
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except ValueError:
-                logger.debug("codex stdout 非 JSON 行（忽略）：%s", line[:200])
-                continue
-            if not isinstance(event, dict):
-                continue
-            last_activity = time.monotonic()
-            result = self._handle_event(
-                state,
-                event,
-                reply_parts=reply_parts,
-                tool_outputs=tool_outputs,
-                stream_callback=stream_callback,
-                on_tool_completed=on_tool_completed,
-                started_at=started_at,
-            )
-            if isinstance(result, EngineRunResult):  # 提前收割：立即停进程，不等宽限
-                await self._terminate_process(process)
-                state.process = None
-                return result
-            if isinstance(result, dict):  # turn.failed / error 事件
-                if result.get("event_type") == "turn.failed":
-                    stream_error = result
-                else:
-                    last_error_event = result
+                except TimeoutError:
+                    if process.returncode is not None and process.stdout.at_eof():  # type: ignore[union-attr]
+                        break
+                    now = time.monotonic()
+                    if now - last_activity > self.idle_timeout:
+                        await self._terminate_process(process)
+                        state.process = None
+                        raise RuntimeError(
+                            f"codex idle timeout after {int(self.idle_timeout)} seconds without new output; "
+                            f"check session {state.session_id} tool calls."
+                        )
+                    if stream_callback is not None and now - last_heartbeat >= CODEX_PROGRESS_HEARTBEAT_SECONDS:
+                        self._emit_progress(
+                            stream_callback,
+                            state,
+                            heartbeat=True,
+                            elapsed_seconds=now - started_at,
+                        )
+                        last_heartbeat = now
+                    continue
+                if not raw_line:  # EOF：进程退出且 stdout 读尽
+                    break
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    logger.debug("codex stdout 非 JSON 行（忽略）：%s", line[:200])
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                last_activity = time.monotonic()
+                result = self._handle_event(
+                    state,
+                    event,
+                    reply_parts=reply_parts,
+                    tool_outputs=tool_outputs,
+                    stream_callback=stream_callback,
+                    on_tool_completed=on_tool_completed,
+                    started_at=started_at,
+                )
+                if isinstance(result, EngineRunResult):  # 提前收割：立即停进程，不等宽限
+                    await self._terminate_process(process)
+                    state.process = None
+                    return result
+                if isinstance(result, dict):  # turn.failed / error 事件
+                    if result.get("event_type") == "turn.failed":
+                        stream_error = result
+                    else:
+                        last_error_event = result
+        finally:
+            await self._join_stderr_drain(drain_task)
 
-        stderr_text = await self._read_stderr(process)
+        # EOF 后先收尸再读退出码（review F1）：returncode 由 child watcher 异步回填，
+        # 直接读可能拿到 None，把成功运行误判为「codex exec 失败（exit None）」。
+        await self._reap_process(process)
+        state.process = None
+        stderr_text = self._stderr_tail(stderr_sink)
         returncode = process.returncode
         if stream_error is not None:
             raise self._classify_failure(stream_error, stderr_text, returncode)
@@ -481,13 +497,34 @@ class CodexEngine:
             await process.wait()
 
     @staticmethod
-    async def _read_stderr(process: asyncio.subprocess.Process) -> str:
-        if process.stderr is None:
-            return ""
+    async def _drain_stderr(stderr: Any, sink: list[str]) -> None:
+        """持续排干子进程 stderr 到 sink（review F2），防止写满管道缓冲假停滞。"""
+        if stderr is None:
+            return
         with suppress(Exception):
-            data = await process.stderr.read()
-            return data.decode("utf-8", errors="replace").strip()
-        return ""
+            while True:
+                chunk = await stderr.read(4096)
+                if not chunk:
+                    return
+                sink.append(chunk.decode("utf-8", errors="replace"))
+                # 有界截断：只保留尾部，报错详情看末尾就够
+                if sum(len(part) for part in sink) > CODEX_STDERR_TAIL_CHARS * 4:
+                    sink[:] = ["".join(sink)[-CODEX_STDERR_TAIL_CHARS:]]
+
+    @staticmethod
+    async def _join_stderr_drain(drain_task: asyncio.Task[None]) -> None:
+        """泵结束后 join 排干 task：进程终态 stderr 即 EOF 自然收尾；异常路径兜底取消。"""
+        if not drain_task.done():
+            with suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(drain_task), CODEX_KILL_GRACE_SECONDS)
+        if not drain_task.done():
+            drain_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await drain_task
+
+    @staticmethod
+    def _stderr_tail(sink: list[str]) -> str:
+        return "".join(sink)[-CODEX_STDERR_TAIL_CHARS:].strip()
 
     # ------------------------------------------------------------------
     # 错误归类（ErrorPattern 消费点，对齐 errors.py 归一化风格）

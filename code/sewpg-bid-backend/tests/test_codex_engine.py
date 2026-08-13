@@ -42,7 +42,10 @@ class _FakeStdout:
         if self._hang:
             await asyncio.sleep(3600)
             return b""
-        self._process.returncode = self._process.exit_code
+        # 模拟 child watcher 异步回填（review F1 真实时序）：EOF 这一刻 returncode
+        # 仍是 None，经事件循环回调才回填；引擎必须 wait() 后再判定退出码。
+        self._process.eof_returncode_was_none = self._process.returncode is None
+        asyncio.get_running_loop().call_soon(self._process._backfill_returncode)
         return b""
 
 
@@ -50,8 +53,14 @@ class _FakeStderr:
     def __init__(self, data: bytes) -> None:
         self._data = data
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, n: int = -1) -> bytes:
+        if not self._data:
+            return b""
+        if n is None or n < 0 or n >= len(self._data):
+            data, self._data = self._data, b""
+            return data
+        data, self._data = self._data[:n], self._data[n:]
+        return data
 
 
 class _FakeProcess:
@@ -67,8 +76,13 @@ class _FakeProcess:
         self.exit_code = exit_code
         self.killed = False
         self.waited = False
+        self.eof_returncode_was_none = False  # F1 回归断言用：EOF 时 returncode 是否未回填
         self.stdout = _FakeStdout(self, events or [], hang)
         self.stderr = _FakeStderr(stderr)
+
+    def _backfill_returncode(self) -> None:
+        if self.returncode is None:
+            self.returncode = self.exit_code
 
     def kill(self) -> None:
         self.killed = True
@@ -78,8 +92,7 @@ class _FakeProcess:
 
     async def wait(self) -> int:
         self.waited = True
-        if self.returncode is None:
-            self.returncode = self.exit_code
+        self._backfill_returncode()
         return self.returncode
 
 
@@ -323,6 +336,31 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(streaming), 2)
         self.assertEqual(streaming[0]["sessionId"], session_id)
 
+    async def test_eof_waits_for_async_returncode_backfill(self) -> None:
+        """回归（review F1）：stdout EOF 时 returncode 尚未由 child watcher 回填，
+        引擎必须 wait 后再判定退出码，否则成功运行被误判「codex exec 失败（exit None）」。"""
+        engine = CodexEngine()
+        session_id = await engine.create_session("t")
+        process = _FakeProcess([_thread_started(), _assistant_message("完成"), _turn_completed()])
+        with _ExecHarness(process):
+            result = await engine.run_session(session_id, "p")
+        self.assertTrue(process.eof_returncode_was_none)  # fake 确实制造了竞态窗口
+        self.assertTrue(process.waited)  # 引擎 EOF 后先 wait 收尸
+        self.assertEqual(result.reply_text, "完成")  # 等待回填后判定为成功
+
+    async def test_stderr_is_drained_during_run(self) -> None:
+        """回归（review F2）：运行期间伴随 task 排干 stderr；超管道缓冲量级的
+        stderr 输出不影响正常完成（真实 CLI 写满 64KB 缓冲会阻塞 write 假停滞）。"""
+        engine = CodexEngine()
+        session_id = await engine.create_session("t")
+        process = _FakeProcess(
+            [_thread_started(), _assistant_message("ok"), _turn_completed()],
+            stderr=b"warning line\n" * 8000,  # ~104KB，超 POSIX 64KB 管道缓冲
+        )
+        with _ExecHarness(process):
+            result = await engine.run_session(session_id, "p")
+        self.assertEqual(result.reply_text, "ok")
+
     # ------------------------------------------------------------------
     # ErrorPattern 错误归类
     # ------------------------------------------------------------------
@@ -363,6 +401,19 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         with _ExecHarness(process):
             with self.assertRaisesRegex(RuntimeError, r"codex exec 失败（exit 1）：some weird failure"):
                 await engine.run_session(session_id, "p")
+
+    async def test_error_patterns_do_not_over_match(self) -> None:
+        """review F3：裸词不误归类——端口里的 4010、权限问题的 insufficient 都不命中。"""
+        engine = CodexEngine()
+        for stderr in (b"listen on port 4010 failed", b"insufficient permissions to write"):
+            session_id = await engine.create_session("t")
+            process = _FakeProcess([], exit_code=1, stderr=stderr)
+            with _ExecHarness(process):
+                with self.assertRaises(RuntimeError) as ctx:
+                    await engine.run_session(session_id, "p")
+            self.assertIn("codex exec 失败（exit 1）", str(ctx.exception))
+            self.assertNotIn("限流", str(ctx.exception))
+            self.assertNotIn("认证失败", str(ctx.exception))
 
     async def test_missing_cli_binary_raises_install_hint(self) -> None:
         engine = CodexEngine(cli_path="/nonexistent/codex")
@@ -463,6 +514,16 @@ class CodexEngineTests(unittest.IsolatedAsyncioTestCase):
         warning_text = "\n".join(logs.output)
         self.assertIn("provider", warning_text)
         self.assertIn("tools", warning_text)
+
+    async def test_request_model_without_instance_model_still_warns(self) -> None:
+        """review F4：实例未配 model 时按请求传入 model_id 同样记 warning 并忽略。"""
+        engine = CodexEngine(model_id="")
+        session_id = await engine.create_session("t")
+        with _ExecHarness(_FakeProcess([_turn_completed()])) as harness:
+            with self.assertLogs("app.services.agent_engine.codex_engine", level="WARNING") as logs:
+                await engine.run_session(session_id, "p", model_id="gpt-x")
+        self.assertIn("CLI 默认", "\n".join(logs.output))
+        self.assertNotIn("--model", harness.calls[0]["argv"])  # 被忽略，仍走 CLI 默认模型
 
 
 class CodexFactoryTests(unittest.TestCase):
