@@ -66,7 +66,7 @@ async def update_business_project(project_id: str, data: dict[str, Any] = Body(d
 
 
 @router.delete("/api/business/projects/{project_id}")
-async def delete_business_project(project_id: str) -> dict[str, str]:
+async def delete_business_project(project_id: str) -> dict[str, Any]:
     return await business_project_service.delete(project_id)
 
 

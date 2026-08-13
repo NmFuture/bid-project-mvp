@@ -17,6 +17,11 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
 
+-- 项目编号序列：编号发出即不回收，删项目不回退。
+-- 已有环境由 ProjectStateRepository.ensure_project_id_sequence 在启动时补建并对齐，
+-- 因此这里只是新库的等价定义，不需要重建数据卷。
+CREATE SEQUENCE IF NOT EXISTS project_id_seq;
+
 -- ============================================================
 -- 1. Raw Material Library (原始素材库)
 -- ============================================================

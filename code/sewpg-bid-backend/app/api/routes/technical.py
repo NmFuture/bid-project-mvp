@@ -75,7 +75,7 @@ async def update_technical_project(project_id: str, data: dict[str, Any] = Body(
 
 
 @router.delete("/api/technical/projects/{project_id}")
-async def delete_technical_project(project_id: str) -> dict[str, str]:
+async def delete_technical_project(project_id: str) -> dict[str, Any]:
     return await technical_project_service.delete(project_id)
 
 

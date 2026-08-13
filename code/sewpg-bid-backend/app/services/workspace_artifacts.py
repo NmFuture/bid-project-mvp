@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from app.services.parse_profiles import (
     ParseProfile,
     resolve_parse_profile,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _profile_for_workspace(value: Any) -> ParseProfile:
@@ -89,22 +92,78 @@ def parse_temp_workspace_dir(project_id: str) -> Path:
     return settings.parsed_dir / project_id
 
 
-def cleanup_parse_temp_workspace(project_id: str) -> bool:
-    path = parse_temp_workspace_dir(project_id)
+def _remove_project_scoped_dir(root: Path, project_id: str) -> bool:
+    """删掉 `root` 下属于该项目的子目录，越界或指向根目录时拒绝。
+
+    `project_id` 只允许是单个路径段：带分隔符或 `..` 的值会让 `root / project_id`
+    逃出 root（例如 `_runtime` 之外的共享目录），这里直接拒绝而不是依赖 resolve 兜底。
+    """
+    normalized = str(project_id or "").strip()
+    if not normalized or normalized in {".", ".."} or "/" in normalized or "\\" in normalized:
+        raise ValueError(f"Refusing to remove project workspace for invalid project id: {project_id!r}")
+
+    path = root / normalized
     if not path.exists():
         return False
 
-    root = settings.parsed_dir.resolve()
+    resolved_root = root.resolve()
     target = path.resolve()
     try:
-        target.relative_to(root)
+        target.relative_to(resolved_root)
     except ValueError:
-        raise ValueError(f"Refusing to remove parse workspace outside parsed_dir: {target}")
-    if target == root:
-        raise ValueError("Refusing to remove parsed_dir root.")
+        raise ValueError(f"Refusing to remove project workspace outside {resolved_root}: {target}")
+    if target == resolved_root:
+        raise ValueError(f"Refusing to remove workspace root: {resolved_root}")
 
     shutil.rmtree(target)
     return True
+
+
+def cleanup_parse_temp_workspace(project_id: str) -> bool:
+    return _remove_project_scoped_dir(settings.parsed_dir, project_id)
+
+
+def cleanup_project_disk_workspaces(project_id: str) -> dict[str, Any]:
+    """清项目在磁盘上的全部按项目编号命名的产物，逐项汇报成败。
+
+    覆盖三处目录加一个 OnlyOffice 文档：
+
+    - `parsed_dir/{PID}`     解析中间产物
+    - `documents_dir/{PID}`  technical-workspace，`tender_review_state.json` 在这里
+    - `uploads_dir/{PID}`    上传原件
+    - `documents_dir/{PID}.docx`  OnlyOffice 正文文档（是文件不是目录）
+
+    其中 `documents_dir/{PID}` 最要紧：它残留下来时，拿到同一编号的新项目会被判定
+    为「已有解析状态」而降级成续跑，最终报成功却没有产物。
+
+    单项失败不阻断其余项，失败信息随返回值上抛给调用方，由接口层暴露，不静默吞掉。
+    """
+    targets: list[tuple[str, Path]] = [
+        ("parsed", settings.parsed_dir),
+        ("documents", settings.documents_dir),
+        ("uploads", settings.uploads_dir),
+    ]
+    removed: list[str] = []
+    failures: list[dict[str, str]] = []
+
+    for label, root in targets:
+        try:
+            if _remove_project_scoped_dir(root, project_id):
+                removed.append(label)
+        except Exception as exc:  # noqa: BLE001 - 逐项兜住，避免一处失败漏清其余
+            logger.error("删除项目 %s 的 %s 工作区失败: %s", project_id, label, exc, exc_info=True)
+            failures.append({"target": label, "message": str(exc)})
+
+    onlyoffice_document = settings.documents_dir / f"{project_id}.docx"
+    try:
+        if onlyoffice_document.is_file():
+            onlyoffice_document.unlink()
+            removed.append("onlyofficeDocument")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("删除项目 %s 的 OnlyOffice 文档失败: %s", project_id, exc, exc_info=True)
+        failures.append({"target": "onlyofficeDocument", "message": str(exc)})
+
+    return {"removed": removed, "failures": failures}
 
 
 def _copy_file_if_exists(source: Path, destination: Path) -> bool:
