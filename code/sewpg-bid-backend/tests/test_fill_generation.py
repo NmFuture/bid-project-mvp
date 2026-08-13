@@ -141,7 +141,7 @@ class FillGenerationTests(unittest.TestCase):
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         # 缺口识别已改为直跑本地脚本（不再经 OpenCode），原先「打桩逼出本地 fallback」
-        # 的 OpencodeClient 打桩随之失效且不再需要。
+        # 的 OpencodeEngine 打桩随之失效且不再需要。
         login = self.client.post("/api/auth/login", json={"email": "admin@sewpg.com", "password": "123456"})
         self.assertEqual(login.status_code, 200)
         self.headers = {"Authorization": f"Bearer {login.json()['token']}"}

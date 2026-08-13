@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.services.bid_parse_cancel import ParseCancelledError
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 
 
 SKILL_NAME = "bid-business-template-extractor"
@@ -360,7 +360,7 @@ def run_business_template_extractor(
     try:
         _raise_if_cancelled(cancel_check)
         prompt = build_business_template_navigation_prompt(project_id=project_id, manifest_path=manifest_path)
-        agent_result = OpencodeClient(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
+        agent_result = OpencodeEngine(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
             prompt,
             session_ready_callback=emit_session_ready,
             cancel_check=cancel_check,

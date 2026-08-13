@@ -17,7 +17,7 @@ from app.core.config import BASE_DIR, settings
 from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.ocr_service import ocr_service
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
     FILL_QUALITY_ACCEPTED_STATUSES,
@@ -1108,7 +1108,7 @@ def _run_table_filler_llm(
     timeout_sec = settings.s4_llm_fill_timeout_sec or settings.opencode_timeout_sec
 
     try:
-        result = OpencodeClient(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
+        result = OpencodeEngine(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
             prompt,
             stream_callback=(
                 (lambda details: progress_callback("table_filler_delta", details))

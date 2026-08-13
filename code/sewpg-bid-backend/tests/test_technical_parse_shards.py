@@ -600,7 +600,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
 
         fake_cls, seen = self._fake_client_class(failing_shards, silent_shards, partial_shards)
         local_result = {"items": [], "structured": {}}
-        with patch.object(parsing, "OpencodeClient", fake_cls):
+        with patch.object(parsing, "OpencodeEngine", fake_cls):
             resolved, message = parsing._run_technical_sharded_parse_skill(
                 self.manifest_path,
                 local_result=local_result,
@@ -650,7 +650,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
             self.output_path.write_text(json.dumps(failed_result, ensure_ascii=False), encoding="utf-8")
             return {"outputFile": str(self.output_path)}
 
-        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+        with patch.object(parsing, "OpencodeEngine", fake_cls), patch.object(
             parsing,
             "_run_s1parse_cli",
             side_effect=failed_finalize,
@@ -682,7 +682,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
             original_init(client, *args, **kwargs)
 
         fake_cls.__init__ = capture_init
-        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+        with patch.object(parsing, "OpencodeEngine", fake_cls), patch.object(
             parsing.system_settings_service,
             "get_opencode_model_config_sync",
             return_value=model_config,

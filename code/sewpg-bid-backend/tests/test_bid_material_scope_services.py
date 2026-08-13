@@ -602,18 +602,18 @@ def test_business_assembly_does_not_own_technical_formatting() -> None:
     assert "app.services.technical_document_format" not in document_source
     assert "app.services.business_assembly" not in document_source
     assert "app.services.business_document_editing" not in document_source
-    assert "OpencodeClient" not in document_source
+    assert "OpencodeEngine" not in document_source
     assert "BusinessDocumentService" not in document_source
     assert "app.services.business_assembly" in business_document_source
     assert "app.services.business_document_editing" in business_document_source
-    assert "OpencodeClient" in business_document_source
+    assert "OpencodeEngine" in business_document_source
     assert "apply_technical_document_format_preset" not in business_document_source
     assert "TECH_FORMAT_PRESETS" not in business_document_source
     assert "app.services.technical_document_format" in technical_document_source
     assert "apply_technical_document_format_preset" in technical_document_source
     assert "app.services.business_assembly" not in technical_document_source
     assert "app.services.business_document_editing" not in technical_document_source
-    assert "OpencodeClient" not in technical_document_source
+    assert "OpencodeEngine" not in technical_document_source
 
 
 def test_technical_chat_is_owned_by_technical_chat_service() -> None:
@@ -621,8 +621,8 @@ def test_technical_chat_is_owned_by_technical_chat_service() -> None:
     technical_chat_source = Path("app/services/technical_chat_service.py").read_text(encoding="utf-8")
     technical_route_source = Path("app/api/routes/technical.py").read_text(encoding="utf-8")
 
-    assert "OpencodeClient" not in technical_document_source
-    assert "OpencodeClient" in technical_chat_source
+    assert "OpencodeEngine" not in technical_document_source
+    assert "OpencodeEngine" in technical_chat_source
     assert "app.services.technical_chat_service" in technical_route_source
     assert "technical_chat_service.chat" in technical_route_source
 

@@ -26,7 +26,7 @@ from app.models.materials import RawFile
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
 from app.services.file_utils import safe_segment
 from app.services.minio_client import minio_client
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.peripheral import PeripheralError
 from app.services.system_settings import system_settings_service
 
@@ -469,13 +469,13 @@ def _send_business_split_ai_prompt(prompt: str) -> dict[str, Any]:
         if provider_id and provider_id not in {"opencode", "futurecode"}:
             raise RuntimeError(f"LLM 直连失败：{direct_error}") from None
         try:
-            result = OpencodeClient(timeout_ms=90_000).send_text_prompt("商务素材语义切片", prompt)
+            result = OpencodeEngine(timeout_ms=90_000).send_text_prompt("商务素材语义切片", prompt)
             if not str(result.get("reply") or "").strip() and direct_error:
                 raise RuntimeError(f"LLM 直连失败：{direct_error}；opencode 返回空响应。")
             return result
         except Exception as opencode_exc:
             raise RuntimeError(f"LLM 直连失败：{direct_error}；opencode 调用失败：{opencode_exc}") from opencode_exc
-    return OpencodeClient(timeout_ms=90_000).send_text_prompt("商务素材语义切片", prompt)
+    return OpencodeEngine(timeout_ms=90_000).send_text_prompt("商务素材语义切片", prompt)
 
 
 def _send_openai_compatible_prompt(config: dict[str, Any], prompt: str) -> dict[str, Any]:

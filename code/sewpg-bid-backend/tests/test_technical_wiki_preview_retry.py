@@ -97,7 +97,7 @@ def _cached_fallback(signature: str, **overrides: object) -> dict:
 class ComputeBatchPreviewRetryTests(unittest.TestCase):
     def test_llm_failure_below_limit_stays_retryable(self) -> None:
         with patch(
-            "app.services.opencode_client.OpencodeClient",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine",
             side_effect=RuntimeError("LLM 不可用"),
         ):
             out = _compute_batch_preview_payloads([_plan(llm_failures=0)])
@@ -112,7 +112,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
 
     def test_llm_failure_reaching_limit_marks_terminal(self) -> None:
         with patch(
-            "app.services.opencode_client.OpencodeClient",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine",
             side_effect=RuntimeError("LLM 不可用"),
         ):
             out = _compute_batch_preview_payloads([_plan(llm_failures=PREVIEW_LLM_MAX_FAILURES - 1)])
@@ -125,7 +125,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
 
     def test_missing_reply_counts_as_llm_failure(self) -> None:
         reply = json.dumps({"previews": {}}, ensure_ascii=False)
-        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
             client_cls.return_value.send_text_prompt.return_value = {"reply": reply, "modelId": "m"}
             out = _compute_batch_preview_payloads([_plan(llm_failures=PREVIEW_LLM_MAX_FAILURES - 1)])
@@ -141,7 +141,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
     def test_batch_miss_recovered_by_single_retry(self) -> None:
         batch_reply = json.dumps({"previews": {}}, ensure_ascii=False)
         single_reply = json.dumps({"lead": "单份导读", "points": ["要点"]}, ensure_ascii=False)
-        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
             client_cls.return_value.send_text_prompt.side_effect = [
                 {"reply": batch_reply, "modelId": "m"},
@@ -158,7 +158,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
 
     def test_batch_timeout_recovered_by_single_retry(self) -> None:
         single_reply = json.dumps({"lead": "单份导读", "points": ["要点"]}, ensure_ascii=False)
-        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
             client_cls.return_value.send_text_prompt.side_effect = [
                 RuntimeError("futurecode 生成超时，请缩短输入或稍后重试。"),
@@ -175,7 +175,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
             {"previews": {"RAW-0001": {"lead": "批量导读", "points": ["要点"]}}},
             ensure_ascii=False,
         )
-        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
             client_cls.return_value.send_text_prompt.return_value = {"reply": batch_reply, "modelId": "m"}
             out = _compute_batch_preview_payloads([_plan()])
@@ -187,7 +187,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
 
     def test_client_construction_failure_skips_single_retry(self) -> None:
         with patch(
-            "app.services.opencode_client.OpencodeClient",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine",
             side_effect=RuntimeError("LLM 不可用"),
         ):
             out = _compute_batch_preview_payloads([_plan(), _plan("RAW-0002")])
@@ -201,7 +201,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
             {"previews": {"RAW-0001": {"lead": "AI 导读", "points": ["要点"]}}},
             ensure_ascii=False,
         )
-        with patch("app.services.opencode_client.OpencodeClient") as client_cls:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
             client_cls.return_value.send_text_prompt.return_value = {"reply": reply, "modelId": "m"}
             out = _compute_batch_preview_payloads([_plan(llm_failures=2)])

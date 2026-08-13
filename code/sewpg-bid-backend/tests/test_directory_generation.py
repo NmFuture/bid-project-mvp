@@ -607,7 +607,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -657,7 +657,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline_with_result_overrides,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -718,7 +718,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline_with_outline_payload(outline_payload),
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -747,7 +747,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline_missing_outline,
         ):
             with self.assertRaisesRegex(RuntimeError, "outline.json"):
@@ -806,7 +806,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "opencodeOutput": {"status": "received", "parts": []},
             }
 
-        with patch("app.services.outline_generation.OpencodeClient") as client_cls:
+        with patch("app.services.outline_generation.OpencodeEngine") as client_cls:
             client_cls.return_value.generate_outline_with_trace.side_effect = _generate
 
             _run_business_outline_skill(manifest_path)
@@ -822,7 +822,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline_with_outline_payload(
                 {"schema_version": "bid-toc-json-v1", "sections": [{"title": "商务响应文件"}]}
             ),
@@ -836,7 +836,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline_with_outline_payload(
                 {"schema_version": "business_bid_outline.v1", "sections": []}
             ),
@@ -850,7 +850,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=RuntimeError("offline business outline"),
         ):
             with self.assertRaisesRegex(RuntimeError, "只负责准备候选材料"):
@@ -866,7 +866,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result("商务标")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline_with_outline_payload(
                 {
                     "schema_version": "business_bid_outline.v1",
@@ -939,7 +939,7 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         project_id = self._prepare_project_with_parse_result("商务标")
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_business_futurecode_outline,
         ):
             generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -959,7 +959,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result()
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ) as mock_generate:
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -1058,7 +1058,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         ), patch(
             "app.services.outline_generation._run_outline_appendix_session",
         ) as mock_appendix, patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
         ) as mock_generate:
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
 
@@ -1289,7 +1289,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "app.services.outline_generation.ThreadPoolExecutor",
                 side_effect=recording_executor,
             ),
-            patch("app.services.outline_generation.OpencodeClient") as client_class,
+            patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
             client_class.return_value.run_outline_decision_session.side_effect = [
                 {"sessionId": f"ses-{index}", "opencodeOutput": {}}
@@ -1364,7 +1364,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "app.services.outline_generation._outline_chapter_base_urls",
                 return_value=["http://opencode:4096"],
             ),
-            patch("app.services.outline_generation.OpencodeClient") as client_class,
+            patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
             client_class.return_value.run_outline_decision_session.side_effect = one_chapter_dies
             with self.assertRaises(_ChapterParallelUnsupported):
@@ -1418,7 +1418,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "app.services.outline_generation._outline_chapter_base_urls",
                 return_value=["http://opencode:4096"],
             ),
-            patch("app.services.outline_generation.OpencodeClient") as client_class,
+            patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
             client_class.return_value.run_outline_decision_session.return_value = {
                 "sessionId": "ses-chapter",
@@ -1582,7 +1582,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "app.services.outline_generation._load_outline_result",
                 return_value={"nodes": []},
             ),
-            patch("app.services.outline_generation.OpencodeClient") as client_class,
+            patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
             client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
             _run_outline_skill(
@@ -1637,7 +1637,7 @@ class DirectoryGenerationTests(unittest.TestCase):
                 "app.services.outline_generation.settings.tech_outline_llm_finalize",
                 True,
             ),
-            patch("app.services.outline_generation.OpencodeClient") as client_class,
+            patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
             client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
             _run_outline_skill(
@@ -1790,7 +1790,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             return runner.compose_manifest(manifest, manifest_path)
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=write_rebased_artifacts,
         ):
             with self.assertRaisesRegex(RuntimeError, "模板|template"):
@@ -1867,7 +1867,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             return runner.compose_manifest(manifest, manifest_path)
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=write_rebased_artifacts,
         ):
             with self.assertRaisesRegex(RuntimeError, "招标文件.*修改"):
@@ -2012,7 +2012,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             return runner.compose_manifest(manifest, manifest_path)
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=write_controlled_appendix_artifacts,
         ):
             result = _run_outline_skill(manifest_path, bid_type="技术标")
@@ -2089,7 +2089,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             return result
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=write_valid_artifacts_then_mutate_manifest,
         ):
             with self.assertRaisesRegex(RuntimeError, "manifest.*修改"):
@@ -2111,7 +2111,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             )
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=write_semantic_path_artifacts,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2322,7 +2322,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             "app.services.outline_generation._ocr_fallback_text",
             return_value=("第一章 投标响应概述\n1.1 项目理解\n第二章 实施方案\n2.1 工作计划", {"status": "completed"}),
         ), patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2364,7 +2364,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result()
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2375,7 +2375,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         marker.write_text("previous run", encoding="utf-8")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             second_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2397,7 +2397,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result()
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2408,7 +2408,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         marker.write_text("keep me", encoding="utf-8")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=RuntimeError("futurecode down"),
         ), patch("app.services.outline_generation._run_local_outline_skill") as local_fallback:
             with self.assertRaisesRegex(RuntimeError, "目录生成需要 opencode 自主决策"):
@@ -2426,7 +2426,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result()
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             first_payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2438,7 +2438,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         marker.write_text("keep me", encoding="utf-8")
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ), patch(
             "app.services.outline_generation._remap_json_file",
@@ -2458,7 +2458,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         project_id = self._prepare_project_with_parse_result()
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2489,7 +2489,7 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         project_id = self._prepare_project_with_parse_result()
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2559,7 +2559,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         tender_doc.save(tender_path)
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -2598,7 +2598,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             }
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=_mock_missing_output,
         ), patch("app.services.outline_generation._run_local_outline_skill") as local_fallback:
             with self.assertRaisesRegex(RuntimeError, "目录生成需要 opencode 自主决策"):
@@ -2611,7 +2611,7 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         project_id = self._prepare_project_with_parse_result()
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             payload = generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
@@ -3146,7 +3146,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ):
             _run_directory_generation_job(project_id, {"outlineStrategy": "strict"})

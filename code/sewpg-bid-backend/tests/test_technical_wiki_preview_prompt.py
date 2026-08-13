@@ -19,7 +19,7 @@ from app.services.technical_wiki_preview_prompt import (
 
 
 def _loader(text: str) -> dict:
-    """简易 json_loader：剥代码块后 json.loads，模拟 OpencodeClient._parse_json_payload。"""
+    """简易 json_loader：剥代码块后 json.loads，模拟 OpencodeEngine._parse_json_payload。"""
     cleaned = str(text or "").strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else ""

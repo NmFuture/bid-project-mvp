@@ -507,7 +507,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt",
             return_value=opencode_result,
         ) as send_text_prompt:
             response = self.client.post(
@@ -547,9 +547,9 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt"
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt"
         ) as send_text_prompt, patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             return_value=opencode_response,
         ) as send_prompt:
             response = self.client.post(
@@ -584,7 +584,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             "role": "T",
         }
 
-        with patch("app.services.opencode_client.OpencodeClient.send_prompt") as send_prompt:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt") as send_prompt:
             response = self.client.post(
                 f"/api/technical/projects/{project_id}/document/technical-chat",
                 json={"message": "继续", "sessionId": "session-user-1"},
@@ -601,7 +601,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
         store.persist_project_state(project)
 
-        with patch("app.services.opencode_client.OpencodeClient.send_prompt") as send_prompt:
+        with patch("app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt") as send_prompt:
             response = self.client.post(
                 f"/api/technical/projects/{project_id}/document/technical-chat",
                 json={"message": "继续", "sessionId": "session-mismatched"},
@@ -626,7 +626,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt",
             return_value=opencode_result,
         ):
             response = self.client.post(
@@ -672,14 +672,14 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             }
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync",
             return_value=custom_config,
         ), patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt",
             autospec=True,
             side_effect=send_text_prompt,
         ) as send_text, patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             autospec=True,
             side_effect=send_prompt,
         ) as send_existing:
@@ -728,7 +728,7 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
             return opencode_result
 
         with patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt",
             side_effect=send_with_concurrent_update,
         ):
             response = self.client.post(
@@ -757,13 +757,13 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync",
             return_value=custom_config,
         ), patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             side_effect=RuntimeError("futurecode 生成超时"),
         ) as send_prompt, patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt",
             return_value={
                 "sessionId": "session-replayed",
                 "providerId": "provider-default",
@@ -794,10 +794,10 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         store.persist_project_state(project)
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync",
             return_value={},
         ), patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             side_effect=RuntimeError("session not found: session-expired"),
         ) as send_prompt:
             response = self.client.post(
@@ -835,10 +835,10 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         wrapped_error.__cause__ = http_error
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync",
             return_value={},
         ), patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             side_effect=wrapped_error,
         ) as send_prompt:
             response = self.client.post(
@@ -864,13 +864,13 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync",
             return_value={},
         ), patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             side_effect=[RuntimeError("ProviderModelNotFound"), fallback_response],
         ) as send_prompt, patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt"
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt"
         ) as send_text_prompt:
             response = self.client.post(
                 f"/api/technical/projects/{project_id}/document/technical-chat",
@@ -911,13 +911,13 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync",
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync",
             return_value=custom_config,
         ), patch(
-            "app.services.opencode_client.OpencodeClient.send_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_prompt",
             side_effect=RuntimeError("ProviderModelNotFound"),
         ) as send_prompt, patch(
-            "app.services.opencode_client.OpencodeClient.send_text_prompt",
+            "app.services.agent_engine.opencode_engine.OpencodeEngine.send_text_prompt",
             return_value={
                 "sessionId": "session-replayed",
                 "providerId": "provider-default",

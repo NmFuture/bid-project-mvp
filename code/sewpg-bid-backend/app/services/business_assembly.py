@@ -20,7 +20,7 @@ from app.services.business_s1_handoff import business_s1_parse_result
 from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.bid_runtime_state import now_iso
 from app.services.workspace_project_access import (
     get_workspace_project_runtime_state,
@@ -702,7 +702,7 @@ def _run_business_format_cleaner_manifest(
 ) -> dict[str, Any]:
     prompt = _build_business_format_cleaner_prompt(manifest_path)
     try:
-        return OpencodeClient().run_bid_business_format_cleaner_with_trace(
+        return OpencodeEngine().run_bid_business_format_cleaner_with_trace(
             prompt,
             session_ready_callback=(
                 (lambda details: progress_callback("format_cleaner_session_ready", details))

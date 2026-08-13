@@ -1997,7 +1997,7 @@ class ParsePipelineTests(unittest.TestCase):
             }
 
             with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
-                "app.services.parsing.OpencodeClient.generate_tender_parse_with_trace",
+                "app.services.parsing.OpencodeEngine.generate_tender_parse_with_trace",
                 side_effect=error,
             ):
                 with self.assertRaisesRegex(RuntimeError, "S1 商务解析 Skill 调用失败"):
@@ -2039,7 +2039,7 @@ class ParsePipelineTests(unittest.TestCase):
                 "app.services.parsing._run_technical_sharded_parse_skill",
                 side_effect=RuntimeError("unit-test sharded parse failed"),
             ), patch(
-                "app.services.parsing.OpencodeClient.generate_tender_parse_with_trace",
+                "app.services.parsing.OpencodeEngine.generate_tender_parse_with_trace",
                 side_effect=error,
             ):
                 progress_events = []
@@ -2116,7 +2116,7 @@ class ParsePipelineTests(unittest.TestCase):
                 return {"outputFile": str(structured_path)}
 
             with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
-                "app.services.parsing.OpencodeClient.generate_tender_parse_with_trace",
+                "app.services.parsing.OpencodeEngine.generate_tender_parse_with_trace",
                 side_effect=fake_generate,
             ):
                 result, warning = parsing_service._run_parse_skill(
@@ -4103,7 +4103,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         with patch.object(
-            parsing_service.OpencodeClient,
+            parsing_service.OpencodeEngine,
             "review_business_commitments_with_trace",
             return_value={
                 "decisions": [
@@ -4139,7 +4139,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         with patch.object(
-            parsing_service.OpencodeClient,
+            parsing_service.OpencodeEngine,
             "review_business_commitments_with_trace",
             side_effect=RuntimeError("semantic review unavailable"),
         ) as mocked_review:
@@ -4175,7 +4175,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         with patch.object(
-            parsing_service.OpencodeClient,
+            parsing_service.OpencodeEngine,
             "review_business_commitments_with_trace",
             return_value={
                 "decisions": [
@@ -4225,7 +4225,7 @@ class ParsePipelineTests(unittest.TestCase):
         ).encode("utf-8")
 
         with patch.object(
-            parsing_service.OpencodeClient,
+            parsing_service.OpencodeEngine,
             "review_business_commitments_with_trace",
             return_value={
                 "decisions": [
@@ -4990,7 +4990,7 @@ class ParsePipelineTests(unittest.TestCase):
         store.persist_project_state(project)
 
         with patch(
-            "app.services.bid_parse_service.OpencodeClient.abort_session",
+            "app.services.bid_parse_service.OpencodeEngine.abort_session",
             return_value=True,
             create=True,
         ) as abort_session:

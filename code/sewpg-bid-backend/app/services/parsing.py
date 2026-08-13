@@ -33,7 +33,7 @@ from app.services.document_parse_engine import create_document_parse_engine
 from app.services.document_parse_quality import evaluate_document_nav_quality
 from app.services.docling_engine import DoclingParseEngine
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.parse_profiles import (
     BUSINESS_PARSE_PROFILE,
     TECHNICAL_PARSE_PROFILE,
@@ -2102,7 +2102,7 @@ def _review_commitment_candidates_semantically(candidates: list[dict[str, Any]])
     if not candidates:
         return {}
     try:
-        result = OpencodeClient().review_business_commitments_with_trace(
+        result = OpencodeEngine().review_business_commitments_with_trace(
             _build_commitment_semantic_review_prompt(candidates)
         )
     except RuntimeError:
@@ -4957,7 +4957,7 @@ def _review_business_attachment_templates_semantically(appendices: list[dict[str
     if not candidates:
         return {}
     try:
-        result = OpencodeClient().review_business_attachment_templates_with_trace(
+        result = OpencodeEngine().review_business_attachment_templates_with_trace(
             _build_business_template_review_prompt(candidates)
         )
     except RuntimeError:
@@ -6493,7 +6493,7 @@ def _run_technical_shard_session(
 ) -> dict[str, Any]:
     key = str(task["key"])
     try:
-        client = OpencodeClient(
+        client = OpencodeEngine(
             model_config=model_config,
             request_slots=_S1_SHARD_REQUEST_SLOTS,
         )
@@ -6734,7 +6734,7 @@ def _run_parse_skill(
         except RuntimeError as exc:
             # 分片链路整体失败时回落到原单会话链路，保证不因为新链路把解析打死。
             logger.warning("S1 技术标分片解析失败，回落到单会话链路：%s", exc)
-    client = OpencodeClient()
+    client = OpencodeEngine()
     stream_callback = (
         (lambda details: progress_callback("opencode_delta", details))
         if progress_callback

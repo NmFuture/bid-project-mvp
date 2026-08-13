@@ -8,7 +8,7 @@
 设计约束：
 - **纯 stdlib，零 `app.*` 依赖**（与 business_wiki_blueprint.py 同款，才能被后端
   importlib 加载而不引入循环依赖）。
-- JSON 解析用**依赖注入**：调用方把 json_loader（如 OpencodeClient._parse_json_payload）
+- JSON 解析用**依赖注入**：调用方把 json_loader（如 OpencodeEngine._parse_json_payload）
   传进来，本模块不直接 import 后端的解析器。
 - 预览仍由**后端发请求 + 控制缓存/并发**；本模块只提供「怎么问、怎么读」，不挂
   opencode agent 逐文件编排。
@@ -307,7 +307,7 @@ def _clip_preview_object(parsed: Any) -> dict[str, Any] | None:
 def parse_preview_reply(reply: str, json_loader: Callable[[str], Any]) -> dict[str, Any] | None:
     """把单文件 LLM 回复解析成裁剪后的 preview 子对象；无有效内容返回 None。
 
-    json_loader：调用方注入的 JSON 解析器（如 OpencodeClient._parse_json_payload），
+    json_loader：调用方注入的 JSON 解析器（如 OpencodeEngine._parse_json_payload），
     本模块不直接依赖后端解析实现。
     """
     try:

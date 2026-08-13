@@ -97,7 +97,7 @@ def mask_secret(value: str) -> str:
 def opencode_llm_config_active(config: dict[str, Any]) -> bool:
     """自定义 LLM 配置是否生效：已启用且 baseUrl 与模型齐全。
 
-    runtime 配置写入与 OpencodeClient 共用同一判定，避免两侧口径不一致。
+    runtime 配置写入与 OpencodeEngine 共用同一判定，避免两侧口径不一致。
     注意：传入的通常是 _normalize_model_config 归一化后的配置，显式空串不会被回填，
     因此 baseUrl 被清空时这里会判为未生效。
     """

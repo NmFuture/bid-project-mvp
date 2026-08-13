@@ -42,7 +42,7 @@ from app.services.business_parse_assets import (
 from app.services.business_template_extractor import convert_extractor_appendices
 from app.services.file_utils import format_size_mb
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, TECHNICAL_PARSE_PROFILE
 from app.services.technical_parse_assets import (
     TechnicalParseAssetError,
@@ -2067,7 +2067,7 @@ class BidParseService:
             "aborted": False,
         }
         if session_id:
-            opencode_abort["aborted"] = OpencodeClient().abort_session(session_id)
+            opencode_abort["aborted"] = OpencodeEngine().abort_session(session_id)
         if trace:
             trace["status"] = "cancelled"
         cancelled = cancel_parse_progress_state(

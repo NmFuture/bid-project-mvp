@@ -1595,9 +1595,9 @@ Use the {TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME} skill.
 
 def run_technical_score_index_xref_skill(brief_path: Path, mapping_path: Path) -> dict[str, Any]:
     """opencode 调用隔离点：测试 patch 本函数即可 mock 章节判断。"""
-    from app.services.opencode_client import OpencodeClient
+    from app.services.agent_engine.opencode_engine import OpencodeEngine
 
-    return OpencodeClient().run_bid_tech_score_index_xref_with_trace(
+    return OpencodeEngine().run_bid_tech_score_index_xref_with_trace(
         _build_score_index_xref_prompt(brief_path, mapping_path),
     )
 

@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from app.core.config import DEFAULT_OPENCODE_MODEL_ID, DEFAULT_OPENCODE_PROVIDER_ID, settings
 from app.services.bid_project_service import technical_project_service
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.workspace_project_access import persist_workspace_project_state, require_workspace_project_for_update
 
 
@@ -63,7 +63,7 @@ def _technical_project_for_update(project_id: str) -> dict[str, Any]:
 
 
 def _existing_session_prompt_result(
-    client: OpencodeClient,
+    client: OpencodeEngine,
     session_id: str,
     prompt: str,
 ) -> dict[str, Any]:
@@ -74,7 +74,7 @@ def _existing_session_prompt_result(
     )
     info = response.get("info") if isinstance(response.get("info"), dict) else {}
     if info.get("error"):
-        raise RuntimeError(OpencodeClient._format_response_error(info["error"]))
+        raise RuntimeError(OpencodeEngine._format_response_error(info["error"]))
     return {
         "sessionId": session_id,
         "providerId": client.provider_id,
@@ -119,7 +119,7 @@ def _send_technical_chat_prompt(
     session_model_id: str = "",
     new_session_prompt: str = "",
 ) -> dict[str, Any]:
-    configured_client = OpencodeClient(
+    configured_client = OpencodeEngine(
         base_url=session_base_url or None,
         provider_id=session_provider_id or None,
         model_id=session_model_id or None,
@@ -138,7 +138,7 @@ def _send_technical_chat_prompt(
         first_error = str(first_exc)
         if session_id and _is_missing_chat_session_error(first_exc):
             raise TechnicalChatSessionExpiredError(first_error) from first_exc
-        if session_id and not OpencodeClient.is_model_not_found_error(first_error):
+        if session_id and not OpencodeEngine.is_model_not_found_error(first_error):
             raise
         fallback_provider = settings.opencode_provider_id or DEFAULT_OPENCODE_PROVIDER_ID
         fallback_model = settings.opencode_model_id or DEFAULT_OPENCODE_MODEL_ID
@@ -147,10 +147,10 @@ def _send_technical_chat_prompt(
             and configured_client.model_id == fallback_model
             and configured_client.base_url == settings.opencode_base_url.rstrip("/")
         )
-        if is_default_model and not OpencodeClient.is_model_not_found_error(first_error):
+        if is_default_model and not OpencodeEngine.is_model_not_found_error(first_error):
             raise
 
-        fallback_client = OpencodeClient(
+        fallback_client = OpencodeEngine(
             base_url=settings.opencode_base_url,
             provider_id=fallback_provider,
             model_id=fallback_model,

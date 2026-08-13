@@ -11,7 +11,7 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 TECH_ASSEMBLY = BACKEND_ROOT / "app" / "services" / "tech_assembly.py"
-OPENCODE_CLIENT = BACKEND_ROOT / "app" / "services" / "opencode_client.py"
+AGENT_ENGINE_JSON_UTILS = BACKEND_ROOT / "app" / "services" / "agent_engine" / "json_utils.py"
 ASSEMBLER_SKILL = BACKEND_ROOT / "opencode" / "skills" / "bid-tech-assembler" / "SKILL.md"
 ASSEMBLER_CONSTRAINTS = (
     BACKEND_ROOT / "opencode" / "skills" / "bid-tech-assembler" / "references" / "constraints.md"
@@ -167,7 +167,7 @@ class TechnicalReportContractTests(unittest.TestCase):
         self.assertNotIn("needs_review", content)
 
     def test_repair_examples_keep_technical_reports_empty_and_business_reports_unchanged(self) -> None:
-        repair = load_isolated_function(OPENCODE_CLIENT, "_repair_json_payload", class_name="OpencodeClient")
+        repair = load_isolated_function(AGENT_ENGINE_JSON_UTILS, "_repair_json_payload")
         prompts: list[str] = []
         fake_client = types.SimpleNamespace(
             create_session=lambda _title: {"id": "repair"},

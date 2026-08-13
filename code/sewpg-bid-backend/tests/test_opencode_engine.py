@@ -13,7 +13,7 @@ import httpx
 
 from app.core.config import settings
 from app.services.bid_parse_cancel import ParseCancelledError
-from app.services.opencode_client import OUTLINE_DECISION_SESSION_MAX_ATTEMPTS, OpencodeClient
+from app.services.agent_engine.opencode_engine import OUTLINE_DECISION_SESSION_MAX_ATTEMPTS, OpencodeEngine
 from app.services.system_settings import system_settings_service
 
 
@@ -31,7 +31,7 @@ def _db_llm_config(**overrides: object) -> dict:
     return config
 
 
-class OpencodeClientTests(unittest.TestCase):
+class OpencodeEngineTests(unittest.TestCase):
     @staticmethod
     def _http_client_with_post_side_effect(side_effect: object) -> MagicMock:
         client = MagicMock()
@@ -45,7 +45,7 @@ class OpencodeClientTests(unittest.TestCase):
             "get_opencode_model_config_sync",
             return_value=_db_llm_config(),
         ):
-            client = OpencodeClient()
+            client = OpencodeEngine()
         self.assertEqual(client.base_url, "http://db-opencode:4096")
         self.assertEqual(client.provider_id, "custom-provider")
         self.assertEqual(client.model_id, "custom-model")
@@ -60,13 +60,13 @@ class OpencodeClientTests(unittest.TestCase):
                 "get_opencode_model_config_sync",
                 return_value=config,
             ):
-                client = OpencodeClient()
+                client = OpencodeEngine()
             self.assertEqual(client.base_url, settings.opencode_base_url.rstrip("/"))
             self.assertEqual(client.provider_id, settings.opencode_provider_id)
             self.assertEqual(client.model_id, settings.opencode_model_id)
 
     def test_repair_examples_keep_technical_reports_empty_and_business_reports_unchanged(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         prompts: list[str] = []
 
         def fake_send_prompt(_session_id: str, prompt: str) -> dict:
@@ -98,9 +98,9 @@ class OpencodeClientTests(unittest.TestCase):
         )
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync"
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync"
         ) as load_config:
-            client = OpencodeClient(model_config=model_config)
+            client = OpencodeEngine(model_config=model_config)
 
         load_config.assert_not_called()
         self.assertEqual(client.base_url, "http://configured-opencode:4096")
@@ -112,9 +112,9 @@ class OpencodeClientTests(unittest.TestCase):
         model_config = _db_llm_config(enabled=False)
 
         with patch(
-            "app.services.opencode_client.system_settings_service.get_opencode_model_config_sync"
+            "app.services.agent_engine.opencode_engine.system_settings_service.get_opencode_model_config_sync"
         ) as load_config:
-            client = OpencodeClient(model_config=model_config)
+            client = OpencodeEngine(model_config=model_config)
 
         load_config.assert_not_called()
         self.assertEqual(client.base_url, settings.opencode_base_url.rstrip("/"))
@@ -136,7 +136,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(config["modelId"], "database-model")
 
     def test_create_session_retries_connection_refused_until_service_recovers(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         request = httpx.Request("POST", "http://opencode:4096/session")
         response = MagicMock()
         response.json.return_value = {"id": "ses-recovered"}
@@ -149,8 +149,8 @@ class OpencodeClientTests(unittest.TestCase):
         )
 
         with (
-            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
-            patch("app.services.opencode_client.time.sleep") as sleep,
+            patch("app.services.agent_engine.opencode_engine.httpx.Client", return_value=http_client),
+            patch("app.services.agent_engine.opencode_engine.time.sleep") as sleep,
         ):
             session = client.create_session("技术标素材预览")
 
@@ -159,7 +159,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.5, 1.0])
 
     def test_create_session_retries_transient_service_unavailable(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         request = httpx.Request("POST", "http://opencode:4096/session")
         unavailable = httpx.Response(503, request=request)
         recovered = MagicMock()
@@ -167,8 +167,8 @@ class OpencodeClientTests(unittest.TestCase):
         http_client = self._http_client_with_post_side_effect([unavailable, recovered])
 
         with (
-            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
-            patch("app.services.opencode_client.time.sleep") as sleep,
+            patch("app.services.agent_engine.opencode_engine.httpx.Client", return_value=http_client),
+            patch("app.services.agent_engine.opencode_engine.time.sleep") as sleep,
         ):
             session = client.create_session("技术标素材预览")
 
@@ -177,15 +177,15 @@ class OpencodeClientTests(unittest.TestCase):
         sleep.assert_called_once_with(0.5)
 
     def test_create_session_reports_error_after_transient_retry_budget_exhausted(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         request = httpx.Request("POST", "http://opencode:4096/session")
         http_client = self._http_client_with_post_side_effect(
             httpx.ConnectError("[Errno 111] Connection refused", request=request)
         )
 
         with (
-            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
-            patch("app.services.opencode_client.time.sleep") as sleep,
+            patch("app.services.agent_engine.opencode_engine.httpx.Client", return_value=http_client),
+            patch("app.services.agent_engine.opencode_engine.time.sleep") as sleep,
         ):
             with self.assertRaisesRegex(RuntimeError, "Connection refused"):
                 client.create_session("技术标素材预览")
@@ -194,14 +194,14 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 6)
 
     def test_create_session_does_not_retry_non_transient_http_error(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         request = httpx.Request("POST", "http://opencode:4096/session")
         response = httpx.Response(400, request=request)
         http_client = self._http_client_with_post_side_effect([response])
 
         with (
-            patch("app.services.opencode_client.httpx.Client", return_value=http_client),
-            patch("app.services.opencode_client.time.sleep") as sleep,
+            patch("app.services.agent_engine.opencode_engine.httpx.Client", return_value=http_client),
+            patch("app.services.agent_engine.opencode_engine.time.sleep") as sleep,
         ):
             with self.assertRaisesRegex(RuntimeError, "400 Bad Request"):
                 client.create_session("技术标素材预览")
@@ -210,7 +210,7 @@ class OpencodeClientTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_send_prompt_includes_explicit_tool_overrides(self) -> None:
-        client = OpencodeClient(
+        client = OpencodeEngine(
             base_url="http://opencode:4096",
             provider_id="provider-test",
             model_id="model-test",
@@ -221,14 +221,14 @@ class OpencodeClientTests(unittest.TestCase):
         http_client = self._http_client_with_post_side_effect(response)
         tool_overrides = {"bash": False, "read": False, "write": False}
 
-        with patch("app.services.opencode_client.httpx.Client", return_value=http_client):
+        with patch("app.services.agent_engine.opencode_engine.httpx.Client", return_value=http_client):
             client.send_prompt("session-safe", "只返回文字", tools=tool_overrides)
 
         payload = http_client.post.call_args.kwargs["json"]
         self.assertEqual(payload["tools"], tool_overrides)
 
     def test_send_text_prompt_omits_tool_overrides_by_default(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with patch.object(
             client,
@@ -244,7 +244,7 @@ class OpencodeClientTests(unittest.TestCase):
         send_prompt.assert_called_once_with("session-default-tools", "继续执行")
 
     def test_extract_outline_json_repairs_invalid_json_once(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -266,7 +266,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["nodes"][0]["title"], "项目概况")
 
     def test_extract_outline_json_promotes_repair_failure(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -301,12 +301,12 @@ class OpencodeClientTests(unittest.TestCase):
 后续说明不应影响解析。
 """
 
-        parsed = OpencodeClient._parse_json_payload(content)
+        parsed = OpencodeEngine._parse_json_payload(content)
 
         self.assertEqual(parsed["decisions"][0]["candidateId"], "CAND-0001")
 
     def test_extract_business_template_extraction_json_repairs_damaged_summary(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -332,14 +332,14 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["summary"]["templateCount"], 2)
 
     def test_extract_business_template_extraction_json_rejects_missing_output_and_summary(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {"parts": [{"type": "text", "text": '{"schemaVersion":"bid-business-template-extractor-v1"}'}]}
 
         with self.assertRaisesRegex(RuntimeError, "商务模板提取 JSON 结构不正确"):
             client._extract_business_template_extraction_json(response)
 
     def test_extract_business_template_extraction_json_accepts_summary_only(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -359,7 +359,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["summary"]["templateCount"], 1)
 
     def test_extract_outline_json_accepts_v2_toc_items(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -379,7 +379,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["items"][0]["title"], "技术方案")
 
     def test_extract_outline_json_accepts_v2_output_file_summary(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -399,7 +399,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn("投标文件-总目录.json", parsed["outputFile"])
 
     def test_generate_outline_with_trace_defaults_to_no_early_tool_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with (
             patch.object(client, "create_session", return_value={"id": "ses-outline"}),
@@ -427,7 +427,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(result["schema_version"], "bid-toc-json-v1")
 
     def test_run_outline_decision_session_uses_persisted_chapter_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         validator = MagicMock(return_value={"complete": True, "decidedCount": 18})
         with (
             patch.object(client, "create_session", return_value={"id": "ses-chapter-1"}),
@@ -455,7 +455,7 @@ class OpencodeClientTests(unittest.TestCase):
 
     def test_run_outline_decision_session_retries_transient_session_error(self) -> None:
         """瞬时流错误重试一次即可续跑：decision-next 会把中断的批次原样带回，不会重复提交。"""
-        client = OpencodeClient()
+        client = OpencodeEngine()
         # 第一次会话报错（上游 SSE 帧错乱），第二次正常收尾
         responses = [
             {"info": {"error": {"name": "AI_JSONParseError", "message": "JSON parsing failed"}}},
@@ -481,7 +481,7 @@ class OpencodeClientTests(unittest.TestCase):
                 "_build_output_trace",
                 return_value={"status": "received", "sessionId": "ses-try-2"},
             ),
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
         ):
             result = client.run_outline_decision_session(
                 "chapter prompt",
@@ -496,7 +496,7 @@ class OpencodeClientTests(unittest.TestCase):
 
     def test_run_outline_decision_session_keeps_result_when_error_arrives_after_completion(self) -> None:
         """决策以落盘状态为准：错误发生在结果写盘之后时，不该丢掉已经判完的整章。"""
-        client = OpencodeClient()
+        client = OpencodeEngine()
         validator = MagicMock(return_value={"complete": True, "decidedCount": 18})
         with (
             patch.object(client, "create_session", return_value={"id": "ses-late-error"}) as create_session,
@@ -522,7 +522,7 @@ class OpencodeClientTests(unittest.TestCase):
 
     def test_run_outline_decision_session_gives_up_after_max_attempts(self) -> None:
         """一直失败要如实抛出，不能无限重试拖死整轮目录生成。"""
-        client = OpencodeClient()
+        client = OpencodeEngine()
         validator = MagicMock(return_value={"complete": False, "decidedCount": 0})
         with (
             patch.object(client, "create_session", return_value={"id": "ses-dead"}) as create_session,
@@ -531,7 +531,7 @@ class OpencodeClientTests(unittest.TestCase):
                 "_send_prompt_with_session_polling",
                 return_value={"info": {"error": {"name": "AI_APICallError", "message": "boom"}}},
             ),
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
         ):
             with self.assertRaises(RuntimeError):
                 client.run_outline_decision_session(
@@ -543,7 +543,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(create_session.call_count, OUTLINE_DECISION_SESSION_MAX_ATTEMPTS)
 
     def test_generate_outline_with_trace_uses_fresh_sessions_for_bounded_handoffs(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         final_response = {
             "parts": [
                 {
@@ -610,7 +610,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(result["opencodeOutput"]["handoffSessionCount"], 2)
 
     def test_assistant_stop_validator_releases_a_completed_handoff_request(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         release_worker = threading.Event()
         stopped_messages = [
             {
@@ -652,7 +652,7 @@ class OpencodeClientTests(unittest.TestCase):
         abort.assert_called_once_with("ses-checkpoint")
 
     def test_handoff_stops_after_first_completed_decision_batch(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         release_worker = threading.Event()
         decision_messages = [
             {
@@ -724,7 +724,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
         self.assertIn('"total_nodes":64', output)
 
@@ -767,7 +767,7 @@ class OpencodeClientTests(unittest.TestCase):
                     }
                 ]
 
-                output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+                output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
                 self.assertEqual(output, "")
 
@@ -808,7 +808,7 @@ class OpencodeClientTests(unittest.TestCase):
                     }
                 ]
 
-                output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+                output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
                 self.assertEqual(output, "")
 
@@ -836,7 +836,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
         self.assertIn('"workflowStage":"finalized"', output)
 
@@ -864,7 +864,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
         self.assertEqual(output, "")
 
@@ -892,7 +892,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
         self.assertEqual(output, "")
 
@@ -922,7 +922,7 @@ class OpencodeClientTests(unittest.TestCase):
                     }
                 ]
 
-                output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+                output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
                 self.assertEqual(output, "")
 
@@ -958,13 +958,13 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "s2outline-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "s2outline-finalize")
 
         self.assertIn('"outputFile"', output)
         self.assertIn('"total_nodes":64', output)
 
     def test_build_output_trace_marks_early_wikibuild_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = client._tool_output_response(
             session_id="ses-wiki",
             output='{"summary":"Wiki 已生成","nodes":[]}',
@@ -978,7 +978,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(trace["completionSource"], "wikibuild")
 
     def test_generate_wiki_blueprint_uses_wikibuild_early_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with (
             patch.object(client, "create_session", return_value={"id": "ses-wiki"}),
@@ -1000,7 +1000,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "wikibuild")
 
     def test_gap_planner_uses_s4gap_early_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with (
             patch.object(client, "create_session", return_value={"id": "ses-gap"}),
@@ -1035,7 +1035,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "s4gap")
 
     def test_generate_tender_parse_uses_s1_finalize_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with (
             patch.object(client, "create_session", return_value={"id": "ses-s1"}),
@@ -1068,7 +1068,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(send_prompt.call_args.kwargs["early_tool_command"], "s1parse-finalize")
 
     def test_s1_parse_raises_session_api_error_before_waiting_for_finalize(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         messages = [
             {
                 "info": {
@@ -1114,7 +1114,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn("reasoning_content", trace["failureReason"])
 
     def test_extract_business_templates_uses_btplnav_finalize_early_completion(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with (
             patch.object(client, "create_session", return_value={"id": "ses-template-agentic"}),
@@ -1144,7 +1144,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(result["opencodeOutput"]["completionSource"], "btplnav-finalize")
 
     def test_extract_business_templates_aborts_session_when_cancelled_after_session_ready(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         ready_events: list[dict[str, str]] = []
 
         def session_ready(details: dict[str, str]) -> None:
@@ -1190,7 +1190,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "btplnav-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "btplnav-finalize")
 
         self.assertIn('"templateCount":2', output)
 
@@ -1225,7 +1225,7 @@ class OpencodeClientTests(unittest.TestCase):
                     }
                 ]
 
-                output = OpencodeClient._find_completed_bash_tool_output(messages, "btplnav-finalize")
+                output = OpencodeEngine._find_completed_bash_tool_output(messages, "btplnav-finalize")
 
                 self.assertEqual(output, "")
 
@@ -1261,13 +1261,13 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "btplnav-finalize")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "btplnav-finalize")
 
         self.assertIn('"outputFile"', output)
         self.assertIn('"templateCount":2', output)
 
     def test_extract_tender_parse_json_rejects_prepared_workflow_stage(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -1286,23 +1286,23 @@ class OpencodeClientTests(unittest.TestCase):
 
     def test_s1_finalize_output_is_terminal_only_for_finalized_stage(self) -> None:
         self.assertTrue(
-            OpencodeClient._s1_finalize_output_is_terminal(
+            OpencodeEngine._s1_finalize_output_is_terminal(
                 '{"schemaVersion":"bid-business-tender-structured-v1","summary":{"workflowStage":"finalized"}}'
             )
         )
         self.assertFalse(
-            OpencodeClient._s1_finalize_output_is_terminal(
+            OpencodeEngine._s1_finalize_output_is_terminal(
                 '{"schemaVersion":"bid-business-tender-structured-v1","summary":{"workflowStage":"failed"}}'
             )
         )
         self.assertFalse(
-            OpencodeClient._s1_finalize_output_is_terminal(
+            OpencodeEngine._s1_finalize_output_is_terminal(
                 '{"schemaVersion":"bid-business-tender-structured-v1","summary":{"workflowStage":"prepared"}}'
             )
         )
 
     def test_polling_can_early_complete_without_stream_callback(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(2)
@@ -1348,7 +1348,7 @@ class OpencodeClientTests(unittest.TestCase):
         """factcurate 不提前返回：建议文件由 LLM 多轮迭代写出（先草稿后填值），
         「脚本完成 / 文件已落地」都不代表终稿——提前返回会回收草稿并孤儿化会话
         （实测三轮三种竞态）。必须等会话自然完成，走正常返回路径。"""
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(1.2)
@@ -1389,7 +1389,7 @@ class OpencodeClientTests(unittest.TestCase):
         """系统设置 timeoutMs 较短（如默认 30s）时，轮询监管的长任务 HTTP 读超时
         必须抬到 idle 监管时限以上，否则脚本/生成阶段请求先被 30s 读超时杀掉，
         后端 400 而 futurecode 会话仍在后台运行（产物无人回收）。"""
-        client = OpencodeClient()
+        client = OpencodeEngine()
         client.timeout = httpx.Timeout(30.0, connect=10.0)
         captured: dict = {}
 
@@ -1413,7 +1413,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertGreaterEqual(run_timeout.read, idle_timeout)
 
     def test_idle_timeout_aborts_session_and_joins_worker(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         release_worker = threading.Event()
 
         def blocked_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
@@ -1443,7 +1443,7 @@ class OpencodeClientTests(unittest.TestCase):
         )
 
     def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         events: list[dict] = []
 
         def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
@@ -1460,7 +1460,7 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
-            patch("app.services.opencode_client.OPENCODE_PROGRESS_HEARTBEAT_SECONDS", 0.1),
+            patch("app.services.agent_engine.opencode_engine.OPENCODE_PROGRESS_HEARTBEAT_SECONDS", 0.1),
         ):
             client._send_prompt_with_session_polling(
                 "ses-heartbeat",
@@ -1475,7 +1475,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(heartbeat_events[-1]["sessionId"], "ses-heartbeat")
 
     def test_polling_aborts_session_when_cancel_requested(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(2)
@@ -1496,7 +1496,7 @@ class OpencodeClientTests(unittest.TestCase):
         abort_session.assert_called_once_with("ses_cancel_polling_probe")
 
     def test_generate_tender_parse_aborts_session_when_cancelled_after_session_ready(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         with (
             patch.object(client, "create_session", return_value={"id": "ses_cancel_ready_probe"}),
@@ -1516,7 +1516,7 @@ class OpencodeClientTests(unittest.TestCase):
         send_prompt.assert_not_called()
 
     def test_s1_parse_does_not_complete_on_prepare_stdout(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(1.0)
@@ -1558,9 +1558,9 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
-            patch("app.services.opencode_client.settings.opencode_timeout_sec", 1),
-            patch("app.services.opencode_client.time.monotonic", side_effect=[0.0, 121.0, 242.0]),
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.settings.opencode_timeout_sec", 1),
+            patch("app.services.agent_engine.opencode_engine.time.monotonic", side_effect=[0.0, 121.0, 242.0]),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
             patch.object(client, "_raise_s1_opencode_stalled", side_effect=RuntimeError("opencode incomplete/stalled")),
         ):
             with self.assertRaisesRegex(RuntimeError, "opencode incomplete/stalled"):
@@ -1571,7 +1571,7 @@ class OpencodeClientTests(unittest.TestCase):
                 )
 
     def test_s1_parse_waits_for_finalize_after_prompt_returns_between_tool_calls(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         finalize_output = (
             '{"schemaVersion":"bid-business-tender-structured-v1",'
             '"outputFile":"/data/parsed/PRJ/s1_structured_result.json",'
@@ -1625,7 +1625,7 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
         ):
             response = client._send_prompt_with_session_polling(
                 "ses-s1",
@@ -1639,7 +1639,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertGreaterEqual(list_session_messages.call_count, 2)
 
     def test_btplnav_waits_for_finalize_after_prompt_timeout(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         finalize_output = (
             '{"schemaVersion":"bid-business-template-extractor-v1",'
             '"outputFile":"/data/parsed/PRJ/business_template_extraction/business_template_extraction.json",'
@@ -1695,7 +1695,7 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "send_prompt", side_effect=RuntimeError("futurecode 生成超时，请缩短输入或稍后重试。")),
             patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
         ):
             response = client._send_prompt_with_session_polling(
                 "ses-template-extraction",
@@ -1709,7 +1709,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertGreaterEqual(list_session_messages.call_count, 2)
 
     def test_s2_outline_waits_for_finalize_after_prompt_timeout(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         finalize_output = (
             '{"schema_version":"technical-outline.v1",'
             '"outputFile":"/data/documents/PRJ/toc.json",'
@@ -1762,7 +1762,7 @@ class OpencodeClientTests(unittest.TestCase):
             patch.object(client, "send_prompt", side_effect=RuntimeError("futurecode generate timeout")),
             patch.object(client, "list_session_messages", side_effect=list_messages) as list_session_messages,
             patch.object(client, "abort_session", return_value=True) as abort_session,
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
         ):
             response = client._send_prompt_with_session_polling(
                 "ses-s2-outline",
@@ -1777,7 +1777,7 @@ class OpencodeClientTests(unittest.TestCase):
         abort_session.assert_called_once_with("ses-s2-outline")
 
     def test_s2_outline_early_completion_aborts_and_waits_for_active_prompt_worker(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         release_worker = threading.Event()
         worker_finished = threading.Event()
         finalize_output = (
@@ -1836,7 +1836,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertTrue(worker_finished.is_set())
 
     def test_s2_outline_stopped_session_uses_terminal_validator_for_noncanonical_command(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         finalized_payload = {
             "schema_version": "technical-outline.v1",
             "outputFile": "/data/documents/PRJ/toc.json",
@@ -1885,7 +1885,7 @@ class OpencodeClientTests(unittest.TestCase):
                         return_value={"signature": ("stopped", ())},
                     ),
                     patch.object(client, "abort_session", side_effect=abort_session) as abort_session_mock,
-                    patch("app.services.opencode_client.time.sleep", return_value=None),
+                    patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
                 ):
                     response = client._send_prompt_with_session_polling(
                         "ses-s2-stopped",
@@ -1900,7 +1900,7 @@ class OpencodeClientTests(unittest.TestCase):
                 abort_session_mock.assert_called_once_with("ses-s2-stopped")
 
     def test_s2_outline_finalize_tool_stops_before_assistant_finishes(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         finalized_payload = {
             "schema_version": "technical-outline.v1",
             "outputFile": "/data/documents/PRJ/toc.json",
@@ -1942,7 +1942,7 @@ class OpencodeClientTests(unittest.TestCase):
         stop_session.assert_called_once_with("ses-s2-finalized")
 
     def test_s2_outline_combined_finalize_tool_stops_before_assistant_finishes(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         finalized_payload = {
             "schema_version": "technical-outline.v1",
             "outputFile": "/data/documents/PRJ/toc.json",
@@ -1988,7 +1988,7 @@ class OpencodeClientTests(unittest.TestCase):
         stop_session.assert_called_once_with("ses-s2-combined-finalize")
 
     def test_s2_outline_terminal_validator_runs_once_per_finalize_tool_call(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         failed_finalize_messages = [
             {
                 "info": {"role": "assistant", "id": "msg-failed-finalize", "finish": "tool-calls"},
@@ -2018,7 +2018,7 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "list_session_messages", return_value=failed_finalize_messages),
             patch.object(client, "_raise_s2_outline_finalize_opencode_stalled", return_value=None),
-            patch("app.services.opencode_client.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
         ):
             response = client._wait_for_s2_outline_finalize_after_prompt_return(
                 session_id="ses-s2-failed-finalize",
@@ -2031,7 +2031,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(validator_calls, 1)
 
     def test_s2_outline_stopped_session_releases_prompt_when_terminal_validation_fails(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         release_worker = threading.Event()
         stopped_messages = [
             {
@@ -2069,7 +2069,7 @@ class OpencodeClientTests(unittest.TestCase):
         abort_session_mock.assert_called_once_with("ses-s2-invalid")
 
     def test_btplnav_stalled_running_tool_reports_trace(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         messages = [
             {
                 "info": {"role": "assistant", "id": "msg-btplnav-running"},
@@ -2101,7 +2101,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn("btplnav read", json.dumps(trace["lastToolInput"], ensure_ascii=False))
 
     def test_s1_parse_stalled_running_read_reports_trace(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
 
         def slow_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             time.sleep(2.0)
@@ -2133,8 +2133,8 @@ class OpencodeClientTests(unittest.TestCase):
         with (
             patch.object(client, "send_prompt", side_effect=slow_send_prompt),
             patch.object(client, "list_session_messages", return_value=messages),
-            patch("app.services.opencode_client.settings.opencode_timeout_sec", 1),
-            patch("app.services.opencode_client.time.monotonic", side_effect=fake_monotonic),
+            patch("app.services.agent_engine.opencode_engine.settings.opencode_timeout_sec", 1),
+            patch("app.services.agent_engine.opencode_engine.time.monotonic", side_effect=fake_monotonic),
         ):
             with self.assertRaises(RuntimeError) as context:
                 client._send_prompt_with_session_polling(
@@ -2154,7 +2154,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn("document_map.json", json.dumps(trace["lastToolInput"], ensure_ascii=False))
 
     def test_early_tool_output_does_not_repair_traceback_into_outline(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = client._tool_output_response(
             session_id="ses-test",
             output='Traceback (most recent call last):\nzipfile.BadZipFile: File is not a zip file',
@@ -2185,7 +2185,7 @@ class OpencodeClientTests(unittest.TestCase):
             }
         ]
 
-        output = OpencodeClient._find_completed_bash_tool_output(messages, "wikibuild")
+        output = OpencodeEngine._find_completed_bash_tool_output(messages, "wikibuild")
 
         self.assertEqual(output, "")
 
@@ -2220,8 +2220,8 @@ class OpencodeClientTests(unittest.TestCase):
                 }
             ]
 
-            output = OpencodeClient._find_completed_bash_tool_output(messages, "business-outline")
-            synthesized = OpencodeClient._synthesize_tool_response_from_manifest(
+            output = OpencodeEngine._find_completed_bash_tool_output(messages, "business-outline")
+            synthesized = OpencodeEngine._synthesize_tool_response_from_manifest(
                 f"business-outline {manifest_path}",
                 "business-outline",
             )
@@ -2230,7 +2230,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(synthesized, "")
 
     def test_extract_wiki_blueprint_json_accepts_valid_payload(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -2250,7 +2250,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["nodes"][0]["title"], "00-Wiki使用说明")
 
     def test_extract_wiki_blueprint_json_accepts_output_file_summary(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -2270,7 +2270,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertIn("wiki_blueprint.json", parsed["outputFile"])
 
     def test_extract_wiki_blueprint_json_repairs_invalid_json_once(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {
@@ -2291,7 +2291,7 @@ class OpencodeClientTests(unittest.TestCase):
         self.assertEqual(parsed["nodes"][0]["title"], "00-Wiki使用说明")
 
     def test_extract_gap_plan_json_accepts_output_file_summary(self) -> None:
-        client = OpencodeClient()
+        client = OpencodeEngine()
         response = {
             "parts": [
                 {

@@ -121,7 +121,7 @@ class GapReviewFlowTests(unittest.TestCase):
         store.reset_for_tests()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")
         # 缺口识别已改为直跑本地脚本（不再经 OpenCode），原先「打桩逼出本地 fallback」
-        # 的 OpencodeClient 打桩随之失效且不再需要。
+        # 的 OpencodeEngine 打桩随之失效且不再需要。
 
     def tearDown(self) -> None:
         self.client.close()

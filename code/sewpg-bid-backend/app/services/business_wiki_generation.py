@@ -44,7 +44,7 @@ from app.services.material_cleaning import is_cleanable_material
 from app.services.material_taxonomy import infer_business_material_category, infer_business_material_subcategory
 from app.services.minio_client import minio_client
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.peripheral import PeripheralError
 from app.services.wiki_blueprint_common import (
     MAX_SYNC_DOCX_BYTES,
@@ -1506,7 +1506,7 @@ def _run_llm_wiki_skill(manifest_path: Path, bid_type: str) -> dict[str, Any]:
         raise RuntimeError(f"{bid_type} Wiki Skill runner 不存在：{BUSINESS_WIKI_RUNNER}")
 
     prompt = _build_wiki_refine_prompt(BUSINESS_WIKI_SKILL_NAME, manifest_path, bid_type)
-    result = OpencodeClient().generate_wiki_blueprint_with_trace(prompt)
+    result = OpencodeEngine().generate_wiki_blueprint_with_trace(prompt)
     result.setdefault("schema_version", "bid-wiki-blueprint-v1")
     return result
 

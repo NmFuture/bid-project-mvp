@@ -1259,8 +1259,8 @@ class BusinessAssemblyServiceTests(unittest.TestCase):
         store._persist_project(project_record)
 
         with (
-            patch("app.services.business_assembly.OpencodeClient.run_bid_business_assembler_with_trace", side_effect=RuntimeError("offline")),
-            patch("app.services.business_assembly.OpencodeClient.run_bid_business_format_cleaner_with_trace", side_effect=RuntimeError("offline")),
+            patch("app.services.business_assembly.OpencodeEngine.run_bid_business_assembler_with_trace", side_effect=RuntimeError("offline")),
+            patch("app.services.business_assembly.OpencodeEngine.run_bid_business_format_cleaner_with_trace", side_effect=RuntimeError("offline")),
         ):
             _start_fill_generation_for_tests(store, project_id)
             from app.services.bid_generation_flow import _run_fill_generation_job

@@ -271,7 +271,7 @@ class BusinessTemplateExtractorAgenticTests(unittest.TestCase):
                 }
 
             with (
-                patch("app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace", new=fake_agent),
+                patch("app.services.business_template_extractor.OpencodeEngine.extract_business_templates_with_trace", new=fake_agent),
             ):
                 appendices, payload, warning = run_business_template_extractor(
                     project_id="PRJ-AGENTIC",

@@ -24,7 +24,7 @@ from app.services.onlyoffice_documents import (
     refresh_document_session,
     sync_document_to_minio,
 )
-from app.services.opencode_client import OpencodeClient
+from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.url_utils import now_message
 from app.services.workspace_project_access import persist_workspace_project_state, require_workspace_project_for_update
 
@@ -53,10 +53,10 @@ def _business_project_for_update(project_id: str) -> dict[str, Any]:
 
 def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
     try:
-        return OpencodeClient().send_text_prompt(title, prompt)
+        return OpencodeEngine().send_text_prompt(title, prompt)
     except Exception as first_exc:
         first_error = str(first_exc)
-        configured_client = OpencodeClient()
+        configured_client = OpencodeEngine()
         fallback_provider = settings.opencode_provider_id or DEFAULT_OPENCODE_PROVIDER_ID
         fallback_model = settings.opencode_model_id or DEFAULT_OPENCODE_MODEL_ID
         is_default_model = (
@@ -64,10 +64,10 @@ def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
             and configured_client.model_id == fallback_model
             and configured_client.base_url == settings.opencode_base_url.rstrip("/")
         )
-        if is_default_model and not OpencodeClient.is_model_not_found_error(first_error):
+        if is_default_model and not OpencodeEngine.is_model_not_found_error(first_error):
             raise
         try:
-            result = OpencodeClient(
+            result = OpencodeEngine(
                 base_url=settings.opencode_base_url,
                 provider_id=fallback_provider,
                 model_id=fallback_model,

@@ -12,6 +12,9 @@ from typing import Any, Callable
 import httpx
 
 from app.core.config import settings
+from app.services.agent_engine import errors as engine_errors
+from app.services.agent_engine import json_utils
+from app.services.agent_engine import trace as trace_utils
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.system_settings import opencode_llm_config_active, system_settings_service
 
@@ -32,7 +35,27 @@ _OUTLINE_DECISION_RETRY_DELAYS_SEC = (2.0, 5.0)
 _SESSION_CREATE_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
-class OpencodeClient:
+class OpencodeEngine:
+    """opencode（LLM Agent 运行时）HTTP 引擎：建会话、发 prompt、轮询会话进度、抽取结构化回复。
+
+    原 `app/services/opencode_client.py` 的 `OpencodeClient`，A0（engine-01）纯改名迁入，
+    所有 `run_bid_*` / `generate_*_with_trace` 方法名与签名保持不动。
+    §5 公共能力已下沉至本包 json_utils/trace/errors（函数体未改），
+    下面以类属性引用挂回，保持 `OpencodeEngine._xxx` 的原访问形态。
+    """
+
+    engine_name = "opencode"  # AgentEngine 协议属性（§3）
+
+    _parse_json_payload = staticmethod(json_utils._parse_json_payload)
+    _balanced_json_object_candidates = staticmethod(json_utils._balanced_json_object_candidates)
+    _repair_json_payload = json_utils._repair_json_payload
+    _build_output_trace = trace_utils._build_output_trace
+    _coerce_timestamp = staticmethod(trace_utils._coerce_timestamp)
+    _normalize_output_parts = staticmethod(trace_utils._normalize_output_parts)
+    _format_response_error = staticmethod(engine_errors._format_response_error)
+    is_model_not_found_error = staticmethod(engine_errors.is_model_not_found_error)
+    _short_http_error = staticmethod(engine_errors._short_http_error)
+
     def __init__(
         self,
         *,
@@ -108,7 +131,7 @@ class OpencodeClient:
             delay,
             attempt + 1,
             len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1,
-            OpencodeClient._short_http_error(exc),
+            OpencodeEngine._short_http_error(exc),
         )
         time.sleep(delay)
         return True
@@ -2077,10 +2100,10 @@ class OpencodeClient:
 
     @staticmethod
     def _s1_finalize_output_is_terminal(output: str) -> bool:
-        if not OpencodeClient._looks_like_json_object(output):
+        if not OpencodeEngine._looks_like_json_object(output):
             return False
         try:
-            parsed = OpencodeClient._parse_json_payload(output)
+            parsed = OpencodeEngine._parse_json_payload(output)
         except RuntimeError:
             return False
         summary = parsed.get("summary") if isinstance(parsed.get("summary"), dict) else {}
@@ -2089,10 +2112,10 @@ class OpencodeClient:
 
     @staticmethod
     def _btplnav_finalize_output_is_terminal(output: str) -> bool:
-        if not OpencodeClient._looks_like_json_object(output):
+        if not OpencodeEngine._looks_like_json_object(output):
             return False
         try:
-            parsed = OpencodeClient._parse_json_payload(output)
+            parsed = OpencodeEngine._parse_json_payload(output)
         except RuntimeError:
             return False
         if parsed.get("schemaVersion") != "bid-business-template-extractor-v1":
@@ -2101,10 +2124,10 @@ class OpencodeClient:
 
     @staticmethod
     def _s2_outline_finalize_output_is_terminal(output: str) -> bool:
-        if not OpencodeClient._looks_like_json_object(output):
+        if not OpencodeEngine._looks_like_json_object(output):
             return False
         try:
-            parsed = OpencodeClient._parse_json_payload(output)
+            parsed = OpencodeEngine._parse_json_payload(output)
         except RuntimeError:
             return False
         if parsed.get("schema_version") != "technical-outline.v1":
@@ -2136,7 +2159,7 @@ class OpencodeClient:
                     continue
                 raw_input = state.get("input") if isinstance(state.get("input"), dict) else {}
                 command = str(raw_input.get("command") or "").strip()
-                if not OpencodeClient._matches_completed_command(command, expected):
+                if not OpencodeEngine._matches_completed_command(command, expected):
                     continue
                 metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
                 exit_code = state.get("exit")
@@ -2146,20 +2169,20 @@ class OpencodeClient:
                     continue
                 output = str(state.get("output") or metadata.get("output") or "").strip()
                 if expected == "s1parse-finalize":
-                    if OpencodeClient._s1_finalize_output_is_terminal(output):
+                    if OpencodeEngine._s1_finalize_output_is_terminal(output):
                         return output
                     continue
                 if expected == "btplnav-finalize":
-                    if OpencodeClient._btplnav_finalize_output_is_terminal(output):
+                    if OpencodeEngine._btplnav_finalize_output_is_terminal(output):
                         return output
                     continue
                 if expected == "s2outline-finalize":
-                    if OpencodeClient._s2_outline_finalize_output_is_terminal(output):
+                    if OpencodeEngine._s2_outline_finalize_output_is_terminal(output):
                         return output
                     continue
-                if output and OpencodeClient._looks_like_json_object(output):
+                if output and OpencodeEngine._looks_like_json_object(output):
                     return output
-                synthesized = OpencodeClient._synthesize_tool_response_from_manifest(command, expected)
+                synthesized = OpencodeEngine._synthesize_tool_response_from_manifest(command, expected)
                 if synthesized:
                     return synthesized
         return ""
@@ -2226,7 +2249,7 @@ class OpencodeClient:
                 continue
             if str(info.get("finish") or "").strip().lower() != "stop":
                 return False
-            return not OpencodeClient._last_tool_is_running(OpencodeClient._last_tool_trace(messages))
+            return not OpencodeEngine._last_tool_is_running(OpencodeEngine._last_tool_trace(messages))
         return False
 
     @staticmethod
@@ -2236,7 +2259,7 @@ class OpencodeClient:
         except Exception as exc:
             raise RuntimeError(f"Opencode 已停止，但当前技术标目录未通过 finalize 校验：{exc}") from exc
         output = json.dumps(payload, ensure_ascii=False)
-        if not OpencodeClient._s2_outline_finalize_output_is_terminal(output):
+        if not OpencodeEngine._s2_outline_finalize_output_is_terminal(output):
             raise RuntimeError("Opencode 已停止，但技术标目录 finalize 校验未返回 finalized。")
         return output
 
@@ -2515,67 +2538,6 @@ class OpencodeClient:
         }
 
     @staticmethod
-    def _parse_json_payload(content: str) -> dict[str, Any]:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```$", "", cleaned)
-            cleaned = cleaned.strip()
-
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            last_error: json.JSONDecodeError | None = None
-            candidates = OpencodeClient._balanced_json_object_candidates(cleaned)
-            if cleaned.startswith("{"):
-                candidates = [candidate for start, candidate in candidates if start == 0]
-            else:
-                candidates = [candidate for _start, candidate in candidates]
-            for candidate in candidates:
-                try:
-                    parsed = json.loads(candidate)
-                except json.JSONDecodeError as exc:
-                    last_error = exc
-                    continue
-                if isinstance(parsed, dict):
-                    return parsed
-            if "{" not in cleaned or "}" not in cleaned:
-                raise RuntimeError("futurecode 返回内容里没有可解析的 JSON。")
-            if last_error is not None:
-                raise RuntimeError("futurecode 返回的 JSON 无法解析。") from last_error
-            raise RuntimeError("futurecode 返回内容里没有完整的 JSON 对象。")
-
-    @staticmethod
-    def _balanced_json_object_candidates(text: str) -> list[tuple[int, str]]:
-        candidates: list[tuple[int, str]] = []
-        for start, char in enumerate(text):
-            if char != "{":
-                continue
-            depth = 0
-            in_string = False
-            escaped = False
-            for index in range(start, len(text)):
-                current = text[index]
-                if in_string:
-                    if escaped:
-                        escaped = False
-                    elif current == "\\":
-                        escaped = True
-                    elif current == '"':
-                        in_string = False
-                    continue
-                if current == '"':
-                    in_string = True
-                elif current == "{":
-                    depth += 1
-                elif current == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidates.append((start, text[start : index + 1]))
-                        break
-        return candidates
-
-    @staticmethod
     def _looks_like_json_object(content: str) -> bool:
         text = str(content or "").strip()
         if text.startswith("```"):
@@ -2594,13 +2556,13 @@ class OpencodeClient:
             "Error:",
             "Exception:",
         )
-        return any(marker in text for marker in failure_markers) and not OpencodeClient._looks_like_json_object(text)
+        return any(marker in text for marker in failure_markers) and not OpencodeEngine._looks_like_json_object(text)
 
     @staticmethod
     def extract_text_response(response: dict[str, Any]) -> str:
         info = response.get("info") if isinstance(response.get("info"), dict) else {}
         if info.get("error"):
-            return OpencodeClient._format_response_error(info["error"])
+            return OpencodeEngine._format_response_error(info["error"])
         text_parts = [
             str(part.get("text") or part.get("reasoning") or "").strip()
             for part in response.get("parts") or []
@@ -2616,202 +2578,8 @@ class OpencodeClient:
         return "\n".join(part for part in reasoning_parts if part).strip()
 
     @staticmethod
-    def _format_response_error(error: Any) -> str:
-        if not isinstance(error, dict):
-            return str(error or "futurecode 调用失败。")
-        name = str(error.get("name") or "futurecode 调用失败").strip()
-        data = error.get("data") if isinstance(error.get("data"), dict) else {}
-        message = str(data.get("message") or error.get("message") or "").strip()
-        details = []
-        provider_id = str(data.get("providerID") or data.get("providerId") or "").strip()
-        model_id = str(data.get("modelID") or data.get("modelId") or "").strip()
-        if provider_id:
-            details.append(f"providerID={provider_id}")
-        if model_id:
-            details.append(f"modelID={model_id}")
-        if message and message != name:
-            name = f"{name}: {message}"
-        if details:
-            return f"{name} ({', '.join(details)})"
-        return name or "futurecode 调用失败。"
-
-    @staticmethod
-    def is_model_not_found_error(error_text: Any) -> bool:
-        text = str(error_text or "").lower()
-        return "providermodelnotfound" in text or "modelnotfound" in text or "model not found" in text
-
-    @staticmethod
-    def _short_http_error(exc: Exception) -> str:
-        detail = str(exc).replace("\n", " ").strip()
-        return detail or "服务调用异常。"
-
-    @staticmethod
     def _shorten_text(value: str, limit: int = 420) -> str:
         text = str(value).strip().replace("\n", " ")
         if len(text) <= limit:
             return text
         return f"{text[:limit - 3]}..."
-
-    def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
-        if repair_kind == "outline":
-            schema_hint = (
-                '{"schema_version":"bid-toc-json-v1","summary":{"total_items":1,'
-                '"annotation_counts":{"保留":1,"适配":0,"新增-招标要求":0,"新增-素材库建议":0,'
-                '"删除建议":0,"素材内置标题":0}},"items":[{"order":1,"number":"第一章",'
-                '"title":"一级标题","level":1,"annotation":"保留","source":"template","reason":""}],'
-                '"outputFile":"/data/documents/PRJ-0001/technical-workspace/s2_toc_workdir/投标文件-总目录.json"}'
-            )
-        elif repair_kind == "wiki":
-            schema_hint = (
-                '{"summary":"一句简短总结","rootTitle":"技术标Wiki（自动生成）",'
-                '"nodes":[{"title":"节点标题","markdownContent":"# 节点标题\\n\\n正文",'
-                '"tags":["技术标","素材库"],"applicableTypes":["技术标"],"children":[]}]}'
-            )
-        elif repair_kind == "assembly":
-            schema_hint = (
-                '{"schema_version":"bid-tech-assembly-v1","outputFile":'
-                '"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/投标文件-正文.docx",'
-                '"assemblyReport":"","needsReview":"",'
-                '"planFile":"/data/documents/PRJ-0001/technical-workspace/s7_assembly_workdir/assembly_plan.json",'
-                '"summary":{"total":1,"byStatus":{"MATCHED":1},"usedPathCount":1,"warningCount":0},'
-                '"warnings":[]}'
-            )
-        elif repair_kind == "gap_plan":
-            schema_hint = (
-                '{"schema_version":"bid-tech-gap-plan-v1","outputFile":'
-                '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/gap_plan.json",'
-                '"summary":{"totalTocItems":1,"matchedCount":0,"missingCount":1,'
-                '"resolvedCount":0,"ignoredCount":0,"structuralCount":0,'
-                '"fillableTaskCount":1,"blockingCount":1},"itemCount":1}'
-            )
-        elif repair_kind == "tender_parse":
-            schema_hint = (
-                '{"schemaVersion":"bid-tender-structured-v1","outputFile":'
-                '"/data/parsed/PRJ-0001/s1_structured_result.json",'
-                '"items":[{"id":"REQ-0001","type":"项目基础信息","category":"project_basics",'
-                '"title":"项目名称","keyEntity":"项目名称","keyValue":"示例项目",'
-                '"sourceFile":"招标文件.docx","evidence":"项目名称：示例项目","evidenceLocation":"L1"}],'
-                '"structured":{"projectDates":{"startDate":"2026-01-01","endDate":"2026-02-01"},'
-                '"categories":[{"key":"project_basics","label":"项目基础信息","count":1,"items":[]}]}}'
-            )
-        elif repair_kind == "business_commitment_review":
-            schema_hint = (
-                '{"decisions":[{"id":"RAW-0001","action":"generate",'
-                '"topicKey":"confidentiality","preferredTitle":"保密承诺书",'
-                '"reason":"明确要求投标人单独提供保密承诺书。"}]}'
-            )
-        elif repair_kind == "business_template_review":
-            schema_hint = (
-                '{"decisions":[{"id":"APPX-0001","action":"accept|review|reject",'
-                '"templateType":"bid_letter","quality":"complete|probably_incomplete|title_only",'
-                '"reason":"一句简短原因"}]}'
-            )
-        elif repair_kind == "table_fill":
-            schema_hint = (
-                '{"schema_version":"bid-tech-table-fill-v1","outputFile":'
-                '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/ai_fill/GAP-0001/AI填写.docx",'
-                '"unfilledFields":[],"evidenceRefs":[{"type":"material","id":"RAW-0001"}]}'
-            )
-        elif repair_kind == "fact_curate":
-            schema_hint = (
-                '{"schema":"bid-tech-fact-curate-v1","suggestionsPath":'
-                '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/fact_curate/fact_curate_suggestions.json",'
-                '"counts":{"fill":1,"fix":0,"confirmAdvice":0}}'
-            )
-        elif repair_kind == "business_format":
-            schema_hint = (
-                '{"schema_version":"bid-business-format-clean-v1","inputFile":'
-                '"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/商务投标文件.docx",'
-                '"outlineFile":"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/business_format_outline.json",'
-                '"outputFile":"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/商务投标文件.formatted.docx",'
-                '"reportFile":"/data/documents/PRJ-0001/business-workspace/s4_assembly_workdir/business_format_clean_report.md",'
-                '"summary":{"outlineCount":1,"matchedHeadingCount":1,"unmatchedHeadingCount":0,'
-                '"tocInserted":true,"tocPresent":true,"headerCleaned":true,"riskCount":0}}'
-            )
-        else:
-            schema_hint = (
-                '{"summary":"一句简短总结","sections":[{"nodeId":"OL-1","title":"章节标题",'
-                '"generationMode":"generated","content":"正文","riskFlags":[]}]}'
-            )
-        repair_prompt = f"""
-请把下面内容整理成严格 JSON。
-
-要求：
-1. 只输出 JSON，不要解释，不要 Markdown 代码块。
-2. 保留原始语义，不要新增事实。
-3. 输出结构必须满足这个模式：
-{schema_hint}
-
-原始内容：
-{raw_content}
-""".strip()
-        session = self.create_session("JSON repair")
-        response = self.send_prompt(str(session.get("id") or ""), repair_prompt)
-        text_parts = [
-            str(part.get("text") or "")
-            for part in response.get("parts") or []
-            if part.get("type") == "text"
-        ]
-        content = "\n".join(part for part in text_parts if part).strip()
-        if not content:
-            raise RuntimeError("futurecode 返回的 JSON 无法解析。")
-        return content
-
-    def _build_output_trace(self, session_id: str, response: dict[str, Any]) -> dict[str, Any]:
-        info = response.get("info") or {}
-        raw_time = info.get("time") or {}
-        trace_parts = response.get("_traceParts")
-        if not isinstance(trace_parts, list):
-            trace_parts = response.get("parts") or []
-        output = {
-            "status": "received",
-            "sessionId": session_id,
-            "providerId": str(info.get("providerID") or self.provider_id),
-            "modelId": str(info.get("modelID") or self.model_id),
-            "receivedAt": str(response.get("_traceReceivedAt") or "")
-            or self._coerce_timestamp(raw_time.get("completed") if isinstance(raw_time, dict) else raw_time),
-            "parts": self._normalize_output_parts(trace_parts),
-        }
-        if response.get("_earlyCompletion"):
-            output["earlyCompletion"] = True
-            output["completionSource"] = str(response.get("_completionSource") or "tool")
-        return output
-
-    @staticmethod
-    def _coerce_timestamp(value: Any) -> str:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if isinstance(value, (int, float)):
-            timestamp = float(value)
-            if timestamp > 1_000_000_000_000:
-                timestamp /= 1000.0
-            return datetime.fromtimestamp(timestamp, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-    @staticmethod
-    def _normalize_output_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        normalized: list[dict[str, Any]] = []
-        for part in parts:
-            part_type = str(part.get("type") or "").strip()
-            if part_type not in {"reasoning", "text", "step-start", "step-finish", "tool"}:
-                continue
-            text = str(part.get("text") or part.get("reasoning") or "").strip()
-            if not text:
-                if part_type == "step-start":
-                    text = "futurecode 已开始处理目录生成请求。"
-                elif part_type == "reasoning":
-                    text = "futurecode 正在分析招标文件与投标模板。"
-                elif part_type == "step-finish":
-                    text = "futurecode 已完成一个处理步骤。"
-                elif part_type == "tool":
-                    tool_name = str(part.get("tool") or "工具").strip()
-                    state = part.get("state") if isinstance(part.get("state"), dict) else {}
-                    status = str(state.get("status") or "运行中").strip()
-                    text = f"futurecode 正在调用 {tool_name}（{status}）。"
-            normalized.append(
-                {
-                    "type": part_type,
-                    "text": text,
-                }
-            )
-        return normalized[-20:]

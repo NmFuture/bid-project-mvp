@@ -645,7 +645,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
             with (
                 patch("app.services.business_template_extractor.subprocess.run", side_effect=fake_subprocess_run),
                 patch(
-                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    "app.services.business_template_extractor.OpencodeEngine.extract_business_templates_with_trace",
                     new=fake_agentic_template_extractor,
                 ),
             ):
@@ -775,7 +775,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
             with (
                 patch("app.services.business_template_extractor.subprocess.Popen", side_effect=fake_popen),
                 patch(
-                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    "app.services.business_template_extractor.OpencodeEngine.extract_business_templates_with_trace",
                     new=fake_agentic_template_extractor,
                 ),
             ):
@@ -869,7 +869,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                     side_effect=AssertionError("existing finalized payload must not be overwritten by prepare"),
                 ),
                 patch(
-                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    "app.services.business_template_extractor.OpencodeEngine.extract_business_templates_with_trace",
                     side_effect=AssertionError("existing finalized payload must not call agent"),
                 ),
             ):
@@ -936,7 +936,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
             with (
                 patch("app.services.business_template_extractor.subprocess.run", side_effect=fake_subprocess_run),
                 patch(
-                    "app.services.business_template_extractor.OpencodeClient.extract_business_templates_with_trace",
+                    "app.services.business_template_extractor.OpencodeEngine.extract_business_templates_with_trace",
                     side_effect=RuntimeError("agent stopped before finalize"),
                 ),
             ):

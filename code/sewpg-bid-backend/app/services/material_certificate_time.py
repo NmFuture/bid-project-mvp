@@ -1158,7 +1158,7 @@ def _parse_ai_certificate_reply(reply: str) -> dict[str, Any]:
 
 
 def _ai_extract_certificate_time(text: str) -> dict[str, Any]:
-    from app.services.opencode_client import OpencodeClient
+    from app.services.agent_engine.opencode_engine import OpencodeEngine
 
     snippet = str(text or "").strip()[:CERTIFICATE_AI_TEXT_LIMIT]
     if not snippet:
@@ -1175,7 +1175,7 @@ def _ai_extract_certificate_time(text: str) -> dict[str, Any]:
         "6. 发证日期必须早于有效期截止日期，不确定时宁可留空。\n"
         f"证书文本：\n{snippet}"
     )
-    result = OpencodeClient().send_text_prompt("证书时间识别", prompt)
+    result = OpencodeEngine().send_text_prompt("证书时间识别", prompt)
     return _parse_ai_certificate_reply(str(result.get("reply") or ""))
 
 
