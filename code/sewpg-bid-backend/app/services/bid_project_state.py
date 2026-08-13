@@ -21,7 +21,11 @@ from app.services.project_stage_flow import (
     updated_project_stage_after_request,
 )
 from app.services.turbine_models import normalize_project_turbine_model, normalize_project_turbine_models, project_turbine_model
-from app.services.workspace_artifacts import cleanup_parse_temp_workspace, promote_parse_artifacts_to_workspace
+from app.services.workspace_artifacts import (
+    cleanup_parse_temp_workspace,
+    cleanup_project_disk_workspaces,
+    promote_parse_artifacts_to_workspace,
+)
 
 
 REVIEW_DECISION_LABELS = {
@@ -435,9 +439,16 @@ def update_review_decision_state(project: dict[str, Any], project_id: str, value
         cleanup_parse_temp_workspace(project_id)
 
 
-def delete_project_side_effects(project_id: str, project: dict[str, Any]) -> None:
-    cleanup_parse_temp_workspace(project_id)
+def delete_project_side_effects(project_id: str, project: dict[str, Any]) -> dict[str, Any]:
+    """删项目的副作用：清磁盘工作区 + 清素材库项目档，返回磁盘清理结果。
+
+    磁盘清理覆盖 parsed/documents/uploads 三处目录和 OnlyOffice 文档；此前只清
+    parsed，`documents_dir/{PID}` 下的 technical-workspace 会连同解析状态文件一起
+    残留，被下一个同编号项目继承。
+    """
+    workspace_cleanup = cleanup_project_disk_workspaces(project_id)
     delete_project_material_folder(project)
+    return workspace_cleanup
 
 
 def delete_project_material_folder(project: dict[str, Any]) -> None:
