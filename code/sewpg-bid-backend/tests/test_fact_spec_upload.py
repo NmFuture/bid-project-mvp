@@ -15,6 +15,7 @@ from app.services import technical_fact_field_specs as specs_module
 from app.services.minio_client import minio_client
 from app.services.store import store
 from app.services.technical_fact_spec_import import (
+    CURRENT_HEADER,
     EXPECTED_HEADER,
     LEGACY_HEADER,
     FactSpecImportError,
@@ -249,3 +250,55 @@ def test_import_specs_rejects_missing_required_column(tmp_path) -> None:
 
     with pytest.raises(FactSpecImportError, match="原占位符位置"):
         import_specs(path)
+
+
+def test_import_specs_supports_current_maintained_header(tmp_path) -> None:
+    """现场维护版表头：无字段名列，label 由「文件名 + 占位符内容」合成。
+
+    该版本单列均不足以唯一标识一行（实测 207 行清单里占位符内容仅 87 个唯一值），
+    因此必须组合，否则 normalize_key 生成的字段键会互相覆盖。
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(CURRENT_HEADER)
+    # 两行占位符内容相同、文件名不同 —— 组合后才唯一
+    ws.append([1, "待插入", "标准文件", "待填写-塔筒设计方案", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"])
+    ws.append([2, "待插入", "客户定制-华能", "待填写-变桨系统专题", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"])
+    # 引用文件留空 —— 模板占位，不进取数流程
+    ws.append([3, "待填写", "标准文件", "待填写-大件部件运输情况", "[页码域，待填写]", ""])
+    path = tmp_path / "现场维护版.xlsx"
+    wb.save(path)
+
+    specs = import_specs(path)
+    assert len(specs) == 3
+
+    keys = [s["key"] for s in specs]
+    assert len(set(keys)) == 3, "占位符内容重复时仍须靠文件名区分，键不得冲突"
+
+    first = specs[0]
+    assert first["targetFile"] == "待填写-塔筒设计方案"
+    assert first["placeholder"] == "[基础弯矩表-完整插入，待插入]"
+    assert first["referenceFile"] == "基础弯矩表.xlsx"
+    assert first["label"] == "待填写-塔筒设计方案 [基础弯矩表-完整插入，待插入]"
+    assert first["note"] == "待插入"
+    assert first["valueRequired"] is True
+
+    blank_ref = specs[2]
+    assert blank_ref["sourceKind"] == "template"
+    assert blank_ref["valueRequired"] is False
+
+
+def test_import_specs_error_message_lists_all_supported_headers(tmp_path) -> None:
+    """表头不匹配时，报错须同时列出三种受支持表头，便于现场自查。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["序号", "无关列A", "无关列B"])
+    ws.append([1, "x", "y"])
+    path = tmp_path / "错表头.xlsx"
+    wb.save(path)
+
+    with pytest.raises(FactSpecImportError) as exc:
+        import_specs(path)
+    message = str(exc.value)
+    assert "待填写文件" in message
+    assert "现场维护版表头" in message

@@ -25,6 +25,12 @@ import openpyxl
 
 EXPECTED_HEADER = ["序号", "待填写文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "来源文件"]
 LEGACY_HEADER = ["序号", "来源文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "引用文件"]
+# 现场维护版表头：无独立的「实际要填写的字段」列，字段名由「文件名 + 占位符内容」合成。
+# 单列均不足以唯一标识一行（实测 207 行中占位符内容仅 87 个唯一值），故必须组合。
+CURRENT_HEADER = ["序号", "类型", "文件夹", "文件名", "占位符内容", "引用文件"]
+
+# label 列的哨兵值：表示字段名不取自单列，而由「文件名 + 占位符内容」合成。
+COMPOSED_LABEL = -1
 
 # 必需列（缺失即报错）：列键 → 表头名，供报错文案使用。
 REQUIRED_COLUMNS = (
@@ -91,6 +97,17 @@ def resolve_columns(header: list[str]) -> dict[str, int | None]:
         "note": index.get("必要说明"),
         "review": index.get("复核"),
     }
+    # 现场维护版：以「文件名 / 占位符内容 / 引用文件」组织，没有独立的字段名列。
+    # 字段名在 import_specs 内由「文件名 + 占位符内容」合成，故此处 label 记为合成标记。
+    if "文件名" in index and "占位符内容" in index:
+        columns["target_file"] = index["文件名"]
+        columns["placeholder"] = index["占位符内容"]
+        columns["reference_file"] = index.get("引用文件")
+        columns["label"] = COMPOSED_LABEL
+        # 「类型」（待填写/待插入）承载必要说明语义
+        columns["note"] = index.get("类型")
+        columns["folder"] = index.get("文件夹")
+        return columns
     # 「来源文件」在两种表头里指代不同：新表头有独立的「待填写文件」列，
     # 「来源文件」是取数来源；历史表头没有「待填写文件」，第 2 列的
     # 「来源文件」才是待填写目标，取数来源叫「引用文件」。
@@ -104,7 +121,7 @@ def resolve_columns(header: list[str]) -> dict[str, int | None]:
     if missing:
         raise FactSpecImportError(
             f"清单缺少必需列 {missing}；期望表头 {EXPECTED_HEADER}"
-            f"（兼容历史表头 {LEGACY_HEADER}），实际 {header}"
+            f"（兼容历史表头 {LEGACY_HEADER}、现场维护版表头 {CURRENT_HEADER}），实际 {header}"
         )
     return columns
 
@@ -134,11 +151,16 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
 
     specs: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows[1:], start=2):
-        label = cell_at(row, columns["label"])
+        target_file = cell_at(row, columns["target_file"])
+        placeholder = cell_at(row, columns["placeholder"])
+        if columns["label"] == COMPOSED_LABEL:
+            # 现场维护版无字段名列：用「文件名 + 占位符内容」合成，二者组合才唯一。
+            label = f"{target_file} {placeholder}".strip()
+        else:
+            label = cell_at(row, columns["label"])
         if not label:
             continue
         note = cell_at(row, columns["note"])
-        target_file = cell_at(row, columns["target_file"])
         reference_file = cell_at(row, columns["reference_file"])
         source_kind = classify_source(reference_file)
         # 无序号列时用行号顶上：序号只用于排序与定位，不参与取值。
@@ -159,7 +181,7 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
                 "targetFile": target_file,
                 # 兼容既有 spec/产物字段；其语义一直是待填写目标文件，不是取数来源。
                 "sourceFile": target_file,
-                "placeholder": cell_at(row, columns["placeholder"]),
+                "placeholder": placeholder,
                 "note": note,
                 "needsConfirmation": "需确认" in note,
                 "referenceFile": reference_file,
