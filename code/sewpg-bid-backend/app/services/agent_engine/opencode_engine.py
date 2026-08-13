@@ -32,7 +32,8 @@ OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS = 10.0
 
 _OPENCODE_REQUEST_SLOTS = threading.BoundedSemaphore(settings.opencode_max_concurrency)
 _SESSION_CREATE_RETRY_DELAYS_SEC = (0.5, 1.0, 2.0, 4.0, 8.0, 8.0)
-_SESSION_CREATE_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+# 与 errors.RETRYABLE_HTTP_STATUS_CODES 同源（B2 起唯一事实在 errors.py）。
+_SESSION_CREATE_RETRYABLE_STATUS_CODES = engine_errors.RETRYABLE_HTTP_STATUS_CODES
 
 # 历史导出入口（tests 与旧调用方从这里取）；常量的owner是编排层。
 OUTLINE_DECISION_SESSION_MAX_ATTEMPTS = agent_orchestrator.OUTLINE_DECISION_SESSION_MAX_ATTEMPTS
@@ -47,6 +48,13 @@ class OpencodeEngine:
     AsyncClient 沿用基线「按请求创建」的生命周期（同步版即每请求新建 Client），
     引擎实例可能被多个事件循环（asyncio.run 桥接的工作线程 / FastAPI 循环）
     复用，跨循环共享连接池不安全，故不在实例上持有长连接。
+
+    B2（engine-04）落地可恢复错误治理（错误分类见 `agent_engine/errors.py`）：
+    - `send_prompt` 只对「确认未送达」（连接未建立）按预算重发；送达状态不确定
+      （读超时/5xx/中途断连）抛 `PromptDeliveryUncertainError`，不自动重发。
+    - 轮询 GET 断线按退避重连（`_poll_session_messages`），断线时间不计入
+      idle 监管（服务重启 ≠ 模型 stall）；预算耗尽抛 `PollReconnectExhaustedError`。
+    重试次数/退避为配置项（`OPENCODE_SEND_PROMPT_MAX_RETRIES` 等，默认值本地安全）。
 
     A1（engine-02）后本类只剩引擎/传输层职责（改造方案 §1 A 层）：
     会话生命周期、轮询监管（idle 超时/心跳/取消）、「bash 工具完成」事件检测与
@@ -176,6 +184,13 @@ class OpencodeEngine:
         timeout: httpx.Timeout | None = None,
         tools: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
+        """发送 prompt（B2：仅「确认未送达」可自动重发，其余显式报错）。
+
+        幂等性取舍：opencode 不支持同会话 message 去重，prompt 一旦送达，
+        重发即重复执行。因此只有连接未建立（ConnectError/ConnectTimeout，
+        请求字节未写出）才按预算重发；读超时/5xx/连接中途断开等送达状态
+        不确定的错误抛 `PromptDeliveryUncertainError`，由上层显式决策。
+        """
         payload = {
             "model": {
                 "providerID": self.provider_id,
@@ -190,28 +205,57 @@ class OpencodeEngine:
         }
         if tools is not None:
             payload["tools"] = dict(tools)
-        try:
-            # Queue before creating the HTTP client so waiting does not consume the model timeout.
-            async with self._request_slot():
-                async with httpx.AsyncClient(timeout=timeout or self.timeout, trust_env=False) as client:
-                    response = await client.post(
-                        f"{self.base_url}/session/{session_id}/message",
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    if not response.text.strip():
-                        raise RuntimeError("futurecode 返回了空响应。")
-                    try:
-                        return response.json()
-                    except ValueError as exc:
-                        raw = self._shorten_text(response.text, limit=420)
-                        raise RuntimeError(f"futurecode 返回了非 JSON 响应：{raw}") from exc
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                "futurecode 生成超时，请缩短输入或稍后重试。"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"futurecode 生成失败：{self._short_http_error(exc)}") from exc
+        max_retries = settings.opencode_send_prompt_max_retries
+        backoff = settings.opencode_send_prompt_retry_backoff_sec or (1,)
+        for attempt in range(max_retries + 1):
+            try:
+                # Queue before creating the HTTP client so waiting does not consume the model timeout.
+                async with self._request_slot():
+                    async with httpx.AsyncClient(timeout=timeout or self.timeout, trust_env=False) as client:
+                        response = await client.post(
+                            f"{self.base_url}/session/{session_id}/message",
+                            json=payload,
+                        )
+                        response.raise_for_status()
+                        if not response.text.strip():
+                            raise RuntimeError("futurecode 返回了空响应。")
+                        try:
+                            return response.json()
+                        except ValueError as exc:
+                            raw = self._shorten_text(response.text, limit=420)
+                            raise RuntimeError(f"futurecode 返回了非 JSON 响应：{raw}") from exc
+            except httpx.HTTPError as exc:
+                if engine_errors.is_pre_delivery_error(exc):
+                    if attempt < max_retries:
+                        delay = backoff[min(attempt, len(backoff) - 1)]
+                        logger.warning(
+                            "futurecode send_prompt 连接未建立（prompt 未送达）；%.1fs 后重发 (attempt %d/%d, session %s): %s",
+                            delay,
+                            attempt + 1,
+                            max_retries + 1,
+                            session_id,
+                            self._short_http_error(exc),
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise RuntimeError(
+                        f"futurecode 生成失败：连接未建立（session {session_id}，已重发 {max_retries} 次）："
+                        f"{self._short_http_error(exc)}"
+                    ) from exc
+                # 送达状态不确定：禁止自动重发（重复执行风险），显式报错保留上下文。
+                if isinstance(exc, httpx.TimeoutException):
+                    raise engine_errors.PromptDeliveryUncertainError(
+                        f"futurecode 生成超时，请缩短输入或稍后重试。"
+                        f"（session {session_id}：读超时前 prompt 可能已送达并在执行中，"
+                        f"为避免重复执行未自动重发，请检查会话状态后由上层决策）"
+                    ) from exc
+                raise engine_errors.PromptDeliveryUncertainError(
+                    f"futurecode 生成失败：{self._short_http_error(exc)}"
+                    f"（session {session_id}：prompt 送达状态不确定，为避免重复执行未自动重发，"
+                    f"请检查会话状态后由上层决策）"
+                ) from exc
+
+        raise RuntimeError("futurecode 生成失败：重试流程异常结束。")  # pragma: no cover
 
     async def send_text_prompt(
         self,
@@ -306,17 +350,83 @@ class OpencodeEngine:
     # 会话监管与轮询（引擎通用能力，不识业务命令）
     # ------------------------------------------------------------------
     async def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
-                response = await client.get(f"{self.base_url}/session/{session_id}/message")
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            return []
+        """拉取会话消息（B2 起失败抛异常，不再吞错返回 []）。
+
+        吞错会让「网络断线」与「会话真无消息」不可区分，断线时间被 idle 监管
+        误计为模型停滞。需要尽力而为语义的调用方用 `_best_effort_messages`；
+        轮询监管链路用 `_poll_session_messages`（断线重连 + 断线耗时上报）。
+        """
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+            response = await client.get(f"{self.base_url}/session/{session_id}/message")
+            response.raise_for_status()
+            payload = response.json()
 
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         return []
+
+    async def _best_effort_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """尽力而为取消息（失败返回 []）：留痕/收尾取证等不允许抛错的路径用。"""
+        try:
+            return await self.list_session_messages(session_id)
+        except (httpx.HTTPError, ValueError):
+            return []
+
+    async def _poll_session_messages(
+        self,
+        session_id: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[list[dict[str, Any]], float]:
+        """轮询取消息（B2 断线恢复）：可恢复错误按退避重连，不立即判死。
+
+        返回 `(messages, disconnected_seconds)`：`disconnected_seconds` 是本次调用
+        花在断线重连上的时长，调用方把它加回 idle 时钟——断线时间不计入 idle，
+        「opencode 服务重启」不被误判成「模型 stall」。
+        重连预算耗尽抛 `PollReconnectExhaustedError`（显式断线错误）；
+        不可恢复错误（4xx/500 等）维持现状语义：返回 `[]` 交给 idle/业务判定。
+        """
+        try:
+            return await self.list_session_messages(session_id), 0.0
+        except (httpx.HTTPError, ValueError) as exc:
+            if not engine_errors.is_recoverable_poll_error(exc):
+                return [], 0.0
+            first_error = exc
+
+        disconnected_started = time.monotonic()
+        max_attempts = settings.opencode_poll_reconnect_max_attempts
+        backoff = settings.opencode_poll_reconnect_backoff_sec or (1,)
+        for attempt in range(max_attempts):
+            delay = float(backoff[min(attempt, len(backoff) - 1)])
+            logger.warning(
+                "futurecode 轮询断线；%.1fs 后重连 (attempt %d/%d, session %s): %s",
+                delay,
+                attempt + 1,
+                max_attempts,
+                session_id,
+                self._short_http_error(first_error),
+            )
+            # 切片 sleep 保取消响应：断线重连窗口内取消延迟不超过 0.5s。
+            remaining = delay
+            while remaining > 0:
+                if cancel_check is not None and cancel_check():
+                    return [], time.monotonic() - disconnected_started
+                step = min(0.5, remaining)
+                await asyncio.sleep(step)
+                remaining -= step
+            try:
+                messages = await self.list_session_messages(session_id)
+                return messages, time.monotonic() - disconnected_started
+            except (httpx.HTTPError, ValueError) as exc:
+                if not engine_errors.is_recoverable_poll_error(exc):
+                    return [], time.monotonic() - disconnected_started
+                first_error = exc
+
+        raise engine_errors.PollReconnectExhaustedError(
+            f"futurecode 轮询断线重连失败（session {session_id}，已重连 {max_attempts} 次，"
+            f"断线约 {int(time.monotonic() - disconnected_started)}s）："
+            f"{self._short_http_error(first_error)}。opencode 服务不可达，非模型停滞；"
+            f"会话可能仍在服务端运行，请恢复服务后由上层决策重试。"
+        ) from first_error
 
     async def abort_session(self, session_id: str) -> bool:
         session_id = str(session_id or "").strip()
@@ -420,18 +530,30 @@ class OpencodeEngine:
         last_activity = progress_started_at
         last_heartbeat = last_activity
         heartbeat_index = 0
+
+        def apply_disconnect(disconnected: float) -> None:
+            # 断线时间不计入 idle：重连耗时加回活动/心跳时钟，
+            # 「opencode 服务重启」不被误判成「模型 stall」。
+            nonlocal last_activity, last_heartbeat
+            if disconnected > 0:
+                last_activity += disconnected
+                last_heartbeat += disconnected
+
         while not await self._wait_worker_stop(worker_task, 0.5):
             await raise_if_cancelled()
             previous_signature = last_signature
+            messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
+            apply_disconnect(disconnected)
+            snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
             if stream_callback is not None:
-                last_signature = await self._emit_session_output_delta(
+                last_signature = self._emit_session_output_delta_from_snapshot(
                     session_id,
+                    snapshot,
                     stream_callback,
                     last_signature,
                     elapsed_seconds=time.monotonic() - progress_started_at,
                 )
             elif early_completion is not None:
-                snapshot = await self._get_session_output_snapshot(session_id)
                 signature = snapshot.get("signature")
                 if signature is not None:
                     last_signature = signature
@@ -446,7 +568,6 @@ class OpencodeEngine:
                     and now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS
                 ):
                     heartbeat_index += 1
-                    snapshot = await self._get_session_output_snapshot(session_id)
                     self._emit_session_progress_heartbeat(
                         session_id=session_id,
                         stream_callback=stream_callback,
@@ -472,7 +593,7 @@ class OpencodeEngine:
                     if early_completion is not None and early_completion.on_idle_stalled is not None:
                         early_completion.on_idle_stalled(
                             session_id,
-                            await self.list_session_messages(session_id),
+                            await self._best_effort_messages(session_id),
                             idle_timeout,
                         )
                     raise RuntimeError(
@@ -480,7 +601,8 @@ class OpencodeEngine:
                         f"check session {session_id} tool calls."
                     )
             if early_completion is not None and tool_completed is not None:
-                messages = await self.list_session_messages(session_id)
+                messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
+                apply_disconnect(disconnected)
                 self._raise_session_error_if_present(session_id, messages)
                 completed_event = self._find_early_completion_event(messages, tool_completed)
                 if completed_event is not None:
@@ -504,7 +626,8 @@ class OpencodeEngine:
                         ),
                     )
             if early_completion is not None and early_completion.on_assistant_stopped is not None:
-                messages = await self.list_session_messages(session_id)
+                messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
+                apply_disconnect(disconnected)
                 if self._session_messages_show_assistant_stop(messages):
                     await self._stop_session_after_early_completion(
                         session_id,
@@ -520,7 +643,8 @@ class OpencodeEngine:
                         stream_callback=stream_callback,
                     )
             if assistant_stop_validator is not None:
-                messages = await self.list_session_messages(session_id)
+                messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
+                apply_disconnect(disconnected)
                 self._raise_session_error_if_present(session_id, messages)
                 if self._session_messages_show_assistant_stop(messages):
                     await self.abort_session(session_id)
@@ -550,7 +674,7 @@ class OpencodeEngine:
                     return early_response
 
         if early_completion is not None and early_completion.wait_after_prompt_return:
-            messages = await self.list_session_messages(session_id)
+            messages, _ = await self._poll_session_messages(session_id, cancel_check)
             self._raise_session_error_if_present(session_id, messages)
             tool_completed = (
                 early_completion.tool_completed_factory()
@@ -580,7 +704,10 @@ class OpencodeEngine:
                     while time.monotonic() < stalled_until:
                         await raise_if_cancelled()
                         await asyncio.sleep(0.5)
-                        messages = await self.list_session_messages(session_id)
+                        messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
+                        apply_disconnect(disconnected)
+                        if disconnected > 0:
+                            stalled_until += disconnected
                         self._raise_session_error_if_present(session_id, messages)
                         completed_event = self._find_early_completion_event(messages, tool_completed)
                         if completed_event is not None:
@@ -651,7 +778,7 @@ class OpencodeEngine:
 
         if stream_callback is not None:
             await raise_if_cancelled()
-            self._raise_session_error_if_present(session_id, await self.list_session_messages(session_id))
+            self._raise_session_error_if_present(session_id, await self._best_effort_messages(session_id))
             last_signature = await self._emit_session_output_delta(
                 session_id,
                 stream_callback,
@@ -698,7 +825,12 @@ class OpencodeEngine:
             if cancel_check is not None and cancel_check():
                 await self.abort_session(session_id)
                 raise ParseCancelledError("解析已取消。")
-            messages = await self.list_session_messages(session_id)
+            messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
+            if disconnected > 0:
+                # 断线时间不计入 idle/deadline：服务重启不被误判成模型 stall。
+                deadline += disconnected
+                last_activity += disconnected
+                last_heartbeat += disconnected
             self._raise_session_error_if_present(session_id, messages)
             completed_event = (
                 self._find_early_completion_event(messages, tool_completed)
@@ -833,6 +965,23 @@ class OpencodeEngine:
         elapsed_seconds: float | None = None,
     ) -> tuple[str, tuple[tuple[str, str], ...]] | None:
         snapshot = await self._get_session_output_snapshot(session_id)
+        return self._emit_session_output_delta_from_snapshot(
+            session_id,
+            snapshot,
+            stream_callback,
+            last_signature,
+            elapsed_seconds=elapsed_seconds,
+        )
+
+    def _emit_session_output_delta_from_snapshot(
+        self,
+        session_id: str,
+        snapshot: dict[str, Any],
+        stream_callback: Callable[[dict[str, Any]], None],
+        last_signature: tuple[str, tuple[tuple[str, str], ...]] | None,
+        *,
+        elapsed_seconds: float | None = None,
+    ) -> tuple[str, tuple[tuple[str, str], ...]] | None:
         signature = snapshot.get("signature")
         if signature is None or signature == last_signature:
             return last_signature
@@ -886,7 +1035,7 @@ class OpencodeEngine:
     async def _get_session_output_snapshot(self, session_id: str) -> dict[str, Any]:
         return self._get_session_output_snapshot_from_messages(
             session_id,
-            await self.list_session_messages(session_id),
+            await self._best_effort_messages(session_id),
         )
 
     def _get_session_output_snapshot_from_messages(

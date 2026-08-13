@@ -148,6 +148,12 @@ class Settings:
     opencode_model_id: str
     opencode_timeout_sec: float
     opencode_max_concurrency: int
+    # B2（engine-04）：send_prompt 重发与轮询断线重连预算，默认值本地安全；
+    # 5090 实测取值只写 docker-compose.5090.yml。
+    opencode_send_prompt_max_retries: int
+    opencode_send_prompt_retry_backoff_sec: tuple[int, ...]
+    opencode_poll_reconnect_max_attempts: int
+    opencode_poll_reconnect_backoff_sec: tuple[int, ...]
     s1_parse_opencode_enabled: bool
     s1_parse_technical_shard_enabled: bool
     s1_parse_shard_concurrency: int
@@ -249,6 +255,12 @@ settings = Settings(
     opencode_model_id=_configured_opencode_model_id,
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
     opencode_max_concurrency=_int_env("OPENCODE_MAX_CONCURRENCY", 8),
+    # B2（engine-04）：send_prompt 只对「确认未送达」（连接未建立）重发，默认 2 次；
+    # 轮询断线重连默认 6 次、退避合计约 23s，覆盖常规服务重启窗口。
+    opencode_send_prompt_max_retries=_non_negative_int_env("OPENCODE_SEND_PROMPT_MAX_RETRIES", 2),
+    opencode_send_prompt_retry_backoff_sec=_int_tuple_env("OPENCODE_SEND_PROMPT_RETRY_BACKOFF_SEC", (1, 2, 4)),
+    opencode_poll_reconnect_max_attempts=_non_negative_int_env("OPENCODE_POLL_RECONNECT_MAX_ATTEMPTS", 6),
+    opencode_poll_reconnect_backoff_sec=_int_tuple_env("OPENCODE_POLL_RECONNECT_BACKOFF_SEC", (1, 2, 4, 4, 4, 4)),
     s1_parse_opencode_enabled=_bool_env(
         "S1_PARSE_OPENCODE_ENABLED",
         os.getenv("APP_ENV", "development") == "production",
