@@ -1432,9 +1432,11 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_idle_timeout_aborts_session_and_joins_worker(self) -> None:
         client = OpencodeEngine()
         release_worker = threading.Event()
+        worker_finished = threading.Event()
 
         async def blocked_send_prompt(session_id: str, prompt_text: str, **_kwargs) -> dict:
             await asyncio.to_thread(release_worker.wait, 2.0)
+            worker_finished.set()
             return {"parts": []}
 
         def abort_session(_session_id: str) -> bool:
@@ -1455,9 +1457,9 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         abort.assert_called_once_with("ses-idle-abort")
-        self.assertFalse(
-            any(thread.name == "opencode-message-ses-idle-abort" for thread in threading.enumerate())
-        )
+        # idle 超时报错前必须等到 worker task 收尾（对齐原 thread.join 语义）：
+        # abort 放行后 worker 才完成，能返回说明发送 task 已被收割。
+        self.assertTrue(worker_finished.is_set())
 
     async def test_polling_emits_heartbeat_when_snapshot_does_not_change(self) -> None:
         client = OpencodeEngine()
@@ -1511,6 +1513,46 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         abort_session.assert_called_once_with("ses_cancel_polling_probe")
+
+    async def test_request_slot_cancelled_while_waiting_does_not_leak_permit(self) -> None:
+        """取消落在并发预算等待窗口时不得泄漏许可（to_thread(acquire) 无法被取消，
+        executor 线程随后 acquire 成功却无人 release；预算默认 1 时一次泄漏即
+        进程级挂死）。"""
+        slots = threading.BoundedSemaphore(1)
+        client = OpencodeEngine(request_slots=slots)
+        slots.acquire()  # 占满预算，迫使引擎调用在 _request_slot 里排队
+
+        task = asyncio.create_task(client.create_session("预算排队取消"))
+        await asyncio.sleep(0.3)  # 让协程进入预算轮询等待窗口（轮询间隔 0.1s）
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        slots.release()
+        self.assertTrue(
+            slots.acquire(blocking=False),
+            "取消排队中的预算获取不得泄漏许可",
+        )
+        slots.release()
+
+    async def test_polling_propagates_worker_error_to_caller(self) -> None:
+        """发送 prompt 的 worker task 异常必须如实抛给主协程（不静默死亡）。"""
+        client = OpencodeEngine()
+
+        async def failing_send_prompt(_session_id: str, _prompt: str, **_kwargs) -> dict:
+            await asyncio.sleep(0.6)  # 让主循环先进入轮询再失败
+            raise RuntimeError("futurecode 生成失败：boom")
+
+        with (
+            patch.object(client, "send_prompt", side_effect=failing_send_prompt),
+            patch.object(client, "list_session_messages", return_value=[]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                await client._send_prompt_with_session_polling(
+                    "ses-worker-error",
+                    "prompt",
+                    stream_callback=MagicMock(),
+                )
 
     async def test_generate_tender_parse_aborts_session_when_cancelled_after_session_ready(self) -> None:
         client = OpencodeEngine()

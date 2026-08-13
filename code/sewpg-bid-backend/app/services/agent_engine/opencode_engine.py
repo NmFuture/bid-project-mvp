@@ -138,11 +138,16 @@ class OpencodeEngine:
 
     @asynccontextmanager
     async def _request_slot(self) -> Any:
-        """并发预算闸门（threading.BoundedSemaphore）：离线 await 获取，不阻塞事件循环。
+        """并发预算闸门（threading.BoundedSemaphore，跨线程/跨循环共享）。
 
-        B4（engine-06）才统一并发治理；B1 保持现有信号量预算与取值不变。
+        非阻塞轮询获取：取消落在等待窗口时协程直接退出、不持有许可——
+        `asyncio.to_thread(acquire)` 的阻塞等待无法被取消，executor 线程随后
+        acquire 成功却无人 release，许可永久泄漏（预算默认 1 时进程级挂死）。
+        不换 asyncio.Semaphore：它有循环亲和性，引擎实例跨事件循环复用会炸。
+        B4（engine-06）才统一并发治理；预算原语与取值保持不变。
         """
-        await asyncio.to_thread(self._request_slots.acquire)
+        while not self._request_slots.acquire(blocking=False):
+            await asyncio.sleep(0.1)
         try:
             yield
         finally:
