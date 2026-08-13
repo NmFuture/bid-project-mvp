@@ -81,6 +81,45 @@ class StorePersistenceTests(unittest.TestCase):
         self.assertEqual(first["id"], "PRJ-0001")
         self.assertEqual(second["id"], "PRJ-0002")
 
+    def test_project_id_not_recycled_after_delete_and_restart(self) -> None:
+        """删掉最大编号项目再重启，新项目不得拿回该编号。
+
+        编号一旦回收，新项目会落进 /data/documents/{PID} 的残留工作区，读到上一轮的
+        tender_review_state.json 后把解析降级成续跑，最终报成功却没有产物。
+        复现必须带重启：编号在进程内是递增计数器，不重启看不到回收。
+        """
+        store1 = AppStore(storage_backend="postgres")
+        first = store1.create_project({"name": "项目一", "bidType": "技术标"})
+        second = store1.create_project({"name": "项目二", "bidType": "技术标"})
+        self.assertEqual(first["id"], "PRJ-0001")
+        self.assertEqual(second["id"], "PRJ-0002")
+
+        store1.delete_project(second["id"])
+
+        store2 = AppStore(storage_backend="postgres")
+        third = store2.create_project({"name": "项目三", "bidType": "技术标"})
+
+        self.assertNotEqual(third["id"], second["id"])
+        self.assertEqual(third["id"], "PRJ-0003")
+
+    def test_project_id_not_recycled_after_deleting_all_projects(self) -> None:
+        """把项目删光再重启，编号仍要接着往下发，不能从头开始。"""
+        store1 = AppStore(storage_backend="postgres")
+        created = [
+            store1.create_project({"name": f"项目{index}", "bidType": "技术标"})["id"]
+            for index in range(1, 4)
+        ]
+        self.assertEqual(created, ["PRJ-0001", "PRJ-0002", "PRJ-0003"])
+
+        for project_id in created:
+            store1.delete_project(project_id)
+
+        store2 = AppStore(storage_backend="postgres")
+        fresh = store2.create_project({"name": "清空后新建", "bidType": "技术标"})
+
+        self.assertNotIn(fresh["id"], created)
+        self.assertEqual(fresh["id"], "PRJ-0004")
+
 
 if __name__ == "__main__":
     unittest.main()

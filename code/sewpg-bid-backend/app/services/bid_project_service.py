@@ -247,14 +247,21 @@ class BidProjectService:
             project["technicalParseAssetSync"] = technical_sync_status
         return project
 
-    async def delete(self, project_id: str) -> dict[str, str]:
+    async def delete(self, project_id: str) -> dict[str, Any]:
         self.ensure_project(project_id)
-        await run_in_threadpool(
+        workspace_cleanup = await run_in_threadpool(
             delete_workspace_project,
             project_id,
             not_found_error=lambda _project_id: HTTPException(status_code=404, detail=self.not_found_message),
         )
-        return {"message": self.delete_message}
+        payload: dict[str, Any] = {"message": self.delete_message}
+        failures = list((workspace_cleanup or {}).get("failures") or [])
+        if failures:
+            # 磁盘没清干净不能报成功了事：残留的工作区会被后续项目继承，
+            # 这里把失败项摆到响应里，让调用方当场看见而不是等磁盘涨满才发现。
+            payload["workspaceCleanupFailed"] = failures
+            payload["message"] = f"{self.delete_message}（磁盘工作区有 {len(failures)} 项未清理，详见 workspaceCleanupFailed）"
+        return payload
 
     async def template_fallback(self, project_id: str) -> dict[str, Any]:
         self.ensure_project(project_id)

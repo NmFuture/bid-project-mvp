@@ -41,12 +41,24 @@ class AppStore:
         max_id = max((self._parse_project_number(project_id) for project_id in self._projects), default=0)
         return max_id + 1
 
+    def _next_project_id_number(self) -> int:
+        """取新项目编号：Postgres 走独立序列，内存后端退回进程内计数器。
+
+        序列的意义是编号永不回收——删掉 PRJ-0011 后新建拿到的是下一个号，不会再
+        落进 /data/documents/PRJ-0011 这类残留工作区、把本轮解析降级成续跑。
+        内存后端只服务测试，没有跨进程语义，保留原计数器即可。
+        """
+        if not self._uses_postgres:
+            return next(self._counter)
+        return self._repository.next_project_number()
+
     @property
     def _uses_postgres(self) -> bool:
         return self._repository.uses_postgres
 
     def _ensure_db(self) -> None:
         self._repository.ensure_db()
+        self._repository.ensure_project_id_sequence()
 
     def _load_projects(self) -> None:
         if not self._uses_postgres:
@@ -73,6 +85,7 @@ class AppStore:
         self._projects = {}
         if clear_persistent:
             self._repository.clear()
+            self._repository.reset_project_id_sequence()
         self._counter = itertools.count(1)
 
     @staticmethod
@@ -113,7 +126,7 @@ class AppStore:
         )
 
     def create_project(self, data: dict[str, Any]) -> dict[str, Any]:
-        project_id = f"PRJ-{next(self._counter):04d}"
+        project_id = f"PRJ-{self._next_project_id_number():04d}"
         project = create_project_state(project_id, data)
         self._normalize_project_identity(project)
         self._projects[project_id] = project
@@ -150,11 +163,12 @@ class AppStore:
         self._persist_project(project)
         return self._detail(project)
 
-    def delete_project(self, project_id: str) -> None:
+    def delete_project(self, project_id: str) -> dict[str, Any]:
         project = self._require(project_id)
-        delete_project_side_effects(project_id, project)
+        workspace_cleanup = delete_project_side_effects(project_id, project)
         self._projects.pop(project_id, None)
         self._delete_project_record(project_id)
+        return workspace_cleanup
 
     def get_stages(self, project_id: str) -> list[dict[str, Any]]:
         project = self._require(project_id)

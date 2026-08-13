@@ -100,9 +100,9 @@ def update_workspace_project(
         raise not_found_error(project_id) from exc
 
 
-def delete_workspace_project(project_id: str, *, not_found_error: ProjectErrorFactory) -> None:
+def delete_workspace_project(project_id: str, *, not_found_error: ProjectErrorFactory) -> dict[str, Any]:
     try:
-        store.delete_project(project_id)
+        return store.delete_project(project_id)
     except KeyError as exc:
         raise not_found_error(project_id) from exc
 
