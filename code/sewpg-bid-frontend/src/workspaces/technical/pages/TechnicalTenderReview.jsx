@@ -21,6 +21,8 @@ import {
   summarizeParseProgress,
 } from '../technicalParseUploadRecovery'
 import BidProgressPanel from '../../../components/shared/BidProgressPanel'
+import ParseValidationNotice from '../components/ParseValidationNotice'
+import { parseValidationSummary } from '../components/parseValidationSummary'
 import { progressElapsedLine } from '../../../utils/progressDuration'
 import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
 import {
@@ -932,6 +934,10 @@ export default function TechnicalTenderReview({ showToast }) {
 
   const rows = structuredRows.length ? structuredRows : fallbackRows
   const isParseCompleted = parseData?.status === 'completed'
+  const parseValidation = useMemo(
+    () => parseValidationSummary(parseData?.structured),
+    [parseData?.structured],
+  )
   const reviewDecision = String(project?.reviewDecision || 'pending')
   const showTechnicalCompactUpload = !isParseCompleted
 
@@ -1404,6 +1410,7 @@ export default function TechnicalTenderReview({ showToast }) {
           <div className="p-6 text-sm text-on-surface-variant">{reviewConfig.pendingParseHint}</div>
         ) : (
           <div className="flex flex-col gap-5">
+            <ParseValidationNotice summary={parseValidation} />
             <ProjectBasicsTable title="项目基础信息" fields={projectBasics} />
 
             {hasTechnicalInterpretation ? (
