@@ -1,7 +1,7 @@
 ---
 id: engine-05
 scope: AgentEngine / 会话生命周期回收
-status: pending
+status: done
 depends-on: [engine-01]
 ---
 

@@ -54,3 +54,12 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] P3-3: `PollReconnectExhaustedError` 抛出路径不取消在飞 worker（刻意设计，与既有 session-error 路径一致，无泄漏）
 - [ ] 断线重连预算约 23s/次：opencode 重启超窗会显式失败（非 stall），需要更长容忍在 5090 配置层调 `OPENCODE_POLL_RECONNECT_*`
 - [ ] worker 内 POST 读超时终结本轮（PromptDeliveryUncertainError），会话可能服务端跑完但产物无人回收；「投递不确定 → 转纯轮询等终态」补齐建议单独立项
+
+## engine-05（review 01，2026-08-13，结论 pass）
+
+- [ ] P3-1: delete 与被遗弃 worker 的理论竞态（idle 超时/收割超时/轮询断连三条错误路径 worker_task 未收割，finally DELETE 与在飞 POST 并发；worker 遗弃是 B3 前既有形态）
+- [ ] P3-2: `json_utils.py:183` 的 `delete_session_quietly` 只有 OpencodeEngine 实现，与「三引擎复用」docstring 隐性耦合——接 codex/pi 走 repair 路径时会 AttributeError 掩盖业务结果，需随 engine-09 接线处理
+- [ ] P3-3: 技术标对话首试失败时新建会话不绑定也不删，靠卷清理兜底
+- [ ] P3-4: 清理脚本 dry-run 的 `2>/dev/null` 掩盖 find 错误，误报「0 个文件」
+- [ ] P3-5: 两个 business review 与 JSON repair 回收路径无直接用例
+- [ ] 清理脚本 `cleanup-opencode-data.sh` 未实机 dry-run 过，建议起栈后验证一次
