@@ -6621,6 +6621,38 @@ def _validation_error_task_key(item: Any) -> str:
         return ""
 
 
+def _technical_submission_fingerprints(skill_manifest_path: Path) -> dict[str, str]:
+    """按 task key 取提交内容指纹，用于判断修复轮是否真的重新落盘。
+
+    settle() 只看提交文件里有没有该 key。修复会话失败时上一轮的提交仍在文件里，
+    会被判成 succeeded，让 shardResults/repairedShards 把「没修好」记成「已修复」。
+    """
+    from agentic.paths import load_manifest as load_skill_manifest  # noqa: PLC0415
+    from agentic.submission_store import load as load_submissions  # noqa: PLC0415
+
+    try:
+        manifest = load_skill_manifest(skill_manifest_path)
+        payload = load_submissions(skill_manifest_path, manifest)
+    except (OSError, ValueError, RuntimeError):
+        return {}
+    targets = payload.get("targets") if isinstance(payload.get("targets"), dict) else {}
+    shards = payload.get("shards") if isinstance(payload.get("shards"), dict) else {}
+    fingerprints: dict[str, str] = {}
+    for raw_key, entry in shards.items():
+        if not isinstance(entry, dict):
+            continue
+        fingerprints[str(raw_key)] = json.dumps(
+            [entry.get("updatedAt"), entry.get("submittedRowNos")],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    if targets.get("projectBasics") is not None:
+        fingerprints["projectBasics"] = json.dumps(
+            targets.get("projectBasics"), ensure_ascii=False, sort_keys=True
+        )
+    return fingerprints
+
+
 def _validation_error_text(item: Any) -> str:
     """把一条 finalize 校验错误压成可读文案，供告警和前端展示。"""
     if not isinstance(item, dict):
@@ -6779,6 +6811,7 @@ def _run_technical_sharded_parse_skill(
         )
         if repair_keys:
             logger.warning("S1 技术标 finalize 校验失败，进入修复轮：%s。", repair_keys)
+            before_repair = _technical_submission_fingerprints(skill_manifest_path)
             repair_results = settle(
                 run_wave(
                     [
@@ -6788,6 +6821,25 @@ def _run_technical_sharded_parse_skill(
                     ]
                 )
             )
+            # settle 以提交文件为准，修复会话失败时上一轮提交仍在，会被判成成功。
+            # 用提交指纹确认这一轮确实重新落盘，没落盘的分片不算修复过。
+            after_repair = _technical_submission_fingerprints(skill_manifest_path)
+            stale_keys = {
+                key for key in repair_keys if before_repair.get(key) == after_repair.get(key)
+            }
+            if stale_keys:
+                logger.warning("S1 技术标修复轮未产生新的提交：%s。", sorted(stale_keys))
+            repair_results = [
+                {
+                    **item,
+                    "status": "failed",
+                    "error": item["error"] or "修复轮未产生新的提交（沿用上一轮结果）。",
+                }
+                if item["key"] in stale_keys
+                else item
+                for item in repair_results
+            ]
+            repair_keys = [key for key in repair_keys if key not in stale_keys]
             by_key = {item["key"]: item for item in results}
             for item in repair_results:
                 by_key[item["key"]] = item

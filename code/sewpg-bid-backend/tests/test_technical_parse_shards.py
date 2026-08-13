@@ -523,10 +523,12 @@ class ShardedOrchestrationTests(unittest.TestCase):
         failing_shards: set[str] | None = None,
         silent_shards: set[str] | None = None,
         partial_shards: set[str] | None = None,
+        failing_after_first: set[str] | None = None,
     ):
         """模拟 opencode 会话：按分片提示词真实调用 s1parse CLI 提交。
 
-        failing_shards 模拟会话报错；silent_shards 模拟会话正常结束但没调 submit。
+        failing_shards 模拟会话报错；silent_shards 模拟会话正常结束但没调 submit；
+        failing_after_first 模拟首轮正常、修复轮报错。
         """
         import re
         import threading
@@ -535,6 +537,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
         failing = failing_shards or set()
         silent = silent_shards or set()
         partial = partial_shards or set()
+        failing_on_repair = failing_after_first or set()
         seen: list[str] = []
         seen_lock = threading.Lock()
 
@@ -557,15 +560,20 @@ class ShardedOrchestrationTests(unittest.TestCase):
                 key = match.group(1) if match else "projectBasics"
                 with seen_lock:
                     seen.append(key)
+                    attempt = seen.count(key)
                 if key in failing:
                     raise RuntimeError(f"injected failure for {key}")
+                if key in failing_on_repair and attempt > 1:
+                    raise RuntimeError(f"injected repair failure for {key}")
                 if key in silent:
                     # 会话「正常结束」，但什么都没提交
                     return {"opencodeOutput": {"sessionId": f"ses-{key}", "status": "completed"}}
                 if key == "projectBasics":
+                    # 修复轮的模型会给出不同的值，否则等于没修；用 attempt 体现这一点。
+                    suffix = f"（修复轮第 {attempt - 1} 次）" if attempt > 1 else ""
                     payload = [
                         {"key": field_key, "label": field_key, "status": "missing",
-                         "value": "当前文件未提及，建议补充上传对应文件"}
+                         "value": f"当前文件未提及，建议补充上传对应文件{suffix}"}
                         for field_key in (
                             "projectName", "tenderNo", "projectUnit", "tenderer", "tenderAgency", "bidDeadline"
                         )
@@ -728,6 +736,55 @@ class ShardedOrchestrationTests(unittest.TestCase):
         submissions = load_submissions(self.manifest_path, load_manifest(self.manifest_path))
         rows = submissions["targets"]["technicalInterpretation"]
         self.assertEqual({int(r["rowNo"]) for r in rows}, {int(i["rowNo"]) for i in load_checklist()})
+
+    def test_failed_repair_session_is_not_reported_as_repaired(self) -> None:
+        """修复会话失败时上一轮提交仍在文件里，不能因此把未修复记成已修复。"""
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        fake_cls, seen = self._fake_client_class(failing_after_first={"projectBasics"})
+        original_cli = parsing._run_s1parse_cli
+
+        def failed_finalize(command: str, manifest_path: Path, *args: str) -> dict:
+            if command != "finalize":
+                return original_cli(command, manifest_path, *args)
+            failed_result = {
+                "items": [],
+                "structured": {
+                    "workflow": {
+                        "stage": "failed",
+                        "validationErrors": [
+                            {
+                                "targetKey": "projectBasics",
+                                "fieldKey": "projectUnit",
+                                "message": "提交值与引用证据文本不一致。",
+                            }
+                        ],
+                    }
+                },
+            }
+            self.output_path.write_text(json.dumps(failed_result, ensure_ascii=False), encoding="utf-8")
+            return {"outputFile": str(self.output_path)}
+
+        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+            parsing,
+            "_run_s1parse_cli",
+            side_effect=failed_finalize,
+        ):
+            resolved, message = parsing._run_technical_sharded_parse_skill(
+                self.manifest_path,
+                local_result={"items": [], "structured": {}},
+                profile=TECHNICAL_PARSE_PROFILE,
+            )
+
+        # 修复轮确实跑了，但会话报错、没有新提交
+        self.assertEqual(seen.count("projectBasics"), 2)
+        workflow = resolved["structured"]["workflow"]
+        self.assertNotIn("projectBasics", workflow.get("repairedShards") or [])
+        self.assertIn("projectBasics", workflow["failedShards"])
+        self.assertIn("finalize 校验未通过", message)
 
     def test_repair_prompt_carries_the_failed_validation_detail(self) -> None:
         """修复轮的提示词必须带上未通过的校验项，否则模型只会重复上一轮的值。"""
