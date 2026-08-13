@@ -1,7 +1,7 @@
 ---
 id: engine-02
 scope: AgentEngine / early completion 泛化与业务编排上移
-status: in-progress
+status: done
 depends-on: [engine-01]
 ---
 
