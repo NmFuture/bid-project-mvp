@@ -175,7 +175,8 @@ class PiEngine:
         except OSError as exc:
             self._request_slots.release()
             raise RuntimeError(f"Pi RPC 进程启动失败（{self.pi_command}）：{exc}") from exc
-        except Exception:
+        except BaseException:
+            # 含 CancelledError：spawn 窗口被取消同样要归还许可（review P2-1 同类路径）。
             self._request_slots.release()
             raise
         session_id = f"pi-{uuid.uuid4().hex[:12]}"
@@ -192,7 +193,9 @@ class PiEngine:
         try:
             # 握手：确认对端确实讲 RPC 协议（二进制缺失/模式错误在此 fail-fast）。
             await self._rpc(session, {"type": "get_state"}, timeout=self.rpc_timeout)
-        except Exception as exc:
+        except BaseException as exc:
+            # 含 CancelledError（BaseException，review P2-1）：握手窗口被取消时
+            # session_id 尚未返回调用方、无人兜底，不回收 = 进程 + 预算许可双泄漏。
             await self._terminate_session(session_id)
             if isinstance(exc, RuntimeError):
                 raise RuntimeError(f"Pi RPC 握手失败：{exc}") from exc
@@ -217,122 +220,128 @@ class PiEngine:
         if tools is not None:
             # Pi RPC 无按请求工具开关（rpc.md 无对应命令）；显式失败而非静默忽略。
             raise ValueError("Pi RPC 不支持按请求工具开关（tools 参数）。")
-        if (provider_id or model_id) and (
-            (provider_id or session.provider_id) != session.provider_id
-            or (model_id or session.model_id) != session.model_id
-        ):
-            await self._rpc(
-                session,
-                {
-                    "type": "set_model",
-                    "provider": provider_id or session.provider_id,
-                    "modelId": model_id or session.model_id,
-                },
-            )
-            session.provider_id = provider_id or session.provider_id
-            session.model_id = model_id or session.model_id
-
-        state = _RunState()
-        cursor = len(session.events)
-        started_at = time.monotonic()
-        last_activity = started_at
-        last_heartbeat = started_at
-        heartbeat_index = 0
-        last_signature: tuple[tuple[str, str], ...] | None = None
-
-        # prompt 被接受后事件流异步推进；success=false = 拒绝（未接受）。
-        await self._rpc(session, {"type": "prompt", "message": prompt_text})
-
-        while True:
-            while cursor < len(session.events):
-                event = session.events[cursor]
-                cursor += 1
-                last_activity = time.monotonic()
-                self._handle_event(session, event, state, on_tool_completed)
-            if state.error is not None:
-                await self._terminate_session(session_id)
-                raise state.error
-            if state.harvested is not None:
-                reply = state.harvested.stdout
-                await self._terminate_session(session_id)
-                if stream_callback is not None:
-                    stream_callback(
-                        self._stream_payload(
-                            session,
-                            state,
-                            status="received",
-                            elapsed_seconds=time.monotonic() - started_at,
-                            extra={"earlyCompletion": True},
-                        )
-                    )
-                return EngineRunResult(
-                    session_id=session_id,
-                    reply_text=reply,
-                    tool_outputs=state.tool_outputs,
-                    trace=self._build_trace(session, state, started_at, early_completion=True),
+        try:
+            if (provider_id or model_id) and (
+                (provider_id or session.provider_id) != session.provider_id
+                or (model_id or session.model_id) != session.model_id
+            ):
+                await self._rpc(
+                    session,
+                    {
+                        "type": "set_model",
+                        "provider": provider_id or session.provider_id,
+                        "modelId": model_id or session.model_id,
+                    },
                 )
-            if state.settled:
+                session.provider_id = provider_id or session.provider_id
+                session.model_id = model_id or session.model_id
+
+            state = _RunState()
+            cursor = len(session.events)
+            started_at = time.monotonic()
+            last_activity = started_at
+            last_heartbeat = started_at
+            heartbeat_index = 0
+            last_signature: tuple[tuple[str, str], ...] | None = None
+
+            # prompt 被接受后事件流异步推进；success=false = 拒绝（未接受）。
+            await self._rpc(session, {"type": "prompt", "message": prompt_text})
+
+            while True:
+                while cursor < len(session.events):
+                    event = session.events[cursor]
+                    cursor += 1
+                    last_activity = time.monotonic()
+                    self._handle_event(session, event, state, on_tool_completed)
+                if state.error is not None:
+                    await self._terminate_session(session_id)
+                    raise state.error
+                if state.harvested is not None:
+                    reply = state.harvested.stdout
+                    await self._terminate_session(session_id)
+                    if stream_callback is not None:
+                        stream_callback(
+                            self._stream_payload(
+                                session,
+                                state,
+                                status="received",
+                                elapsed_seconds=time.monotonic() - started_at,
+                                extra={"earlyCompletion": True},
+                            )
+                        )
+                    return EngineRunResult(
+                        session_id=session_id,
+                        reply_text=reply,
+                        tool_outputs=state.tool_outputs,
+                        trace=self._build_trace(session, state, started_at, early_completion=True),
+                    )
+                if state.settled:
+                    if stream_callback is not None:
+                        signature = state.signature()
+                        if signature != last_signature:
+                            stream_callback(
+                                self._stream_payload(
+                                    session, state, elapsed_seconds=time.monotonic() - started_at
+                                )
+                            )
+                    return EngineRunResult(
+                        session_id=session_id,
+                        reply_text=state.reply_text,
+                        tool_outputs=state.tool_outputs,
+                        trace=self._build_trace(session, state, started_at, early_completion=False),
+                    )
+                if cancel_check is not None and cancel_check():
+                    await self._terminate_session(session_id)
+                    raise ParseCancelledError("解析已取消。")
+
+                now = time.monotonic()
                 if stream_callback is not None:
                     signature = state.signature()
                     if signature != last_signature:
+                        last_signature = signature
+                        last_heartbeat = now
+                        heartbeat_index = 0
+                        stream_callback(
+                            self._stream_payload(session, state, elapsed_seconds=now - started_at)
+                        )
+                    elif now - last_heartbeat >= self.heartbeat_interval:
+                        heartbeat_index += 1
+                        last_heartbeat = now
                         stream_callback(
                             self._stream_payload(
-                                session, state, elapsed_seconds=time.monotonic() - started_at
+                                session,
+                                state,
+                                elapsed_seconds=now - started_at,
+                                extra={
+                                    "heartbeat": True,
+                                    "heartbeatIndex": heartbeat_index,
+                                    "idleSeconds": max(1, int(now - last_activity)),
+                                },
                             )
                         )
-                return EngineRunResult(
-                    session_id=session_id,
-                    reply_text=state.reply_text,
-                    tool_outputs=state.tool_outputs,
-                    trace=self._build_trace(session, state, started_at, early_completion=False),
-                )
-            if cancel_check is not None and cancel_check():
-                await self._terminate_session(session_id)
-                raise ParseCancelledError("解析已取消。")
-
-            now = time.monotonic()
-            if stream_callback is not None:
-                signature = state.signature()
-                if signature != last_signature:
-                    last_signature = signature
-                    last_heartbeat = now
-                    heartbeat_index = 0
-                    stream_callback(
-                        self._stream_payload(session, state, elapsed_seconds=now - started_at)
+                if now - last_activity > self.idle_timeout:
+                    await self._terminate_session(session_id)
+                    raise RuntimeError(
+                        f"pi idle timeout after {int(self.idle_timeout)} seconds without new events; "
+                        f"check session {session_id} tool calls."
                     )
-                elif now - last_heartbeat >= self.heartbeat_interval:
-                    heartbeat_index += 1
-                    last_heartbeat = now
-                    stream_callback(
-                        self._stream_payload(
-                            session,
-                            state,
-                            elapsed_seconds=now - started_at,
-                            extra={
-                                "heartbeat": True,
-                                "heartbeatIndex": heartbeat_index,
-                                "idleSeconds": max(1, int(now - last_activity)),
-                            },
-                        )
-                    )
-            if now - last_activity > self.idle_timeout:
-                await self._terminate_session(session_id)
-                raise RuntimeError(
-                    f"pi idle timeout after {int(self.idle_timeout)} seconds without new events; "
-                    f"check session {session_id} tool calls."
-                )
 
-            # 等待粒度跟随最近的监管 deadline（心跳/idle），保证超时精度。
-            wait_seconds = min(
-                _RUN_POLL_MAX_SECONDS,
-                max(0.05, last_activity + self.idle_timeout - now),
-                max(0.05, last_heartbeat + self.heartbeat_interval - now)
-                if stream_callback is not None
-                else _RUN_POLL_MAX_SECONDS,
-            )
-            with suppress(TimeoutError):
-                await asyncio.wait_for(session.new_event.wait(), timeout=wait_seconds)
-            session.new_event.clear()
+                # 等待粒度跟随最近的监管 deadline（心跳/idle），保证超时精度。
+                wait_seconds = min(
+                    _RUN_POLL_MAX_SECONDS,
+                    max(0.05, last_activity + self.idle_timeout - now),
+                    max(0.05, last_heartbeat + self.heartbeat_interval - now)
+                    if stream_callback is not None
+                    else _RUN_POLL_MAX_SECONDS,
+                )
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(session.new_event.wait(), timeout=wait_seconds)
+                session.new_event.clear()
+        except asyncio.CancelledError:
+            # 外部任务取消（review P2-1 同类路径）：回收进程 + 归还预算许可。
+            # _terminate_session 幂等，内部终态路径已回收时此处为 no-op。
+            await self._terminate_session(session_id)
+            raise
 
     async def list_messages(self, session_id: str) -> list[dict[str, Any]]:
         session = self._sessions.get(session_id)

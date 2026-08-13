@@ -220,6 +220,39 @@ def _codex_done_events() -> list[dict[str, Any]]:
     ]
 
 
+class _FakeCodexHangStdout:
+    """永不 EOF 的 stdout（模拟长任务）：进程被 kill 后才放行。"""
+
+    def __init__(self, process: "_FakeCodexHangProcess") -> None:
+        self._process = process
+
+    def at_eof(self) -> bool:
+        return False
+
+    async def readline(self) -> bytes:
+        while self._process.returncode is None:
+            await asyncio.sleep(0.01)
+        return b""
+
+
+class _FakeCodexHangProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.killed = False
+        self.stdout = _FakeCodexHangStdout(self)
+        self.stderr = _FakeCodexStderr()
+
+    def kill(self) -> None:
+        self.killed = True
+        if self.returncode is None:
+            self.returncode = -9
+
+    async def wait(self) -> int:
+        while self.returncode is None:
+            await asyncio.sleep(0.005)
+        return self.returncode
+
+
 class CodexBudgetTests(unittest.IsolatedAsyncioTestCase):
     """进程型引擎（codex）：一个 session 一个进程，进程池纳入全局预算。"""
 
@@ -261,6 +294,33 @@ class CodexBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pool.acquire(blocking=False), "取消等待中的 run 不得泄漏许可")
         pool.release()
 
+    async def test_run_session_cancelled_mid_run_kills_process_and_releases(self) -> None:
+        """run 进行中（spawn 之后）外部取消：进程回收 + 预算许可归还（review P3-4）。"""
+        pool = ConcurrencyBudget(1).derive()
+        engine = CodexEngine(request_slots=pool)
+        session_id = await engine.create_session("运行中取消")
+        process = _FakeCodexHangProcess()
+
+        with (
+            patch(
+                "app.services.agent_engine.codex_engine.asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=process),
+            ),
+            patch(
+                "app.services.agent_engine.codex_engine.CODEX_KILL_GRACE_SECONDS", 0.2
+            ),
+        ):
+            task = asyncio.create_task(engine.run_session(session_id, "长任务 prompt"))
+            await asyncio.sleep(0.3)  # 进程已起，事件泵在等输出
+            self.assertFalse(pool.acquire(blocking=False), "run 进行中预算许可必须被占用")
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.assertTrue(process.killed, "取消后进程必须被回收")
+        self.assertTrue(pool.acquire(blocking=False), "取消后预算许可必须归还")
+        pool.release()
+
 
 class _FakePiStdout:
     """队列驱动的 stdout：feed() 注入 JSONL，feed_eof() 模拟进程关闭。"""
@@ -286,7 +346,13 @@ class _FakePiStdin:
     def write(self, data: bytes) -> None:
         self.lines.append(data)
         for raw in data.decode("utf-8").splitlines():
-            if raw.strip() and "id" in (payload := json.loads(raw)):
+            if not raw.strip():
+                continue
+            payload = json.loads(raw)
+            handler = self._process.handlers.get(payload.get("type"))
+            if handler is not None and handler(self._process, payload):
+                continue  # handler 自行响应（或不响应，模拟不应答）
+            if "id" in payload:
                 self._process.stdout.feed(
                     {
                         "type": "response",
@@ -302,12 +368,17 @@ class _FakePiStdin:
 
 
 class _FakePiProcess:
-    def __init__(self) -> None:
+    """handlers: {command_type: fn(proc, payload) -> bool}；True = 已自行响应/不应答。"""
+
+    def __init__(self, handlers: dict | None = None) -> None:
         self.returncode: int | None = None
+        self.killed = False
+        self.handlers = handlers or {}
         self.stdout = _FakePiStdout()
         self.stdin = _FakePiStdin(self)
 
     def kill(self) -> None:
+        self.killed = True
         if self.returncode is None:
             self.returncode = -9
             self.stdout.feed_eof()
@@ -374,4 +445,61 @@ class PiBudgetTests(unittest.IsolatedAsyncioTestCase):
 
         pool.release()
         self.assertTrue(pool.acquire(blocking=False), "取消排队中的 create 不得泄漏许可")
+        pool.release()
+
+    async def test_create_session_handshake_failure_releases_permit(self) -> None:
+        """握手失败（Exception 路径，review P3-4）：回收进程并归还预算许可。"""
+        pool = ConcurrencyBudget(1).derive()
+        engine = self._engine(pool)
+        engine.rpc_timeout = 0.2
+        process = _FakePiProcess({"get_state": lambda proc, payload: True})  # 不应答
+
+        with patch.object(engine, "_spawn_process", new=AsyncMock(return_value=process)):
+            with self.assertRaisesRegex(RuntimeError, "握手失败"):
+                await engine.create_session("握手失败")
+
+        self.assertTrue(process.killed, "握手失败后进程必须被回收")
+        self.assertEqual(engine._sessions, {})
+        self.assertTrue(pool.acquire(blocking=False), "握手失败不得泄漏预算许可")
+        pool.release()
+
+    async def test_create_session_cancelled_during_handshake_reclaims_process_and_permit(
+        self,
+    ) -> None:
+        """握手窗口外部取消（review P2-1）：CancelledError 同样回收进程 + 归还许可，
+        session_id 未返回调用方，不回收即永久双泄漏。"""
+        pool = ConcurrencyBudget(1).derive()
+        engine = self._engine(pool)  # rpc_timeout 2.0s，取消落在握手等待窗口内
+        process = _FakePiProcess({"get_state": lambda proc, payload: True})  # 不应答
+
+        with patch.object(engine, "_spawn_process", new=AsyncMock(return_value=process)):
+            task = asyncio.create_task(engine.create_session("握手取消"))
+            await asyncio.sleep(0.3)  # 进入握手等待窗口
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.assertTrue(process.killed, "握手取消后进程必须被回收")
+        self.assertEqual(engine._sessions, {}, "握手取消后会话必须出表")
+        self.assertTrue(pool.acquire(blocking=False), "握手取消不得泄漏预算许可")
+        pool.release()
+
+    async def test_run_session_cancelled_reclaims_process_and_permit(self) -> None:
+        """run 进行中外部取消（review P2-1 同类路径）：回收进程 + 归还许可。"""
+        pool = ConcurrencyBudget(1).derive()
+        engine = self._engine(pool)
+        process = _FakePiProcess()  # prompt 自动 ack 但不吐事件 → run 在等事件
+        with patch.object(engine, "_spawn_process", new=AsyncMock(return_value=process)):
+            session_id = await engine.create_session("运行中取消")
+
+        task = asyncio.create_task(engine.run_session(session_id, "长任务 prompt"))
+        await asyncio.sleep(0.3)  # prompt 已接受，事件泵在等新事件
+        self.assertFalse(pool.acquire(blocking=False), "run 进行中预算许可必须被占用")
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        self.assertTrue(process.killed, "run 取消后进程必须被回收")
+        self.assertEqual(engine._sessions, {}, "run 取消后会话必须出表")
+        self.assertTrue(pool.acquire(blocking=False), "run 取消不得泄漏预算许可")
         pool.release()
