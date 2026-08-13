@@ -51,6 +51,33 @@
 - **生产路径无 stub/mock/fake 残留**；`factory.py` 改动最小（+4/−3，docstring 同步）；无超任务范围改动。
 - **测试复跑**：2299 passed 与声称一致（见文首）。
 
-## 结论
+## 结论（初验，2026-08-13）
 
 **blocked**。F1（P1 blocking）：正常退出路径的 returncode 竞态会把成功运行间歇性误判为 `codex exec 失败（exit None）`，属核心路径正确性缺陷，须先修（一行 `wait` + fake 时序修正）再合入。F2（stderr 排干）建议与 F1 一并修；F3–F6 非阻塞，可随修复一并处理或留后续波次。
+
+---
+
+## 复验（fix commit `2d9f4a8`，2026-08-13）
+
+### F1 已修复 ✓（blocking 解除）
+
+- EOF break 后先 `await self._reap_process(process)`（内含 `wait()` 收尸，returncode 由 child watcher 回填完成）再读退出码（`codex_engine.py` 事件泵尾部），时序正确；`state.process = None` 同步落位。路径化最坏情形（stdout 关、进程仍挂 stderr）由 reap 的 5s 宽限 + kill 兜底，无无界挂起。
+- fake 改 `call_soon` 异步回填 returncode，真实还原 watcher 时序；回归用例 `test_eof_waits_for_async_returncode_backfill` 断言 `eof_returncode_was_none`（竞态窗口确实被制造）+ `waited` + 成功结果——把修复回滚掉该用例必红，区分度成立。
+
+### F2 已修复 ✓
+
+- `_drain_stderr` 伴随 task 按 4096 分块持续排干，sink 超 32KB 摊还截断到 8KB 尾部，内存有界；`_join_stderr_drain` 在 finally 中 join（shield + 5s 上限 + cancel 兜底 + 异常 suppress），生命周期无泄漏、无未消费 task 异常。排干 task 与 stdout 泵无共享状态，无新竞态。回归用例 `test_stderr_is_drained_during_run` 用 ~104KB stderr（超 64KB 管道缓冲）验证正常完成。
+
+### F3 / F4 已修复 ✓ 无副作用
+
+- F3：`\b401\b` / `\b429\b` / `insufficient (quota|funds|credits)` 词边界收窄；旧归类用例（"429 rate limit"、"401 Unauthorized"）仍命中，新增 `test_error_patterns_do_not_over_match` 验证 "4010" 端口与 "insufficient permissions" 走通用兜底。
+- F4：warning 条件改为 `model_id and model_id != self.model_id`，实例未配模型时报「CLI 默认」；`test_request_model_without_instance_model_still_warns` 验证 warning 与 argv 不带 `--model`。等值传入不重复告警，无行为回退。
+
+### 复验测试
+
+- 抽查 `tests/test_codex_engine.py`：**27 passed**（23 + 新增 4）；全量 2303 passed 采信开发者自报（与 2299 + 4 口径一致）。
+- F5（并发 run 防护 / `--` 分隔）、F6（monitor 收敛）维持 P3 留后续波次，不阻塞。
+
+## 最终结论
+
+**pass**。F1/F2 修复正确且有带区分度的回归用例，F3/F4 顺带收敛无副作用；F5/F6 为 P3 非阻塞遗留。engine-07 可合入，真实联通性验证按任务书留 engine-09 PoC。
