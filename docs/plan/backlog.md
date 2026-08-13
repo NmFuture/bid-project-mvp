@@ -63,3 +63,11 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] P3-4: 清理脚本 dry-run 的 `2>/dev/null` 掩盖 find 错误，误报「0 个文件」
 - [ ] P3-5: 两个 business review 与 JSON repair 回收路径无直接用例
 - [ ] 清理脚本 `cleanup-opencode-data.sh` 未实机 dry-run 过，建议起栈后验证一次
+
+## engine-06（review 01 + 复验，2026-08-14，结论 pass）
+
+- [x] ~~P2-1 (blocking)~~ 已修复（dd321ab）：pi create_session 握手窗口 CancelledError 穿 except Exception 致预算许可+进程双泄漏；改 BaseException + run_session 同类兜底，附 4 用例
+- [ ] P2-2: 部署行为变化需晋级 PR 显式告知——既有部署 .env 的 `OPENCODE_MAX_CONCURRENCY` 静默失效（由 `AGENT_CONCURRENCY_BUDGET` 取代，默认 8）；5090 有效并发 1→8，`docker-compose.5090.yml` 取值归发布负责人确认
+- [ ] P3-3: 架构总览文档（05-Harness基建.md 等）仍描述旧三池，漂移待统一更新
+- [ ] Pi 会话创建后永不 terminate/delete 时许可与进程同生命周期滞留（即进程泄漏本身，孤儿回收归 engine-09/后续）
+- [ ] 并发冒烟（S1 分片真实并行观察峰值 ≤ 预算）需 dev/5090 环境

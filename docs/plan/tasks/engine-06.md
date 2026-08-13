@@ -1,7 +1,7 @@
 ---
 id: engine-06
 scope: AgentEngine / 并发治理统一
-status: pending
+status: done
 depends-on: []
 ---
 
