@@ -26,6 +26,7 @@ from app.services.identity import build_project_material_scope
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.file_utils import run_awaitable_sync
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
 from app.services.business_bidder_profile import load_business_bidder_facts
 from app.services.business_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION, build_project_fact_table
@@ -206,7 +207,7 @@ def _business_material_feedback_index(state: Any) -> dict[str, Any]:
 def run_business_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
     prompt = _build_business_gap_planner_prompt(manifest_path)
     try:
-        return OpencodeEngine().run_bid_business_gap_planner_with_trace(prompt)
+        return run_awaitable_sync(OpencodeEngine().run_bid_business_gap_planner_with_trace(prompt))
     except Exception:
         return _run_local_skill_runner(BUSINESS_GAP_PLANNER_RUNNER, manifest_path, BUSINESS_GAP_PLAN_SCHEMA_VERSION)
 
@@ -214,7 +215,7 @@ def run_business_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
 def run_business_table_fill_skill(manifest_path: Path) -> dict[str, Any]:
     prompt = _build_business_table_fill_prompt(manifest_path)
     try:
-        return OpencodeEngine().run_bid_business_table_fill_with_trace(prompt)
+        return run_awaitable_sync(OpencodeEngine().run_bid_business_table_fill_with_trace(prompt))
     except Exception:
         return _run_local_skill_runner(BUSINESS_TABLE_FILL_RUNNER, manifest_path, BUSINESS_TABLE_FILL_SCHEMA_VERSION)
 

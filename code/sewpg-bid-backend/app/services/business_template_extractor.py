@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.file_utils import run_awaitable_sync
 
 
 SKILL_NAME = "bid-business-template-extractor"
@@ -360,11 +361,11 @@ def run_business_template_extractor(
     try:
         _raise_if_cancelled(cancel_check)
         prompt = build_business_template_navigation_prompt(project_id=project_id, manifest_path=manifest_path)
-        agent_result = OpencodeEngine(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
+        agent_result = run_awaitable_sync(OpencodeEngine(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
             prompt,
             session_ready_callback=emit_session_ready,
             cancel_check=cancel_check,
-        )
+        ))
         _raise_if_cancelled(cancel_check)
         opencode_trace = agent_result.get("opencodeOutput") if isinstance(agent_result.get("opencodeOutput"), dict) else None
         if opencode_trace and progress_callback:

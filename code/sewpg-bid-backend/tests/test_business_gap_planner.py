@@ -1584,7 +1584,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
         traced = {"schemaVersion": "bid-business-table-fill-v1", "outputFile": "/tmp/out.docx", "opencodeOutput": {"status": "completed"}}
 
         class _FakeClient:
-            def run_bid_business_table_fill_with_trace(self, prompt_text, **kwargs):
+            async def run_bid_business_table_fill_with_trace(self, prompt_text, **kwargs):
                 assert "businesstablefill" in prompt_text
                 return traced
 
@@ -1592,7 +1592,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
             self.assertEqual(planning.run_business_table_fill_skill(manifest_path), traced)
 
         class _BrokenClient:
-            def run_bid_business_table_fill_with_trace(self, prompt_text, **kwargs):
+            async def run_bid_business_table_fill_with_trace(self, prompt_text, **kwargs):
                 raise RuntimeError("opencode unavailable")
 
         local_result = {"schemaVersion": "bid-business-table-fill-v1", "outputFile": "/tmp/local.docx"}

@@ -10,17 +10,20 @@
 - 任务注册表 `TASK_SPECS`：每类 agent 任务声明 `{命令名: {提前完成判定, stall 策略,
   结果校验}}`。新增一类 agent 任务 = 注册一条 spec + 一个编排方法，不再改引擎。
 
+B1（engine-03）起编排方法全量 async（引擎调用一律 await）；同步调用方经
+`app.services.file_utils.run_awaitable_sync` 桥接进入。
+
 引擎侧（`opencode_engine.py`）不出现任何业务命令字符串字面量。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from app.services.agent_engine import json_utils
 from app.services.agent_engine.base import (
@@ -493,7 +496,7 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------
     # 业务会话编排（自 OpencodeEngine 上移，方法体未改逻辑）
     # ------------------------------------------------------------------
-    def run_outline_decision_session(
+    async def run_outline_decision_session(
         self,
         prompt_text: str,
         *,
@@ -510,7 +513,7 @@ class AgentOrchestrator:
         """
         engine = self.engine
         for attempt in range(1, OUTLINE_DECISION_SESSION_MAX_ATTEMPTS + 1):
-            session = engine.create_session(session_title)
+            session = await engine.create_session(session_title)
             session_id = str(session.get("id") or "")
             if session_ready_callback:
                 session_ready_callback(
@@ -521,7 +524,7 @@ class AgentOrchestrator:
                         "sessionPhase": session_phase,
                     }
                 )
-            response = engine._send_prompt_with_session_polling(
+            response = await engine._send_prompt_with_session_polling(
                 session_id,
                 prompt_text,
                 stream_callback=stream_callback or (lambda _details: None),
@@ -557,7 +560,7 @@ class AgentOrchestrator:
                     session_title,
                     error_text,
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
                 continue
             state = response.get("_assistantStopValidation")
             if not isinstance(state, dict):
@@ -583,14 +586,14 @@ class AgentOrchestrator:
             return None
         return state if isinstance(state, dict) else None
 
-    def generate_outline(self, prompt_text: str) -> dict[str, Any]:
-        result = self.generate_outline_with_trace(prompt_text)
+    async def generate_outline(self, prompt_text: str) -> dict[str, Any]:
+        result = await self.generate_outline_with_trace(prompt_text)
         return {
             "summary": result.get("summary"),
             "nodes": result.get("nodes"),
         }
 
-    def generate_outline_with_trace(
+    async def generate_outline_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
@@ -606,7 +609,7 @@ class AgentOrchestrator:
             if handoff_prompt_factory is None or handoff_state_callback is None:
                 raise ValueError("handoff prompt factory and state callback must be provided together")
             for handoff_index in range(1, 257):
-                session = engine.create_session(f"S2 目录决策·接力 {handoff_index}")
+                session = await engine.create_session(f"S2 目录决策·接力 {handoff_index}")
                 handoff_session_id = str(session.get("id") or "")
                 handoff_session_ids.append(handoff_session_id)
                 if session_ready_callback:
@@ -626,7 +629,7 @@ class AgentOrchestrator:
                     validated_handoff_state.update(state)
                     return state
 
-                handoff_response = engine._send_prompt_with_session_polling(
+                handoff_response = await engine._send_prompt_with_session_polling(
                     handoff_session_id,
                     handoff_prompt_factory(handoff_index),
                     stream_callback=stream_callback,
@@ -648,7 +651,7 @@ class AgentOrchestrator:
             else:
                 raise RuntimeError("S2 目录决策接力超过 256 个会话，已停止以避免无限循环。")
 
-        session = engine.create_session("S2 目录生成")
+        session = await engine.create_session("S2 目录生成")
         session_id = str(session.get("id") or "")
         if session_ready_callback:
             session_ready_callback(
@@ -660,7 +663,7 @@ class AgentOrchestrator:
                     "sessionIndex": len(handoff_session_ids) + 1,
                 }
             )
-        response = engine._send_prompt_with_session_polling(
+        response = await engine._send_prompt_with_session_polling(
             session_id,
             prompt_text,
             stream_callback=stream_callback,
@@ -669,7 +672,7 @@ class AgentOrchestrator:
                 terminal_validator=terminal_validator,
             ),
         )
-        parsed = self._extract_outline_json(response)
+        parsed = await self._extract_outline_json(response)
         output_trace = engine._build_output_trace(session_id, response)
         if handoff_session_ids:
             output_trace["sessionIds"] = [*handoff_session_ids, session_id]
@@ -679,14 +682,14 @@ class AgentOrchestrator:
             "opencodeOutput": output_trace,
         }
 
-    def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
-        result = self.generate_draft_sections_with_trace(prompt_text)
+    async def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
+        result = await self.generate_draft_sections_with_trace(prompt_text)
         return {
             "summary": result.get("summary"),
             "sections": result.get("sections"),
         }
 
-    def _run_traced_session(
+    async def _run_traced_session(
         self,
         *,
         session_title: str,
@@ -695,12 +698,12 @@ class AgentOrchestrator:
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
         early_tool_command: str = "",
-        extractor: Callable[[dict[str, Any]], dict[str, Any]],
+        extractor: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
         abort_on_cancel: bool = False,
     ) -> dict[str, Any]:
         """「建会话 → 轮询 → 结果校验 → 留痕」的公共编排骨架。"""
         engine = self.engine
-        session = engine.create_session(session_title)
+        session = await engine.create_session(session_title)
         session_id = str(session.get("id") or "")
         if abort_on_cancel:
             try:
@@ -715,7 +718,7 @@ class AgentOrchestrator:
                 if cancel_check is not None and cancel_check():
                     raise ParseCancelledError("解析已取消。")
             except ParseCancelledError:
-                engine.abort_session(session_id)
+                await engine.abort_session(session_id)
                 raise
         elif session_ready_callback:
             session_ready_callback(
@@ -725,26 +728,26 @@ class AgentOrchestrator:
                     "modelId": engine.model_id,
                 }
             )
-        response = engine._send_prompt_with_session_polling(
+        response = await engine._send_prompt_with_session_polling(
             session_id,
             prompt_text,
             stream_callback=stream_callback,
             early_completion=self._build_early_completion_plan(early_tool_command),
             cancel_check=cancel_check,
         )
-        parsed = extractor(response)
+        parsed = await extractor(response)
         return {
             **parsed,
             "opencodeOutput": engine._build_output_trace(session_id, response),
         }
 
-    def generate_draft_sections_with_trace(
+    async def generate_draft_sections_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S4 生成标书",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -752,13 +755,13 @@ class AgentOrchestrator:
             extractor=self._extract_sections_json,
         )
 
-    def run_bid_business_assembler_with_trace(
+    async def run_bid_business_assembler_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S4 商务标响应文件装配",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -767,13 +770,13 @@ class AgentOrchestrator:
             extractor=self._extract_assembly_json,
         )
 
-    def run_bid_business_format_cleaner_with_trace(
+    async def run_bid_business_format_cleaner_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S4 商务标格式规范化",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -782,13 +785,13 @@ class AgentOrchestrator:
             extractor=self._extract_business_format_json,
         )
 
-    def run_bid_tech_gap_planner_with_trace(
+    async def run_bid_tech_gap_planner_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S3 技术标缺口识别",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -797,13 +800,13 @@ class AgentOrchestrator:
             extractor=self._extract_gap_plan_json,
         )
 
-    def run_bid_tech_tag_importer_with_trace(
+    async def run_bid_tech_tag_importer_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="技术标标签导入·模糊匹配",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -811,13 +814,13 @@ class AgentOrchestrator:
             extractor=self._extract_tag_match_json,
         )
 
-    def run_bid_business_gap_planner_with_trace(
+    async def run_bid_business_gap_planner_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S3 商务标缺口处理",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -826,13 +829,13 @@ class AgentOrchestrator:
             extractor=self._extract_gap_plan_json,
         )
 
-    def run_bid_business_table_fill_with_trace(
+    async def run_bid_business_table_fill_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S3 商务标 AI 填写",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -841,14 +844,14 @@ class AgentOrchestrator:
             extractor=self._extract_table_fill_json,
         )
 
-    def run_bid_tech_table_filler_with_trace(
+    async def run_bid_tech_table_filler_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S4 技术标缺口 AI 填写",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -857,14 +860,14 @@ class AgentOrchestrator:
             extractor=self._extract_table_fill_json,
         )
 
-    def run_bid_tech_score_index_xref_with_trace(
+    async def run_bid_tech_score_index_xref_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S4 技术标评分索引章节判断",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -873,14 +876,14 @@ class AgentOrchestrator:
             extractor=self._extract_score_index_mapping_json,
         )
 
-    def run_bid_tech_fact_curator_with_trace(
+    async def run_bid_tech_fact_curator_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         early_tool_command: str = "",
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S3 技术标事实表维护",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -889,13 +892,13 @@ class AgentOrchestrator:
             extractor=self._extract_fact_curator_json,
         )
 
-    def generate_wiki_blueprint_with_trace(
+    async def generate_wiki_blueprint_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="素材 Wiki 生成",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -904,14 +907,14 @@ class AgentOrchestrator:
             extractor=self._extract_wiki_blueprint_json,
         )
 
-    def generate_tender_parse_with_trace(
+    async def generate_tender_parse_with_trace(
         self,
         prompt_text: str,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="S1 招标文件结构化解析",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -922,7 +925,7 @@ class AgentOrchestrator:
             abort_on_cancel=True,
         )
 
-    def run_tender_parse_shard_with_trace(
+    async def run_tender_parse_shard_with_trace(
         self,
         prompt_text: str,
         *,
@@ -937,7 +940,7 @@ class AgentOrchestrator:
         finalize 由后端在所有分片汇合后统一执行，所以这里不解析业务 JSON，只回传 trace。
         """
         engine = self.engine
-        session = engine.create_session(title)
+        session = await engine.create_session(title)
         session_id = str(session.get("id") or "")
         try:
             if session_ready_callback:
@@ -951,11 +954,11 @@ class AgentOrchestrator:
             if cancel_check is not None and cancel_check():
                 raise ParseCancelledError("解析已取消。")
         except ParseCancelledError:
-            engine.abort_session(session_id)
+            await engine.abort_session(session_id)
             raise
         # 传入 stream_callback 以启用轮询与 idle 监管；不挂提前完成计划，
         # 分片会话没有 finalize 这种唯一终止命令，走通用完成判定即可。
-        response = engine._send_prompt_with_session_polling(
+        response = await engine._send_prompt_with_session_polling(
             session_id,
             prompt_text,
             stream_callback=stream_callback or (lambda _details: None),
@@ -963,41 +966,41 @@ class AgentOrchestrator:
         )
         return {"opencodeOutput": engine._build_output_trace(session_id, response)}
 
-    def review_business_commitments_with_trace(
+    async def review_business_commitments_with_trace(
         self,
         prompt_text: str,
     ) -> dict[str, Any]:
         engine = self.engine
-        session = engine.create_session("商务标承诺语义复核")
+        session = await engine.create_session("商务标承诺语义复核")
         session_id = str(session.get("id") or "")
-        response = engine._send_prompt_with_session_polling(session_id, prompt_text)
-        parsed = self._extract_commitment_review_json(response)
+        response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
+        parsed = await self._extract_commitment_review_json(response)
         return {
             **parsed,
             "opencodeOutput": engine._build_output_trace(session_id, response),
         }
 
-    def review_business_attachment_templates_with_trace(
+    async def review_business_attachment_templates_with_trace(
         self,
         prompt_text: str,
     ) -> dict[str, Any]:
         engine = self.engine
-        session = engine.create_session("商务标附件模板语义校验")
+        session = await engine.create_session("商务标附件模板语义校验")
         session_id = str(session.get("id") or "")
-        response = engine._send_prompt_with_session_polling(session_id, prompt_text)
-        parsed = self._extract_business_template_review_json(response)
+        response = await engine._send_prompt_with_session_polling(session_id, prompt_text)
+        parsed = await self._extract_business_template_review_json(response)
         return {
             **parsed,
             "opencodeOutput": engine._build_output_trace(session_id, response),
         }
 
-    def extract_business_templates_with_trace(
+    async def extract_business_templates_with_trace(
         self,
         prompt_text: str,
         session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        return self._run_traced_session(
+        return await self._run_traced_session(
             session_title="商务标模板自主提取",
             prompt_text=prompt_text,
             session_ready_callback=session_ready_callback,
@@ -1010,8 +1013,8 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------
     # 业务结果校验（14 个 _extract_*_json + 公共 JSON 抽取/修复入口）
     # ------------------------------------------------------------------
-    def _extract_outline_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_outline_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回目录内容。",
             repair_kind="outline",
@@ -1025,8 +1028,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的目录 JSON 结构不正确。")
         return parsed
 
-    def _extract_sections_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_sections_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回正文内容。",
             repair_kind="sections",
@@ -1035,8 +1038,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的正文 JSON 结构不正确。")
         return parsed
 
-    def _extract_wiki_blueprint_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_wiki_blueprint_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回 Wiki 蓝图内容。",
             repair_kind="wiki",
@@ -1048,8 +1051,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的 Wiki 蓝图 JSON 结构不正确。")
         return parsed
 
-    def _extract_assembly_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_assembly_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回正文拼装结果。",
             repair_kind="assembly",
@@ -1058,8 +1061,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的正文拼装 JSON 结构不正确。")
         return parsed
 
-    def _extract_business_format_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_business_format_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回商务标格式清洗结果。",
             repair_kind="business_format",
@@ -1068,8 +1071,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的商务标格式清洗 JSON 结构不正确。")
         return parsed
 
-    def _extract_gap_plan_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_gap_plan_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回缺口识别结果。",
             repair_kind="gap_plan",
@@ -1081,8 +1084,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的缺口识别 JSON 结构不正确。")
         return parsed
 
-    def _extract_tag_match_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_tag_match_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回标签模糊匹配结果。",
             repair_kind="gap_plan",
@@ -1091,8 +1094,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的标签匹配 JSON 结构不正确。")
         return parsed
 
-    def _extract_tender_parse_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_tender_parse_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回招标解析结果。",
             repair_kind="tender_parse",
@@ -1111,8 +1114,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode S1 只完成了 prepare/prepared 阶段，尚未执行 s1parse finalize。")
         return parsed
 
-    def _extract_commitment_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_commitment_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回承诺复核结果。",
             repair_kind="business_commitment_review",
@@ -1121,8 +1124,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的承诺复核 JSON 结构不正确。")
         return parsed
 
-    def _extract_business_template_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_business_template_review_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回附件模板校验结果。",
             repair_kind="business_template_review",
@@ -1131,8 +1134,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的附件模板校验 JSON 结构不正确。")
         return parsed
 
-    def _extract_business_template_extraction_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_business_template_extraction_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回商务模板提取结果。",
             repair_kind="business_template_extraction",
@@ -1144,8 +1147,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的商务模板提取 JSON 结构不正确。")
         return parsed
 
-    def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_table_fill_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回 AI 填写结果。",
             repair_kind="table_fill",
@@ -1154,8 +1157,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的 AI 填写 JSON 结构不正确。")
         return parsed
 
-    def _extract_score_index_mapping_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_score_index_mapping_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回评分索引章节判断结果。",
             repair_kind="gap_plan",
@@ -1166,8 +1169,8 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的评分索引章节判断 JSON 结构不正确。")
         return parsed
 
-    def _extract_fact_curator_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = self._extract_json_response(
+    async def _extract_fact_curator_json(self, response: dict[str, Any]) -> dict[str, Any]:
+        parsed = await self._extract_json_response(
             response,
             empty_message="futurecode 未返回事实表维护结果。",
             repair_kind="fact_curate",
@@ -1180,7 +1183,7 @@ class AgentOrchestrator:
             raise RuntimeError("futurecode 返回的事实表维护 JSON 结构不正确。")
         return parsed
 
-    def _extract_json_response(
+    async def _extract_json_response(
         self,
         response: dict[str, Any],
         empty_message: str,
@@ -1213,7 +1216,7 @@ class AgentOrchestrator:
                 snippet = engine._shorten_text(content, limit=420)
                 raise RuntimeError(f"futurecode 工具执行失败：{snippet}。") from exc
             try:
-                repaired = engine._repair_json_payload(content, repair_kind)
+                repaired = await engine._repair_json_payload(content, repair_kind)
                 return engine._parse_json_payload(repaired)
             except RuntimeError as repair_error:
                 snippet = engine._shorten_text(content, limit=420)

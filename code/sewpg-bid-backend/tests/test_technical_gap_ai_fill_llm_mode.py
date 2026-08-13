@@ -30,7 +30,7 @@ class _FakeOpencodeEngine:
         self.calls: list[dict] = []
         _FakeOpencodeEngine.instances.append(self)
 
-    def run_bid_tech_table_filler_with_trace(self, prompt, **kwargs):
+    async def run_bid_tech_table_filler_with_trace(self, prompt, **kwargs):
         self.calls.append({"prompt": prompt, **kwargs})
         if _FakeOpencodeEngine.error is not None:
             raise _FakeOpencodeEngine.error

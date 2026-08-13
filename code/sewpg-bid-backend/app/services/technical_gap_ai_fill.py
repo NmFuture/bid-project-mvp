@@ -18,6 +18,7 @@ from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.ocr_service import ocr_service
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.file_utils import run_awaitable_sync
 from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
     FILL_QUALITY_ACCEPTED_STATUSES,
@@ -1108,7 +1109,7 @@ def _run_table_filler_llm(
     timeout_sec = settings.s4_llm_fill_timeout_sec or settings.opencode_timeout_sec
 
     try:
-        result = OpencodeEngine(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
+        result = run_awaitable_sync(OpencodeEngine(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
             prompt,
             stream_callback=(
                 (lambda details: progress_callback("table_filler_delta", details))
@@ -1116,7 +1117,7 @@ def _run_table_filler_llm(
                 else None
             ),
             early_tool_command="",
-        )
+        ))
     except Exception as exc:
         raise RuntimeError(f"LLM 附表填写会话失败：{exc}") from exc
     # 回收校验：stdout 摘要过 _extract_table_fill_json 后，outputFile 必须真实存在

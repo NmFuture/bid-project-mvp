@@ -611,7 +611,7 @@ def test_run_skill_supervises_factcurate_without_early_return(tmp_path, monkeypa
     calls: dict = {}
 
     class FakeClient:
-        def run_bid_tech_fact_curator_with_trace(self, prompt: str, **kwargs) -> dict:
+        async def run_bid_tech_fact_curator_with_trace(self, prompt: str, **kwargs) -> dict:
             calls.update(kwargs)
             return {"schema": "bid-tech-fact-curate-v1"}
 

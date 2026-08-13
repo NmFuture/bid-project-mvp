@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -807,7 +807,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             }
 
         with patch("app.services.outline_generation.OpencodeEngine") as client_cls:
-            client_cls.return_value.generate_outline_with_trace.side_effect = _generate
+            client_cls.return_value.generate_outline_with_trace = AsyncMock(side_effect=_generate)
 
             _run_business_outline_skill(manifest_path)
 
@@ -1291,10 +1291,10 @@ class DirectoryGenerationTests(unittest.TestCase):
             ),
             patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
-            client_class.return_value.run_outline_decision_session.side_effect = [
+            client_class.return_value.run_outline_decision_session = AsyncMock(side_effect=[
                 {"sessionId": f"ses-{index}", "opencodeOutput": {}}
                 for index in range(1, 8)
-            ]
+            ])
             result = _run_parallel_outline_chapters(manifest_path, {})
 
         load_config.assert_called_once_with()
@@ -1366,7 +1366,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             ),
             patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
-            client_class.return_value.run_outline_decision_session.side_effect = one_chapter_dies
+            client_class.return_value.run_outline_decision_session = AsyncMock(side_effect=one_chapter_dies)
             with self.assertRaises(_ChapterParallelUnsupported):
                 _run_parallel_outline_chapters(manifest_path, {})
 
@@ -1420,10 +1420,10 @@ class DirectoryGenerationTests(unittest.TestCase):
             ),
             patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
-            client_class.return_value.run_outline_decision_session.return_value = {
+            client_class.return_value.run_outline_decision_session = AsyncMock(return_value={
                 "sessionId": "ses-chapter",
                 "opencodeOutput": {},
-            }
+            })
             with self.assertRaisesRegex(RuntimeError, "chapter decisions are incomplete"):
                 _run_parallel_outline_chapters(manifest_path, {})
 
@@ -1584,7 +1584,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             ),
             patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
-            client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
+            client_class.return_value.generate_outline_with_trace = AsyncMock(side_effect=fake_generate)
             _run_outline_skill(
                 Path("C:/workspace/s2_input.json"),
                 bid_type="技术标",
@@ -1639,7 +1639,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             ),
             patch("app.services.outline_generation.OpencodeEngine") as client_class,
         ):
-            client_class.return_value.generate_outline_with_trace.side_effect = fake_generate
+            client_class.return_value.generate_outline_with_trace = AsyncMock(side_effect=fake_generate)
             _run_outline_skill(
                 Path("C:/workspace/s2_input.json"),
                 bid_type="技术标",

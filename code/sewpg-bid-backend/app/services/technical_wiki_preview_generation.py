@@ -572,6 +572,7 @@ def _retry_single_preview(client: Any, plan: dict[str, Any]) -> tuple[dict[str, 
     返回 (preview, model, error)；成功时 error 为空。
     """
     from app.services.agent_engine.opencode_engine import OpencodeEngine
+    from app.services.file_utils import run_awaitable_sync
 
     try:
         prompt = build_preview_prompt(
@@ -580,7 +581,7 @@ def _retry_single_preview(client: Any, plan: dict[str, Any]) -> tuple[dict[str, 
             str(plan.get("tier_label") or ""),
             plan.get("profile") or {},
         )
-        result = client.send_text_prompt("技术标素材预览（单份补打）", prompt)
+        result = run_awaitable_sync(client.send_text_prompt("技术标素材预览（单份补打）", prompt))
         preview = parse_preview_reply(str(result.get("reply") or ""), OpencodeEngine._parse_json_payload)
     except Exception as exc:  # noqa: BLE001 - 单份补打失败只降级这一份，不影响同批其他份
         return None, "", str(exc)[:120]
@@ -591,6 +592,7 @@ def _retry_single_preview(client: Any, plan: dict[str, Any]) -> tuple[dict[str, 
 
 def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     from app.services.agent_engine.opencode_engine import OpencodeEngine
+    from app.services.file_utils import run_awaitable_sync
 
     out: dict[str, dict[str, Any]] = {}
     if not plans:
@@ -619,7 +621,7 @@ def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, di
                 for plan in plans
             ]
         )
-        result = client.send_text_prompt("技术标素材预览", prompt)
+        result = run_awaitable_sync(client.send_text_prompt("技术标素材预览", prompt))
         previews = parse_batch_preview_reply(str(result.get("reply") or ""), OpencodeEngine._parse_json_payload)
         model = str(result.get("modelId") or "")
     except Exception as exc:  # noqa: BLE001 - 整批失败仍逐份补打，不直接降级

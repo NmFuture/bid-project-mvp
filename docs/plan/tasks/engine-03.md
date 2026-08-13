@@ -1,7 +1,7 @@
 ---
 id: engine-03
 scope: AgentEngine / OpencodeEngine 异步化
-status: in-progress
+status: done
 depends-on: [engine-01]
 ---
 

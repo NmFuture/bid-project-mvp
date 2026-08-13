@@ -604,7 +604,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
                 )
                 return completed()
 
-            def fake_agentic_template_extractor(_client, prompt: str, **_kwargs):  # type: ignore[no-untyped-def]
+            async def fake_agentic_template_extractor(_client, prompt: str, **_kwargs):  # type: ignore[no-untyped-def]
                 agent_prompts.append(prompt)
                 self.assertIn("btplnav prepare", prompt)
                 self.assertIn("btplnav submit", prompt)
@@ -729,7 +729,7 @@ class BusinessTemplateExtractorWrapperTests(unittest.TestCase):
 
             cancel_check_fn = lambda: False
 
-            def fake_agentic_template_extractor(
+            async def fake_agentic_template_extractor(
                 _client,
                 prompt: str,
                 *,

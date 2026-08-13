@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import types
 import tempfile
@@ -34,7 +35,9 @@ def load_isolated_function(
         scope = owner.body
     requested_names = {name, *dependencies}
     functions = [
-        node for node in scope if isinstance(node, ast.FunctionDef) and node.name in requested_names
+        node
+        for node in scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in requested_names
     ]
     function = next(node for node in functions if node.name == name)
     function.decorator_list = []
@@ -169,15 +172,21 @@ class TechnicalReportContractTests(unittest.TestCase):
     def test_repair_examples_keep_technical_reports_empty_and_business_reports_unchanged(self) -> None:
         repair = load_isolated_function(AGENT_ENGINE_JSON_UTILS, "_repair_json_payload")
         prompts: list[str] = []
+
+        async def fake_create_session(_title: str) -> dict:
+            return {"id": "repair"}
+
+        async def fake_send_prompt(_session_id: str, prompt: str) -> dict:
+            prompts.append(prompt)
+            return {"parts": [{"type": "text", "text": "{}"}]}
+
         fake_client = types.SimpleNamespace(
-            create_session=lambda _title: {"id": "repair"},
-            send_prompt=lambda _session_id, prompt: (
-                prompts.append(prompt) or {"parts": [{"type": "text", "text": "{}"}]}
-            ),
+            create_session=fake_create_session,
+            send_prompt=fake_send_prompt,
         )
 
-        repair(fake_client, "broken", "assembly")
-        repair(fake_client, "broken", "business_format")
+        asyncio.run(repair(fake_client, "broken", "assembly"))
+        asyncio.run(repair(fake_client, "broken", "business_format"))
 
         technical_prompt, business_prompt = prompts
         self.assertIn('"assemblyReport":""', technical_prompt)

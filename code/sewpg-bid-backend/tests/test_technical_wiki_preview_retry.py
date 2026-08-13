@@ -127,7 +127,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
         reply = json.dumps({"previews": {}}, ensure_ascii=False)
         with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
-            client_cls.return_value.send_text_prompt.return_value = {"reply": reply, "modelId": "m"}
+            client_cls.return_value.send_text_prompt = AsyncMock(return_value={"reply": reply, "modelId": "m"})
             out = _compute_batch_preview_payloads([_plan(llm_failures=PREVIEW_LLM_MAX_FAILURES - 1)])
 
         payload = out["RAW-0001"]
@@ -143,10 +143,12 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
         single_reply = json.dumps({"lead": "单份导读", "points": ["要点"]}, ensure_ascii=False)
         with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
-            client_cls.return_value.send_text_prompt.side_effect = [
-                {"reply": batch_reply, "modelId": "m"},
-                {"reply": single_reply, "modelId": "m-single"},
-            ]
+            client_cls.return_value.send_text_prompt = AsyncMock(
+                side_effect=[
+                    {"reply": batch_reply, "modelId": "m"},
+                    {"reply": single_reply, "modelId": "m-single"},
+                ]
+            )
             out = _compute_batch_preview_payloads([_plan()])
 
         payload = out["RAW-0001"]
@@ -160,10 +162,12 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
         single_reply = json.dumps({"lead": "单份导读", "points": ["要点"]}, ensure_ascii=False)
         with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
-            client_cls.return_value.send_text_prompt.side_effect = [
-                RuntimeError("futurecode 生成超时，请缩短输入或稍后重试。"),
-                {"reply": single_reply, "modelId": "m-single"},
-            ]
+            client_cls.return_value.send_text_prompt = AsyncMock(
+                side_effect=[
+                    RuntimeError("futurecode 生成超时，请缩短输入或稍后重试。"),
+                    {"reply": single_reply, "modelId": "m-single"},
+                ]
+            )
             out = _compute_batch_preview_payloads([_plan()])
 
         payload = out["RAW-0001"]
@@ -177,7 +181,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
         )
         with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
-            client_cls.return_value.send_text_prompt.return_value = {"reply": batch_reply, "modelId": "m"}
+            client_cls.return_value.send_text_prompt = AsyncMock(return_value={"reply": batch_reply, "modelId": "m"})
             out = _compute_batch_preview_payloads([_plan()])
 
         payload = out["RAW-0001"]
@@ -203,7 +207,7 @@ class ComputeBatchPreviewRetryTests(unittest.TestCase):
         )
         with patch("app.services.agent_engine.opencode_engine.OpencodeEngine") as client_cls:
             client_cls._parse_json_payload = staticmethod(json.loads)
-            client_cls.return_value.send_text_prompt.return_value = {"reply": reply, "modelId": "m"}
+            client_cls.return_value.send_text_prompt = AsyncMock(return_value={"reply": reply, "modelId": "m"})
             out = _compute_batch_preview_payloads([_plan(llm_failures=2)])
 
         payload = out["RAW-0001"]

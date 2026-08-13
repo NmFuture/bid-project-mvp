@@ -24,6 +24,7 @@ from app.services.bid_outline_state import save_generated_outline_state
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_type import BUSINESS_BID_TYPE, require_bid_type
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.file_utils import run_awaitable_sync
 from app.services.parsing import IMAGE_SUFFIXES, _ocr_fallback_text
 from app.services.bid_runtime_state import build_directory_opencode_output, now_iso
 from app.services.system_settings import system_settings_service
@@ -380,7 +381,7 @@ def _run_outline_appendix_session(
         emit_appendix_progress(int(snapshot.get("decidedCount") or 0))
 
     emit_appendix_progress(0)
-    result = OpencodeEngine(
+    result = run_awaitable_sync(OpencodeEngine(
         timeout_ms=int(settings.opencode_timeout_sec * 1000),
     ).run_outline_decision_session(
         _build_outline_appendix_prompt(manifest_path),
@@ -393,7 +394,7 @@ def _run_outline_appendix_session(
         ),
         stream_callback=stream_delta if progress_callback else None,
         session_phase="appendix_decision",
-    )
+    ))
     emit_appendix_progress(appendix_total)
     return result
 
@@ -574,7 +575,7 @@ def _run_parallel_outline_chapters(
                     return
                 aggregator.update(chapter_id, int(snapshot.get("decidedCount") or 0))
 
-        result = OpencodeEngine(
+        result = run_awaitable_sync(OpencodeEngine(
             base_url=chapter_base_urls[chapter_indexes[chapter_id] % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
             model_config=model_config,
@@ -585,7 +586,7 @@ def _run_parallel_outline_chapters(
             completion_validator=validate_complete,
             session_ready_callback=session_ready,
             stream_callback=stream_delta if progress_callback else None,
-        )
+        ))
         return chapter_id, str(result["sessionId"])
 
     def run_appendix() -> dict[str, Any]:
@@ -621,7 +622,7 @@ def _run_parallel_outline_chapters(
             aggregator.update_appendix(int(snapshot.get("decidedCount") or 0))
 
         aggregator.update_appendix(0)
-        result = OpencodeEngine(
+        result = run_awaitable_sync(OpencodeEngine(
             base_url=chapter_base_urls[len(chapters) % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
             model_config=model_config,
@@ -633,7 +634,7 @@ def _run_parallel_outline_chapters(
             session_ready_callback=session_ready,
             stream_callback=stream_delta if progress_callback else None,
             session_phase="appendix_predecision",
-        )
+        ))
         aggregator.update_appendix(len(appendix_items))
         return result
 
@@ -990,7 +991,7 @@ def _run_outline_skill(
                 )
                 progress_callback("outline_delta", callback_details)
 
-            generated = OpencodeEngine(
+            generated = run_awaitable_sync(OpencodeEngine(
                 timeout_ms=int(settings.opencode_timeout_sec * 1000)
             ).generate_outline_with_trace(
                     _build_outline_finalize_prompt(manifest_path),
@@ -999,7 +1000,7 @@ def _run_outline_skill(
                     early_tool_command=TECH_OUTLINE_FINALIZE_EARLY_COMMAND,
                     terminal_validator=lambda: _finalize_current_technical_outline(manifest_path),
                     **handoff_kwargs,
-                )
+                ))
         loaded = _load_outline_result(
             generated,
             manifest_path,
@@ -1045,7 +1046,7 @@ def _run_business_outline_skill(
 ) -> dict[str, Any]:
     prompt = _build_business_outline_prompt(manifest_path)
     try:
-        result = OpencodeEngine(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
+        result = run_awaitable_sync(OpencodeEngine(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
             prompt,
             session_ready_callback=(
                 (lambda details: progress_callback("outline_session_ready", details))
@@ -1058,7 +1059,7 @@ def _run_business_outline_skill(
                 else None
             ),
             early_tool_command="",
-        )
+        ))
     except Exception as exc:
         if progress_callback:
             progress_callback(

@@ -1,30 +1,11 @@
 """AgentEngine 协议与公共类型（改造方案 §3）。
 
-A0 起步为同步签名（§7 已拍板：A0 纯改名，不引入并发语义变化），与现状行为一致；
-async 化是 engine-03（B1）的事，届时本协议翻成 §3 的 async 目标形态：
-
-    class AgentEngine(Protocol):
-        engine_name: str    # "opencode" | "codex" | "pi"
-
-        async def create_session(self, title: str) -> str: ...
-        async def run_session(
-            self,
-            session_id: str,
-            prompt_text: str,
-            *,
-            provider_id: str | None = None,
-            model_id: str | None = None,
-            tools: dict[str, bool] | None = None,
-            stream_callback: Callable[[dict[str, Any]], None] | None = None,
-            on_tool_completed: Callable[[ToolCompletedEvent], bool] | None = None,  # 返回 True = 提前收割
-            cancel_check: Callable[[], bool] | None = None,
-        ) -> EngineRunResult: ...
-        async def list_messages(self, session_id: str) -> list[dict[str, Any]]: ...
-        async def abort_session(self, session_id: str) -> bool: ...
-        async def delete_session(self, session_id: str) -> None: ...
+B1（engine-03）起协议为 §3 的 async 目标形态；`OpencodeEngine` 内部为
+`httpx.AsyncClient` + asyncio task 轮询（每会话 daemon 线程已消除）。
+同步调用方经项目既有桥接 `app.services.file_utils.run_awaitable_sync` 进入。
 
 A1（engine-02）落地 on_tool_completed 语义：引擎只检测「一个 bash 工具完成」并上报
-ToolCompletedEvent；是否提前收割由业务回调判定。同步现状下该回调经
+ToolCompletedEvent；是否提前收割由业务回调判定。该回调经
 EarlyCompletionPlan 注入 `_send_prompt_with_session_polling(early_completion=...)`。
 """
 from __future__ import annotations
@@ -129,13 +110,13 @@ def iter_completed_bash_tool_events(
 
 
 class AgentEngine(Protocol):
-    """引擎无关的「会话 + 可监管」原语（同步起步，async 目标形态见模块 docstring）。"""
+    """引擎无关的「会话 + 可监管」原语（B1 起为 §3 的 async 目标形态）。"""
 
     engine_name: str  # "opencode" | "codex" | "pi"
 
-    def create_session(self, title: str) -> str: ...
+    async def create_session(self, title: str) -> str: ...
 
-    def run_session(
+    async def run_session(
         self,
         session_id: str,
         prompt_text: str,
@@ -144,14 +125,14 @@ class AgentEngine(Protocol):
         model_id: str | None = None,
         tools: dict[str, bool] | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
-        # A1（engine-02）落地：返回 True = 提前收割；同步现状经 EarlyCompletionPlan
+        # A1（engine-02）落地：返回 True = 提前收割；经 EarlyCompletionPlan
         # 注入 OpencodeEngine._send_prompt_with_session_polling。
         on_tool_completed: Callable[[ToolCompletedEvent], bool] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> EngineRunResult: ...
 
-    def list_messages(self, session_id: str) -> list[dict[str, Any]]: ...
+    async def list_messages(self, session_id: str) -> list[dict[str, Any]]: ...
 
-    def abort_session(self, session_id: str) -> bool: ...
+    async def abort_session(self, session_id: str) -> bool: ...
 
-    def delete_session(self, session_id: str) -> None: ...
+    async def delete_session(self, session_id: str) -> None: ...

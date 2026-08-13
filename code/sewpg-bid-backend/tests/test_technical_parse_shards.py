@@ -552,7 +552,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
             def __init__(self, *_args, **_kwargs) -> None:
                 pass
 
-            def run_tender_parse_shard_with_trace(self, prompt: str, **_kwargs) -> dict:
+            async def run_tender_parse_shard_with_trace(self, prompt: str, **_kwargs) -> dict:
                 match = re.search(r"--shard (\S+)", prompt)
                 key = match.group(1) if match else "projectBasics"
                 with seen_lock:

@@ -468,7 +468,12 @@ def extract_pdf_text(path: Path) -> tuple[str, dict[str, Any]]:
     }
 
 
-def _run_async_ocr(coro: Any) -> Any:
+def _run_coroutine_blocking(coro: Any) -> Any:
+    """同步上下文执行协程的本模块既有桥接（OCR 识别与 opencode 引擎调用共用）。
+
+    无线程外事件循环时直接 asyncio.run；已在事件循环里（如本地内联执行解析任务
+    跑在请求线程上）则开新线程跑独立循环并 join——保持原同步阻塞语义。
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -484,7 +489,7 @@ def _run_async_ocr(coro: Any) -> Any:
         except BaseException as exc:  # pragma: no cover - defensive bridge
             error = exc
 
-    thread = threading.Thread(target=run, daemon=True, name="parse-visual-recognition")
+    thread = threading.Thread(target=run, daemon=True, name="parse-blocking-bridge")
     thread.start()
     thread.join()
     if error:
@@ -495,7 +500,7 @@ def _run_async_ocr(coro: Any) -> Any:
 def _ocr_fallback_text(project_id: str, file_record: dict[str, Any], file_path: Path) -> tuple[str, dict[str, Any]]:
     _ = project_id
     try:
-        text, raw = _run_async_ocr(
+        text, raw = _run_coroutine_blocking(
             ocr_service.recognize_text_for_parse(
                 file_name=str(file_record.get("name") or file_path.name),
                 content=file_path.read_bytes(),
@@ -547,7 +552,7 @@ def _ocr_business_pdf_pages(
             try:
                 page = pdf.load_page(page_no - 1)
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                text, raw = _run_async_ocr(
+                text, raw = _run_coroutine_blocking(
                     ocr_service.recognize_text_for_parse(
                         file_name=f"{document.get('name') or file_path.stem}-page-{page_no}.png",
                         content=pix.tobytes("png"),
@@ -2102,9 +2107,9 @@ def _review_commitment_candidates_semantically(candidates: list[dict[str, Any]])
     if not candidates:
         return {}
     try:
-        result = OpencodeEngine().review_business_commitments_with_trace(
+        result = _run_coroutine_blocking(OpencodeEngine().review_business_commitments_with_trace(
             _build_commitment_semantic_review_prompt(candidates)
-        )
+        ))
     except RuntimeError:
         return {}
     decisions = result.get("decisions")
@@ -4957,9 +4962,9 @@ def _review_business_attachment_templates_semantically(appendices: list[dict[str
     if not candidates:
         return {}
     try:
-        result = OpencodeEngine().review_business_attachment_templates_with_trace(
+        result = _run_coroutine_blocking(OpencodeEngine().review_business_attachment_templates_with_trace(
             _build_business_template_review_prompt(candidates)
-        )
+        ))
     except RuntimeError:
         return {}
     decisions = result.get("decisions")
@@ -6497,12 +6502,12 @@ def _run_technical_shard_session(
             model_config=model_config,
             request_slots=_S1_SHARD_REQUEST_SLOTS,
         )
-        client.run_tender_parse_shard_with_trace(
+        _run_coroutine_blocking(client.run_tender_parse_shard_with_trace(
             task["prompt"],
             title=f"S1 技术标解析 · {task['label']}",
             stream_callback=lambda details: aggregator.on_stream(key, details),
             cancel_check=cancel_check,
-        )
+        ))
         return {"key": key, "label": task["label"], "status": "succeeded", "error": ""}
     except ParseCancelledError:
         raise
@@ -6755,12 +6760,12 @@ def _run_parse_skill(
         else None
     )
     try:
-        result = client.generate_tender_parse_with_trace(
+        result = _run_coroutine_blocking(client.generate_tender_parse_with_trace(
             _build_tender_parse_prompt(skill_manifest_path, profile),
             stream_callback=stream_callback,
             session_ready_callback=session_ready_callback,
             cancel_check=cancel_check,
-        )
+        ))
         _raise_if_parse_cancelled(cancel_check)
         return _resolve_skill_structured_result(result, local_result=local_result, profile=profile), ""
     except ParseCancelledError:
@@ -6772,12 +6777,12 @@ def _run_parse_skill(
             progress_callback("opencode_delta", copy.deepcopy(trace))
         _raise_if_parse_cancelled(cancel_check)
         try:
-            retry_result = client.generate_tender_parse_with_trace(
+            retry_result = _run_coroutine_blocking(client.generate_tender_parse_with_trace(
                 _build_tender_parse_retry_prompt(skill_manifest_path, profile, exc),
                 stream_callback=stream_callback,
                 session_ready_callback=session_ready_callback,
                 cancel_check=cancel_check,
-            )
+            ))
             _raise_if_parse_cancelled(cancel_check)
             resolved = _resolve_skill_structured_result(retry_result, local_result=local_result, profile=profile)
             retry_trace = (resolved.get("structured") or {}).get("opencodeOutput")

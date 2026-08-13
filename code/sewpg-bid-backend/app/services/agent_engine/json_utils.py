@@ -72,7 +72,7 @@ def _balanced_json_object_candidates(text: str) -> list[tuple[int, str]]:
     return candidates
 
 
-def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
+async def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
     if repair_kind == "outline":
         schema_hint = (
             '{"schema_version":"bid-toc-json-v1","summary":{"total_items":1,'
@@ -165,8 +165,8 @@ def _repair_json_payload(self, raw_content: str, repair_kind: str) -> str:
 原始内容：
 {raw_content}
 """.strip()
-    session = self.create_session("JSON repair")
-    response = self.send_prompt(str(session.get("id") or ""), repair_prompt)
+    session = await self.create_session("JSON repair")
+    response = await self.send_prompt(str(session.get("id") or ""), repair_prompt)
     text_parts = [
         str(part.get("text") or "")
         for part in response.get("parts") or []

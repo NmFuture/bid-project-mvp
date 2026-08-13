@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -65,18 +66,18 @@ _S2_FINALIZE_OUTPUT = (
 )
 
 
-class FinalizeChainCharacterizationTests(unittest.TestCase):
+class FinalizeChainCharacterizationTests(unittest.IsolatedAsyncioTestCase):
     """公开方法级别的表征测试：重构只许改内部结构，不许改这些可观察行为。"""
 
     # ------------------------------------------------------------------
     # s1parse-finalize
     # ------------------------------------------------------------------
-    def test_s1_finalize_early_completes_through_public_method(self) -> None:
+    async def test_s1_finalize_early_completes_through_public_method(self) -> None:
         client = OpencodeEngine()
         stream_events: list[dict] = []
 
-        def slow_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
-            time.sleep(1.2)
+        async def slow_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
+            await asyncio.sleep(1.2)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 
         messages = [
@@ -92,7 +93,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "list_session_messages", return_value=messages),
         ):
             started_at = time.monotonic()
-            result = client.generate_tender_parse_with_trace(
+            result = await client.generate_tender_parse_with_trace(
                 "prompt",
                 stream_callback=stream_events.append,
             )
@@ -104,7 +105,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
         self.assertTrue(early_events)
         self.assertEqual(early_events[-1]["completionSource"], "s1parse-finalize")
 
-    def test_s1_finalize_waits_after_prompt_return_through_public_method(self) -> None:
+    async def test_s1_finalize_waits_after_prompt_return_through_public_method(self) -> None:
         client = OpencodeEngine()
         intermediate = [
             _bash_tool_message(
@@ -133,14 +134,14 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "create_session", return_value={"id": "ses-s1-wait"}),
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", side_effect=list_messages),
-            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.asyncio.sleep", return_value=None),
         ):
-            result = client.generate_tender_parse_with_trace("prompt")
+            result = await client.generate_tender_parse_with_trace("prompt")
 
         self.assertEqual(result["outputFile"], "/data/parsed/PRJ/s1_structured_result.json")
         self.assertEqual(result["opencodeOutput"]["completionSource"], "s1parse-finalize")
 
-    def test_s1_finalize_stall_raises_with_trace_through_public_method(self) -> None:
+    async def test_s1_finalize_stall_raises_with_trace_through_public_method(self) -> None:
         client = OpencodeEngine()
         running_messages = [
             {
@@ -163,10 +164,10 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", return_value=running_messages),
             patch.object(client, "_session_polling_idle_timeout", return_value=0.2),
-            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.asyncio.sleep", return_value=None),
         ):
             with self.assertRaises(RuntimeError) as context:
-                client.generate_tender_parse_with_trace("prompt")
+                await client.generate_tender_parse_with_trace("prompt")
 
         exc = context.exception
         self.assertIn("opencode incomplete/stalled", str(exc))
@@ -180,11 +181,11 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
     # ------------------------------------------------------------------
     # btplnav-finalize
     # ------------------------------------------------------------------
-    def test_btplnav_finalize_early_completes_through_public_method(self) -> None:
+    async def test_btplnav_finalize_early_completes_through_public_method(self) -> None:
         client = OpencodeEngine()
 
-        def slow_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
-            time.sleep(1.2)
+        async def slow_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
+            await asyncio.sleep(1.2)
             return {"parts": [{"type": "text", "text": '{"late":true}'}]}
 
         messages = [
@@ -200,13 +201,13 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "list_session_messages", return_value=messages),
         ):
             started_at = time.monotonic()
-            result = client.extract_business_templates_with_trace("prompt")
+            result = await client.extract_business_templates_with_trace("prompt")
 
         self.assertLess(time.monotonic() - started_at, 1.2)
         self.assertEqual(result["summary"]["templateCount"], 11)
         self.assertEqual(result["opencodeOutput"]["completionSource"], "btplnav-finalize")
 
-    def test_btplnav_finalize_stall_raises_with_trace_through_public_method(self) -> None:
+    async def test_btplnav_finalize_stall_raises_with_trace_through_public_method(self) -> None:
         client = OpencodeEngine()
         running_messages = [
             _bash_tool_message(
@@ -222,10 +223,10 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", return_value=running_messages),
             patch.object(client, "_session_polling_idle_timeout", return_value=0.2),
-            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.asyncio.sleep", return_value=None),
         ):
             with self.assertRaises(RuntimeError) as context:
-                client.extract_business_templates_with_trace("prompt")
+                await client.extract_business_templates_with_trace("prompt")
 
         exc = context.exception
         self.assertIn("opencode incomplete/stalled", str(exc))
@@ -237,12 +238,12 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
     # ------------------------------------------------------------------
     # s2outline-finalize
     # ------------------------------------------------------------------
-    def test_s2_outline_finalize_early_completes_and_stops_session_through_public_method(self) -> None:
+    async def test_s2_outline_finalize_early_completes_and_stops_session_through_public_method(self) -> None:
         client = OpencodeEngine()
         release_worker = threading.Event()
 
-        def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
-            release_worker.wait(timeout=5)
+        async def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
+            await asyncio.to_thread(release_worker.wait, 5)
             return {"parts": [{"type": "text", "text": _S2_FINALIZE_OUTPUT}]}
 
         def abort_session(_session_id: str) -> bool:
@@ -265,7 +266,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
                 patch.object(client, "abort_session", side_effect=abort_session) as abort_mock,
             ):
                 started_at = time.monotonic()
-                result = client.generate_outline_with_trace(
+                result = await client.generate_outline_with_trace(
                     "prompt",
                     early_tool_command="s2outline-finalize",
                 )
@@ -277,7 +278,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
         self.assertEqual(result["opencodeOutput"]["completionSource"], "s2outline-finalize")
         abort_mock.assert_called_once_with("ses-s2-early")
 
-    def test_s2_outline_terminal_validator_harvest_through_public_method(self) -> None:
+    async def test_s2_outline_terminal_validator_harvest_through_public_method(self) -> None:
         client = OpencodeEngine()
         release_worker = threading.Event()
         finalized_payload = {
@@ -286,8 +287,8 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             "summary": {"total_nodes": 64, "workflowStage": "finalized"},
         }
 
-        def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
-            release_worker.wait(timeout=5)
+        async def blocked_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
+            await asyncio.to_thread(release_worker.wait, 5)
             return {"parts": []}
 
         def abort_session(_session_id: str) -> bool:
@@ -309,7 +310,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
                 patch.object(client, "list_session_messages", return_value=messages),
                 patch.object(client, "abort_session", side_effect=abort_session) as abort_mock,
             ):
-                result = client.generate_outline_with_trace(
+                result = await client.generate_outline_with_trace(
                     "prompt",
                     early_tool_command="s2outline-finalize",
                     terminal_validator=lambda: finalized_payload,
@@ -324,7 +325,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
         )
         abort_mock.assert_called_once_with("ses-s2-validator")
 
-    def test_s2_outline_finalize_stall_raises_with_trace_through_public_method(self) -> None:
+    async def test_s2_outline_finalize_stall_raises_with_trace_through_public_method(self) -> None:
         client = OpencodeEngine()
         running_messages = [
             _bash_tool_message(
@@ -340,10 +341,10 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "send_prompt", return_value={"parts": [{"type": "text", "text": ""}]}),
             patch.object(client, "list_session_messages", return_value=running_messages),
             patch.object(client, "_session_polling_idle_timeout", return_value=0.2),
-            patch("app.services.agent_engine.opencode_engine.time.sleep", return_value=None),
+            patch("app.services.agent_engine.opencode_engine.asyncio.sleep", return_value=None),
         ):
             with self.assertRaises(RuntimeError) as context:
-                client.generate_outline_with_trace(
+                await client.generate_outline_with_trace(
                     "prompt",
                     early_tool_command="s2outline-finalize",
                 )
@@ -357,13 +358,13 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
     # ------------------------------------------------------------------
     # factcurate 不提前返回
     # ------------------------------------------------------------------
-    def test_factcurate_never_returns_early_through_public_method(self) -> None:
+    async def test_factcurate_never_returns_early_through_public_method(self) -> None:
         """factcurate 的建议文件由 LLM 多轮迭代写出（先草稿后填值），脚本完成
         不代表终稿；提前返回会回收草稿并孤儿化会话，必须等会话自然完成。"""
         client = OpencodeEngine()
 
-        def slow_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
-            time.sleep(1.2)
+        async def slow_send_prompt(_session_id: str, _prompt: str, **_kwargs: object) -> dict:
+            await asyncio.sleep(1.2)
             return {"parts": [{"type": "text", "text": '{"suggestionsPath":"/tmp/suggestions.json"}'}]}
 
         messages = [
@@ -379,7 +380,7 @@ class FinalizeChainCharacterizationTests(unittest.TestCase):
             patch.object(client, "list_session_messages", return_value=messages),
         ):
             started_at = time.monotonic()
-            result = client.run_bid_tech_fact_curator_with_trace(
+            result = await client.run_bid_tech_fact_curator_with_trace(
                 "prompt",
                 early_tool_command="factcurate",
             )

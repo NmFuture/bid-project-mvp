@@ -25,6 +25,7 @@ from app.services.onlyoffice_documents import (
     sync_document_to_minio,
 )
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.file_utils import run_awaitable_sync
 from app.services.url_utils import now_message
 from app.services.workspace_project_access import persist_workspace_project_state, require_workspace_project_for_update
 
@@ -53,7 +54,7 @@ def _business_project_for_update(project_id: str) -> dict[str, Any]:
 
 def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
     try:
-        return OpencodeEngine().send_text_prompt(title, prompt)
+        return run_awaitable_sync(OpencodeEngine().send_text_prompt(title, prompt))
     except Exception as first_exc:
         first_error = str(first_exc)
         configured_client = OpencodeEngine()
@@ -67,11 +68,11 @@ def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
         if is_default_model and not OpencodeEngine.is_model_not_found_error(first_error):
             raise
         try:
-            result = OpencodeEngine(
+            result = run_awaitable_sync(OpencodeEngine(
                 base_url=settings.opencode_base_url,
                 provider_id=fallback_provider,
                 model_id=fallback_model,
-            ).send_text_prompt(f"{title}（默认模型重试）", prompt)
+            ).send_text_prompt(f"{title}（默认模型重试）", prompt))
             result["fallbackModelUsed"] = True
             result["primaryModelError"] = first_error
             return result

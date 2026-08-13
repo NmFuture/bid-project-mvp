@@ -40,7 +40,7 @@ from app.services.business_parse_assets import (
     approve_business_scoring_asset,
 )
 from app.services.business_template_extractor import convert_extractor_appendices
-from app.services.file_utils import format_size_mb
+from app.services.file_utils import format_size_mb, run_awaitable_sync
 from app.services.onlyoffice_documents import WORD_MEDIA_TYPE, build_editor_session_key
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE, TECHNICAL_PARSE_PROFILE
@@ -2067,7 +2067,7 @@ class BidParseService:
             "aborted": False,
         }
         if session_id:
-            opencode_abort["aborted"] = OpencodeEngine().abort_session(session_id)
+            opencode_abort["aborted"] = run_awaitable_sync(OpencodeEngine().abort_session(session_id))
         if trace:
             trace["status"] = "cancelled"
         cancelled = cancel_parse_progress_state(
@@ -2175,7 +2175,9 @@ class BidParseService:
         return self.parse_progress(project_id)
 
     async def cancel(self, project_id: str) -> dict[str, Any]:
-        return self.cancel_parse(project_id)
+        # cancel_parse 内部经 run_awaitable_sync 桥接 abort opencode 会话，
+        # 放工作线程执行，不在事件循环线程上直接桥接。
+        return await asyncio.to_thread(self.cancel_parse, project_id)
 
     def _mark_parse_queued(self, project_id: str, message: str, file_names: list[str] | None = None) -> dict[str, Any]:
         """入队前把进度置为排队态：前端轮询立即有反馈；任务迟迟不被消费时由 stale 机制兜底。"""

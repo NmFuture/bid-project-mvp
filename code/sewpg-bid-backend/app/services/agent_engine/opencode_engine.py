@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
 import time
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -39,11 +41,18 @@ OUTLINE_DECISION_SESSION_MAX_ATTEMPTS = agent_orchestrator.OUTLINE_DECISION_SESS
 class OpencodeEngine:
     """opencode（LLM Agent 运行时）HTTP 引擎：建会话、发 prompt、轮询会话进度。
 
+    B1（engine-03）起全量 async：`httpx.AsyncClient` + 每会话一个 asyncio task
+    轮询（原 daemon 线程已消除，轮询异常经 task 显式传回调用方）；心跳、
+    idle 超时、进度增量与 on_tool_completed 提前收割语义不变。
+    AsyncClient 沿用基线「按请求创建」的生命周期（同步版即每请求新建 Client），
+    引擎实例可能被多个事件循环（asyncio.run 桥接的工作线程 / FastAPI 循环）
+    复用，跨循环共享连接池不安全，故不在实例上持有长连接。
+
     A1（engine-02）后本类只剩引擎/传输层职责（改造方案 §1 A 层）：
     会话生命周期、轮询监管（idle 超时/心跳/取消）、「bash 工具完成」事件检测与
     提前收割框架、输出留痕。全部业务编排（`run_bid_*` / `_extract_*_json` /
     finalize 判定 / stall 报错）已上移到 `agent_engine/orchestrator.py`，
-    本类以同名委托保留对外方法名与签名，调用方零改动。
+    本类以同名委托保留对外方法名与签名（B1 起为 async）。
 
     提前完成的业务差异通过 `EarlyCompletionPlan` 注入
     `_send_prompt_with_session_polling`：本文件不出现任何业务命令字符串字面量。
@@ -90,19 +99,19 @@ class OpencodeEngine:
         )
         self._orchestrator = agent_orchestrator.AgentOrchestrator(self)
 
-    def create_session(self, title: str) -> dict[str, Any]:
+    async def create_session(self, title: str) -> dict[str, Any]:
         for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
             try:
-                with self._request_slots:
-                    with httpx.Client(timeout=self.timeout, trust_env=False) as client:
-                        response = client.post(
+                async with self._request_slot():
+                    async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+                        response = await client.post(
                             f"{self.base_url}/session",
                             json={"title": title},
                         )
                         response.raise_for_status()
                         return response.json()
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                if self._retry_session_create(exc, attempt):
+                if await self._retry_session_create(exc, attempt):
                     continue
                 if isinstance(exc, httpx.TimeoutException):
                     raise RuntimeError(
@@ -112,7 +121,7 @@ class OpencodeEngine:
             except httpx.HTTPStatusError as exc:
                 if (
                     exc.response.status_code in _SESSION_CREATE_RETRYABLE_STATUS_CODES
-                    and self._retry_session_create(exc, attempt)
+                    and await self._retry_session_create(exc, attempt)
                 ):
                     continue
                 raise RuntimeError(f"futurecode 创建 session 失败：{self._short_http_error(exc)}") from exc
@@ -127,8 +136,20 @@ class OpencodeEngine:
 
         raise RuntimeError("futurecode 创建 session 失败：重试流程异常结束。")  # pragma: no cover
 
+    @asynccontextmanager
+    async def _request_slot(self) -> Any:
+        """并发预算闸门（threading.BoundedSemaphore）：离线 await 获取，不阻塞事件循环。
+
+        B4（engine-06）才统一并发治理；B1 保持现有信号量预算与取值不变。
+        """
+        await asyncio.to_thread(self._request_slots.acquire)
+        try:
+            yield
+        finally:
+            self._request_slots.release()
+
     @staticmethod
-    def _retry_session_create(exc: httpx.HTTPError, attempt: int) -> bool:
+    async def _retry_session_create(exc: httpx.HTTPError, attempt: int) -> bool:
         if attempt >= len(_SESSION_CREATE_RETRY_DELAYS_SEC):
             return False
         delay = _SESSION_CREATE_RETRY_DELAYS_SEC[attempt]
@@ -139,10 +160,10 @@ class OpencodeEngine:
             len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1,
             OpencodeEngine._short_http_error(exc),
         )
-        time.sleep(delay)
+        await asyncio.sleep(delay)
         return True
 
-    def send_prompt(
+    async def send_prompt(
         self,
         session_id: str,
         prompt_text: str,
@@ -166,9 +187,9 @@ class OpencodeEngine:
             payload["tools"] = dict(tools)
         try:
             # Queue before creating the HTTP client so waiting does not consume the model timeout.
-            with self._request_slots:
-                with httpx.Client(timeout=timeout or self.timeout, trust_env=False) as client:
-                    response = client.post(
+            async with self._request_slot():
+                async with httpx.AsyncClient(timeout=timeout or self.timeout, trust_env=False) as client:
+                    response = await client.post(
                         f"{self.base_url}/session/{session_id}/message",
                         json=payload,
                     )
@@ -187,19 +208,19 @@ class OpencodeEngine:
         except httpx.HTTPError as exc:
             raise RuntimeError(f"futurecode 生成失败：{self._short_http_error(exc)}") from exc
 
-    def send_text_prompt(
+    async def send_text_prompt(
         self,
         title: str,
         prompt_text: str,
         *,
         tools: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
-        session = self.create_session(title)
+        session = await self.create_session(title)
         session_id = str(session.get("id") or "")
         response = (
-            self.send_prompt(session_id, prompt_text)
+            await self.send_prompt(session_id, prompt_text)
             if tools is None
-            else self.send_prompt(session_id, prompt_text, tools=tools)
+            else await self.send_prompt(session_id, prompt_text, tools=tools)
         )
         info = response.get("info") if isinstance(response.get("info"), dict) else {}
         if info.get("error"):
@@ -214,75 +235,75 @@ class OpencodeEngine:
 
     # ------------------------------------------------------------------
     # 业务编排门面（A1）：实现见 agent_engine/orchestrator.py 的 AgentOrchestrator，
-    # 方法名与签名保持不动。
+    # 方法名与签名保持不动（B1 起为 async）。
     # ------------------------------------------------------------------
-    def generate_outline(self, prompt_text: str) -> dict[str, Any]:
-        return self._orchestrator.generate_outline(prompt_text)
+    async def generate_outline(self, prompt_text: str) -> dict[str, Any]:
+        return await self._orchestrator.generate_outline(prompt_text)
 
-    def run_outline_decision_session(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_outline_decision_session(*args, **kwargs)
+    async def run_outline_decision_session(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_outline_decision_session(*args, **kwargs)
 
-    def generate_outline_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.generate_outline_with_trace(*args, **kwargs)
+    async def generate_outline_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.generate_outline_with_trace(*args, **kwargs)
 
-    def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
-        return self._orchestrator.generate_draft_sections(prompt_text)
+    async def generate_draft_sections(self, prompt_text: str) -> dict[str, Any]:
+        return await self._orchestrator.generate_draft_sections(prompt_text)
 
-    def generate_draft_sections_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.generate_draft_sections_with_trace(*args, **kwargs)
+    async def generate_draft_sections_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.generate_draft_sections_with_trace(*args, **kwargs)
 
-    def run_bid_business_assembler_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_business_assembler_with_trace(*args, **kwargs)
+    async def run_bid_business_assembler_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_business_assembler_with_trace(*args, **kwargs)
 
-    def run_bid_business_format_cleaner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_business_format_cleaner_with_trace(*args, **kwargs)
+    async def run_bid_business_format_cleaner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_business_format_cleaner_with_trace(*args, **kwargs)
 
-    def run_bid_tech_gap_planner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_tech_gap_planner_with_trace(*args, **kwargs)
+    async def run_bid_tech_gap_planner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_tech_gap_planner_with_trace(*args, **kwargs)
 
-    def run_bid_tech_tag_importer_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_tech_tag_importer_with_trace(*args, **kwargs)
+    async def run_bid_tech_tag_importer_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_tech_tag_importer_with_trace(*args, **kwargs)
 
-    def run_bid_business_gap_planner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_business_gap_planner_with_trace(*args, **kwargs)
+    async def run_bid_business_gap_planner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_business_gap_planner_with_trace(*args, **kwargs)
 
-    def run_bid_business_table_fill_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_business_table_fill_with_trace(*args, **kwargs)
+    async def run_bid_business_table_fill_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_business_table_fill_with_trace(*args, **kwargs)
 
-    def run_bid_tech_table_filler_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_tech_table_filler_with_trace(*args, **kwargs)
+    async def run_bid_tech_table_filler_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_tech_table_filler_with_trace(*args, **kwargs)
 
-    def run_bid_tech_score_index_xref_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_tech_score_index_xref_with_trace(*args, **kwargs)
+    async def run_bid_tech_score_index_xref_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_tech_score_index_xref_with_trace(*args, **kwargs)
 
-    def run_bid_tech_fact_curator_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_bid_tech_fact_curator_with_trace(*args, **kwargs)
+    async def run_bid_tech_fact_curator_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_bid_tech_fact_curator_with_trace(*args, **kwargs)
 
-    def generate_wiki_blueprint_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.generate_wiki_blueprint_with_trace(*args, **kwargs)
+    async def generate_wiki_blueprint_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.generate_wiki_blueprint_with_trace(*args, **kwargs)
 
-    def generate_tender_parse_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.generate_tender_parse_with_trace(*args, **kwargs)
+    async def generate_tender_parse_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.generate_tender_parse_with_trace(*args, **kwargs)
 
-    def run_tender_parse_shard_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.run_tender_parse_shard_with_trace(*args, **kwargs)
+    async def run_tender_parse_shard_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.run_tender_parse_shard_with_trace(*args, **kwargs)
 
-    def review_business_commitments_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.review_business_commitments_with_trace(*args, **kwargs)
+    async def review_business_commitments_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.review_business_commitments_with_trace(*args, **kwargs)
 
-    def review_business_attachment_templates_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.review_business_attachment_templates_with_trace(*args, **kwargs)
+    async def review_business_attachment_templates_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.review_business_attachment_templates_with_trace(*args, **kwargs)
 
-    def extract_business_templates_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return self._orchestrator.extract_business_templates_with_trace(*args, **kwargs)
+    async def extract_business_templates_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._orchestrator.extract_business_templates_with_trace(*args, **kwargs)
 
     # ------------------------------------------------------------------
     # 会话监管与轮询（引擎通用能力，不识业务命令）
     # ------------------------------------------------------------------
-    def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
+    async def list_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         try:
-            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
-                response = client.get(f"{self.base_url}/session/{session_id}/message")
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+                response = await client.get(f"{self.base_url}/session/{session_id}/message")
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError):
@@ -292,13 +313,13 @@ class OpencodeEngine:
             return [item for item in payload if isinstance(item, dict)]
         return []
 
-    def abort_session(self, session_id: str) -> bool:
+    async def abort_session(self, session_id: str) -> bool:
         session_id = str(session_id or "").strip()
         if not session_id:
             return False
         try:
-            with httpx.Client(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
-                response = client.post(f"{self.base_url}/session/{session_id}/abort")
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+                response = await client.post(f"{self.base_url}/session/{session_id}/abort")
                 response.raise_for_status()
                 if not response.text.strip():
                     return True
@@ -306,24 +327,33 @@ class OpencodeEngine:
         except (httpx.HTTPError, ValueError):
             return False
 
-    def _stop_session_after_early_completion(
+    @staticmethod
+    async def _wait_worker_stop(worker_task: asyncio.Task[None], timeout: float) -> bool:
+        """等发送 prompt 的 asyncio task 收尾（对齐原 `thread.join(timeout)` 语义）。"""
+        try:
+            await asyncio.wait_for(asyncio.shield(worker_task), timeout)
+            return True
+        except TimeoutError:
+            return False
+
+    async def _stop_session_after_early_completion(
         self,
         session_id: str,
         *,
-        finished: threading.Event | None = None,
+        finished: asyncio.Task[None] | None = None,
         command_label: str,
     ) -> None:
         """提前收割后停掉会话；`command_label` 由业务计划注入（报错文案的一部分）。"""
-        aborted = self.abort_session(session_id)
+        aborted = await self.abort_session(session_id)
         if finished is not None:
-            if finished.wait(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
+            if await self._wait_worker_stop(finished, OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
                 return
             status = "已发送 abort" if aborted else "abort 失败"
             raise RuntimeError(f"{command_label} 后 Opencode worker 未停止（{status}）。")
         if not aborted:
             raise RuntimeError(f"{command_label} 后无法确认 Opencode session 已停止。")
 
-    def _send_prompt_with_session_polling(
+    async def _send_prompt_with_session_polling(
         self,
         session_id: str,
         prompt_text: str,
@@ -334,11 +364,10 @@ class OpencodeEngine:
         assistant_stop_validator: Callable[[], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if stream_callback is None and early_completion is None:
-            return self.send_prompt(session_id, prompt_text)
+            return await self.send_prompt(session_id, prompt_text)
 
         response_holder: dict[str, Any] = {}
         error_holder: dict[str, Exception] = {}
-        finished = threading.Event()
         abort_sent = False
         # 每个相位各取一个完成判定回调（业务侧可按相位独立维护去重状态）。
         tool_completed = (
@@ -347,15 +376,6 @@ class OpencodeEngine:
             else None
         )
 
-        def raise_if_cancelled() -> None:
-            nonlocal abort_sent
-            if cancel_check is None or not cancel_check():
-                return
-            if not abort_sent:
-                abort_sent = True
-                self.abort_session(session_id)
-            raise ParseCancelledError("解析已取消。")
-
         idle_timeout = self._session_polling_idle_timeout()
         # 轮询监管的长任务：阻塞 message 请求的读超时不得短于轮询 idle 监管时限。
         # 系统设置的 timeoutMs（默认 30s）若直接作用于这里，脚本/生成阶段 HTTP 层先超时，
@@ -363,20 +383,31 @@ class OpencodeEngine:
         configured_read = float(self.timeout.read or 0.0)
         run_timeout = httpx.Timeout(max(configured_read, idle_timeout + 60.0), connect=10.0)
 
-        def worker() -> None:
+        async def worker() -> None:
+            # 原 daemon 线程的 asyncio task 形态：异常收进 error_holder 由主协程抛出，
+            # task 自身不携带未消费异常（不会「静默死亡」）。
             try:
-                response_holder["response"] = self.send_prompt(session_id, prompt_text, timeout=run_timeout)
+                response_holder["response"] = await self.send_prompt(session_id, prompt_text, timeout=run_timeout)
             except Exception as exc:  # pragma: no cover - exercised via caller path
                 error_holder["error"] = exc
-            finally:
-                finished.set()
 
-        thread = threading.Thread(
-            target=worker,
-            daemon=True,
+        worker_task = asyncio.create_task(
+            worker(),
             name=f"opencode-message-{session_id}",
         )
-        thread.start()
+
+        async def raise_if_cancelled() -> None:
+            nonlocal abort_sent
+            if cancel_check is None or not cancel_check():
+                return
+            if not abort_sent:
+                abort_sent = True
+                await self.abort_session(session_id)
+            # 取消路径显式收割发送 task（原 daemon 线程会被遗弃到请求自然结束）。
+            worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_task
+            raise ParseCancelledError("解析已取消。")
 
         command_label = early_completion.display_label if early_completion is not None else ""
         progress_started_at = time.monotonic()
@@ -384,18 +415,18 @@ class OpencodeEngine:
         last_activity = progress_started_at
         last_heartbeat = last_activity
         heartbeat_index = 0
-        while not finished.wait(0.5):
-            raise_if_cancelled()
+        while not await self._wait_worker_stop(worker_task, 0.5):
+            await raise_if_cancelled()
             previous_signature = last_signature
             if stream_callback is not None:
-                last_signature = self._emit_session_output_delta(
+                last_signature = await self._emit_session_output_delta(
                     session_id,
                     stream_callback,
                     last_signature,
                     elapsed_seconds=time.monotonic() - progress_started_at,
                 )
             elif early_completion is not None:
-                snapshot = self._get_session_output_snapshot(session_id)
+                snapshot = await self._get_session_output_snapshot(session_id)
                 signature = snapshot.get("signature")
                 if signature is not None:
                     last_signature = signature
@@ -410,7 +441,7 @@ class OpencodeEngine:
                     and now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS
                 ):
                     heartbeat_index += 1
-                    snapshot = self._get_session_output_snapshot(session_id)
+                    snapshot = await self._get_session_output_snapshot(session_id)
                     self._emit_session_progress_heartbeat(
                         session_id=session_id,
                         stream_callback=stream_callback,
@@ -424,11 +455,10 @@ class OpencodeEngine:
                 if now - last_activity > idle_timeout:
                     if not abort_sent:
                         abort_sent = True
-                        aborted = self.abort_session(session_id)
+                        aborted = await self.abort_session(session_id)
                     else:
                         aborted = True
-                    thread.join(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS)
-                    if thread.is_alive():
+                    if not await self._wait_worker_stop(worker_task, OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
                         abort_status = "已发送 abort" if aborted else "abort 失败"
                         raise RuntimeError(
                             "futurecode idle timeout 后 Opencode worker 未停止"
@@ -437,7 +467,7 @@ class OpencodeEngine:
                     if early_completion is not None and early_completion.on_idle_stalled is not None:
                         early_completion.on_idle_stalled(
                             session_id,
-                            self.list_session_messages(session_id),
+                            await self.list_session_messages(session_id),
                             idle_timeout,
                         )
                     raise RuntimeError(
@@ -445,14 +475,14 @@ class OpencodeEngine:
                         f"check session {session_id} tool calls."
                     )
             if early_completion is not None and tool_completed is not None:
-                messages = self.list_session_messages(session_id)
+                messages = await self.list_session_messages(session_id)
                 self._raise_session_error_if_present(session_id, messages)
                 completed_event = self._find_early_completion_event(messages, tool_completed)
                 if completed_event is not None:
                     if early_completion.stop_on_early_complete:
-                        self._stop_session_after_early_completion(
+                        await self._stop_session_after_early_completion(
                             session_id,
-                            finished=finished,
+                            finished=worker_task,
                             command_label=early_completion.stop_label,
                         )
                     return self._early_completion_response(
@@ -469,11 +499,11 @@ class OpencodeEngine:
                         ),
                     )
             if early_completion is not None and early_completion.on_assistant_stopped is not None:
-                messages = self.list_session_messages(session_id)
+                messages = await self.list_session_messages(session_id)
                 if self._session_messages_show_assistant_stop(messages):
-                    self._stop_session_after_early_completion(
+                    await self._stop_session_after_early_completion(
                         session_id,
-                        finished=finished,
+                        finished=worker_task,
                         command_label=early_completion.stop_label,
                     )
                     return self._early_completion_response(
@@ -485,11 +515,11 @@ class OpencodeEngine:
                         stream_callback=stream_callback,
                     )
             if assistant_stop_validator is not None:
-                messages = self.list_session_messages(session_id)
+                messages = await self.list_session_messages(session_id)
                 self._raise_session_error_if_present(session_id, messages)
                 if self._session_messages_show_assistant_stop(messages):
-                    self.abort_session(session_id)
-                    if not finished.wait(OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
+                    await self.abort_session(session_id)
+                    if not await self._wait_worker_stop(worker_task, OPENCODE_EARLY_COMPLETION_STOP_TIMEOUT_SECONDS):
                         raise RuntimeError(
                             "OpenCode assistant 已完成接力会话，但消息请求未在 abort 后停止。"
                         )
@@ -515,7 +545,7 @@ class OpencodeEngine:
                     return early_response
 
         if early_completion is not None and early_completion.wait_after_prompt_return:
-            messages = self.list_session_messages(session_id)
+            messages = await self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             tool_completed = (
                 early_completion.tool_completed_factory()
@@ -543,9 +573,9 @@ class OpencodeEngine:
                         last_heartbeat = last_activity
                     heartbeat_index = 0
                     while time.monotonic() < stalled_until:
-                        raise_if_cancelled()
-                        time.sleep(0.5)
-                        messages = self.list_session_messages(session_id)
+                        await raise_if_cancelled()
+                        await asyncio.sleep(0.5)
+                        messages = await self.list_session_messages(session_id)
                         self._raise_session_error_if_present(session_id, messages)
                         completed_event = self._find_early_completion_event(messages, tool_completed)
                         if completed_event is not None:
@@ -603,7 +633,7 @@ class OpencodeEngine:
                             f"check session {session_id} tool calls."
                         )
 
-            pending_response = self._wait_for_early_completion_after_prompt_return(
+            pending_response = await self._wait_for_early_completion_after_prompt_return(
                 session_id=session_id,
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
@@ -615,21 +645,21 @@ class OpencodeEngine:
                 return pending_response
 
         if stream_callback is not None:
-            raise_if_cancelled()
-            self._raise_session_error_if_present(session_id, self.list_session_messages(session_id))
-            last_signature = self._emit_session_output_delta(
+            await raise_if_cancelled()
+            self._raise_session_error_if_present(session_id, await self.list_session_messages(session_id))
+            last_signature = await self._emit_session_output_delta(
                 session_id,
                 stream_callback,
                 last_signature,
                 elapsed_seconds=time.monotonic() - progress_started_at,
             )
-        thread.join()
-        raise_if_cancelled()
+        await worker_task
+        await raise_if_cancelled()
         if error_holder.get("error"):
             raise error_holder["error"]
         return response_holder["response"]
 
-    def _wait_for_early_completion_after_prompt_return(
+    async def _wait_for_early_completion_after_prompt_return(
         self,
         *,
         session_id: str,
@@ -661,9 +691,9 @@ class OpencodeEngine:
 
         while time.monotonic() < deadline:
             if cancel_check is not None and cancel_check():
-                self.abort_session(session_id)
+                await self.abort_session(session_id)
                 raise ParseCancelledError("解析已取消。")
-            messages = self.list_session_messages(session_id)
+            messages = await self.list_session_messages(session_id)
             self._raise_session_error_if_present(session_id, messages)
             completed_event = (
                 self._find_early_completion_event(messages, tool_completed)
@@ -672,7 +702,7 @@ class OpencodeEngine:
             )
             if completed_event is not None:
                 if plan.stop_on_early_complete:
-                    self._stop_session_after_early_completion(
+                    await self._stop_session_after_early_completion(
                         session_id,
                         command_label=plan.stop_label,
                     )
@@ -731,7 +761,7 @@ class OpencodeEngine:
                         early_tool_command=plan.display_label,
                     )
                     last_heartbeat = now
-            time.sleep(0.5)
+            await asyncio.sleep(0.5)
 
         if plan.on_idle_stalled is not None:
             plan.on_idle_stalled(session_id, messages, idle_timeout)
@@ -789,7 +819,7 @@ class OpencodeEngine:
             stream_callback(payload)
         return early_response
 
-    def _emit_session_output_delta(
+    async def _emit_session_output_delta(
         self,
         session_id: str,
         stream_callback: Callable[[dict[str, Any]], None],
@@ -797,7 +827,7 @@ class OpencodeEngine:
         *,
         elapsed_seconds: float | None = None,
     ) -> tuple[str, tuple[tuple[str, str], ...]] | None:
-        snapshot = self._get_session_output_snapshot(session_id)
+        snapshot = await self._get_session_output_snapshot(session_id)
         signature = snapshot.get("signature")
         if signature is None or signature == last_signature:
             return last_signature
@@ -848,10 +878,10 @@ class OpencodeEngine:
             }
         )
 
-    def _get_session_output_snapshot(self, session_id: str) -> dict[str, Any]:
+    async def _get_session_output_snapshot(self, session_id: str) -> dict[str, Any]:
         return self._get_session_output_snapshot_from_messages(
             session_id,
-            self.list_session_messages(session_id),
+            await self.list_session_messages(session_id),
         )
 
     def _get_session_output_snapshot_from_messages(

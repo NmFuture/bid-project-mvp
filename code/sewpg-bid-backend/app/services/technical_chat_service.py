@@ -12,6 +12,7 @@ from app.core.config import DEFAULT_OPENCODE_MODEL_ID, DEFAULT_OPENCODE_PROVIDER
 from app.services.bid_project_service import technical_project_service
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.file_utils import run_awaitable_sync
 from app.services.workspace_project_access import persist_workspace_project_state, require_workspace_project_for_update
 
 
@@ -67,11 +68,11 @@ def _existing_session_prompt_result(
     session_id: str,
     prompt: str,
 ) -> dict[str, Any]:
-    response = client.send_prompt(
+    response = run_awaitable_sync(client.send_prompt(
         session_id,
         prompt,
         tools=TECHNICAL_CHAT_DISABLED_TOOLS,
-    )
+    ))
     info = response.get("info") if isinstance(response.get("info"), dict) else {}
     if info.get("error"):
         raise RuntimeError(OpencodeEngine._format_response_error(info["error"]))
@@ -127,11 +128,11 @@ def _send_technical_chat_prompt(
     try:
         if session_id:
             return _existing_session_prompt_result(configured_client, session_id, prompt)
-        result = configured_client.send_text_prompt(
+        result = run_awaitable_sync(configured_client.send_text_prompt(
             title,
             prompt,
             tools=TECHNICAL_CHAT_DISABLED_TOOLS,
-        )
+        ))
         result["baseUrl"] = configured_client.base_url
         return result
     except Exception as first_exc:
@@ -161,11 +162,11 @@ def _send_technical_chat_prompt(
             if session_id and fallback_client.base_url == configured_client.base_url:
                 result = _existing_session_prompt_result(fallback_client, session_id, prompt)
             else:
-                result = fallback_client.send_text_prompt(
+                result = run_awaitable_sync(fallback_client.send_text_prompt(
                     f"{title}（默认模型重试）",
                     new_session_prompt or prompt,
                     tools=TECHNICAL_CHAT_DISABLED_TOOLS,
-                )
+                ))
                 result["baseUrl"] = fallback_client.base_url
             result["fallbackModelUsed"] = True
             result["primaryModelError"] = first_error

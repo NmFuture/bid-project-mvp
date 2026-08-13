@@ -127,6 +127,7 @@ def _run_sync(
 ) -> list[dict[str, Any]]:
     # 延迟导入，避免在无 opencode 配置的环境（如纯单测）下加载 httpx/settings 失败
     from app.services.agent_engine.opencode_engine import OpencodeEngine
+    from app.services.file_utils import run_awaitable_sync
 
     rows = unmatched[:_MAX_UNMATCHED]
     shortlist, by_id = _prefilter_candidates(rows, candidates)
@@ -134,7 +135,7 @@ def _run_sync(
         return []  # 没有任何字符上沾边的候选，直接放弃，省一次模型调用
 
     prompt = _build_prompt(rows, shortlist)
-    result = OpencodeEngine(timeout_ms=_FUZZY_TIMEOUT_MS).run_bid_tech_tag_importer_with_trace(prompt)
+    result = run_awaitable_sync(OpencodeEngine(timeout_ms=_FUZZY_TIMEOUT_MS).run_bid_tech_tag_importer_with_trace(prompt))
     matches = result.get("matches") or []
 
     valid_ids = {str(item.get("id") or "") for item in shortlist}
