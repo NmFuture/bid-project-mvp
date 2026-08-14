@@ -742,7 +742,7 @@ input,
 
 .toast {
   position: fixed;
-  top: 24px;
+  top: 60px;
   right: 24px;
   z-index: 200;
   width: max-content;

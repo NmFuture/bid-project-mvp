@@ -2099,7 +2099,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
             <div className="flex min-w-0 items-center gap-2">
               <h3 className="truncate text-sm font-semibold text-on-surface">素材目录</h3>
               <span className="rounded-lg bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant">
-                {hasActiveFilters ? '筛选' : '已加载'} {fileItems.length}
+                {hasActiveFilters ? '筛选出' : '共'} {fileItems.length} 个文件
               </span>
             </div>
           </div>
