@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import Button from '../../../components/ui/Button'
-import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
 import BidProgressPanel from '../../../components/shared/BidProgressPanel'
+import TechnicalTaskProgressDialog from './TechnicalTaskProgressDialog'
 import { progressElapsedLine } from '../../../utils/progressDuration'
 import {
   isScoreIndexProgressFailed,
@@ -13,7 +12,7 @@ import {
 
 // 重新生成索引的进度弹窗，版式与重新生成目录一致：
 // 卡片第一行是量化明细（已建立章节索引 X/Y 项），第二行是耗时，右侧只留百分比。
-export default function TechnicalScoreIndexProgressModal({ open, status, onClose }) {
+export default function TechnicalScoreIndexProgressModal({ open, status, onClose, onStop, stopping = false }) {
   const running = isScoreIndexProgressRunning(status)
   const [nowMs, setNowMs] = useState(() => Date.now())
 
@@ -46,11 +45,14 @@ export default function TechnicalScoreIndexProgressModal({ open, status, onClose
   const unresolvedCount = Math.max(0, Number(output?.unresolvedCount) || 0)
 
   return (
-    <Dialog open={open} onClose={onClose} size="sm">
-      <DialogHeader onClose={onClose}>
-        <h3 className="text-lg font-headline font-semibold text-on-surface">{title}</h3>
-      </DialogHeader>
-      <DialogBody className="space-y-4 p-5">
+    <TechnicalTaskProgressDialog
+      open={open}
+      title={title}
+      active={running}
+      stopping={stopping}
+      onClose={onClose}
+      onStop={onStop}
+    >
         <BidProgressPanel
           tone={summary.tone}
           detail={summary.detail}
@@ -86,10 +88,6 @@ export default function TechnicalScoreIndexProgressModal({ open, status, onClose
             当前成稿未被修改，可关闭后重试。
           </div>
         ) : null}
-      </DialogBody>
-      <DialogFooter>
-        <Button type="button" onClick={onClose} variant={completed ? 'primary' : 'quiet'}>关闭</Button>
-      </DialogFooter>
-    </Dialog>
+    </TechnicalTaskProgressDialog>
   )
 }

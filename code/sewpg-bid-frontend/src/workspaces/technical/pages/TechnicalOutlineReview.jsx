@@ -5,7 +5,7 @@ import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalDirectoryProgressPanel from '../components/TechnicalDirectoryProgressPanel'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
-import MaterialMatchProgressModal from '../../../components/shared/MaterialMatchProgressModal'
+import TechnicalMaterialMatchProgressModal from '../components/TechnicalMaterialMatchProgressModal'
 import {
   finishedMaterialMatchProgress,
   idleMaterialMatchProgress,
@@ -14,7 +14,7 @@ import {
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
-import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
+import TechnicalTaskProgressDialog from '../components/TechnicalTaskProgressDialog'
 import Toolbar from '../../../components/ui/Toolbar'
 import { getOutlineDisplayNumber } from '../../../utils/outlineNumber'
 import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
@@ -208,20 +208,21 @@ const sendOnlyOfficeSearch = (text, onlyofficeEmbedRef = null, beforeSend = null
   return payload.nonce
 }
 
-function DirectoryGenerationProgressModal({ open, state, nowMs, onClose }) {
+function DirectoryGenerationProgressModal({ open, state, nowMs, onClose, onStop, stopping = false }) {
   if (!open) return null
   const running = isDirectoryProgressRunning(state)
   const completed = state?.status === 'completed'
   const failed = isDirectoryProgressFailed(state)
 
   return (
-    <Dialog open={open} onClose={onClose} size="sm">
-      <DialogHeader onClose={onClose}>
-        <h3 className="text-lg font-headline font-semibold text-on-surface">
-          {running ? '正在重新生成目录' : completed ? '目录重新生成完成' : failed ? '目录重新生成失败' : '重新生成目录'}
-        </h3>
-      </DialogHeader>
-      <DialogBody className="space-y-4 p-5">
+    <TechnicalTaskProgressDialog
+      open={open}
+      title={running ? '正在重新生成目录' : completed ? '目录重新生成完成' : failed ? '目录重新生成失败' : '重新生成目录'}
+      active={running}
+      stopping={stopping}
+      onClose={onClose}
+      onStop={onStop}
+    >
         <TechnicalDirectoryProgressPanel state={state} nowMs={nowMs} />
         {running ? (
           <p className="text-xs text-outline">任务在后台运行，可以关闭弹窗或离开页面。</p>
@@ -236,11 +237,7 @@ function DirectoryGenerationProgressModal({ open, state, nowMs, onClose }) {
             当前目录及原有下游结果未被修改，可关闭后重试。
           </div>
         ) : null}
-      </DialogBody>
-      <DialogFooter>
-        <Button type="button" onClick={onClose} variant={completed ? 'primary' : 'quiet'}>关闭</Button>
-      </DialogFooter>
-    </Dialog>
+    </TechnicalTaskProgressDialog>
   )
 }
 
@@ -906,7 +903,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           </div>
         )}
       </OnlyOfficeWorkspace>
-      <MaterialMatchProgressModal
+      <TechnicalMaterialMatchProgressModal
         open={materialMatchProgress.open}
         running={materialMatchProgress.running}
         error={materialMatchProgress.error}
