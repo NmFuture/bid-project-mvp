@@ -46,7 +46,16 @@ def _build_xlsx(path: Path, labels: list[str]) -> Path:
     ws = wb.active
     ws.append(EXPECTED_HEADER)
     for index, label in enumerate(labels, start=1):
-        ws.append([index, "招标文件-技术规范书", "第一章 1.1", label, "", "", "招标文件/技术规范书"])
+        ws.append(
+            [
+                index,
+                "待填写",
+                "标准文件",
+                "招标文件-技术规范书",
+                f"[{label}，待填写]",
+                "招标文件/技术规范书",
+            ]
+        )
     wb.save(path)
     return path
 
