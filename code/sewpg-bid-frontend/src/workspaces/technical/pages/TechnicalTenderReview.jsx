@@ -1346,7 +1346,6 @@ export default function TechnicalTenderReview({ showToast }) {
                   onClick={handleStopParse}
                   size="stage"
                   variant="dangerQuiet"
-                  icon="stop_circle"
                   className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   停止解析
@@ -1359,7 +1358,6 @@ export default function TechnicalTenderReview({ showToast }) {
                   disabled={uploading || creatingReview || reviewDecision === 'abandon'}
                   size="stage"
                   variant="quiet"
-                  icon="refresh"
                   className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   重新解析
@@ -1460,7 +1458,6 @@ export default function TechnicalTenderReview({ showToast }) {
             <section className="overflow-hidden rounded-md border border-surface-container-high">
               <div className="flex flex-col gap-2 border-b border-surface-container-high bg-surface-container-low px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[18px] text-primary">article</span>
                   <h4 className="text-sm font-semibold text-on-surface">附表 Word</h4>
                 </div>
                 <span className="text-xs text-outline">{appendices.length} 个</span>
@@ -1622,7 +1619,6 @@ export default function TechnicalTenderReview({ showToast }) {
             {!hasTechnicalInterpretation && reviewConfig.showEvidenceDetails !== false && (
               <details className="rounded-md border border-surface-container-high bg-white">
                 <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-on-surface">
-                  <span className="mr-2 align-middle material-symbols-outlined text-[18px] text-primary">travel_explore</span>
                   证据明细
                 </summary>
                 <div className="overflow-x-auto border-t border-surface-container-high" role="region" aria-label="证据明细，可横向滚动" tabIndex={0}>

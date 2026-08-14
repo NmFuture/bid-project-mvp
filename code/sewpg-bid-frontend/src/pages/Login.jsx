@@ -99,12 +99,12 @@ export default function Login({ onLogin }) {
               <div className="mb-3 inline-block text-xs text-white/55 uppercase">
                 Bid Intelligence Platform
               </div>
-              <p className="font-headline text-[40px] font-bold leading-[1.18] text-white">
+              <p className="font-headline text-[40px] font-semibold leading-[1.18] text-white">
                 让标书工作
                 <br />
                 回归专业判断
               </p>
-              <p className="text-[14px] text-white/65 mt-5 max-w-md leading-[1.85]">
+              <p className="text-sm text-white/65 mt-5 max-w-md leading-[1.85]">
                 以 AI 替代重复性事务，把投标团队的精力集中在评分点应答、技术方案与商务谈判上。统一管理素材库与
                 Wiki，技术标与商务标双线协同，全过程审计可溯。
               </p>
@@ -112,7 +112,7 @@ export default function Login({ onLogin }) {
 
             <div className="flex flex-col gap-2.5 max-w-md">
               {CAPABILITIES.map((cap) => (
-                <div key={cap.text} className="flex items-center gap-3 text-[13px] text-white/75">
+                <div key={cap.text} className="flex items-center gap-3 text-sm text-white/75">
                   <span
                     className="material-symbols-outlined text-[18px] text-primary-container"
                     style={{ fontVariationSettings: "'FILL' 1" }}
@@ -208,7 +208,7 @@ export default function Login({ onLogin }) {
                 <button
                   type="submit"
                   disabled={loading || !email}
-                  className="h-11 w-full rounded-md bg-primary text-sm font-semibold text-white transition-colors hover:bg-on-primary-fixed-variant focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-11 w-full rounded-md bg-primary text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading ? '登录中…' : '登录'}
                 </button>
@@ -236,7 +236,7 @@ export default function Login({ onLogin }) {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-[14px] font-semibold text-on-surface truncate">
+                          <span className="text-sm font-semibold text-on-surface truncate">
                             {account.name}
                           </span>
                           <span className="font-mono text-xs text-outline">
@@ -248,12 +248,14 @@ export default function Login({ onLogin }) {
                           {account.title} · {account.department}
                         </div>
                       </div>
-                      <span
-                        className={`material-symbols-outlined text-[18px] ${isLoading ? 'animate-spin-slow text-primary' : 'text-outline group-hover:text-primary'}`}
-                        aria-hidden="true"
-                      >
-                        {isLoading ? 'progress_activity' : 'chevron_right'}
-                      </span>
+                      {isLoading ? (
+                        <span
+                          className="material-symbols-outlined animate-spin-slow text-[18px] text-primary"
+                          aria-hidden="true"
+                        >
+                          progress_activity
+                        </span>
+                      ) : null}
                     </button>
                   )
                 })}

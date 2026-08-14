@@ -436,7 +436,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   const renderFormatNumberInput = (field, label, props = {}) => (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
+      <span className="mb-1 block text-xs font-semibold text-on-surface-variant">{label}</span>
       <input
         type="number"
         value={customFormat[field]}
@@ -451,7 +451,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   const renderFormatFontSelect = (field, label, options) => (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
+      <span className="mb-1 block text-xs font-semibold text-on-surface-variant">{label}</span>
       <select
         value={customFormat[field] || options[0]?.value || ''}
         onChange={(event) => updateCustomFormat(field, event.target.value)}
@@ -466,7 +466,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   const renderFormatTextInput = (field, label, props = {}) => (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
+      <span className="mb-1 block text-xs font-semibold text-on-surface-variant">{label}</span>
       <input
         type="text"
         value={customFormat[field] || ''}
@@ -534,7 +534,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 key={`${message.role}-${index}`}
                 className={`rounded-lg px-3 py-2 text-sm leading-6 ${message.role === 'user' ? 'ml-8 bg-primary text-on-primary' : message.error ? 'mr-8 bg-error/10 text-error' : 'mr-8 bg-surface-container-low text-on-surface'}`}
               >
-                <div className="mb-1 text-[11px] font-semibold opacity-70">
+                <div className="mb-1 text-xs font-semibold opacity-70">
                   {message.role === 'user' ? '我' : message.fallbackModelUsed ? `AI助手（${message.modelLabel || '默认模型'}）` : 'AI助手'}
                 </div>
                 {message.role === 'assistant' && !message.error ? (
@@ -700,7 +700,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 type="button"
                 onClick={handleDownloadWord}
                 disabled={wordPreparing}
-                icon="download"
                 size="sm"
                 variant="primary"
               >
@@ -710,7 +709,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 type="button"
                 onClick={handlePreparePdf}
                 disabled={pdfPreparing}
-                icon="download"
                 size="sm"
                 variant="primary"
               >
@@ -720,7 +718,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 type="button"
                 onClick={handleRegenerateScoreIndex}
                 disabled={scoreIndexStarting || scoreIndexRunning || generationRunning}
-                icon="refresh"
                 size="sm"
                 variant="secondary"
               >
@@ -730,7 +727,6 @@ export default function TechnicalCoCreationEditor({ showToast }) {
                 type="button"
                 onClick={handleRequestRegenerate}
                 disabled={regenerationStarting || generationRunning || scoreIndexRunning}
-                icon="refresh"
                 size="sm"
                 variant="secondary"
               >
@@ -818,7 +814,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         size="sm"
       >
         <DialogHeader onClose={() => setRegenerationConfirmOpen(false)}>
-          <h3 className="text-lg font-headline font-bold text-on-surface">确认重新生成正文？</h3>
+          <h3 className="text-lg font-headline font-semibold text-on-surface">确认重新生成正文？</h3>
           <p className="mt-1 text-sm text-on-surface-variant">系统将重新执行技术标正文装配流程。</p>
         </DialogHeader>
         <DialogBody className="space-y-3 px-5 py-4">

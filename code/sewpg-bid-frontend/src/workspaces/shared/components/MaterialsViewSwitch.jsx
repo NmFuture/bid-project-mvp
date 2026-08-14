@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 
 // 素材库统一页头：按工作组分区渲染（如「技术标」「共享」），
-// 各组徽标与 tab 常驻并列，跨页跳转不再整段替换，避免 tab 条闪变。
+// 各组标签与 tab 常驻并列，跨页跳转不再整段替换，避免 tab 条闪变。
 // groups: [{ key, label, icon, items: [{ key, label, to }] }]，to 为绝对路径。
 export default function MaterialsViewSwitch({
   active = '',
@@ -33,7 +33,6 @@ export default function MaterialsViewSwitch({
                   <span aria-hidden="true" className="hidden h-6 w-px bg-outline-variant/60 sm:inline-block" />
                 ) : null}
                 <span className="inline-flex h-8 items-center gap-1.5 px-1 text-xs font-semibold text-on-surface">
-                  <span aria-hidden="true" className="material-symbols-outlined text-[16px]">{group.icon}</span>
                   {group.label}
                 </span>
                 <div className="inline-flex h-8 w-fit rounded-md border border-outline-variant bg-white p-0.5 text-xs">

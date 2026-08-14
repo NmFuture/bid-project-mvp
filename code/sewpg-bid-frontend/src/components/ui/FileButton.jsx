@@ -22,7 +22,6 @@ export default function FileButton({
   children,
   className = '',
   disabled = false,
-  icon = 'upload_file',
   multiple = false,
   onChange,
   size = 'md',
@@ -40,11 +39,6 @@ export default function FileButton({
         className,
       )}
     >
-      {icon ? (
-        <span aria-hidden="true" className={cx('material-symbols-outlined', size === 'xs' || size === 'sm' ? 'text-[16px]' : 'text-[18px]')}>
-          {icon}
-        </span>
-      ) : null}
       <span className="leading-none">{children}</span>
       <input
         type="file"

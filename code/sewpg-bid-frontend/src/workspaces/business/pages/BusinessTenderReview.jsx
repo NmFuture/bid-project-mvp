@@ -1476,7 +1476,7 @@ export default function BusinessTenderReview({ showToast }) {
             {parts.length ? (
               <div className="flex flex-col gap-2">
                 {parts.map((part, index) => (
-                  <pre key={`${part.type || 'text'}-${index}`} className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-white px-2 py-1 text-[11px] leading-relaxed text-on-surface-variant">
+                  <pre key={`${part.type || 'text'}-${index}`} className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-white px-2 py-1 text-xs leading-relaxed text-on-surface-variant">
                     {part.text}
                   </pre>
                 ))}
@@ -1686,7 +1686,6 @@ export default function BusinessTenderReview({ showToast }) {
                   onClick={handleStopParse}
                   size="stage"
                   variant="dangerQuiet"
-                  icon="stop_circle"
                   className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   停止解析
@@ -1699,7 +1698,6 @@ export default function BusinessTenderReview({ showToast }) {
                   disabled={uploading || reviewDecision === 'abandon'}
                   size="stage"
                   variant="quiet"
-                  icon="refresh"
                   className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   重新解析
@@ -1793,7 +1791,6 @@ export default function BusinessTenderReview({ showToast }) {
                   onClick={handleStopParse}
                   size="lg"
                   variant="dangerQuiet"
-                  icon="stop_circle"
                   className="!h-11 w-full sm:!h-10 sm:w-auto"
                 >
                   停止解析

@@ -623,7 +623,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
           />
           <span className="min-w-0 flex-1 truncate text-on-surface" title={node.path}>{node.name}</span>
           {node.fileCount > 0 && (
-            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] tabular-nums text-on-surface-variant">{node.fileCount}</span>
+            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-xs tabular-nums text-on-surface-variant">{node.fileCount}</span>
           )}
         </div>
         {hasChildren && expanded ? node.children.map((child) => renderScopeTreeNode(child, depth + 1)) : null}
@@ -962,7 +962,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                         </button>
                         {Number(item.duplicateCount || 0) > 1 && (
                           <span
-                            className="shrink-0 rounded bg-tertiary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-container"
+                            className="shrink-0 rounded bg-tertiary-container px-1.5 py-0.5 text-xs font-semibold text-on-tertiary-container"
                             title={`已合并 ${item.duplicateCount} 条同路径同名记录`}
                           >
                             重复 {item.duplicateCount}
@@ -995,7 +995,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                         )}
                       </span>
                       <span className="min-w-0 truncate">
-                        <span className={`inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                        <span className={`inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-xs font-medium ${
                           certificateValidityOf(item, today) === 'valid'
                             ? 'bg-secondary-container text-on-secondary-container'
                             : certificateValidityOf(item, today) === 'expired'
@@ -1006,7 +1006,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                         </span>
                       </span>
                       <span className="min-w-0 truncate" title={item.errorMessage || CERTIFICATE_STATUS_LABELS[item.status] || item.status}>
-                        <span className={`inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                        <span className={`inline-flex max-w-full items-center rounded px-1.5 py-0.5 text-xs font-medium ${
                           item.status === 'extracted' || item.status === 'manual'
                             ? 'bg-secondary-container text-on-secondary-container'
                             : item.status === 'failed' || item.status === 'unsupported'
@@ -1225,18 +1225,18 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
                                   aria-label={`选择建议目录 ${item.path}`}
                                 />
                                 <span className="min-w-0 flex-1 truncate text-xs font-medium text-on-surface" title={item.path}>{item.path}</span>
-                                <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] text-on-surface-variant">{item.candidateCount || 0}</span>
+                                <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-xs text-on-surface-variant">{item.candidateCount || 0}</span>
                                 <button
                                   type="button"
                                   onClick={() => addSuggestionScopes([item])}
                                   disabled={added}
-                                  className="h-6 rounded px-2 text-[11px] font-semibold text-primary hover:bg-primary/10 disabled:text-outline"
+                                  className="h-6 rounded px-2 text-xs font-semibold text-primary hover:bg-primary/10 disabled:text-outline"
                                 >
                                   {added ? '已加入' : '加入'}
                                 </button>
                               </div>
                               {!!item.examples?.length && (
-                                <div className="mt-1 truncate pl-6 text-[11px] text-outline" title={item.examples.join('，')}>
+                                <div className="mt-1 truncate pl-6 text-xs text-outline" title={item.examples.join('，')}>
                                   {item.examples.join('，')}
                                 </div>
                               )}

@@ -113,7 +113,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
   // 进度接口连续不可用：显式提示，不再静默保持旧快照或空白（R10-B07-05）。
   if (pollFailures >= POLL_FAILURE_ALERT_THRESHOLD && !pollAlertDismissed) {
     return (
-      <div role="alert" className="flex items-center gap-3 rounded-md border border-error/30 bg-error/5 px-4 py-2.5 text-[13px]">
+      <div role="alert" className="flex items-center gap-3 rounded-md border border-error/30 bg-error/5 px-4 py-2.5 text-sm">
         <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-error">sync_problem</span>
         <span className="min-w-0 flex-1 truncate text-on-surface">
           素材流水线进度查询失败，正在自动重试；也可刷新页面重连。
@@ -138,7 +138,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
     if (failure) {
       const statusText = failure.status === 'cancelled' ? '已取消' : '失败'
       return (
-        <div role="alert" className="flex items-center gap-3 rounded-md border border-error/30 bg-error/5 px-4 py-2.5 text-[13px]">
+        <div role="alert" className="flex items-center gap-3 rounded-md border border-error/30 bg-error/5 px-4 py-2.5 text-sm">
           <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-error">error</span>
           <span className="min-w-0 flex-1 truncate text-on-surface" title={failure.message || ''}>
             {`${failure.stageLabel}${statusText}${failure.message ? `：${failure.message}` : ''}`}
@@ -153,9 +153,6 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
               disabled={retrying}
               className="inline-flex shrink-0 items-center gap-1 rounded border border-error/30 px-2 py-0.5 text-xs text-error hover:bg-error/10 disabled:opacity-50"
             >
-              <span aria-hidden="true" className={`material-symbols-outlined text-[14px] ${retrying ? 'animate-spin' : ''}`}>
-                refresh
-              </span>
               {retrying ? '重试启动中…' : '重试'}
             </button>
           ) : null}
@@ -176,7 +173,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
     // 收尾如实：队列已空但仍有预览停在兜底态时说清还差几个，不装作全部完成。
     if (pendingPreview > 0 && !dismissedKeys.includes(`pending:${pendingPreview}`)) {
       return (
-        <div role="status" className="flex items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-4 py-2.5 text-[13px]">
+        <div role="status" className="flex items-center gap-3 rounded-md border border-surface-container-high bg-surface-container-lowest px-4 py-2.5 text-sm">
           <span aria-hidden="true" className="material-symbols-outlined text-[16px] text-outline">pending</span>
           <span className="min-w-0 flex-1 truncate text-on-surface">
             {pendingPreview} 个大文件的预览待补全——深度解析产物就绪后自动补齐，也可在 Wiki 页点「刷新并重试」
@@ -254,7 +251,7 @@ export default function MaterialPipelineProgress({ onWikiJobSuccess }) {
       role="status"
       className="business-panel flex flex-col gap-2 rounded-md border border-surface-container-high bg-surface-container-lowest px-4 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] leading-[1.6]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm leading-[1.6]">
         <span aria-hidden="true" className="material-symbols-outlined animate-spin text-[16px] text-primary">
           progress_activity
         </span>

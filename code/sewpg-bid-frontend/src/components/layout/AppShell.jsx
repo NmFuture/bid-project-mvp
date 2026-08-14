@@ -206,13 +206,12 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
                 <button
                   type="button"
                   role="menuitem"
-                  className="w-full text-left flex items-center gap-3 px-4 py-2.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
+                  className="w-full text-left flex items-center px-4 py-2.5 text-sm text-on-surface hover:bg-surface-container-low transition-colors"
                   onClick={() => {
                     setShowUserMenu(false)
                     navigate('/settings')
                   }}
                 >
-                  <span className="material-symbols-outlined text-lg" aria-hidden="true">settings</span>
                   设置
                 </button>
                 <button
@@ -222,9 +221,8 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
                     setShowUserMenu(false)
                     onLogout?.()
                   }}
-                  className="w-full text-left flex items-center gap-3 px-4 py-2.5 text-sm text-error hover:bg-error-container/30 transition-colors"
+                  className="w-full text-left flex items-center px-4 py-2.5 text-sm text-error hover:bg-error-container/30 transition-colors"
                 >
-                  <span className="material-symbols-outlined text-lg" aria-hidden="true">logout</span>
                   退出登录
                 </button>
               </div>

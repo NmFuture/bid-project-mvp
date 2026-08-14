@@ -616,7 +616,7 @@ export default function BusinessOutlineReview({ showToast }) {
                     focusTenderBasis(node)
                   }}
                   disabled={!canFocusBasis}
-                  className={`shrink-0 rounded border px-2 py-1 text-[11px] font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-secondary/30 disabled:cursor-default ${requiredStatusClassName(status)} ${canFocusBasis ? 'hover:brightness-95' : ''}`}
+                  className={`shrink-0 rounded border px-2 py-1 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-secondary/30 disabled:cursor-default ${requiredStatusClassName(status)} ${canFocusBasis ? 'hover:brightness-95' : ''}`}
                   title={canFocusBasis ? '点击定位招标依据' : ''}
                 >
                   {status}

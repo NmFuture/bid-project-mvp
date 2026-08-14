@@ -223,7 +223,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       <section className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest p-4 lg:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-headline font-bold text-on-surface">项目事实表清单（全局生效）</h2>
+            <h2 className="text-lg font-headline font-semibold text-on-surface">项目事实表清单（全局生效）</h2>
             <p className="mt-1 text-xs text-outline">全局一份，所有技术标项目共用；缺口识别时用这份清单提取事实表字段。</p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
@@ -238,7 +238,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               type="button"
               onClick={() => factSpecsInputRef.current?.click()}
               disabled={Boolean(busyAction)}
-              icon="upload_file"
               size="sm"
               variant="primary"
             >
@@ -249,7 +248,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               onClick={() => window.open(technicalMaterialsAPI.rules.factSpecsDownloadUrl(), '_blank', 'noopener')}
               disabled={!factSpecsDownloadable || Boolean(busyAction)}
               title={factSpecsDownloadable ? `下载 ${factSpecsMeta?.fileName}` : '系统默认清单没有上传存档可下载'}
-              icon="download"
               size="sm"
               variant="quiet"
             >
@@ -260,7 +258,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               onClick={() => window.open(technicalMaterialsAPI.rules.factSpecsExportUrl(), '_blank', 'noopener')}
               disabled={Boolean(busyAction)}
               title="按当前生效清单生成 Excel"
-              icon="file_export"
               size="sm"
               variant="quiet"
             >
@@ -270,7 +267,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               type="button"
               onClick={() => setFactSpecsEditOpen(true)}
               disabled={Boolean(busyAction)}
-              icon="edit"
               size="sm"
               variant="quiet"
             >
@@ -289,7 +285,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       <section className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest p-4 lg:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-headline font-bold text-on-surface">附表填写规则（按客户）</h2>
+            <h2 className="text-lg font-headline font-semibold text-on-surface">附表填写规则（按客户）</h2>
             <p className="mt-1 text-xs text-outline">客户×附表→素材来源，缺口识别时确定每张附表的取值来源。每个客户一份，项目自动套用其所属客户的规则；客户未维护规则时按无规则处理。</p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
@@ -304,7 +300,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               type="button"
               onClick={() => matrixInputRef.current?.click()}
               disabled={!selectedCustomer || Boolean(busyAction)}
-              icon="upload_file"
               size="sm"
               variant="primary"
             >
@@ -315,7 +310,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               onClick={() => window.open(technicalMaterialsAPI.rules.appendixMatrixExportUrl(selectedCustomer), '_blank', 'noopener')}
               disabled={!selectedCustomer || !matrixImported || Boolean(busyAction)}
               title={matrixImported ? `导出「${selectedCustomer}」的规则为 Excel` : '该客户尚未维护附表填写规则'}
-              icon="file_export"
               size="sm"
               variant="quiet"
             >
@@ -325,7 +319,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
               type="button"
               onClick={() => setMatrixEditOpen(true)}
               disabled={!selectedCustomer || Boolean(busyAction)}
-              icon="edit"
               size="sm"
               variant="quiet"
             >
@@ -372,7 +365,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       <section className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-headline font-bold text-on-surface">项目工作区入口</h2>
+            <h2 className="text-lg font-headline font-semibold text-on-surface">项目工作区入口</h2>
             <p className="mt-1 text-xs text-outline">维护完规则后直接进入所选项目的素材匹配页，无需返回项目列表查找。</p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
@@ -407,7 +400,6 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
                     ? '该项目尚未生成并确认投标目录，请先完成目录生成与确认'
                     : `进入「${selectedProject.name || selectedProject.id}」的素材匹配页`
               }
-              icon="arrow_forward"
               size="sm"
               variant="primary"
             >

@@ -101,18 +101,11 @@ function MetricCard({ metric }) {
   )
 }
 
-function SectionHeader({ icon, title, hint }) {
+function SectionHeader({ title, hint }) {
   return (
     <div className="flex items-center justify-between mb-3">
       <div className="flex items-center gap-2">
-        <span
-          className="material-symbols-outlined text-[20px] text-primary"
-          style={{ fontVariationSettings: "'FILL' 1" }}
-          aria-hidden="true"
-        >
-          {icon}
-        </span>
-        <h2 className="text-base font-headline font-semibold text-on-surface">{title}</h2>
+        <h2 className="text-lg font-headline font-semibold text-on-surface">{title}</h2>
         {hint && <span className="text-xs text-outline">{hint}</span>}
       </div>
     </div>
@@ -324,7 +317,7 @@ export default function JobMonitor() {
                 setLoading(true)
                 load()
               }}
-              className="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-container hover:text-on-primary-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              className="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
               重新加载
             </button>
@@ -389,7 +382,6 @@ export default function JobMonitor() {
                 load()
               }}
               className="w-full sm:w-24"
-              icon="refresh"
               size="md"
               variant="secondary"
             >
@@ -402,7 +394,6 @@ export default function JobMonitor() {
       {metricGroups.map((group) => (
         <section key={group.key}>
           <SectionHeader
-            icon={group.icon}
             title={group.title}
             hint={group.agg ? `${group.agg.count} 次任务` : '暂无数据'}
           />
@@ -415,7 +406,7 @@ export default function JobMonitor() {
       ))}
 
       <section>
-        <SectionHeader icon="bar_chart" title="阶段耗时榜" hint="按平均耗时排序" />
+        <SectionHeader title="阶段耗时榜" hint="按平均耗时排序" />
         {phaseRanking.length === 0 ? (
           <EmptyState icon="bar_chart" title="暂无阶段耗时数据" className="rounded-lg border border-outline-variant bg-white" />
         ) : (
@@ -424,7 +415,7 @@ export default function JobMonitor() {
       </section>
 
       <section>
-        <SectionHeader icon="list_alt" title="最近任务" hint={`最近 ${LIST_LIMIT} 条，点击行展开阶段瀑布`} />
+        <SectionHeader title="最近任务" hint={`最近 ${LIST_LIMIT} 条，点击行展开阶段瀑布`} />
         <div className="overflow-x-auto rounded-lg border border-outline-variant bg-white">
           <div className="grid min-w-[52rem] grid-cols-[minmax(6rem,8rem)_1fr_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(4.5rem,6rem)_minmax(7rem,9rem)] gap-2 border-b border-surface-container-high bg-surface-container-low px-4 py-3 text-xs font-semibold text-on-surface-variant">
             <span>类型</span>

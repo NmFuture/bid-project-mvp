@@ -533,7 +533,7 @@ function TagFilterDropdown({
             )}
           </div>
           <div className="mt-2 flex items-center justify-between border-t border-surface-container-high pt-2">
-            <span className="text-[11px] text-outline">已选 {selected.length}</span>
+            <span className="text-xs text-outline">已选 {selected.length}</span>
             <button
               type="button"
               onClick={onClear}
@@ -862,12 +862,12 @@ function TreeNode({
                           title={itemTags.join('，')}
                         >
                           {itemTags.slice(0, 3).map((tag) => (
-                            <span key={tag} className="max-w-[4.5rem] truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                            <span key={tag} className="max-w-[4.5rem] truncate rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                               {tag}
                             </span>
                           ))}
                           {itemTags.length > 3 && (
-                            <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-[10px] font-medium text-on-surface-variant">
+                            <span className="rounded-full bg-surface-container-high px-1.5 py-0.5 text-xs font-medium text-on-surface-variant">
                               +{itemTags.length - 3}
                             </span>
                           )}
@@ -2254,7 +2254,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         <div className="dialog-overlay fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-hidden p-3 sm:p-4">
           <div role="dialog" aria-modal="true" aria-label={`上传${activeBidType}原始素材`} className="wizard-modal-surface flex h-[calc(100dvh-1.5rem)] max-h-[46rem] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in sm:h-[calc(100dvh-2rem)]">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
-              <h2 className="text-lg font-headline font-bold text-on-surface">上传{activeBidType}原始素材</h2>
+              <h2 className="text-lg font-headline font-semibold text-on-surface">上传{activeBidType}原始素材</h2>
               <button onClick={closeUploadModal} className="close-plain text-on-surface-variant hover:text-primary transition-colors" aria-label="关闭">
                 <span className="material-symbols-outlined">close</span>
               </button>
@@ -2582,7 +2582,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           <div role="dialog" aria-modal="true" aria-label="技术素材切分审核" className="wizard-modal-surface flex h-[calc(100dvh-1.5rem)] max-h-[60rem] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in sm:h-[calc(100dvh-2rem)]">
             <div className="px-5 sm:px-6 py-4 border-b border-surface-container-high flex items-center justify-between shrink-0">
               <div className="min-w-0">
-                <h2 className="text-lg font-headline font-bold text-on-surface">技术素材切分审核</h2>
+                <h2 className="text-lg font-headline font-semibold text-on-surface">技术素材切分审核</h2>
                 <p className="mt-1 truncate text-xs text-outline">
                   母文件：{splitSourceItem?.name || '-'}；确认后将生成子素材并进入技术标原始素材库。
                 </p>
@@ -2644,7 +2644,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                                 </span>
                               </span>
                             </label>
-                            <span className="max-w-[8rem] shrink-0 truncate rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant" title={fragment.id}>
+                            <span className="max-w-[8rem] shrink-0 truncate rounded-full bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant" title={fragment.id}>
                               {fragment.id}
                             </span>
                           </div>
@@ -2669,7 +2669,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                           </div>
 
                           <div className="mt-3 rounded-lg bg-surface-container-low px-3 py-2">
-                            <div className="text-[11px] font-semibold text-on-surface-variant">片段预览</div>
+                            <div className="text-xs font-semibold text-on-surface-variant">片段预览</div>
                             <pre className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-on-surface-variant">
                               {fragment.contentPreview || '暂无预览文本'}
                             </pre>

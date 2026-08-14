@@ -152,7 +152,6 @@ export default function BusinessProjectList({ showToast }) {
             type="button"
             onClick={() => setShowWizard(true)}
             className="w-full sm:w-48"
-            icon="add"
             size="stage"
           >
             新建商务标项目
@@ -263,15 +262,15 @@ export default function BusinessProjectList({ showToast }) {
                     ))}
                   </dl>
                   <div className="grid grid-cols-1 gap-2 border-t border-outline-variant/45 bg-surface-container-low/55 p-3 min-[430px]:grid-cols-3">
-                    <button type="button" onClick={() => openProject(project)} className="min-h-10 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container">
+                    <Button onClick={() => openProject(project)} className="w-full">
                       打开项目
-                    </button>
-                    <button type="button" onClick={(event) => openParseResult(project.id, event)} className="min-h-10 rounded-md bg-surface-container-high px-3 text-sm font-semibold text-on-surface hover:bg-surface-dim">
+                    </Button>
+                    <Button variant="quiet" onClick={(event) => openParseResult(project.id, event)} className="w-full">
                       查看解析
-                    </button>
-                    <button type="button" disabled={isActionLoading} onClick={() => handleDelete(project.id)} className="min-h-10 rounded-md bg-error-container/60 px-3 text-sm font-semibold text-on-error-container hover:bg-error-container disabled:opacity-50">
+                    </Button>
+                    <Button variant="dangerQuiet" disabled={isActionLoading} onClick={() => handleDelete(project.id)} className="w-full">
                       {isActionLoading ? '删除中…' : '删除项目'}
-                    </button>
+                    </Button>
                   </div>
                 </article>
               )

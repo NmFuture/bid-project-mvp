@@ -53,7 +53,7 @@ export default function MaterialMatchProgressModal({
   return (
     <Dialog open={open} onClose={running ? undefined : onClose} size="sm">
       <DialogHeader onClose={running ? undefined : onClose}>
-        <h3 className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+        <h3 className="text-lg font-headline font-semibold text-on-surface">{title}</h3>
       </DialogHeader>
       <DialogBody className="space-y-4 p-5">
         <BidProgressPanel

@@ -217,7 +217,7 @@ function DirectoryGenerationProgressModal({ open, state, nowMs, onClose }) {
   return (
     <Dialog open={open} onClose={onClose} size="sm">
       <DialogHeader onClose={onClose}>
-        <h3 className="text-lg font-headline font-bold text-on-surface">
+        <h3 className="text-lg font-headline font-semibold text-on-surface">
           {running ? '正在重新生成目录' : completed ? '目录重新生成完成' : failed ? '目录重新生成失败' : '重新生成目录'}
         </h3>
       </DialogHeader>
