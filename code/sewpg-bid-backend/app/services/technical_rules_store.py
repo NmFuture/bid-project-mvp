@@ -23,7 +23,11 @@ from app.services.technical_fact_spec_global import (
     global_fact_specs_meta_path,
     load_global_fact_specs_meta,
 )
-from app.services.technical_fact_spec_import import EXPECTED_HEADER
+from app.services.technical_fact_spec_import import (
+    EXPECTED_HEADER,
+    placeholder_label,
+    split_multi_value,
+)
 
 # 附表规则导出列头：用词与 parse_appendix_source_matrix 的 _header_kind 识别词兼容，
 # 保证导出件可再导入。
@@ -198,24 +202,50 @@ async def replace_fact_spec_rows(specs: list[dict[str, Any]], operator: str) -> 
     return {"specTotal": len(specs)}
 
 
+def _exportable_placeholder(placeholder: str, label: str) -> str:
+    """占位符列必须能被 placeholder_label() 推回 label，否则再导入时字段名就变了。
+
+    在线编辑的行里 label 与占位符各自独立（占位符可能是「第一章 1.1」这类位置描述），
+    推不回来时回退成标准占位符写法，保住闭环。
+    """
+    if label and placeholder_label(placeholder) != label:
+        return f"[{label}，待填写]"
+    return placeholder
+
+
 def export_fact_specs_xlsx(specs: list[dict[str, Any]]) -> bytes:
-    """生成事实表清单 xlsx：列头与 import_specs 的导入列映射严格一致（可再导入）。"""
+    """生成事实表清单 xlsx：列头与 import_specs 的导入列映射严格一致（可再导入）。
+
+    归并态的 spec 一格存多个位置，导出时按 (文件名, 占位符内容) 配对拆回多行——这是
+    「下载→编辑→重新上传」闭环成立的前提：再导入时同字段名的多行会重新归并回一个 spec。
+    「文件夹」列留空：下游只按文件名匹配 Word（见 bid-tech-word-placeholder-filler 的
+    run_from_manifest.py），目录不参与匹配，不值得为往返无损再加一列靠索引对齐的多值。
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Sheet1"
     ws.append(list(EXPECTED_HEADER))
-    for index, spec in enumerate(specs, start=1):
-        ws.append(
-            [
-                spec.get("seq") or index,
-                str(spec.get("targetFile") or spec.get("sourceFile") or ""),
-                str(spec.get("placeholder") or ""),
-                str(spec.get("label") or ""),
-                str(spec.get("note") or ""),
-                str(spec.get("reviewLabel") or ""),
-                str(spec.get("referenceFile") or ""),
-            ]
-        )
+    seq = 0
+    for spec in specs:
+        label = str(spec.get("label") or "")
+        targets = split_multi_value(spec.get("targetFile") or spec.get("sourceFile")) or [""]
+        placeholders = split_multi_value(spec.get("placeholder")) or [""]
+        row_type = str(spec.get("note") or "待填写")
+        reference_file = str(spec.get("referenceFile") or "")
+        for position in range(max(len(targets), len(placeholders))):
+            seq += 1
+            ws.append(
+                [
+                    seq,
+                    row_type,
+                    "",
+                    targets[position] if position < len(targets) else "",
+                    _exportable_placeholder(
+                        placeholders[position] if position < len(placeholders) else "", label
+                    ),
+                    reference_file,
+                ]
+            )
     buffer = BytesIO()
     wb.save(buffer)
     return buffer.getvalue()

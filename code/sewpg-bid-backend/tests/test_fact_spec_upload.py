@@ -15,9 +15,7 @@ from app.services import technical_fact_field_specs as specs_module
 from app.services.minio_client import minio_client
 from app.services.store import store
 from app.services.technical_fact_spec_import import (
-    CURRENT_HEADER,
     EXPECTED_HEADER,
-    LEGACY_HEADER,
     FactSpecImportError,
     import_specs,
 )
@@ -47,7 +45,10 @@ def client(override_path, monkeypatch):
         yield test_client
 
 
-def _build_xlsx(path: Path, rows: int = 5, header: list[str] | None = None, note: str = "说明") -> Path:
+def _build_xlsx(
+    path: Path, rows: int = 5, header: list[str] | None = None, row_type: str = "待填写"
+) -> Path:
+    """每行一个不同字段名，字段名由占位符内容剥离得出。"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(header if header is not None else EXPECTED_HEADER)
@@ -55,11 +56,10 @@ def _build_xlsx(path: Path, rows: int = 5, header: list[str] | None = None, note
         ws.append(
             [
                 index,
+                row_type,
+                "标准文件",
                 "招标文件-技术规范书",
-                "第一章 1.1",
-                f"上传测试字段{index}",
-                note,
-                "",
+                f"[上传测试字段{index}，待填写]",
                 "招标文件/技术规范书",
             ]
         )
@@ -96,14 +96,13 @@ def test_upload_valid_xlsx_writes_override_and_matches_contract(client, override
     assert {spec["sourceKind"] for spec in specs} == {"tender"}
 
 
-def test_upload_needs_confirmation_and_template_rows_counted(client, override_path, tmp_path) -> None:
-    xlsx_path = _build_xlsx(tmp_path / "清单.xlsx", rows=3, note="需确认：以招标文件为准")
+def test_upload_payload_counts_spec_and_fillable_totals(client, override_path, tmp_path) -> None:
+    xlsx_path = _build_xlsx(tmp_path / "清单.xlsx", rows=3)
     response = _upload(client, xlsx_path)
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["specTotal"] == 3
-    assert payload["needsConfirmation"] == 3
     assert payload["fillableTotal"] == 3
 
 
@@ -177,23 +176,20 @@ def test_import_specs_writes_output_path(tmp_path) -> None:
     assert json.loads(output_path.read_text(encoding="utf-8")) == specs
 
 
-def test_import_specs_maps_new_and_legacy_source_headers(tmp_path) -> None:
-    new_path = _build_xlsx(tmp_path / "新表头.xlsx", rows=1)
-    legacy_path = _build_xlsx(tmp_path / "旧表头.xlsx", rows=1, header=LEGACY_HEADER)
+def test_import_specs_maps_target_and_reference_columns(tmp_path) -> None:
+    spec = import_specs(_build_xlsx(tmp_path / "清单.xlsx", rows=1))[0]
 
-    for path in (new_path, legacy_path):
-        spec = import_specs(path)[0]
-        assert spec["targetFile"] == "招标文件-技术规范书"
-        assert spec["sourceFile"] == spec["targetFile"]
-        assert spec["referenceFile"] == "招标文件/技术规范书"
-        assert spec["sourceKind"] == "tender"
+    assert spec["targetFile"] == "招标文件-技术规范书"
+    assert spec["sourceFile"] == spec["targetFile"]
+    assert spec["referenceFile"] == "招标文件/技术规范书"
+    assert spec["sourceKind"] == "tender"
 
 
 def test_import_specs_rejects_bad_seq(tmp_path) -> None:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(EXPECTED_HEADER)
-    ws.append(["不是数字", "招标文件", "第一章", "字段A", "", "", "招标文件/x"])
+    ws.append(["不是数字", "待填写", "标准文件", "招标文件", "[字段A，待填写]", "招标文件/x"])
     bad_path = tmp_path / "坏序号.xlsx"
     wb.save(bad_path)
 
@@ -212,26 +208,26 @@ def _write_sheet(path: Path, header: list[str], rows: list[list]) -> Path:
 
 
 def test_import_specs_accepts_missing_optional_columns(tmp_path) -> None:
-    # 序号/必要说明/复核都是可选列：缺了不报错，序号退化成行号
+    # 序号/类型/文件夹都是可选列：缺了不报错，序号退化成行号
     path = _write_sheet(
         tmp_path / "精简表头.xlsx",
-        ["待填写文件", "原占位符位置", "实际要填写的字段", "来源文件"],
-        [["华能/待填写-塔筒.docx", "[技术方案，待填写]", "塔筒段数", "项目定制-塔架"]],
+        ["文件名", "占位符内容", "引用文件"],
+        [["华能/待填写-塔筒.docx", "[塔筒段数，待填写]", "项目定制-塔架"]],
     )
     spec = import_specs(path)[0]
 
     assert spec["seq"] == 1
-    assert spec["note"] == "" and spec["needsConfirmation"] is False
+    assert spec["note"] == ""
     assert spec["reviewLabel"] == ""
     assert spec["targetFile"] == "华能/待填写-塔筒.docx"
-    assert spec["placeholder"] == "[技术方案，待填写]"
+    assert spec["placeholder"] == "[塔筒段数，待填写]"
 
 
 def test_import_specs_locates_columns_by_name_not_position(tmp_path) -> None:
     path = _write_sheet(
         tmp_path / "乱序表头.xlsx",
-        ["实际要填写的字段", "来源文件", "待填写文件", "原占位符位置"],
-        [["塔筒段数", "项目定制-塔架", "华能/待填写-塔筒.docx", "[技术方案，待填写]"]],
+        ["引用文件", "占位符内容", "类型", "文件名"],
+        [["项目定制-塔架", "[塔筒段数，待填写]", "待填写", "华能/待填写-塔筒.docx"]],
     )
     spec = import_specs(path)[0]
 
@@ -244,61 +240,126 @@ def test_import_specs_locates_columns_by_name_not_position(tmp_path) -> None:
 def test_import_specs_rejects_missing_required_column(tmp_path) -> None:
     path = _write_sheet(
         tmp_path / "缺占位符列.xlsx",
-        ["序号", "待填写文件", "实际要填写的字段", "来源文件"],
-        [[1, "华能/待填写-塔筒.docx", "塔筒段数", "项目定制-塔架"]],
+        ["序号", "类型", "文件名", "引用文件"],
+        [[1, "待填写", "华能/待填写-塔筒.docx", "项目定制-塔架"]],
     )
 
-    with pytest.raises(FactSpecImportError, match="原占位符位置"):
+    with pytest.raises(FactSpecImportError, match="占位符内容"):
         import_specs(path)
 
 
-def test_import_specs_supports_current_maintained_header(tmp_path) -> None:
-    """现场维护版表头：无字段名列，label 由「文件名 + 占位符内容」合成。
+def test_import_specs_strips_placeholder_decoration_into_label(tmp_path) -> None:
+    """字段名取占位符正文：剥掉方括号（半/全角）与「待填写」类前后缀。"""
+    raw_placeholders = [
+        "[单台机组功率曲线保证率（%），待填写]",
+        "【投标机型，待填写】",
+        "[待填写：塔筒段数]",
+        "[页码域,待补充]",
+        "轮毂高度，待填写",
+    ]
+    path = _write_sheet(
+        tmp_path / "占位符剥离.xlsx",
+        EXPECTED_HEADER,
+        [
+            [index, "待填写", "标准文件", f"待填写-文件{index}.docx", raw, "招标文件/技术规范书"]
+            for index, raw in enumerate(raw_placeholders, start=1)
+        ],
+    )
 
-    该版本单列均不足以唯一标识一行（实测 207 行清单里占位符内容仅 87 个唯一值），
-    因此必须组合，否则 normalize_key 生成的字段键会互相覆盖。
-    """
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(CURRENT_HEADER)
-    # 两行占位符内容相同、文件名不同 —— 组合后才唯一
-    ws.append([1, "待插入", "标准文件", "待填写-塔筒设计方案", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"])
-    ws.append([2, "待插入", "客户定制-华能", "待填写-变桨系统专题", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"])
-    # 引用文件留空 —— 模板占位，不进取数流程
-    ws.append([3, "待填写", "标准文件", "待填写-大件部件运输情况", "[页码域，待填写]", ""])
-    path = tmp_path / "现场维护版.xlsx"
-    wb.save(path)
+    assert [spec["label"] for spec in import_specs(path)] == [
+        "单台机组功率曲线保证率（%）",
+        "投标机型",
+        "塔筒段数",
+        "页码域",
+        "轮毂高度",
+    ]
+    # 占位符原文必须原样留存，下游要拿它在 Word 里精确匹配
+    assert import_specs(path)[0]["placeholder"] == raw_placeholders[0]
 
+
+def test_import_specs_merges_rows_sharing_one_field_name(tmp_path) -> None:
+    """同一事实在多个文件里各填一遍 → 合并成一个 spec，位置存分号多值。"""
+    path = _write_sheet(
+        tmp_path / "同名合并.xlsx",
+        EXPECTED_HEADER,
+        [
+            [3, "待填写", "标准文件", "待填写-技术方案.docx", "[投标机型，待填写]", ""],
+            [7, "待填写", "标准文件", "待填写-塔筒设计.docx", "[投标机型，待填写]", "项目定制-选型表"],
+            [9, "待填写", "客户定制-华能", "待填写-变桨专题.docx", "【投标机型，待填写】", "项目定制-选型表"],
+            [11, "待填写", "标准文件", "待填写-技术方案.docx", "[轮毂高度，待填写]", "项目定制-选型表"],
+        ],
+    )
     specs = import_specs(path)
-    assert len(specs) == 3
 
-    keys = [s["key"] for s in specs]
-    assert len(set(keys)) == 3, "占位符内容重复时仍须靠文件名区分，键不得冲突"
+    assert len(specs) == 2
+    assert len({spec["key"] for spec in specs}) == 2
 
-    first = specs[0]
-    assert first["targetFile"] == "待填写-塔筒设计方案"
-    assert first["placeholder"] == "[基础弯矩表-完整插入，待插入]"
-    assert first["referenceFile"] == "基础弯矩表.xlsx"
-    assert first["label"] == "待填写-塔筒设计方案 [基础弯矩表-完整插入，待插入]"
-    assert first["note"] == "待插入"
-    assert first["valueRequired"] is True
-
-    blank_ref = specs[2]
-    assert blank_ref["sourceKind"] == "template"
-    assert blank_ref["valueRequired"] is False
+    model = next(spec for spec in specs if spec["label"] == "投标机型")
+    assert model["targetFile"] == "待填写-技术方案.docx;待填写-塔筒设计.docx;待填写-变桨专题.docx"
+    assert model["placeholder"] == "[投标机型，待填写];[投标机型，待填写];【投标机型，待填写】"
+    assert model["sourceFile"] == model["targetFile"]
+    # 组内取最小序号，排序保持稳定
+    assert model["seq"] == 3
+    # 首行引用文件留空时由后续同名行补上，否则整字段会被误判成模板占位
+    assert model["referenceFile"] == "项目定制-选型表"
+    assert model["valueRequired"] is True
 
 
-def test_import_specs_error_message_lists_all_supported_headers(tmp_path) -> None:
-    """表头不匹配时，报错须同时列出三种受支持表头，便于现场自查。"""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.append(["序号", "无关列A", "无关列B"])
-    ws.append([1, "x", "y"])
-    path = tmp_path / "错表头.xlsx"
-    wb.save(path)
+def test_import_specs_merges_by_normalized_key_not_raw_label(tmp_path) -> None:
+    """写法不同但归一化后同键的行必须并成一个 spec，否则两个 spec 共用一个 key。"""
+    path = _write_sheet(
+        tmp_path / "归一化合并.xlsx",
+        EXPECTED_HEADER,
+        [
+            [1, "待填写", "标准文件", "待填写-A.docx", "[轮毂高度-m，待填写]", "项目定制-选型表"],
+            [2, "待填写", "标准文件", "待填写-B.docx", "[轮毂高度，m，待填写]", "项目定制-选型表"],
+        ],
+    )
+    specs = import_specs(path)
+
+    assert len(specs) == 1
+    assert specs[0]["label"] == "轮毂高度-m", "label 取首次出现的写法"
+    assert specs[0]["targetFile"] == "待填写-A.docx;待填写-B.docx"
+
+
+def test_import_specs_skips_embed_rows(tmp_path) -> None:
+    """「待插入」是整文件插入指令，走 manifest 的 embedSources 通道，不是事实字段。"""
+    path = _write_sheet(
+        tmp_path / "含待插入.xlsx",
+        EXPECTED_HEADER,
+        [
+            [1, "待插入", "标准文件", "待填写-塔筒设计.docx", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"],
+            [2, "待插入", "客户定制-华能", "待填写-变桨专题.docx", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"],
+            [3, "待填写", "标准文件", "待填写-大件运输.docx", "[页码域，待填写]", ""],
+        ],
+    )
+    specs = import_specs(path)
+
+    assert [spec["label"] for spec in specs] == ["页码域"]
+    # 引用文件整格留空 —— 模板占位，不进取数流程
+    assert specs[0]["sourceKind"] == "template"
+    assert specs[0]["valueRequired"] is False
+
+
+def test_import_specs_rejects_sheet_with_only_embed_rows(tmp_path) -> None:
+    path = _write_sheet(
+        tmp_path / "全待插入.xlsx",
+        EXPECTED_HEADER,
+        [[1, "待插入", "标准文件", "待填写-塔筒设计.docx", "[基础弯矩表-完整插入，待插入]", "基础弯矩表.xlsx"]],
+    )
+
+    with pytest.raises(FactSpecImportError, match="未解析出任何字段"):
+        import_specs(path)
+
+
+def test_import_specs_error_message_names_expected_header(tmp_path) -> None:
+    """表头不匹配时，报错须列出缺的列与期望表头，便于现场自查。"""
+    path = _write_sheet(tmp_path / "错表头.xlsx", ["序号", "无关列A", "无关列B"], [[1, "x", "y"]])
 
     with pytest.raises(FactSpecImportError) as exc:
         import_specs(path)
     message = str(exc.value)
-    assert "待填写文件" in message
-    assert "现场维护版表头" in message
+    assert "文件名" in message
+    assert "占位符内容" in message
+    assert "期望表头" in message
+    assert "实际" in message

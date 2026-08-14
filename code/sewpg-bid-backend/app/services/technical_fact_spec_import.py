@@ -5,15 +5,21 @@ from __future__ import annotations
 清单只有全局一份，由素材库「规则」tab 和设置页上传，两个入口共用本模块解析。
 
 清单列（Sheet1，首行表头）：
-    序号 / 待填写文件 / 原占位符位置 / 实际要填写的字段 / 必要说明 / 复核 / 来源文件
+    序号 / 类型 / 文件夹 / 文件名 / 占位符内容 / 引用文件
 
-按表头名定位列，不依赖列序；缺可选列（序号/必要说明/复核）不报错。
-兼容历史表头：第 2 列“来源文件”、第 7 列“引用文件”。历史命名中的
-“来源文件”实际表示待填写目标文件，导入后仍保留 sourceFile 兼容字段。
+按表头名定位列，不依赖列序；缺可选列（序号/类型/文件夹）不报错。
+
+字段名取自「占位符内容」——剥掉方括号与「待填写」后缀后的正文。同一事实会在多个文件
+里各填一遍（实测 132 行「待填写」只对应 59 个不同字段），故按字段名归并成一个 spec，
+targetFile / placeholder 存分号分隔的多值，两列下标一一对应，与下游
+bid-tech-word-placeholder-filler 的 split_spec_cell 一格多值约定一致。
+
+「类型」为「待插入」的行不是事实字段，是整文件插入指令，走 manifest 的 embedSources
+独立通道（technical_gap_ai_fill 直接扫 Word 文档本身），故整行跳过。
 
 生成的 spec 字段：
     seq, key, label, reviewLabel, targetFile, sourceFile, placeholder, note,
-    needsConfirmation, referenceFile, valueRequired, sourceKind, aliases
+    referenceFile, valueRequired, sourceKind, aliases
 """
 
 import json
@@ -23,21 +29,19 @@ from typing import Any
 
 import openpyxl
 
-EXPECTED_HEADER = ["序号", "待填写文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "来源文件"]
-LEGACY_HEADER = ["序号", "来源文件", "原占位符位置", "实际要填写的字段", "必要说明", "复核", "引用文件"]
-# 现场维护版表头：无独立的「实际要填写的字段」列，字段名由「文件名 + 占位符内容」合成。
-# 单列均不足以唯一标识一行（实测 207 行中占位符内容仅 87 个唯一值），故必须组合。
-CURRENT_HEADER = ["序号", "类型", "文件夹", "文件名", "占位符内容", "引用文件"]
+EXPECTED_HEADER = ["序号", "类型", "文件夹", "文件名", "占位符内容", "引用文件"]
 
-# label 列的哨兵值：表示字段名不取自单列，而由「文件名 + 占位符内容」合成。
-COMPOSED_LABEL = -1
+# 一格多值分隔符：与下游 split_spec_cell 的 [；;\n] 拆分口径一致
+MULTI_VALUE_SEPARATOR = ";"
+
+# 「类型」列取该值的行是整文件插入指令，不进事实表
+EMBED_ROW_TYPE = "待插入"
 
 # 必需列（缺失即报错）：列键 → 表头名，供报错文案使用。
 REQUIRED_COLUMNS = (
-    ("target_file", "待填写文件"),
-    ("placeholder", "原占位符位置"),
-    ("label", "实际要填写的字段"),
-    ("reference_file", "来源文件"),
+    ("target_file", "文件名"),
+    ("placeholder", "占位符内容"),
+    ("reference_file", "引用文件"),
 )
 
 # 引用文件 → 来源类别
@@ -49,6 +53,11 @@ SOURCE_KIND_RULES = [
     ("自动生成", "derived"),
 ]
 
+_BRACKET_PREFIX_RE = re.compile(r"^[\[【]\s*")
+_BRACKET_SUFFIX_RE = re.compile(r"\s*[\]】]$")
+_FILL_PREFIX_RE = re.compile(r"^(待填写|缺失)[:：]\s*")
+_FILL_SUFFIX_RE = re.compile(r"[，,、:：\s]*(待填写|待补充|待确认|待插入)$")
+
 
 class FactSpecImportError(ValueError):
     """清单文件不合法（无法解析/表头不符/内容为空/序号无效）。"""
@@ -59,6 +68,24 @@ def normalize_key(text: str) -> str:
     text = re.sub(r"\s+", "", text or "")
     text = text.replace("（", "(").replace("）", ")")
     return re.sub(r"[，,、;；:：/\\\-—_]+", "", text).lower()
+
+
+def placeholder_label(raw: Any) -> str:
+    """占位符原文 → 字段名：剥外层方括号与「待填写」类前后缀。
+
+    与 bid-tech-word-placeholder-filler/scripts/run_from_manifest.py 的同名函数保持同一
+    套剥离规则，清单侧认出的字段名才和填写侧对得上。
+    """
+    text = re.sub(r"\s+", " ", str(raw or "")).strip()
+    text = _BRACKET_SUFFIX_RE.sub("", _BRACKET_PREFIX_RE.sub("", text)).strip()
+    text = _FILL_PREFIX_RE.sub("", text).strip()
+    return _FILL_SUFFIX_RE.sub("", text).strip()
+
+
+def split_multi_value(value: Any) -> list[str]:
+    """一格多值拆回列表：分号（全/半角）与换行都算分隔符，与下游 split_spec_cell 同口径。"""
+    text = str(value or "").replace("　", " ").replace("\xa0", " ")
+    return [part.strip() for part in re.split(r"[；;\n]+", text) if part.strip()]
 
 
 def classify_source(reference_file: str) -> str:
@@ -92,36 +119,15 @@ def resolve_columns(header: list[str]) -> dict[str, int | None]:
             index[name] = position
     columns: dict[str, int | None] = {
         "seq": index.get("序号"),
-        "placeholder": index.get("原占位符位置"),
-        "label": index.get("实际要填写的字段"),
-        "note": index.get("必要说明"),
-        "review": index.get("复核"),
+        "row_type": index.get("类型"),
+        "target_file": index.get("文件名"),
+        "placeholder": index.get("占位符内容"),
+        "reference_file": index.get("引用文件"),
     }
-    # 现场维护版：以「文件名 / 占位符内容 / 引用文件」组织，没有独立的字段名列。
-    # 字段名在 import_specs 内由「文件名 + 占位符内容」合成，故此处 label 记为合成标记。
-    if "文件名" in index and "占位符内容" in index:
-        columns["target_file"] = index["文件名"]
-        columns["placeholder"] = index["占位符内容"]
-        columns["reference_file"] = index.get("引用文件")
-        columns["label"] = COMPOSED_LABEL
-        # 「类型」（待填写/待插入）承载必要说明语义
-        columns["note"] = index.get("类型")
-        columns["folder"] = index.get("文件夹")
-        return columns
-    # 「来源文件」在两种表头里指代不同：新表头有独立的「待填写文件」列，
-    # 「来源文件」是取数来源；历史表头没有「待填写文件」，第 2 列的
-    # 「来源文件」才是待填写目标，取数来源叫「引用文件」。
-    if "待填写文件" in index:
-        columns["target_file"] = index["待填写文件"]
-        columns["reference_file"] = index.get("来源文件")
-    else:
-        columns["target_file"] = index.get("来源文件")
-        columns["reference_file"] = index.get("引用文件")
     missing = [name for key, name in REQUIRED_COLUMNS if columns.get(key) is None]
     if missing:
         raise FactSpecImportError(
-            f"清单缺少必需列 {missing}；期望表头 {EXPECTED_HEADER}"
-            f"（兼容历史表头 {LEGACY_HEADER}、现场维护版表头 {CURRENT_HEADER}），实际 {header}"
+            f"清单缺少必需列 {missing}；期望表头 {EXPECTED_HEADER}，实际 {header}"
         )
     return columns
 
@@ -130,6 +136,38 @@ def cell_at(row: tuple[Any, ...], position: int | None) -> str:
     if position is None or position >= len(row):
         return ""
     return cell_text(row[position])
+
+
+def row_seq(row: tuple[Any, ...], position: int | None, row_index: int) -> int:
+    """序号列缺失或本行留空时退化成行号；序号只用于排序与定位，不参与取值。"""
+    if position is None or position >= len(row) or cell_text(row[position]) == "":
+        return row_index - 1
+    raw = row[position]
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise FactSpecImportError(f"第 {row_index} 行序号无效：{raw!r}") from exc
+
+
+def _finalize(pending: dict[str, Any]) -> dict[str, Any]:
+    """归并态（多值列表）→ 落盘态（分号分隔字符串），并按引用文件定来源类别。"""
+    target_file = MULTI_VALUE_SEPARATOR.join(pending["targetFile"])
+    source_kind = classify_source(pending["referenceFile"])
+    return {
+        "seq": pending["seq"],
+        "key": pending["key"],
+        "label": pending["label"],
+        "reviewLabel": pending["reviewLabel"],
+        "targetFile": target_file,
+        # 兼容既有 spec/产物字段；其语义一直是待填写目标文件，不是取数来源。
+        "sourceFile": target_file,
+        "placeholder": MULTI_VALUE_SEPARATOR.join(pending["placeholder"]),
+        "note": pending["note"],
+        "referenceFile": pending["referenceFile"],
+        "valueRequired": source_kind != "template",
+        "sourceKind": source_kind,
+        "aliases": [],
+    }
 
 
 def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -> list[dict[str, Any]]:
@@ -149,47 +187,41 @@ def import_specs(xlsx_path: Path | str, output_path: Path | str | None = None) -
     header = [cell_text(c) for c in rows[0]]
     columns = resolve_columns(header)
 
-    specs: list[dict[str, Any]] = []
+    # 按 key 归并（而非 label 原文）：normalize_key 会把「轮毂高度（m）」和「轮毂高度,m」
+    # 归一成同一个键，按 label 归并会留下两个 spec 却共用一个键，下游按键取值即冲突。
+    merged: dict[str, dict[str, Any]] = {}
     for row_index, row in enumerate(rows[1:], start=2):
-        target_file = cell_at(row, columns["target_file"])
+        if cell_at(row, columns["row_type"]) == EMBED_ROW_TYPE:
+            continue
         placeholder = cell_at(row, columns["placeholder"])
-        if columns["label"] == COMPOSED_LABEL:
-            # 现场维护版无字段名列：用「文件名 + 占位符内容」合成，二者组合才唯一。
-            label = f"{target_file} {placeholder}".strip()
-        else:
-            label = cell_at(row, columns["label"])
+        label = placeholder_label(placeholder)
         if not label:
             continue
-        note = cell_at(row, columns["note"])
+        seq = row_seq(row, columns["seq"], row_index)
+        target_file = cell_at(row, columns["target_file"])
         reference_file = cell_at(row, columns["reference_file"])
-        source_kind = classify_source(reference_file)
-        # 无序号列时用行号顶上：序号只用于排序与定位，不参与取值。
-        if columns["seq"] is None:
-            seq = row_index - 1
-        else:
-            raw_seq = row[columns["seq"]] if columns["seq"] < len(row) else None
-            try:
-                seq = int(raw_seq)
-            except (TypeError, ValueError) as exc:
-                raise FactSpecImportError(f"第 {row_index} 行序号无效：{raw_seq!r}") from exc
-        specs.append(
-            {
+        pending = merged.get(normalize_key(label))
+        if pending is None:
+            merged[normalize_key(label)] = {
                 "seq": seq,
                 "key": normalize_key(label),
                 "label": label,
-                "reviewLabel": cell_at(row, columns["review"]),
-                "targetFile": target_file,
-                # 兼容既有 spec/产物字段；其语义一直是待填写目标文件，不是取数来源。
-                "sourceFile": target_file,
-                "placeholder": placeholder,
-                "note": note,
-                "needsConfirmation": "需确认" in note,
+                "reviewLabel": "",
+                "targetFile": [target_file],
+                "placeholder": [placeholder],
+                "note": cell_at(row, columns["row_type"]),
                 "referenceFile": reference_file,
-                "valueRequired": source_kind != "template",
-                "sourceKind": source_kind,
-                "aliases": [],
             }
-        )
+            continue
+        # 同一事实在多个文件里各填一遍：位置逐个累加，两列下标必须一一对应，故不去重
+        pending["targetFile"].append(target_file)
+        pending["placeholder"].append(placeholder)
+        pending["seq"] = min(pending["seq"], seq)
+        # 先出现的行未写引用文件时，由后续同名行补上，否则整字段会被误判成模板占位
+        if not pending["referenceFile"]:
+            pending["referenceFile"] = reference_file
+
+    specs = [_finalize(pending) for pending in merged.values()]
     if not specs:
         raise FactSpecImportError(f"清单未解析出任何字段: {path.name}")
 
