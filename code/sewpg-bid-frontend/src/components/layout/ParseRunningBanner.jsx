@@ -31,7 +31,7 @@ export default function ParseRunningBanner() {
     let stopped = false
 
     const refresh = async () => {
-      const current = readRunningParses()[0] || null
+      const current = readRunningParses().find((item) => item.bidType === 'business') || null
       if (!current) {
         if (!stopped) {
           setMarker(null)
