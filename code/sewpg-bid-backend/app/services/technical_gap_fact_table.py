@@ -363,9 +363,9 @@ def normalize_project_fact_field(
         "updatedAt": saved_at,
         "updatedBy": operator,
     }
-    # 清单 spec 元数据（有则保留，供前端展示"待确认"标记与复核口径）；
+    # 清单 spec 元数据（有则保留，供前端展示复核口径）；
     # turbineGroup/turbineModelLabel 是机型分组标记，页面保存后要跟着回写，否则分组丢失
-    for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile", "turbineGroup", "turbineModelLabel"):
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "sourceKind", "sourceHint", "placeholder", "targetFile", "turbineGroup", "turbineModelLabel"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
@@ -409,7 +409,7 @@ def reconcile_fact_fields_with_specs(
 ) -> None:
     """以填值 spec 为骨架对齐抽取结果。
 
-    - 匹配到的字段打上 spec 元数据；needsConfirmation 且已自动提取的转"待人工确认"。
+    - 匹配到的字段打上 spec 元数据。
     - 未匹配到的 spec 生成"未提取"骨架字段，保证清单字段在事实表中齐全。
     - 一个启发式字段只归属一个 spec（按清单序号顺序先到先得）。
     - 上一轮已有人工值/人工状态的 spec 字段在重建时保留（人工确认结果不丢）。
@@ -431,13 +431,10 @@ def reconcile_fact_fields_with_specs(
             field["specSeq"] = int(spec.get("seq") or 0)
             field["specKey"] = str(spec.get("key") or "")
             field["reviewLabel"] = str(spec.get("reviewLabel") or "")
-            field["needsConfirmation"] = bool(spec.get("needsConfirmation"))
             field["sourceKind"] = str(spec.get("sourceKind") or "")
             # 正文填写按「待填写文件 + 占位符原文」定位字段，两列随字段下发到 manifest
             field["placeholder"] = str(spec.get("placeholder") or "")
             field["targetFile"] = str(spec.get("targetFile") or "")
-            # needsConfirmation 只作为「这条清单要求人工复核口径」的展示标记随字段下发，
-            # 不再改状态：有值就可用，口径对不对由人在页面上看着标记自行核。
             continue
         key = fact_label_key(spec.get("label")) or f"spec-{int(spec.get('seq') or 0):03d}"
         if key in fields_by_key:
@@ -463,7 +460,6 @@ def reconcile_fact_fields_with_specs(
             "specSeq": int(spec.get("seq") or 0),
             "specKey": str(spec.get("key") or ""),
             "reviewLabel": str(spec.get("reviewLabel") or ""),
-            "needsConfirmation": bool(spec.get("needsConfirmation")),
             "sourceKind": str(spec.get("sourceKind") or ""),
             "sourceHint": str(spec.get("referenceFile") or ""),
             "placeholder": str(spec.get("placeholder") or ""),
@@ -699,7 +695,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
             has_value = bool(str(existing.get("value") or "").strip())
             field = copy.deepcopy(existing)
-            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
+            for meta_key in ("specSeq", "specKey", "reviewLabel", "sourceKind", "sourceHint", "placeholder", "targetFile"):
                 field.pop(meta_key, None)
             field["label"] = label_text
             field["key"] = key

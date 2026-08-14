@@ -574,11 +574,6 @@ const FactMaintenanceModal = ({
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
-              {field.needsConfirmation ? (
-                <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径建议人工核一遍'}>
-                  核口径
-                </span>
-              ) : null}
             </div>
           )}
         </div>

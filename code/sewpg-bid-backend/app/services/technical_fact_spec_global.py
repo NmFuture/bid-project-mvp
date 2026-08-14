@@ -59,7 +59,6 @@ def apply_fact_specs_override(specs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "specTotal": len(specs),
         "fillableTotal": sum(1 for spec in specs if spec.get("valueRequired")),
-        "needsConfirmation": sum(1 for spec in specs if spec.get("needsConfirmation")),
         "template": sum(1 for spec in specs if spec.get("sourceKind") == "template"),
         "override": True,
     }

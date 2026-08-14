@@ -55,7 +55,6 @@ def _fields() -> list[dict]:
             "unit": "",
             "status": "unextracted",
             "sourceKind": "tender",
-            "needsConfirmation": False,
             "specKey": "T-010",
             "specSeq": 10,
             "sourceRefs": [],
@@ -69,7 +68,6 @@ def _fields() -> list[dict]:
             "unit": "m/s",
             "status": "extracted",
             "sourceKind": "material",
-            "needsConfirmation": False,
             "specKey": "T-021",
             "specSeq": 21,
             "sourceRefs": [{"type": "materialFact", "materialId": "RAW-1"}],
@@ -83,7 +81,6 @@ def _fields() -> list[dict]:
             "unit": "",
             "status": "pending_confirmation",
             "sourceKind": "tender",
-            "needsConfirmation": True,
             "specKey": "T-030",
             "specSeq": 30,
             "sourceRefs": [],
@@ -97,7 +94,6 @@ def _fields() -> list[dict]:
             "unit": "",
             "status": "confirmed",
             "sourceKind": "platform",
-            "needsConfirmation": False,
             "specKey": "T-001",
             "specSeq": 1,
             "sourceRefs": [{"type": "projectTurbineModel", "field": "model"}],
@@ -143,13 +139,12 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     # 全量字段带 spec 元数据注入
     assert len(manifest["projectFactTable"]["fields"]) == 4
     field = manifest["projectFactTable"]["fields"][0]
-    for meta in ("specKey", "specSeq", "sourceKind", "status", "label", "value", "unit", "needsConfirmation"):
+    for meta in ("specKey", "specSeq", "sourceKind", "status", "label", "value", "unit"):
         assert meta in field
-    # 三件事分桶：unextracted+tender→fill，extracted→fix，needsConfirmation 非 confirmed→confirmAdvice
+    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix
     assert manifest["targets"] == {
         "fill": ["招标单机容量出口端mw"],
-        "fix": ["年平均风速"],
-        "confirmAdvice": ["电量承诺函版本"],
+        "fix": ["年平均风速", "电量承诺函版本"],
     }
     assert manifest["briefFile"].endswith("fact_curate_brief.json")
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
@@ -308,36 +303,16 @@ def test_fix_suggestion_replaces_value_and_keeps_old_in_alternatives() -> None:
     assert report["fixed"] == ["年平均风速"]
 
 
-def test_confirm_advice_keeps_existing_value() -> None:
+def test_confirm_advice_action_is_rejected() -> None:
+    """confirm-advice 已废弃：即使 agent 回传该 action 也不落表，只记 ignored。"""
     table, report = _apply(
         [
             {
                 "fieldKey": "电量承诺函版本",
                 "suggestedValue": "V3 考核值",
                 "unit": "",
-                "evidence": "承诺函原文口径为 V2 保证值，现值一致",
+                "evidence": "承诺函原文口径为 V2 保证值",
                 "confidence": 0.66,
-                "action": "confirm-advice",
-            }
-        ]
-    )
-    field = table["fields"][2]
-    assert field["value"] == "V2 保证值"  # 有值口径建议不改值
-    assert field["status"] == "confirmed"
-    assert field["sourceRefs"][-1]["type"] == "factCurator"
-    assert field["sourceRefs"][-1]["action"] == "confirm-advice"
-    assert report["advised"] == ["电量承诺函版本"]
-
-
-def test_confirm_advice_with_empty_suggested_value_keeps_evidence() -> None:
-    table, report = _apply(
-        [
-            {
-                "fieldKey": "电量承诺函版本",
-                "suggestedValue": "",
-                "unit": "",
-                "evidence": "现值 V2 保证值与承诺函原文口径一致",
-                "confidence": 0.88,
                 "action": "confirm-advice",
             }
         ]
@@ -345,11 +320,9 @@ def test_confirm_advice_with_empty_suggested_value_keeps_evidence() -> None:
 
     field = table["fields"][2]
     assert field["value"] == "V2 保证值"
-    assert field["status"] == "confirmed"
-    assert field["sourceRefs"][-1]["evidence"] == "现值 V2 保证值与承诺函原文口径一致"
-    assert field["updatedBy"] == "测试用户"
-    assert report["advised"] == ["电量承诺函版本"]
-    assert report["ignored"] == []
+    assert report["ignored"] == [
+        {"fieldKey": "电量承诺函版本", "reason": "非法 action：confirm-advice"}
+    ]
 
 
 def test_confirmed_field_never_overwritten() -> None:
@@ -449,7 +422,7 @@ def test_action_must_match_manifest_target_bucket() -> None:
         ],
         operator="测试用户",
         saved_at="2026-07-26T01:00:00Z",
-        targets={"fill": ["招标单机容量出口端mw"], "fix": [], "confirmAdvice": []},
+        targets={"fill": ["招标单机容量出口端mw"], "fix": []},
     )
 
     assert table["fields"][0]["value"] == ""
@@ -470,7 +443,6 @@ def test_real_world_key_forms_matched_by_normalization() -> None:
             "unit": "",
             "status": "unextracted",
             "sourceKind": "tender",
-            "needsConfirmation": False,
             "specKey": "T-090",
             "specSeq": 90,
             "sourceRefs": [],
@@ -484,7 +456,6 @@ def test_real_world_key_forms_matched_by_normalization() -> None:
             "unit": "",
             "status": "unextracted",
             "sourceKind": "tender",
-            "needsConfirmation": False,
             "specKey": "T-042",
             "specSeq": 42,
             "sourceRefs": [],
@@ -657,7 +628,7 @@ def test_brief_script_flags_dirty_value_and_finds_snippets(tmp_path) -> None:
         "schemaVersion": "bid-tech-fact-curate-v1",
         "projectId": "P-CUR",
         "projectFactTable": {"fields": _fields()},
-        "targets": {"fill": ["招标单机容量出口端mw"], "fix": ["年平均风速"], "confirmAdvice": []},
+        "targets": {"fill": ["招标单机容量出口端mw"], "fix": ["年平均风速"]},
         "tenderSources": [{"kind": "combinedText", "path": str(combined)}],
         "materials": [],
         "briefFile": str(brief_file),
@@ -675,7 +646,7 @@ def test_brief_script_flags_dirty_value_and_finds_snippets(tmp_path) -> None:
     assert result.returncode == 0, result.stderr
     summary = json.loads(result.stdout)
     assert summary["schema"] == "bid-tech-fact-curate-v1"
-    assert summary["counts"] == {"fill": 1, "fix": 1, "confirmAdvice": 0}
+    assert summary["counts"] == {"fill": 1, "fix": 1}
     assert "年平均风速" in summary["flaggedFields"]
 
     brief = json.loads(brief_file.read_text(encoding="utf-8"))

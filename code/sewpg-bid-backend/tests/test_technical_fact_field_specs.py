@@ -26,7 +26,6 @@ class TestTechnicalFactFieldSpecs(unittest.TestCase):
         fillable = fillable_specs()
         # 0722 清单来源列没有整格留空的条目，20 条「/」是来源未指定而非模板占位，同样要取值
         self.assertEqual(len(fillable), 148)
-        self.assertEqual(sum(1 for spec in specs if spec.get("needsConfirmation")), 14)
         self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "template"), 0)
         self.assertEqual(sum(1 for spec in specs if spec.get("sourceKind") == "unspecified"), 20)
         # 模板更新条目不进填值流程
@@ -115,8 +114,8 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
         self.assertEqual(normalized["placeholder"], source["placeholder"])
         self.assertEqual(normalized["targetFile"], source["targetFile"])
 
-    def test_needs_confirmation_spec_keeps_status(self) -> None:
-        # needsConfirmation 只作为「口径要人工核」的展示标记随字段下发，不再改状态
+    def test_reconcile_keeps_confirmed_status(self) -> None:
+        # 对齐清单只补 spec 元数据，不改已确认字段的状态
         fields_by_key = {
             "日期": {
                 "id": "FACT-0001",
@@ -145,7 +144,6 @@ class TestReconcileFactFieldsWithSpecs(unittest.TestCase):
         reconcile_fact_fields_with_specs(fields_by_key)
         field = fields_by_key[fact_label_key(pending_spec["label"])]
         self.assertEqual(field["status"], FACT_STATUS_CONFIRMED)
-        self.assertTrue(field["needsConfirmation"])
 
     def test_previous_manual_result_survives_rebuild(self) -> None:
         from app.services.technical_gap_fact_table import fact_label_key
@@ -228,7 +226,6 @@ class TestNormalizeProjectFactFieldV2(unittest.TestCase):
                 "specSeq": 4,
                 "specKey": "单台机组功率曲线保证率(%)",
                 "reviewLabel": "单台机组功率曲线保证率（%）",
-                "needsConfirmation": False,
                 "sourceKind": "tender",
             }
         )

@@ -84,7 +84,6 @@ def test_upload_valid_xlsx_writes_override_and_matches_contract(client, override
     assert payload == {
         "specTotal": 6,
         "fillableTotal": 6,
-        "needsConfirmation": 0,
         "template": 0,
         "override": True,
     }
