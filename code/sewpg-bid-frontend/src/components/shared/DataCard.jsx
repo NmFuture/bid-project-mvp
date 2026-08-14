@@ -23,7 +23,7 @@ export default function DataCard({
     <article
       onClick={onClick}
       style={style}
-      className={`min-w-0 rounded-lg border border-outline-variant bg-surface-container-lowest ${padding} ${hover ? 'transition-[background-color,border-color] duration-150 hover:border-primary/45 hover:bg-primary-fixed/20' : ''} ${className}`.trim()}
+      className={`min-w-0 rounded-lg border border-outline-variant bg-surface-container-lowest shadow-[var(--shadow-panel)] ${padding} ${hover ? 'transition-[background-color,border-color] duration-150 hover:border-primary/45 hover:bg-primary-fixed/20' : ''} ${className}`.trim()}
       {...interactiveProps}
     >
       {children}
