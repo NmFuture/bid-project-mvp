@@ -1,7 +1,7 @@
 ---
 name: bid-tech-fact-curator
 description: 技术标项目事实表的 AI 复核员。用于事实表构建之后：输入 manifest 给定的事实表全量字段、招标文件解析产物和相关素材，输出 bid-tech-fact-curate-v1 逐字段建议 JSON——待填写的字段补抽候选值，已有取值的字段做脏数据校验。只写建议文件，不写事实表。
-allowed-tools: [Bash, Grep]
+allowed-tools: [Bash, Glob, Grep]
 ---
 
 # 技术标项目事实表维护
