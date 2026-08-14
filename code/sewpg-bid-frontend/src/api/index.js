@@ -553,8 +553,6 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/${gid}/confirm-ready`, { method: 'POST', body: data }),
   setTitleOnly: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/title-only`, { method: 'POST', body: data }),
-  submitReview: (projectId) =>
-    request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
   buildFacts: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
@@ -572,8 +570,6 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/curate`),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
-  recheck: (projectId) =>
-    request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>
     request(`/technical/projects/${projectId}/gaps/${gid}/ai-fill`, {
       method: 'POST',
@@ -612,8 +608,6 @@ export const technicalDocumentAPI = {
   get: (projectId) => request(`/technical/projects/${projectId}/document`),
   save: (projectId, data) =>
     request(`/technical/projects/${projectId}/document/save`, { method: 'PUT', body: data }),
-  forceSave: (projectId) =>
-    request(`/technical/projects/${projectId}/document/force-save`, { method: 'POST' }),
   technicalChat: (projectId, data) =>
     request(`/technical/projects/${projectId}/document/technical-chat`, { method: 'POST', body: data, timeoutMs: 2 * 60 * 1000 }),
   technicalFormat: (projectId, data) =>
@@ -699,18 +693,12 @@ export const technicalMaterialsAPI = {
       return request(`/technical/materials/raw/folders${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
     },
     updateFile: (id, data) => request(`/technical/materials/raw/${id}`, { method: 'PATCH', body: data }),
-    tagImportPreview: (data) =>
-      request('/technical/materials/raw/tag-import/preview', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
-    tagImportCommit: (data) =>
-      request('/technical/materials/raw/tag-import/commit', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     autoTags: (data) =>
       request('/technical/materials/raw/auto-tags', { method: 'POST', body: data, timeoutMs: 10 * 60 * 1000 }),
     moveFile: (data) => request('/technical/materials/raw/move', { method: 'POST', body: data }),
     deleteFile: (id) => request(`/technical/materials/raw/${id}`, { method: 'DELETE' }),
     batchDelete: (data) => request('/technical/materials/raw/batch-delete', { method: 'POST', body: data }),
     batchTags: (data) => request('/technical/materials/raw/batch-tags', { method: 'POST', body: data }),
-    batchCertificateTime: (data) =>
-      request('/technical/materials/raw/certificate-time/batch', { method: 'POST', body: data, timeoutMs: 20 * 60 * 1000 }),
     previewTechnicalSplit: (id, data) =>
       request(`/technical/materials/raw/${id}/split/preview`, { method: 'POST', body: data, timeoutMs: 5 * 60 * 1000 }),
     confirmTechnicalSplit: (id, data) =>
@@ -733,15 +721,6 @@ export const technicalMaterialsAPI = {
       request('/technical/materials/wiki/bootstrap', { method: 'POST', body: data, retryCount: 0 }),
     bootstrapStatus: (jobId, options = {}) =>
       request(`/technical/materials/wiki/jobs/${encodeURIComponent(jobId)}`, options),
-    create: (data) => request('/technical/materials/wiki', { method: 'POST', body: data }),
-    update: (id, data) => request(`/technical/materials/wiki/${id}`, { method: 'PUT', body: data }),
-    delete: (id, params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/technical/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
-    },
-    certificateTime: () => request('/technical/materials/wiki/certificate-time'),
-    updateCertificateTime: (fileId, data) =>
-      request(`/technical/materials/wiki/certificate-time/${fileId}`, { method: 'PATCH', body: data }),
   },
   certificates: {
     ledger: () => request('/technical/materials/certificates'),
@@ -991,12 +970,6 @@ export const businessMaterialsAPI = {
       return request(`/business/materials/wiki${qs ? `?${qs}` : ''}`)
     },
     bootstrap: (data = {}) => runWikiBootstrap('business', data),
-    create: (data) => request('/business/materials/wiki', { method: 'POST', body: data }),
-    update: (id, data) => request(`/business/materials/wiki/${id}`, { method: 'PUT', body: data }),
-    delete: (id, params = {}) => {
-      const qs = new URLSearchParams(cleanQuery(params)).toString()
-      return request(`/business/materials/wiki/${id}${qs ? `?${qs}` : ''}`, { method: 'DELETE' })
-    },
     move: (id, data) => request(`/business/materials/wiki/${id}/move`, { method: 'POST', body: data }),
     uploadAttachment: (id, data) =>
       request(`/business/materials/wiki/${id}/attachments`, { method: 'POST', body: data }),

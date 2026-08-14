@@ -949,3 +949,63 @@ test('没有匹配素材时已选区为空', () => {
   const item = { id: 'GAP-1', matchedMaterials: [] }
   assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
 })
+
+// 逐条质量警示（frontend-01）：needs_review 或有未填字段才亮标，
+// 口径与后端 bid-fill-quality-report-v1 及批量复核黄标一致。
+test('AI 填写仍有未填字段时亮出数量徽标与原因', () => {
+  const item = {
+    id: 'GAP-1',
+    qualityStatus: 'needs_review',
+    qualityReport: { status: 'needs_review', unfilledFieldCount: 3 },
+  }
+
+  const flag = technicalHelpers.technicalGapQualityFlag(item)
+
+  assert.equal(flag.label, '3 项未填')
+  assert.equal(flag.unfilledCount, 3)
+  assert.equal(flag.needsReview, true)
+  assert.match(flag.tip, /3 项未填字段/)
+  assert.match(flag.tip, /质量验收未通过/)
+})
+
+test('needs_review 但没有未填字段时同样亮标（验收未达标）', () => {
+  const item = {
+    id: 'GAP-1',
+    qualityStatus: 'needs_review',
+    qualityReport: { status: 'needs_review', unfilledFieldCount: 0, sourceRuleMessage: '项目定制来源未命中' },
+  }
+
+  const flag = technicalHelpers.technicalGapQualityFlag(item)
+
+  assert.equal(flag.label, '质量待复核')
+  assert.match(flag.tip, /项目定制来源未命中/)
+})
+
+test('旧字段名 residualPlaceholderCount/unfilledPlaceholderCount 兜底计数', () => {
+  assert.equal(
+    technicalHelpers.technicalGapQualityFlag({ qualityReport: { residualPlaceholderCount: 2 } }).unfilledCount,
+    2,
+  )
+  assert.equal(
+    technicalHelpers.technicalGapQualityFlag({ qualityReport: { unfilledPlaceholderCount: 1 } }).unfilledCount,
+    1,
+  )
+})
+
+test('验收通过、无需填写与人工复核通过都不亮标', () => {
+  assert.equal(
+    technicalHelpers.technicalGapQualityFlag({ qualityStatus: 'passed', qualityReport: { status: 'passed', unfilledFieldCount: 0 } }),
+    null,
+  )
+  assert.equal(
+    technicalHelpers.technicalGapQualityFlag({ qualityStatus: 'no_fill_required', qualityReport: { status: 'no_fill_required' } }),
+    null,
+  )
+  // human_confirmed 是复核通过的收口终态，历史 qualityReport.status 仍是 needs_review，也不许回弹示警
+  assert.equal(
+    technicalHelpers.technicalGapQualityFlag({ qualityStatus: 'human_confirmed', qualityReport: { status: 'needs_review', unfilledFieldCount: 2 } }),
+    null,
+  )
+  assert.equal(technicalHelpers.technicalGapQualityFlag({}), null)
+  assert.equal(technicalHelpers.technicalGapQualityFlag(null), null)
+})

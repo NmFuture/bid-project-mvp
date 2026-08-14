@@ -718,6 +718,35 @@ export const aiFillComparisonPair = (choices, selectedChoice) => {
   return reference ? { reference, result: selectedChoice } : null
 }
 
+// 逐条质量警示（frontend-01）：AI 填写产物未过质检（needs_review）或仍有未填字段时，
+// 在目录列表行与详情区亮出徽标，堵「复核通过点了白点还不知道」的黑洞。
+// 字段口径对齐后端 bid-fill-quality-report-v1（technical_gap_ai_fill._build_fill_quality_report）：
+// status ∈ passed / no_fill_required / needs_review；未填数取 unfilledFieldCount，
+// residualPlaceholderCount / unfilledPlaceholderCount 是旧字段名兜底。
+export const technicalGapQualityFlag = (item) => {
+  if (!item) return null
+  const report = item?.qualityReport && typeof item.qualityReport === 'object' ? item.qualityReport : {}
+  const qualityStatus = String(item?.qualityStatus || report.status || '')
+  // human_confirmed 是人工复核通过的收口终态，不再示警。
+  if (qualityStatus === 'human_confirmed') return null
+  const unfilledCount = Math.max(0, Number(
+    report.unfilledFieldCount ?? report.residualPlaceholderCount ?? report.unfilledPlaceholderCount ?? 0,
+  ) || 0)
+  const needsReview = qualityStatus === 'needs_review'
+  if (!needsReview && !unfilledCount) return null
+  const reasons = []
+  if (unfilledCount) reasons.push(`${unfilledCount} 项未填字段`)
+  if (needsReview) reasons.push('质量验收未通过')
+  const sourceRuleMessage = String(report.sourceRuleMessage || '')
+  if (sourceRuleMessage) reasons.push(sourceRuleMessage)
+  return {
+    needsReview,
+    unfilledCount,
+    label: unfilledCount ? `${unfilledCount} 项未填` : '质量待复核',
+    tip: `AI 填写待复核：${reasons.join('，')}。请人工复核或补充事实表后重填。`,
+  }
+}
+
 export const resultSummaryForItem = (selected, allItems = []) => {
   const artifact = latestResolvedArtifact(selected)
   if (artifact) {

@@ -28,12 +28,14 @@ import {
   previewChoicesForItem,
   primaryBlankSource,
   recommendedSelectionsForItem,
+  resultSummaryForItem,
   TECHNICAL_GAP_TAG_CONFIG,
   TECHNICAL_WORD_FILL_SKILL,
   technicalBodyFillCounts,
   technicalGapDescendants,
   technicalGapFillError,
   technicalGapProgressCounts,
+  technicalGapQualityFlag,
   technicalGapTagBucketOf,
   technicalGapTagOf,
   technicalMatchScore,
@@ -139,6 +141,31 @@ function TechnicalTocActionBadge({ item, items }) {
     <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant} title={tip}>
       {config.label}
     </Badge>
+  )
+}
+
+// 逐条质量警示徽标（frontend-01）：AI 填写未过质检或仍有未填字段时亮黄标，hover 出原因。
+// 与工作态标签并列但不抢口径：标签说「待审核」，徽标说「为什么值得警惕」。
+function TechnicalGapQualityBadge({ item }) {
+  const flag = technicalGapQualityFlag(item)
+  if (!flag) return null
+  return (
+    <span title={flag.tip}>
+      <Badge shape="square" size="xs" variant="warn">{flag.label}</Badge>
+    </span>
+  )
+}
+
+// 详情区警示条：选中项有待复核质量问题时，在标题下方点明原因，
+// 与列表行徽标、批量复核按钮 title 共用 technicalGapQualityFlag 同一口径。
+function TechnicalGapQualityNotice({ item }) {
+  const flag = technicalGapQualityFlag(item)
+  if (!flag) return null
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-5 py-2.5 text-xs text-amber-800">
+      <span className="material-symbols-outlined text-[15px]">warning</span>
+      <span className="min-w-0">{flag.tip}</span>
+    </div>
   )
 }
 
@@ -2238,11 +2265,11 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
 
   // 批量复核通过：放行与否是人的决定，带未填字段的产物同样可批量定案（产品裁决 2026-08-09）。
-  // 黄标条数仍在按钮 title 里点出来，让人知道自己在放过什么。
+  // 黄标条数仍在按钮 title 里点出来，让人知道自己在放过什么；口径与逐条徽标一致
+  // （technicalGapQualityFlag：needs_review 或有未填字段）。
   const batchReviewables = reviewQueue
   const flaggedReviewCount = useMemo(
-    () => reviewQueue.filter((item) => Number(item?.qualityReport?.unfilledPlaceholderCount || 0)
-      || asArray(item?.reviewNotes).length).length,
+    () => reviewQueue.filter((item) => technicalGapQualityFlag(item)).length,
     [reviewQueue],
   )
 
@@ -2927,8 +2954,8 @@ export default function TechnicalGapRecognition({ showToast }) {
                 disabled={Boolean(busyAction) || !batchReviewables.length}
                 title={
                   flaggedReviewCount
-                    ? `复核通过 ${batchReviewables.length} 条，其中 ${flaggedReviewCount} 条仍有未填字段`
-                    : `复核通过 ${batchReviewables.length} 条，均无未填字段`
+                    ? `复核通过 ${batchReviewables.length} 条，其中 ${flaggedReviewCount} 条质量待复核（未填字段或验收未达标）`
+                    : `复核通过 ${batchReviewables.length} 条，质量均已达标`
                 }
                 size="sm"
                 variant="primary"
@@ -3042,7 +3069,10 @@ export default function TechnicalGapRecognition({ showToast }) {
                               <div className={`mt-1 line-clamp-2 text-sm font-semibold leading-snug ${frozen || ignored ? 'text-on-surface-variant' : 'text-on-surface'}`}>{item.title}</div>
                             </div>
                           </div>
-                          <TechnicalTocActionBadge item={item} items={items} />
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <TechnicalTocActionBadge item={item} items={items} />
+                            <TechnicalGapQualityBadge item={item} />
+                          </div>
                         </div>
                       </div>
                     )
@@ -3064,6 +3094,17 @@ export default function TechnicalGapRecognition({ showToast }) {
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium text-outline">{selected.number || selected.section || '-'}</span>
                         <TechnicalTocActionBadge item={selected} items={items} />
+                        {/* 待审核项在标题旁直接亮出质检结论（验收通过/待复核，复盘口径），
+                            复用 resultSummaryForItem，不用点开对比弹窗才知道这条填得怎么样。 */}
+                        {selectedTag === 'template_review' ? (() => {
+                          const summary = resultSummaryForItem(selected, items)
+                          if (!summary) return null
+                          return (
+                            <Badge shape="square" size="xs" variant={summary.tone === 'fill' ? 'warn' : 'done'}>
+                              {summary.label}
+                            </Badge>
+                          )
+                        })() : null}
                       </div>
                       <div className="mt-1.5 flex items-center justify-between gap-3">
                         <h3 className="min-w-0 truncate text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
@@ -3081,6 +3122,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                       </div>
                     </div>
                   </div>
+                  <TechnicalGapQualityNotice item={selected} />
 
                   <div className="min-h-0 flex-1 overflow-y-auto bg-surface-container-low">
                     <div className="space-y-4 p-4">
