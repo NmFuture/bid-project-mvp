@@ -68,6 +68,25 @@ const filterControlClass =
 const cardClass =
   'rounded-lg border border-outline-variant bg-white'
 
+// 筛选区默认收起为一行，避免筛选控件比内容还重；展开后呈现完整筛选表单
+function FilterDisclosure({ children }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-sm font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <span aria-hidden="true" className="material-symbols-outlined text-[18px]">{open ? 'expand_less' : 'expand_more'}</span>
+        筛选条件
+      </button>
+      {open ? <div className="mt-3">{children}</div> : null}
+    </div>
+  )
+}
+
 const safeMessage = (error, fallback) => error?.payload?.detail || error?.message || fallback
 
 const csvEscape = (value) => {
@@ -279,9 +298,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
       <div className={`${cardClass} p-4`}>
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-on-surface-variant">
-            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-              {total} 条
-            </span>
+            <span className="text-xs text-on-surface-variant">共 {total} 条</span>
             {(refreshing || error) && (
               <span className={`text-xs ${error ? 'text-error' : 'text-outline'}`}>
                 {error || '正在刷新数据…'}
@@ -299,6 +316,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
             {exporting ? '导出中…' : '导出 CSV'}
           </Button>
         </div>
+        <FilterDisclosure>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(16rem,1.4fr)_repeat(4,minmax(8rem,1fr))]">
           <div>
             <label className={filterLabelClass}>关键字</label>
@@ -415,6 +433,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
             </Button>
           </div>
         </div>
+        </FilterDisclosure>
       </div>
 
       {!items.length ? (
@@ -574,6 +593,7 @@ function EventList({ eventsAPI, showToast }) {
   return (
     <>
       <div className={`${cardClass} p-4`}>
+        <FilterDisclosure>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[repeat(3,minmax(8rem,1fr))_minmax(16rem,1.4fr)]">
           <div>
             <label className={filterLabelClass}>事件类型</label>
@@ -667,6 +687,7 @@ function EventList({ eventsAPI, showToast }) {
             </Button>
           </div>
         </div>
+        </FilterDisclosure>
       </div>
 
       {loading && !data ? (
@@ -814,6 +835,7 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
   return (
     <>
       <div className={`${cardClass} p-4`}>
+        <FilterDisclosure>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(12rem,1fr)_minmax(20rem,1.4fr)_auto] lg:items-end">
           <div>
             <label className={filterLabelClass}>用户</label>
@@ -868,6 +890,7 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
             </Button>
           </div>
         </div>
+        </FilterDisclosure>
       </div>
 
       {loading && !data ? (
