@@ -41,6 +41,8 @@ services:
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
       OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
+      # engine-10：与 opencode 服务同源的服务端密码；非空时客户端请求统一带 Basic 鉴权头。
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
       AGENT_CONCURRENCY_BUDGET: ${AGENT_CONCURRENCY_BUDGET:-8}
       TECH_OUTLINE_LLM_FINALIZE: ${TECH_OUTLINE_LLM_FINALIZE:-false}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
@@ -144,6 +146,8 @@ services:
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-deepseek-v4-flash}
       OPENCODE_CHAPTER_BASE_URLS: ${OPENCODE_CHAPTER_BASE_URLS:-http://opencode:4096}
       OPENCODE_TIMEOUT_SEC: ${OPENCODE_TIMEOUT_SEC:-1800}
+      # engine-10：与 opencode 服务同源的服务端密码；非空时客户端请求统一带 Basic 鉴权头。
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
       AGENT_CONCURRENCY_BUDGET: ${AGENT_CONCURRENCY_BUDGET:-8}
       TECH_OUTLINE_LLM_FINALIZE: ${TECH_OUTLINE_LLM_FINALIZE:-false}
       S1_PARSE_OPENCODE_ENABLED: ${S1_PARSE_OPENCODE_ENABLED:-true}
@@ -332,14 +336,19 @@ services:
     expose:
       - "4096"
     ports:
-      - "${OPENCODE_HOST_PORT:-4096}:4096"
+      # engine-10：只绑定本机回环，局域网不再可达；fastapi/worker 走 compose 内部网络不受影响。
+      # 宿主机直连调试仍可用（127.0.0.1:4096）；启用 OPENCODE_SERVER_PASSWORD 后需带 Basic 鉴权。
+      - "127.0.0.1:${OPENCODE_HOST_PORT:-4096}:4096"
+    # engine-10：资源限额，默认值为本地安全值；5090 实测取值只写 docker-compose.5090.yml。
+    cpus: ${OPENCODE_CPU_LIMIT:-4.0}
+    mem_limit: ${OPENCODE_MEMORY_LIMIT:-8g}
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:4096/global/health').then((res) => { if (!res.ok) process.exit(1); }).catch(() => process.exit(1))",
+          "const p = process.env.OPENCODE_SERVER_PASSWORD || ''; const h = p ? { Authorization: 'Basic ' + Buffer.from('opencode:' + p).toString('base64') } : {}; fetch('http://127.0.0.1:4096/global/health', { headers: h }).then((res) => { if (!res.ok) process.exit(1); }).catch(() => process.exit(1))",
         ]
       interval: 15s
       timeout: 5s

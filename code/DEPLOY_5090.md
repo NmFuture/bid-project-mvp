@@ -102,6 +102,7 @@ Docker Hub 或模型源偶发失败时，可以重试失败的 pull/build；不�
 | `DATABASE_URL` | 与新 PostgreSQL 密码同步；密码含特殊字符时先做 URL 编码 |
 | `MINIO_ROOT_USER`、`MINIO_ROOT_PASSWORD` | 替换示例凭据 |
 | `AUTH_ADMIN_EMAIL`、`AUTH_ADMIN_PASSWORD`、`AUTH_ADMIN_NAME` | 初始管理员；必须替换 `123456` |
+| `OPENCODE_SERVER_PASSWORD` | 必填，opencode 服务端鉴权密码（engine-10）；为空时 compose 解析直接报错 |
 | `OCR_GPU_DEVICE_ID` | 必须为 `0` |
 | `OCR_HF_CACHE_DIR` | 默认 `./.localdata/ocr/huggingface`；允许首次在线下载并持久化 |
 | `HF_ENDPOINT` | 5090 当前优先使用可达的 `https://hf-mirror.com` |
@@ -146,7 +147,8 @@ docker compose \
 curl -fsS http://127.0.0.1:80/ >/dev/null
 curl -fsS http://127.0.0.1:80/api/healthz
 curl -fsS http://127.0.0.1:80/ds/healthcheck >/dev/null
-curl -fsS http://127.0.0.1:4096/global/health
+# opencode 已启用服务端鉴权（OPENCODE_SERVER_PASSWORD），只读引用单个变量，不打印整个 .env
+curl -fsS -u "opencode:$(grep '^OPENCODE_SERVER_PASSWORD=' ./.env | cut -d= -f2-)" http://127.0.0.1:4096/global/health
 curl -fsS http://127.0.0.1:8000/health
 
 docker exec sewpg_bid_docling_worker python -c \

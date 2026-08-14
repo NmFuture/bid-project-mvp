@@ -23,3 +23,9 @@ services:
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       NVIDIA_VISIBLE_DEVICES: "0"
       CUDA_VISIBLE_DEVICES: "0"
+
+  opencode:
+    environment:
+      # engine-10：生产强制非空（未设置时 compose 直接报错 fail-fast）；
+      # 空密码只允许出现在本地开发（主层默认值为空）。
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:?生产部署必须在 .env 中设置 OPENCODE_SERVER_PASSWORD（opencode 服务端鉴权密码）}
