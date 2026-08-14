@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from .style_index import StyleIndex, index_for_paragraph
+
 # Heading 段落开头的编号前缀正则。按优先级从长到短匹配。
 _PREFIX_PATTERNS = [
     # "第X章/节/篇/部分/卷"（中文数字或阿拉伯）
@@ -140,7 +142,16 @@ def _paragraph_heading_level(para) -> Optional[int]:
     direct = _direct_outline_level(para)
     if direct is not None:
         return direct
-    return _style_heading_level(para.style)
+    # 不走 para.style：那条路径每次都要重扫样式表，几万段落的循环里是主要耗时。
+    # 查预建索引，语义与 _style_heading_level(para.style) 一致（名称翻译、
+    # 未知 id 回落默认样式、basedOn 链、样式级 outlineLvl 都对齐）。
+    for entry in index_for_paragraph(para).iter_chain(StyleIndex.raw_style_id(para)):
+        named_level = _heading_level(entry.name)
+        if named_level is not None:
+            return named_level
+        if entry.outline_level is not None:
+            return entry.outline_level
+    return None
 
 
 def _numpr_num_id(num_pr) -> Optional[int]:
