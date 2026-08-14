@@ -616,6 +616,32 @@ class ShardedOrchestrationTests(unittest.TestCase):
             )
         return resolved, message, seen
 
+    def test_shard_sessions_use_project_opencode_concurrency_as_worker_cap(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        fake_cls, _seen = self._fake_client_class()
+        worker_counts: list[int] = []
+        original_executor = parsing.ThreadPoolExecutor
+
+        class RecordingExecutor(original_executor):
+            def __init__(self, *args, **kwargs):
+                worker_counts.append(kwargs.get("max_workers", args[0] if args else None))
+                super().__init__(*args, **kwargs)
+
+        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+            parsing.settings, "opencode_max_concurrency", 2
+        ), patch.object(parsing, "ThreadPoolExecutor", RecordingExecutor):
+            parsing._run_technical_sharded_parse_skill(
+                self.manifest_path,
+                local_result={"items": [], "structured": {}},
+                profile=TECHNICAL_PARSE_PROFILE,
+            )
+
+        self.assertEqual(worker_counts, [2])
+
     def test_all_shards_run_once_and_finalize_covers_full_checklist(self) -> None:
         resolved, message, seen = self._run()
 
