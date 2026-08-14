@@ -2643,9 +2643,11 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
 
   // 刷新并 AI 填充：保存当前编辑 → 按最新素材范围刷新事实表 → 事实表维护 Skill 按素材
-  // 给字段补值/修正/口径建议，结果落为待人工确认
+  // 给字段补值/修正/口径建议，结果落为待人工确认。
+  // 三步全在后端那一个任务里跑，这里只提交一次并把页面上的编辑带过去——拆成三次调用时，
+  // 只有第三步有防重入，等待期间再点一次按钮，前两步照跑改了表，正在跑的那轮就作废了。
   const handleCurateFacts = async () => {
-    if (busyAction) return
+    if (busyAction || factCurateRunning) return
     const hasUnnamedManualValue = factFields.some((field) => {
       const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
       return isManualField && String(field.value || '').trim() && !String(field.label || '').trim()
@@ -2656,26 +2658,13 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     setBusyAction('facts-curate')
     try {
-      // 表还没建过（清单刚上传）时没有可保存的编辑，跳过保存直接进构建
-      if (factFields.length) {
-        const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
-        const savedTable = await technicalGapsAPI.saveFacts(id, {
-          fields: fieldsToSave,
-          confirm: false,
-          operator: '当前用户',
-        })
-        setFactTable(savedTable)
-        setFactFields(asObjectArray(savedTable?.fields))
-        setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
-      }
-      // 先按最新素材范围刷新事实表（重跑规则抽取，并把无值的终态字段复位为未提取），
-      // 再交给 AI 补抽——否则上一轮标成「缺少来源」的字段不会进 AI 的工作清单。
-      const rebuiltTable = await technicalGapsAPI.buildFacts(id)
-      setFactTable(rebuiltTable)
-      setFactFields(asObjectArray(rebuiltTable?.fields))
-      setData((current) => (current ? { ...current, projectFactTable: rebuiltTable } : current))
+      // 表还没建过（清单刚上传）时没有可保存的编辑，fields 为空，后端跳过保存直接建表
+      const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
       // 提交后台任务后立即返回，执行进度由轮询接管；此后关弹窗、刷新页面都不影响
-      const payload = await technicalGapsAPI.curateFacts(id, {})
+      const payload = await technicalGapsAPI.curateFacts(id, {
+        fields: fieldsToSave,
+        operator: '当前用户',
+      })
       setFactCurateReport(null)
       setFactCurateState(payload?.factCurateState || null)
       showToast?.(payload?.message || '已提交 AI 匹配填充任务')
@@ -3455,7 +3444,11 @@ export default function TechnicalGapRecognition({ showToast }) {
           open
           factTable={factTable}
           fields={factFields}
-          busy={['facts-confirm', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
+          // 后台任务跑着时同样置灰：保存/刷新/范围三个动作现在都在任务里跑，
+          // 中途再点会被后端 409 挡掉，按钮先灰掉省得用户以为点上了
+          busy={
+            ['facts-confirm', 'facts-material-sources', 'facts-curate'].includes(busyAction) || factCurateRunning
+          }
           specsImported={factSpecsMeta.imported}
           specsFileName={factSpecsMeta.fileName}
           materialPaths={factMaterialPaths}
