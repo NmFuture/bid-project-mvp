@@ -514,6 +514,8 @@ export const technicalParseAPI = {
 
 export const technicalDirectoryAPI = {
   status: (projectId) => request(`/technical/projects/${projectId}/directory-generation`),
+  cancel: (projectId) =>
+    request(`/technical/projects/${projectId}/directory-generation/cancel`, { method: 'POST' }),
   run: (projectId) =>
     request(`/technical/projects/${projectId}/directory-generation/run`, {
       method: 'POST',
@@ -536,6 +538,8 @@ export const technicalOutlineAPI = {
 
 export const technicalGapsAPI = {
   detectionStatus: (projectId) => request(`/technical/projects/${projectId}/gaps-detection`),
+  cancelDetection: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps-detection/cancel`, { method: 'POST' }),
   runDetection: (projectId) =>
     request(`/technical/projects/${projectId}/gaps-detection/run`, {
       method: 'POST',
@@ -604,6 +608,8 @@ export const technicalGapsAPI = {
 
 export const technicalGenerateAPI = {
   status: (projectId) => request(`/technical/projects/${projectId}/fill-generation`),
+  cancel: (projectId) =>
+    request(`/technical/projects/${projectId}/fill-generation/cancel`, { method: 'POST' }),
   run: (projectId) =>
     request(`/technical/projects/${projectId}/fill-generation/run`, {
       method: 'POST',
@@ -614,6 +620,8 @@ export const technicalGenerateAPI = {
 
 export const technicalScoreIndexAPI = {
   status: (projectId) => request(`/technical/projects/${projectId}/score-index`),
+  cancel: (projectId) =>
+    request(`/technical/projects/${projectId}/score-index/cancel`, { method: 'POST' }),
   run: (projectId) =>
     request(`/technical/projects/${projectId}/score-index/run`, {
       method: 'POST',
