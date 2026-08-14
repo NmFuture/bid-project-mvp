@@ -982,7 +982,7 @@ class ParsePipelineTests(unittest.TestCase):
             "app.services.parsing.DoclingParseEngine.parse_pdf",
             new=fake_parse_pdf,
         ), patch(
-            "app.services.parsing._ocr_business_pdf_pages",
+            "app.services.parse_extract._ocr_business_pdf_pages",
             side_effect=fake_ocr_pages,
         ), patch(
             "app.services.parsing.run_business_template_extractor",
@@ -2036,7 +2036,7 @@ class ParsePipelineTests(unittest.TestCase):
             }
 
             with patch("app.services.parsing.settings.s1_parse_opencode_enabled", True), patch(
-                "app.services.parsing._run_technical_sharded_parse_skill",
+                "app.services.parse_s1_skill._run_technical_sharded_parse_skill",
                 side_effect=RuntimeError("unit-test sharded parse failed"),
             ), patch(
                 "app.services.parsing.OpencodeEngine.generate_tender_parse_with_trace",
@@ -2835,7 +2835,7 @@ class ParsePipelineTests(unittest.TestCase):
             captured.append(appendix)
             return dict(appendix)
 
-        with patch("app.services.parsing.materialize_appendix_docx", side_effect=fake_materialize):
+        with patch("app.services.parse_appendix.materialize_appendix_docx", side_effect=fake_materialize):
             parsing_service._extract_docx_appendices(
                 "PRJ-SLICE-POLICY",
                 [
@@ -2864,7 +2864,7 @@ class ParsePipelineTests(unittest.TestCase):
         doc.save(source_path)
 
         source_state = parsing_service._build_appendix_slice_state(source_path)
-        with patch("app.services.parsing.DOCX_SLICE_STORED_XML_THRESHOLD_BYTES", 1, create=True):
+        with patch("app.services.parse_appendix.DOCX_SLICE_STORED_XML_THRESHOLD_BYTES", 1, create=True):
             sliced = parsing_service._slice_appendix_from_source(
                 source_path,
                 target_path,

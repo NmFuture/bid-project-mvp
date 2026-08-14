@@ -657,11 +657,11 @@ class ShardedOrchestrationTests(unittest.TestCase):
     def test_finalize_validation_failure_raises_instead_of_returning_success(self) -> None:
         from unittest.mock import patch
 
-        from app.services import parsing
+        from app.services import parse_s1_skill, parsing
         from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
 
         fake_create, _seen, _created_kwargs = self._fake_client_class()
-        original_cli = parsing._run_s1parse_cli
+        original_cli = parse_s1_skill._run_s1parse_cli
 
         def failed_finalize(command: str, manifest_path: Path, *args: str) -> dict:
             if command != "finalize":
@@ -680,7 +680,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
             return {"outputFile": str(self.output_path)}
 
         with patch.object(parsing.AgentEngineFactory, "create", side_effect=fake_create), patch.object(
-            parsing,
+            parse_s1_skill,
             "_run_s1parse_cli",
             side_effect=failed_finalize,
         ):
