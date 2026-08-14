@@ -381,7 +381,7 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       <PageHeader
         variant="panel"
         title="系统设置"

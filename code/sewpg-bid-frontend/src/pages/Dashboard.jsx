@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { dashboardAPI } from '../api'
+import { usePageData } from '../utils/pageCache'
 import { workspaceRoute } from '../utils/workspace'
 import StatusBadge from '../components/shared/StatusBadge'
 import RoleChip from '../components/shared/RoleChip'
@@ -209,28 +210,11 @@ function PanelHeader({ title, hint, action }) {
 
 export default function Dashboard({ currentUser }) {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    let mounted = true
-    dashboardAPI
-      .get()
-      .then((payload) => {
-        if (!mounted) return
-        setData(payload)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (!mounted) return
-        setError(err?.message || '加载失败')
-        setLoading(false)
-      })
-    return () => {
-      mounted = false
-    }
-  }, [])
+  // 会话缓存：二次进入工作台直接渲染上次数据，后台静默刷新
+  const { data, loading, error } = usePageData(
+    `dashboard:${currentUser?.id || 'guest'}`,
+    () => dashboardAPI.get(),
+  )
 
   const role = data?.role || currentUser?.role
   const userName = currentUser?.name || '用户'
@@ -249,7 +233,7 @@ export default function Dashboard({ currentUser }) {
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="mx-auto w-full max-w-[1600px]">
         <EmptyState
@@ -276,7 +260,7 @@ export default function Dashboard({ currentUser }) {
   const metrics = (data?.metrics || []).filter((metric) => !['aiSaved', 'todo'].includes(metric.key))
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       <Greeting name={userName} role={role} />
 
       {/* 顶部统计 */}

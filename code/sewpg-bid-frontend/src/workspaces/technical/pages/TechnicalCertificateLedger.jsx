@@ -783,7 +783,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
 
   return (
     <>
-      <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
+      <div className="flex min-h-0 flex-col gap-3">
         <MaterialsViewSwitch
           active="certificates"
           title="证书台账"

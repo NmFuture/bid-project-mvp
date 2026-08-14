@@ -514,7 +514,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
 
   return (
     <>
-    <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
+    <div className="flex min-h-0 flex-col gap-3">
       <MaterialsViewSwitch
         active="wiki"
         title={`${activeBidType} Wiki`}
