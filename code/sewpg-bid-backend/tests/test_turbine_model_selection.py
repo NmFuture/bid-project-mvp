@@ -73,7 +73,6 @@ def _seed_fact_specs(project_id: str) -> None:
                 "sourceFile": "",
                 "placeholder": "",
                 "note": "",
-                "needsConfirmation": False,
                 "referenceFile": "招标文件",
                 "valueRequired": True,
                 "sourceKind": "tender",

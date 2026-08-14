@@ -90,7 +90,6 @@ const toPayloadSpec = (row, index) => {
     sourceFile: targetFile,
     placeholder: row.placeholder.trim(),
     note,
-    needsConfirmation: note.includes('需确认'),
     referenceFile,
     valueRequired: sourceKind !== 'template',
     sourceKind,
