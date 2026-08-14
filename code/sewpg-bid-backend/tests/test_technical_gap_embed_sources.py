@@ -228,6 +228,118 @@ class EmbedSourcesTests(unittest.TestCase):
         lookup.assert_not_called()
 
 
+class EmbedLabelRangeTests(unittest.TestCase):
+    """`文件-起点-终点` 拆分：文件名边界由素材索引决定，不靠语法猜。"""
+
+    def setUp(self) -> None:
+        self.project = {"id": "PRJ-0001", "name": "示例项目", "bidType": "技术标"}
+
+    def _by_key(self, names: list[str]) -> dict[str, list[dict]]:
+        index: dict[str, list[dict]] = {}
+        for name in names:
+            index.setdefault(ai_fill._embed_norm(Path(name).stem), []).append({"id": name, "name": name})
+        return index
+
+    def test_two_anchors_become_closed_range(self) -> None:
+        matches, anchors = ai_fill._embed_split_label(
+            "物流解决方案-项目运输方案-场内道路建议参数", self._by_key(["物流解决方案.docx"])
+        )
+
+        self.assertEqual(matches[0]["name"], "物流解决方案.docx")
+        self.assertEqual(anchors, ["项目运输方案", "场内道路建议参数"])
+
+    def test_single_anchor_is_start_equals_end(self) -> None:
+        _matches, anchors = ai_fill._embed_split_label(
+            "风资源评估报告-发电量结果", self._by_key(["风资源评估报告.docx"])
+        )
+
+        self.assertEqual(anchors, ["发电量结果"])
+
+    def test_reserved_whole_file_token_means_no_range(self) -> None:
+        matches, anchors = ai_fill._embed_split_label(
+            "基础弯矩表-完整插入", self._by_key(["基础弯矩表.xlsx"])
+        )
+
+        self.assertTrue(matches)
+        self.assertEqual(anchors, [])
+
+    def test_hyphenated_material_name_is_not_cut_apart(self) -> None:
+        # 型式认证素材名自带四个连字符，固定按第一个 `-` 拆会把文件名切碎
+        name = "EW5.0-202-FD24C3018（南高齿）齿轮箱型式认证A-20240829.pdf"
+        matches, anchors = ai_fill._embed_split_label(f"{Path(name).stem}-完整插入", self._by_key([name]))
+
+        self.assertEqual(matches[0]["name"], name)
+        self.assertEqual(anchors, [])
+
+    def test_unmatched_concept_name_reports_not_found_not_format_error(self) -> None:
+        # 清单写概念名、素材是带机型编号的全名：根因是素材名对不上，不是占位符格式错。
+        # 报「格式错误」会把人引去改清单，但清单没错。
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            blank = tmp / "待填写-方案.docx"
+            _write_docx(blank, ["[齿轮箱型式认证-完整插入，待插入]"])
+            with (
+                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
+                patch.object(ai_fill, "project_turbine_model", return_value={}),
+                patch.object(
+                    ai_fill,
+                    "_allowed_technical_material_index",
+                    return_value=[{"id": "RAW-1", "name": "EW5.0-202-FD24C3018齿轮箱型式认证A.pdf", "materialTier": "project"}],
+                ),
+            ):
+                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
+
+        self.assertEqual(sources[0]["status"], "not_found")
+
+    def test_extra_anchors_after_matched_material_are_a_format_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            blank = tmp / "待填写-方案.docx"
+            _write_docx(blank, ["[物流解决方案-甲-乙-丙，待插入]"])
+            with (
+                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
+                patch.object(ai_fill, "project_turbine_model", return_value={}),
+                patch.object(
+                    ai_fill,
+                    "_allowed_technical_material_index",
+                    return_value=[{"id": "RAW-3", "name": "物流解决方案.docx", "materialTier": "project"}],
+                ),
+            ):
+                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
+
+        # 前缀命中了素材、后面确实剩三段，这才是真正的格式错
+        self.assertEqual(sources[0]["status"], "invalid_range")
+        self.assertIn("3 个标题锚点", sources[0]["statusMessage"])
+
+    def test_heading_range_is_handed_to_the_filler(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            blank = tmp / "待填写-方案.docx"
+            _write_docx(blank, ["[物流解决方案-项目运输方案-场内道路建议参数，待插入]"])
+            payload = {"bucket": "materials", "key": "cleaned/物流解决方案.docx", "fileName": "物流解决方案.docx"}
+
+            def _run_async_stub(awaitable: object) -> tuple[dict, str]:
+                if hasattr(awaitable, "close"):
+                    awaitable.close()
+                return payload, "cleaned"
+
+            with (
+                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
+                patch.object(ai_fill, "project_turbine_model", return_value={}),
+                patch.object(
+                    ai_fill,
+                    "_allowed_technical_material_index",
+                    return_value=[{"id": "RAW-3", "name": "物流解决方案.docx", "materialTier": "project"}],
+                ),
+                patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),
+                patch.object(ai_fill.minio_client, "download_file"),
+            ):
+                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
+
+        self.assertEqual(sources[0]["status"], "ready")
+        self.assertEqual(sources[0]["headingRange"], {"start": "项目运输方案", "end": "场内道路建议参数"})
+
+
 class EmbedConversionTests(unittest.TestCase):
     """非 docx 素材按需转 Word。真跑转换脚本，不 mock 转换本身——嵌进投标材料的是产物内容。"""
 

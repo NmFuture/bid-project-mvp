@@ -876,6 +876,8 @@ _EMBED_PLACEHOLDER_RE = re.compile(r"[\[【]\s*([^\]】\r\n]{1,80}?)\s*[,，、:
 _EMBED_NORM_RE = re.compile(r"[\s（）()、/\\:：；;，,。\-_—×*\[\]【】]+")
 # 素材分层的特异性：同名素材优先取更专的一层，同层撞名才交人工
 _EMBED_TIER_PRIORITY = {"project": 3, "customer": 2, "standard": 1}
+# 待插入范围统一成闭区间 [起点节, 终点节]：单标题是起点=终点，整份是这个保留字
+_EMBED_WHOLE_FILE_TOKEN = "完整插入"
 # 非 docx 素材按需转 Word 后再嵌入，转换脚本取自 bid-material-format-cleaner
 _EMBED_CONVERT_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".pdf"}
 _EMBED_EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
@@ -884,6 +886,28 @@ _EMBED_CONVERT_SCRIPTS: dict[str, Any] = {}
 
 def _embed_norm(value: Any) -> str:
     return _EMBED_NORM_RE.sub("", str(value or "").replace("　", " ").strip().lower())
+
+
+def _embed_split_label(label: str, by_key: dict[str, list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """把 `文件-起点-终点` 拆成 (素材候选, 标题锚点)。
+
+    素材名自带连字符（型式认证素材名里有四个），固定按第一个 `-` 拆会把文件名切碎，
+    所以从最长前缀往短试，第一个在素材索引里命中的前缀就是文件名——文件名边界由
+    「库里有没有这个名字」决定，比按语法猜更本质。
+
+    一个前缀都不命中时返回空候选，交给上层报 not_found。这类占位符的根因是素材名
+    对不上（清单写概念名、素材是带机型编号的全名），报「格式错误」会把人引去改清单。
+    """
+    parts = [part.strip() for part in str(label or "").split("-")]
+    for count in range(len(parts), 0, -1):
+        matches = by_key.get(_embed_norm("-".join(parts[:count])))
+        if not matches:
+            continue
+        anchors = [part for part in parts[count:] if part]
+        if len(anchors) == 1 and _embed_norm(anchors[0]) == _embed_norm(_EMBED_WHOLE_FILE_TOKEN):
+            anchors = []
+        return matches, anchors
+    return [], []
 
 
 def _format_cleaner_script(script_name: str) -> Any:
@@ -1020,7 +1044,7 @@ def _embed_sources_for_fill(
 
     sources: list[dict[str, Any]] = []
     for label in labels:
-        matches = by_key.get(_embed_norm(label)) or []
+        matches, anchors = _embed_split_label(label, by_key)
         if not matches:
             sources.append(
                 {
@@ -1040,12 +1064,28 @@ def _embed_sources_for_fill(
             "folderPath": str(picked.get("folderPath") or ""),
             "materialTier": str(picked.get("materialTier") or ""),
         }
+        if anchors:
+            # 单锚点是起点=终点，闭区间语义由 filler 按标题层级展开成整节
+            entry["headingRange"] = {"start": anchors[0], "end": anchors[-1]}
+        if len(anchors) > 2:
+            # 前缀已命中素材，后面还剩三段以上，才是真的占位符格式错
+            sources.append(
+                {
+                    **entry,
+                    "status": "invalid_range",
+                    "statusMessage": (
+                        f"占位符「{label}」在素材「{name}」之后拆出 {len(anchors)} 个标题锚点，"
+                        "最多支持起点和终点两个。"
+                    ),
+                }
+            )
+            continue
         if ambiguous:
             sources.append(
                 {
                     **entry,
                     "status": "ambiguous",
-                    "statusMessage": f"同一层级存在多个名为「{label}」的素材，请人工指定。",
+                    "statusMessage": f"同一层级存在多个名为「{Path(name).stem}」的素材，请人工指定。",
                     "candidateCount": len(matches),
                 }
             )

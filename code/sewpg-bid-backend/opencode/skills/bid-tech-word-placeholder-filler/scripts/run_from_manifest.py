@@ -15,6 +15,7 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from docx.text.paragraph import Paragraph
 from docxcompose.composer import Composer
 
 
@@ -752,6 +753,113 @@ def build_embed_index(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return index
 
 
+# Heading 编号前缀，与 bid-tech-assembler/scripts/numbering_fixer.py 的 _PREFIX_PATTERNS 同源。
+# 只用于锚点比对，不改文档内容——素材里的编号原样搬走，assembler 后续会剥光重注。
+HEADING_PREFIX_PATTERNS = [
+    re.compile(r"^\s*第[一二三四五六七八九十百千万零〇0-9]+[章节篇部分卷]\s*[::]?\s*"),
+    re.compile(r"^\s*\d+(?:\.\d+){0,6}[.．、\s]+"),
+    re.compile(r"^\s*[（(][一二三四五六七八九十百千万\d]+[）)]\s*[::]?\s*"),
+    re.compile(r"^\s*[一二三四五六七八九十百千万零〇]+[、.．:：]\s*"),
+    re.compile(r"^\s*(?:[IVX]+|[ivx]+)[.．、)]\s*"),
+    re.compile(r"^\s*[A-Za-z][.．、)]\s*"),
+    re.compile(r"^\s*附\s*[:：]?\s*"),
+]
+HEADING_STYLE_RE = re.compile(r"^(?:Heading|heading)\s+(\d+)$|^标题\s*(\d+)$")
+
+
+def strip_heading_prefix(text: str) -> str:
+    """剥掉标题里所有可识别的章节号前缀（复合前缀要连续剥，如 "第一章 1.1 xxx"）。"""
+    previous = None
+    current = text or ""
+    while previous != current:
+        previous = current
+        for pattern in HEADING_PREFIX_PATTERNS:
+            current = pattern.sub("", current, count=1)
+    return current.strip()
+
+
+def heading_level(paragraph: Any) -> int | None:
+    """段落的 Heading 级别；不是 Heading 返回 None。兼容英文 Heading N 与中文 标题 N。"""
+    style_name = (paragraph.style.name or "") if paragraph.style else ""
+    match = HEADING_STYLE_RE.match(style_name.strip())
+    if not match:
+        return None
+    return int(match.group(1) or match.group(2))
+
+
+def heading_anchor_key(value: Any) -> str:
+    """锚点比对键：剥编号前缀后再走 norm()，消除空格与全半角差异。"""
+    return norm(strip_heading_prefix(clean(value)))
+
+
+def locate_heading_anchor(headings: list[tuple[int, int, str]], anchor: str, role: str) -> int:
+    """在标题表里定位锚点，返回它在 body 子元素里的下标。
+
+    精确优先：剥掉编号前缀后全等且唯一就用它；精确无命中再退子串；多命中不猜，抛错交人工。
+    `风资源评估报告.docx` 里 H2「方案及发电量结果」的子串也命中「发电量结果」，
+    直接用子串匹配会插错整个上级章节。
+    """
+    key = heading_anchor_key(anchor)
+    if not key:
+        raise ValueError(f"{role}标题为空。")
+    exact = [index for index, _level, text in headings if text == key]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        raise ValueError(f"{role}标题「{anchor}」精确命中 {len(exact)} 处，无法确定用哪一处。")
+    partial = [index for index, _level, text in headings if key in text]
+    if len(partial) == 1:
+        return partial[0]
+    if not partial:
+        raise ValueError(f"{role}标题「{anchor}」在素材里找不到。")
+    raise ValueError(f"{role}标题「{anchor}」模糊命中 {len(partial)} 处，无法确定用哪一处。")
+
+
+def slice_heading_range(source_path: Path, start_anchor: str, end_anchor: str) -> Any:
+    """把素材裁到闭区间 [起点节, 终点节]，返回裁好的 Document。
+
+    「节」= 标题行本身 + 到下一个同级或更高级标题之前的全部内容，含子标题、表格、图。
+    闭区间是业务方逐字确认的语义：`文件-A-B` = A 节 + 中间所有章 + B 节完整，含头含尾。
+
+    实现刻意不搬 XML 元素：裁的是内存里的 Document，再把它整个交给 Composer.insert。
+    docxcompose 是逐元素从源 styles.xml 拉样式合并的，裁过的 body 走的还是同一条路径，
+    Heading 样式不会降级成 Normal——而样式一丢，assembler 的 strip_prefix /
+    inject_prefix_to_headings 就跳过这段（两者开头都是 `if lvl is None: continue`），
+    这段内容在最终稿里永远不会被编号。
+    """
+    doc = Document(str(source_path))
+    body = doc.element.body
+    children = [child for child in body if child.tag != qn("w:sectPr")]
+    levels: dict[int, int] = {}
+    headings: list[tuple[int, int, str]] = []
+    for index, child in enumerate(children):
+        if child.tag != qn("w:p"):
+            continue
+        paragraph = Paragraph(child, doc)
+        level = heading_level(paragraph)
+        if level is None:
+            continue
+        levels[index] = level
+        headings.append((index, level, heading_anchor_key(paragraph.text)))
+    if not headings:
+        raise ValueError("素材里没有 Heading 样式的标题，无法按标题区间截取。")
+    start_index = locate_heading_anchor(headings, start_anchor, "起点")
+    end_index = locate_heading_anchor(headings, end_anchor, "终点")
+    if end_index < start_index:
+        raise ValueError(f"终点标题「{end_anchor}」排在起点标题「{start_anchor}」之前。")
+    end_level = levels[end_index]
+    stop = len(children)
+    for index in range(end_index + 1, len(children)):
+        level = levels.get(index)
+        if level is not None and level <= end_level:
+            stop = index
+            break
+    for index, child in enumerate(children):
+        if index < start_index or index >= stop:
+            body.remove(child)
+    return doc
+
+
 def embed_failure_message(entry: dict[str, Any] | None) -> str:
     if not entry:
         return "素材库未找到同名素材。"
@@ -782,24 +890,45 @@ def apply_embeds(
         entry = embed_index.get(placeholder_key(label))
         source_path = Path(clean(entry.get("docxPath"))) if entry and clean(entry.get("docxPath")) else None
         ready = bool(entry) and clean(entry.get("status")) == "ready" and source_path is not None and source_path.exists()
+        heading_range = entry.get("headingRange") if entry and isinstance(entry.get("headingRange"), dict) else None
+        start_anchor = clean(heading_range.get("start")) if heading_range else ""
+        end_anchor = (clean(heading_range.get("end")) if heading_range else "") or start_anchor
+        range_error = ""
+        source_doc: Any = None
+        if ready:
+            try:
+                source_doc = (
+                    slice_heading_range(source_path, start_anchor, end_anchor)
+                    if start_anchor
+                    else Document(str(source_path))
+                )
+            except Exception as exc:  # noqa: BLE001 - 单份素材截不出来不能中断整份文件的填写
+                ready = False
+                range_error = f"素材「{clean(entry.get('name')) or source_path.name}」按标题区间截取失败：{exc}"
         if ready:
             if composer is None:
                 composer = Composer(doc)
-            composer.insert(list(body).index(paragraph._p), Document(str(source_path)))
+            composer.insert(list(body).index(paragraph._p), source_doc)
             paragraph._p.getparent().remove(paragraph._p)
+            source_name = clean(entry.get("name")) or source_path.name
             decisions.append(
                 {
                     "location": location,
                     "placeholder": placeholder["full"],
                     "label": label,
                     "action": "embed",
-                    "value": f"[已嵌入整份素材：{clean(entry.get('name')) or source_path.name}]",
+                    "value": (
+                        f"[已嵌入素材片段：{source_name} · {start_anchor}~{end_anchor}]"
+                        if start_anchor
+                        else f"[已嵌入整份素材：{source_name}]"
+                    ),
                     "confidence": 0.99,
                     "evidence": {
                         "source": clean(entry.get("name")),
                         "sourcePath": str(source_path),
                         "materialId": clean(entry.get("materialId")),
                         "materialTier": clean(entry.get("materialTier")),
+                        "headingRange": f"{start_anchor}~{end_anchor}" if start_anchor else "",
                         "factType": "embedded_document",
                     },
                     "alternatives": [],
@@ -808,7 +937,7 @@ def apply_embeds(
                 }
             )
             continue
-        message = embed_failure_message(entry)
+        message = range_error or embed_failure_message(entry)
         set_paragraph_text(paragraph, f"[待人工插入：{label}]", highlight=True)
         unfilled.append(label)
         decisions.append(
@@ -822,7 +951,8 @@ def apply_embeds(
                 "evidence": None,
                 "alternatives": [],
                 "specStatus": "embed_manual",
-                "embedStatus": clean(entry.get("status")) if entry else "not_found",
+                # 区间截取失败时素材本身是 ready 的，照抄 status 会让报告看不出真实原因
+                "embedStatus": "range_failed" if range_error else (clean(entry.get("status")) if entry else "not_found"),
                 "embedMessage": message,
             }
         )
@@ -915,7 +1045,7 @@ def write_reports(output_file: Path, result: dict[str, Any]) -> tuple[Path, Path
         f"- 输出文件：`{result['outputFile']}`",
         f"- 占位符：{report['placeholderCount']}",
         f"- 已填写：{report['filledPlaceholderCount']}",
-        f"- 已嵌入整份素材：{report.get('embeddedCount', 0)}",
+        f"- 已嵌入素材：{report.get('embeddedCount', 0)}",
         f"- 待人工：{report['unfilledPlaceholderCount']}（其中待人工插入 {report.get('manualEmbedCount', 0)}）",
         "",
         "## 参考来源",

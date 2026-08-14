@@ -98,6 +98,258 @@ def _write_blank_source(path: Path) -> None:
     document.save(str(path))
 
 
+def _write_range_source(path: Path) -> None:
+    """复刻 物流解决方案.docx 的真实结构：并列 H1 各带子节，末章后跟表格。
+
+    二/三/四 是并列一级标题，不是父子——按区间取「二~四」必须带上中间的三。
+    """
+    from docx import Document
+
+    document = Document()
+    for title, level in (
+        ("一、数字化运输管理", 1),
+        ("1.1 平台简介", 2),
+        ("二、项目运输方案", 1),
+        ("2.1 大件运输", 2),
+        ("2.2 车辆配置", 2),
+        ("三、临时设施布置", 1),
+        ("四、场内道路建议参数", 1),
+        ("4.1 路基宽度", 2),
+    ):
+        document.add_heading(title, level=level)
+        document.add_paragraph(f"{title} 正文")
+    table = document.add_table(rows=1, cols=1)
+    table.rows[0].cells[0].text = "末章表格"
+    document.save(str(path))
+
+
+def _write_substring_trap_source(path: Path) -> None:
+    """复刻 风资源评估报告.docx 的子串陷阱：H2「方案及发电量结果」下挂 H3「发电量结果」。"""
+    from docx import Document
+
+    document = Document()
+    for title, level in (
+        ("方案及发电量结果", 2),
+        ("机位方案", 3),
+        ("发电量结果", 3),
+        ("不确定性分析", 2),
+    ):
+        document.add_heading(title, level=level)
+        document.add_paragraph(f"{title} 正文")
+    document.save(str(path))
+
+
+def _headings(document) -> list[tuple[int, str]]:
+    return [
+        (filler.heading_level(paragraph), paragraph.text)
+        for paragraph in document.paragraphs
+        if filler.heading_level(paragraph) is not None
+    ]
+
+
+class HeadingRangeSliceTests(unittest.TestCase):
+    """按闭区间截取：起点节 + 中间所有章 + 终点节完整，含头含尾。"""
+
+    def test_closed_range_keeps_start_middle_and_end_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "物流解决方案.docx"
+            _write_range_source(source)
+
+            sliced = filler.slice_heading_range(source, "项目运输方案", "场内道路建议参数")
+            headings = _headings(sliced)
+            texts = [paragraph.text for paragraph in sliced.paragraphs]
+            table_count = len(sliced.tables)
+
+        # 起点节含全部子节、中间章整章带上、终点节到文档尾（含表格）
+        self.assertEqual(
+            headings,
+            [
+                (1, "二、项目运输方案"),
+                (2, "2.1 大件运输"),
+                (2, "2.2 车辆配置"),
+                (1, "三、临时设施布置"),
+                (1, "四、场内道路建议参数"),
+                (2, "4.1 路基宽度"),
+            ],
+        )
+        # 起点之前的整章不能带进来
+        self.assertNotIn("一、数字化运输管理", texts)
+        self.assertNotIn("1.1 平台简介", texts)
+        self.assertEqual(table_count, 1)
+
+    def test_single_anchor_stops_at_next_same_or_higher_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "物流解决方案.docx"
+            _write_range_source(source)
+
+            # 单标题 = 起点等于终点，只取该节
+            sliced = filler.slice_heading_range(source, "项目运输方案", "项目运输方案")
+            headings = _headings(sliced)
+
+        self.assertEqual(
+            headings,
+            [(1, "二、项目运输方案"), (2, "2.1 大件运输"), (2, "2.2 车辆配置")],
+        )
+
+    def test_exact_match_wins_over_substring(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "风资源评估报告.docx"
+            _write_substring_trap_source(source)
+
+            sliced = filler.slice_heading_range(source, "发电量结果", "发电量结果")
+            headings = _headings(sliced)
+
+        # H2「方案及发电量结果」的子串也命中，直接用子串会插错整个上级章节
+        self.assertEqual(headings, [(3, "发电量结果")])
+
+    def test_substring_fallback_applies_only_when_exact_misses(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "风资源评估报告.docx"
+            _write_substring_trap_source(source)
+
+            sliced = filler.slice_heading_range(source, "方案及发电量", "方案及发电量")
+            headings = _headings(sliced)
+
+        self.assertEqual(
+            headings,
+            [(2, "方案及发电量结果"), (3, "机位方案"), (3, "发电量结果")],
+        )
+
+    def test_numbering_prefix_is_ignored_when_matching_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "物流解决方案.docx"
+            _write_range_source(source)
+
+            # 素材标题带「二、」「2.1 」编号，占位符只写概念名
+            sliced = filler.slice_heading_range(source, "大件运输", "车辆配置")
+            headings = _headings(sliced)
+
+        self.assertEqual(headings, [(2, "2.1 大件运输"), (2, "2.2 车辆配置")])
+
+    def test_missing_anchor_raises_with_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "物流解决方案.docx"
+            _write_range_source(source)
+
+            with self.assertRaises(ValueError) as caught:
+                filler.slice_heading_range(source, "不存在的章节", "场内道路建议参数")
+
+        self.assertIn("找不到", str(caught.exception))
+
+    def test_reversed_range_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "物流解决方案.docx"
+            _write_range_source(source)
+
+            with self.assertRaises(ValueError) as caught:
+                filler.slice_heading_range(source, "场内道路建议参数", "项目运输方案")
+
+        self.assertIn("之前", str(caught.exception))
+
+
+class HeadingRangeEmbedRunTests(unittest.TestCase):
+    """区间截取跑通整条 fill_docx 链路，重点盯 Heading 样式有没有活下来。"""
+
+    def _run(self, tmp: Path, heading_range: dict | None, *, anchor: str = "项目运输方案") -> dict:
+        from docx import Document
+
+        blank = tmp / "待填写-总体方案.docx"
+        document = Document()
+        document.add_paragraph("一、总体方案")
+        document.add_paragraph("本项目安全等级为[安全等级，待填写]。")
+        document.add_paragraph("[物流解决方案，待插入]")
+        document.save(str(blank))
+
+        source = tmp / "物流解决方案.docx"
+        _write_range_source(source)
+
+        entry = {
+            "placeholder": "物流解决方案",
+            "materialId": "RAW-0007",
+            "name": "物流解决方案.docx",
+            "materialTier": "project",
+            "status": "ready",
+            "docxPath": str(source),
+        }
+        if heading_range:
+            entry["headingRange"] = heading_range
+        manifest = {
+            "schemaVersion": "bid-tech-word-placeholder-fill-v1",
+            "title": "总体方案",
+            "blankSource": {"docxPath": str(blank), "title": "待填写-总体方案.docx"},
+            "outputFile": str(tmp / "out.docx"),
+            # 清单第 2/3 列（待填写文件 / 原占位符位置）是 spec_index 的启用条件，缺了整份直接失败
+            "projectFactTable": {
+                "status": "confirmed",
+                "fields": [
+                    {
+                        "label": "安全等级",
+                        "value": "一级",
+                        "placeholder": "[安全等级，待填写]",
+                        "targetFile": "待填写-总体方案.docx",
+                    }
+                ],
+            },
+            "embedSources": [entry],
+        }
+        manifest_path = tmp / "word_fill_input.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        return filler.run_from_manifest(manifest_path)
+
+    def test_range_embed_preserves_heading_styles_in_output(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            result = self._run(tmp, {"start": "项目运输方案", "end": "场内道路建议参数"})
+            output = Document(str(tmp / "out.docx"))
+            headings = _headings(output)
+
+        decision = [item for item in result["filledFieldDetails"] if item["action"] == "embed"][0]
+        self.assertEqual(decision["evidence"]["headingRange"], "项目运输方案~场内道路建议参数")
+        self.assertIn("已嵌入素材片段", decision["value"])
+        # 样式一旦降级成 Normal，assembler 的 strip_prefix / inject_prefix_to_headings
+        # 会整段跳过（两者开头都是 `if lvl is None: continue`），最终稿里永远不会被编号
+        self.assertEqual(
+            headings,
+            [
+                (1, "二、项目运输方案"),
+                (2, "2.1 大件运输"),
+                (2, "2.2 车辆配置"),
+                (1, "三、临时设施布置"),
+                (1, "四、场内道路建议参数"),
+                (2, "4.1 路基宽度"),
+            ],
+        )
+
+    def test_whole_file_embed_is_unchanged_without_heading_range(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            result = self._run(tmp, None)
+            output = Document(str(tmp / "out.docx"))
+            headings = _headings(output)
+
+        decision = [item for item in result["filledFieldDetails"] if item["action"] == "embed"][0]
+        self.assertIn("已嵌入整份素材", decision["value"])
+        self.assertEqual(decision["evidence"]["headingRange"], "")
+        # 整份插入必须仍然是整份：第一章不能被截掉
+        self.assertEqual(headings[0], (1, "一、数字化运输管理"))
+        self.assertEqual(len(headings), 8)
+
+    def test_bad_anchor_degrades_to_manual_with_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            result = self._run(tmp, {"start": "不存在的章节", "end": "不存在的章节"})
+
+        detail = [item for item in result["fillReport"]["embedDetails"] if item["label"] == "物流解决方案"][0]
+        # 素材本身是 ready 的，照抄 status 会让报告看不出真实原因
+        self.assertEqual(detail["action"], "manual_embed")
+        self.assertEqual(detail["status"], "range_failed")
+        self.assertIn("找不到", detail["message"])
+
+
 class EmbedRunTests(unittest.TestCase):
     def _run(self, tmp: Path) -> dict:
         blank = tmp / "待填写-总体方案.docx"
