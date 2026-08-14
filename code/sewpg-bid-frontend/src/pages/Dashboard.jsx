@@ -8,6 +8,7 @@ import RoleChip from '../components/shared/RoleChip'
 import EmptyState from '../components/shared/EmptyState'
 import PageHeader from '../components/shared/PageHeader'
 import Skeleton, { SkeletonCard } from '../components/shared/Skeleton'
+import Button from '../components/ui/Button'
 
 const METRIC_TONE = {
   primary: 'bg-primary-fixed text-primary',
@@ -281,19 +282,30 @@ export default function Dashboard({ currentUser }) {
             title={isTB ? '在跑项目（双流程并列）' : `我负责的${role === 'B' ? '商务标' : '技术标'}项目`}
             hint={isTB ? `${projectsParallel.length} 个项目` : `${projects.length} 个项目`}
             action={
-              <button
-                type="button"
-                onClick={() => navigate(workspaceRoute(role === 'B' ? 'business' : 'tech', '/projects'))}
-                className="min-h-11 rounded-md px-2 text-sm font-medium text-primary hover:bg-primary-fixed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <span>查看全部</span>
-              </button>
+              (isTB ? projectsParallel.length : projects.length) > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => navigate(workspaceRoute(role === 'B' ? 'business' : 'tech', '/projects'))}
+                  className="min-h-11 rounded-md px-2 text-sm font-medium text-primary hover:bg-primary-fixed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <span>查看全部</span>
+                </button>
+              ) : null
             }
           />
           {isTB ? (
             <div className="space-y-3 stagger">
               {projectsParallel.length === 0 ? (
-                <EmptyState icon="folder_off" title="暂无在跑项目" />
+                <EmptyState
+                  icon="folder_off"
+                  title="暂无在跑项目"
+                  description="从解析一份招标文件开始，确认参与后项目会出现在这里。"
+                  action={(
+                    <Button onClick={() => navigate('/parse/technical')}>
+                      去解析招标文件
+                    </Button>
+                  )}
+                />
               ) : (
                 projectsParallel.map((p) => <ParallelProjectCard key={p.id} project={p} />)
               )}
@@ -301,7 +313,17 @@ export default function Dashboard({ currentUser }) {
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,30rem),1fr))] gap-3 stagger">
               {projects.length === 0 ? (
-                <EmptyState icon="folder_off" title="暂无在跑项目" className="col-span-full" />
+                <EmptyState
+                  icon="folder_off"
+                  title="暂无在跑项目"
+                  description="从解析一份招标文件开始，确认参与后项目会出现在这里。"
+                  className="col-span-full"
+                  action={(
+                    <Button onClick={() => navigate(role === 'B' ? '/parse/business' : '/parse/technical')}>
+                      去解析招标文件
+                    </Button>
+                  )}
+                />
               ) : (
                 projects.map((p) => (
                   <ProjectCard key={p.id} project={p} workspaceSlug={role === 'B' ? 'business' : 'tech'} />
