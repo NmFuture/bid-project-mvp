@@ -48,13 +48,6 @@ const previewKindLabels = {
   artifact: '结果预览',
 }
 
-const previewKindIcons = {
-  material: 'description',
-  appendix: 'table_view',
-  blankMaterial: 'description',
-  artifact: 'task',
-}
-
 const compactList = (items, limit = 4) => {
   const list = uniqueStrings(items)
   return {
@@ -273,10 +266,10 @@ function MaterialCandidateCard({
         {leading || null}
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[13px] font-semibold text-on-surface" title={name}>{name}</span>
+            <span className="truncate text-sm font-semibold text-on-surface" title={name}>{name}</span>
             {matchPercent > 0 ? (
               <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
+                className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${
                   matchPercent >= 99
                     ? 'bg-secondary-container text-on-secondary-container'
                     : matchPercent >= 50
@@ -292,8 +285,8 @@ function MaterialCandidateCard({
           <div className="mt-1 flex min-w-0 items-center gap-1.5">
             {coverageLabel ? <Badge size="xs" variant="pending">{coverageLabel}</Badge> : null}
             {isFillable ? <Badge size="xs" variant="info">待填写</Badge> : null}
-            {tierLabel ? <span className="shrink-0 text-[10px] text-outline">{tierLabel}</span> : null}
-            <span className="min-w-0 truncate text-[11px] text-outline" title={path}>{path}</span>
+            {tierLabel ? <span className="shrink-0 text-xs text-outline">{tierLabel}</span> : null}
+            <span className="min-w-0 truncate text-xs text-outline" title={path}>{path}</span>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -337,7 +330,6 @@ function MaterialCandidateCard({
             >
               {aiFillBusy ? 'AI填写中...' : aiFillCompleted ? (
                 <>
-                  <span className="material-symbols-outlined align-[-3px] text-[14px] text-secondary">check_circle</span>
                   已AI填写
                 </>
               ) : 'AI填写'}
@@ -574,11 +566,6 @@ const FactMaintenanceModal = ({
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
-              {field.needsConfirmation ? (
-                <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径建议人工核一遍'}>
-                  核口径
-                </span>
-              ) : null}
             </div>
           )}
         </div>
@@ -605,7 +592,7 @@ const FactMaintenanceModal = ({
                 </div>
               ))}
               {hiddenRefCount ? (
-                <div className="pl-[21px] text-[11px] text-outline">另有 {hiddenRefCount} 份素材</div>
+                <div className="pl-[21px] text-xs text-outline">另有 {hiddenRefCount} 份素材</div>
               ) : null}
             </div>
           ) : (
@@ -688,7 +675,7 @@ const FactMaintenanceModal = ({
           />
           <span className="min-w-0 flex-1 truncate text-on-surface" title={node.path}>{node.name}</span>
           {node.fileCount > 0 && (
-            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] tabular-nums text-on-surface-variant">{node.fileCount}</span>
+            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-xs tabular-nums text-on-surface-variant">{node.fileCount}</span>
           )}
         </div>
         {hasChildren && expanded ? node.children.map((child) => renderPathTreeNode(child, depth + 1)) : null}
@@ -708,7 +695,7 @@ const FactMaintenanceModal = ({
         <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-3.5 sm:px-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 id="technical-fact-modal-title" className="text-lg font-headline font-bold text-on-surface">项目事实表维护</h3>
+              <h3 id="technical-fact-modal-title" className="text-lg font-headline font-semibold text-on-surface">项目事实表维护</h3>
               <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${status === 'confirmed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-fixed text-on-tertiary-fixed'}`}>
                 {factTableStatusLabels[status] || status}
               </span>
@@ -730,10 +717,10 @@ const FactMaintenanceModal = ({
                   ? (curatePhase || '刷新填充中...')
                   : (fields.length ? '刷新并 AI 填充' : '生成事实表并 AI 填充')}
               </Button>
-              <Button type="button" onClick={onAddField} disabled={busy} icon="add" size="md" variant="secondary">
+              <Button type="button" onClick={onAddField} disabled={busy} size="md" variant="secondary">
                 新增字段
               </Button>
-              <Button type="button" onClick={onConfirm} disabled={busy || !fields.length} icon="save" size="md" variant="primary">
+              <Button type="button" onClick={onConfirm} disabled={busy || !fields.length} size="md" variant="primary">
                 保存
               </Button>
               <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="ghost" />
@@ -814,7 +801,6 @@ const FactMaintenanceModal = ({
               type="button"
               onClick={onGoToRules}
               disabled={busy}
-              icon="open_in_new"
               size="xs"
               variant="quiet"
               title="事实表清单已迁至素材库 · 规则页统一维护"
@@ -834,7 +820,6 @@ const FactMaintenanceModal = ({
               type="button"
               onClick={enterPathsEditing}
               disabled={busy}
-              icon={pathsEditing ? 'expand_less' : 'tune'}
               size="xs"
               variant="quiet"
             >
@@ -876,7 +861,7 @@ const FactMaintenanceModal = ({
                 {selectedPaths.map((path) => (
                   <span
                     key={path}
-                    className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
+                    className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
                     title={path}
                   >
                     <span className="max-w-[320px] truncate">{path}</span>
@@ -935,7 +920,6 @@ const FactMaintenanceModal = ({
                       onClick={() => setFactFilter(null)}
                       className="inline-flex h-6 items-center gap-0.5 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim"
                     >
-                      <span className="material-symbols-outlined text-[13px]">close</span>
                       清除筛选
                     </button>
                   </>
@@ -966,7 +950,6 @@ const FactMaintenanceModal = ({
                             <Fragment key={`fact-section-shared-${section.rows[0].index}`}>
                               {turbineGroupCount > 1 ? (
                                 <div className="flex items-center gap-1.5 border-y border-surface-container-high bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant">
-                                  <span className="material-symbols-outlined text-[15px] text-outline">public</span>
                                   全场共用
                                 </div>
                               ) : null}
@@ -978,14 +961,14 @@ const FactMaintenanceModal = ({
                           <div key={`fact-section-turbine-${section.group}`} className="px-3 pb-1 pt-3">
                             <div className="overflow-hidden rounded-lg border border-primary/30 shadow-sm">
                               <div className="flex items-center gap-2 border-b border-primary/20 bg-primary/[0.08] px-3 py-2">
-                                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold leading-none text-on-primary">
+                                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold leading-none text-on-primary">
                                   {section.group}
                                 </span>
                                 <span className="truncate text-sm font-semibold text-on-surface" title={section.modelLabel}>
                                   {section.modelLabel || `机型${section.group}`}
                                 </span>
                                 {summary ? (
-                                  <span className="ml-auto shrink-0 rounded-md bg-surface px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
+                                  <span className="ml-auto shrink-0 rounded-md bg-surface px-2 py-0.5 text-xs font-medium text-on-surface-variant">
                                     {summary}
                                   </span>
                                 ) : null}
@@ -1020,7 +1003,6 @@ const FactMaintenanceModal = ({
                       disabled={busy}
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
-                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
                       前往规则页
                     </button>
                   </>
@@ -1035,7 +1017,6 @@ const FactMaintenanceModal = ({
                       disabled={busy}
                       className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
                     >
-                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
                       前往规则页上传
                     </button>
                   </>
@@ -1078,7 +1059,7 @@ function AiFillReferenceModal({
       <div role="dialog" aria-modal="true" aria-labelledby="technical-ai-fill-modal-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-4xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-4 sm:px-5">
           <div className="min-w-0">
-            <h3 id="technical-ai-fill-modal-title" className="text-lg font-headline font-bold text-on-surface">AI 填写</h3>
+            <h3 id="technical-ai-fill-modal-title" className="text-lg font-headline font-semibold text-on-surface">AI 填写</h3>
             <p className="mt-1 truncate text-xs text-on-surface-variant" title={blankTitle}>
               待填写对象：{blankTitle || '待填写空表/Word'}
             </p>
@@ -1086,16 +1067,16 @@ function AiFillReferenceModal({
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <div className="rounded-md border border-secondary/20 bg-secondary-container/30 px-3 py-2 text-[11px] text-on-secondary-container">
+          <div className="rounded-md border border-secondary/20 bg-secondary-container/30 px-3 py-2 text-xs text-on-secondary-container">
             勾选结果会锁定为本次 AI 填写的唯一素材范围，不会自动扩大到其他素材。
           </div>
           {sourceRoutingSummary ? (
-            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs leading-relaxed text-on-surface-variant">
               {sourceRoutingSummary}
             </div>
           ) : null}
           {usesTenderDocument ? (
-            <div className={`mt-2 rounded-md px-3 py-2 text-[11px] leading-relaxed ${missingTenderDocument ? 'bg-error-container text-on-error-container' : 'bg-primary-container/45 text-on-primary-container'}`}>
+            <div className={`mt-2 rounded-md px-3 py-2 text-xs leading-relaxed ${missingTenderDocument ? 'bg-error-container text-on-error-container' : 'bg-primary-container/45 text-on-primary-container'}`}>
               <div className="font-semibold">使用项目招标文件全文</div>
               <div className="mt-0.5">
                 {missingTenderDocument
@@ -1136,7 +1117,7 @@ function AiFillReferenceModal({
                         aria-label={`勾选 ${material.name || material.cleanedFileName || materialId} 用于 AI 填写`}
                       />
                       {checked ? (
-                        <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+                        <span className="rounded bg-secondary-container px-1.5 py-0.5 text-xs font-semibold text-on-secondary-container">
                           用于AI
                         </span>
                       ) : null}
@@ -1145,7 +1126,7 @@ function AiFillReferenceModal({
                 />
               )
             }) : (
-              <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
+              <div className="rounded-md bg-surface-container-low px-3 py-2 text-xs text-outline">
                 {usesTenderDocument && !missingTenderDocument
                   ? '本次无需额外选择素材，AI 将读取项目招标文件全文进行填写。'
                   : '暂无推荐素材，可先在目录项底部搜索或上传素材后再发起 AI 填写。'}
@@ -1157,12 +1138,11 @@ function AiFillReferenceModal({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-on-surface">上传补充素材</div>
-                  <div className="mt-0.5 text-[11px] text-outline">
+                  <div className="mt-0.5 text-xs text-outline">
                     自动匹配不准时可手动补料：上传的文件会存入项目素材库，并自动勾选为本次 AI 填写的参考素材。
                   </div>
                 </div>
                 <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container ${busy || uploadBusy ? 'pointer-events-none opacity-50' : ''}`}>
-                  <span className="material-symbols-outlined text-[16px]">upload_file</span>
                   {uploadBusy ? '上传中...' : '上传素材'}
                   <input
                     type="file"
@@ -1183,11 +1163,11 @@ function AiFillReferenceModal({
         </div>
         <div className="flex flex-col gap-3 border-t border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="flex flex-wrap gap-1.5">
-            <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
+            <span className="rounded bg-secondary-container px-2 py-0.5 text-xs font-semibold text-on-secondary-container">
               已选 {referenceIds.length} 份参考素材
             </span>
             {usesTenderDocument && !missingTenderDocument ? (
-              <span className="rounded bg-primary-container px-2 py-0.5 text-[10px] font-semibold text-on-primary-container">
+              <span className="rounded bg-primary-container px-2 py-0.5 text-xs font-semibold text-on-primary-container">
                 招标文件 {tenderDocumentState.documentCount || '全部'} 份
               </span>
             ) : null}
@@ -1214,7 +1194,6 @@ function AiFillReferenceModal({
 function PreviewDocumentPane({
   eyebrow,
   title,
-  icon,
   loading,
   session,
   error,
@@ -1223,15 +1202,12 @@ function PreviewDocumentPane({
   return (
     <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest lg:min-h-[35rem]">
       <div className="flex min-h-[64px] shrink-0 items-center gap-3 border-b border-surface-container-high px-4 py-3">
-        <span className="material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-fixed text-[20px] text-primary">
-          {icon}
-        </span>
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold text-primary">{eyebrow}</div>
+          <div className="text-xs font-semibold text-primary">{eyebrow}</div>
           <h4 className="mt-0.5 truncate text-sm font-semibold text-on-surface" title={title}>{title}</h4>
         </div>
         {mode === 'edit' ? (
-          <span className="ml-auto shrink-0 rounded bg-primary-fixed px-2 py-0.5 text-[10px] font-semibold text-primary">
+          <span className="ml-auto shrink-0 rounded bg-primary-fixed px-2 py-0.5 text-xs font-semibold text-primary">
             可编辑 · 自动保存
           </span>
         ) : null}
@@ -1312,7 +1288,7 @@ function TechnicalPreviewModal({
                   disabled={reviewBusy}
                   variant="quiet"
                 />
-                <span className="min-w-12 text-center text-[11px] tabular-nums text-on-surface-variant">
+                <span className="min-w-12 text-center text-xs tabular-nums text-on-surface-variant">
                   {queueIndex >= 0 ? queueIndex + 1 : '-'}/{queue.length}
                 </span>
                 <IconButton
@@ -1346,7 +1322,6 @@ function TechnicalPreviewModal({
               <PreviewDocumentPane
                 eyebrow="填写前 · 参考稿"
                 title={comparison.reference.title || '待填写文档'}
-                icon={previewKindIcons[comparison.reference.kind] || 'description'}
                 loading={referencePreviewLoading}
                 session={referencePreviewSession}
                 error={referencePreviewError}
@@ -1354,7 +1329,6 @@ function TechnicalPreviewModal({
               <PreviewDocumentPane
                 eyebrow="填写后 · AI 结果"
                 title={comparison.result.title || 'AI 填写结果'}
-                icon="auto_awesome"
                 loading={previewLoading}
                 session={previewSession}
                 error={previewError}
@@ -1365,7 +1339,6 @@ function TechnicalPreviewModal({
             <PreviewDocumentPane
               eyebrow={previewKindLabels[selectedPreviewChoice.kind] || '文档预览'}
               title={selectedPreviewChoice.title || '文档预览'}
-              icon={previewKindIcons[selectedPreviewChoice.kind] || 'description'}
               loading={previewLoading}
               session={previewSession}
               error={previewError}
@@ -2731,7 +2704,7 @@ export default function TechnicalGapRecognition({ showToast }) {
           <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-container-high">
             <span className="material-symbols-outlined text-3xl text-primary">account_tree</span>
           </div>
-          <h4 className="mb-2 font-headline text-lg font-bold text-on-surface">请先生成并确认投标目录</h4>
+          <h4 className="mb-2 font-headline text-lg font-semibold text-on-surface">请先生成并确认投标目录</h4>
           <p className="max-w-xl text-sm leading-relaxed text-on-surface-variant">
             素材匹配基于已确认的投标目录运行。当前项目尚未生成目录、目录未确认或目录为空，请先完成目录生成与确认。
           </p>
@@ -2771,7 +2744,6 @@ export default function TechnicalGapRecognition({ showToast }) {
               title={sourceMatrixMeta.imported ? `附表填写规则：${sourceMatrixMeta.fileName || '已维护'}（按客户${sourceMatrixMeta.customerName ? `「${sourceMatrixMeta.customerName}」` : ''}维护，到素材库 · 规则页维护）` : '该客户尚未维护附表填写规则，到素材库 · 规则页维护'}
               size="stage"
               variant="quiet"
-              icon="open_in_new"
             >
               附表规则
             </Button>
@@ -2817,12 +2789,12 @@ export default function TechnicalGapRecognition({ showToast }) {
           <div className="flex min-h-7 flex-wrap items-center gap-3">
             <div className="flex shrink-0 items-center gap-2 border-r border-surface-container-high pr-3">
               <span className="text-xs font-semibold text-on-surface-variant">剩余任务</span>
-              <span className="text-lg font-headline font-bold tabular-nums text-primary">{remainingTasks}</span>
+              <span className="text-lg font-headline font-semibold tabular-nums text-primary">{remainingTasks}</span>
             </div>
             {/* 已就绪目录数 / 目录总行数：五桶目录数求和恒等于总行数，干完必然是 100% */}
             <div className="flex shrink-0 items-center gap-2 border-r border-surface-container-high pr-3">
               <span className="text-xs font-semibold text-on-surface-variant">目录覆盖</span>
-              <span className="text-lg font-headline font-bold tabular-nums text-primary">{coverageSettled}</span>
+              <span className="text-lg font-headline font-semibold tabular-nums text-primary">{coverageSettled}</span>
               <span className="text-xs tabular-nums text-outline">/ {coverageTotal}</span>
               <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-container-high">
                 <div
@@ -2849,9 +2821,9 @@ export default function TechnicalGapRecognition({ showToast }) {
                       active ? 'bg-primary-fixed ring-1 ring-primary' : 'bg-surface-container-low hover:bg-surface-container-high'
                     }`}
                   >
-                    <span className="text-[11px] text-on-surface-variant">{label}</span>
-                    <span className="text-sm font-headline font-bold tabular-nums text-primary">{tagTasks[key] || 0}</span>
-                    <span className="text-[11px] tabular-nums text-outline">（{tagTocs[key] || 0}）</span>
+                    <span className="text-xs text-on-surface-variant">{label}</span>
+                    <span className="text-sm font-headline font-semibold tabular-nums text-primary">{tagTasks[key] || 0}</span>
+                    <span className="text-xs tabular-nums text-outline">（{tagTocs[key] || 0}）</span>
                   </button>
                 )
               })}
@@ -2886,15 +2858,15 @@ export default function TechnicalGapRecognition({ showToast }) {
                     style={{ width: `${bodyFillTotal ? Math.round((bodyFillDone / bodyFillTotal) * 100) : 0}%` }}
                   />
                 </div>
-                <span className="shrink-0 text-[11px] tabular-nums text-on-surface-variant">
+                <span className="shrink-0 text-xs tabular-nums text-on-surface-variant">
                   {bodyFillDone}/{bodyFillTotal}
                 </span>
-                <span className="min-w-0 truncate text-[11px] text-outline" title={String(bodyFillState?.current || '')}>
+                <span className="min-w-0 truncate text-xs text-outline" title={String(bodyFillState?.current || '')}>
                   {bodyFillState?.current || ''}
                 </span>
               </div>
             ) : (
-              <span className="min-w-0 flex-1 truncate text-[11px] text-outline" title={String(bodyFillState?.message || '')}>
+              <span className="min-w-0 flex-1 truncate text-xs text-outline" title={String(bodyFillState?.message || '')}>
                 {bodyFillState?.message || ''}
               </span>
             )}
@@ -2934,7 +2906,7 @@ export default function TechnicalGapRecognition({ showToast }) {
               </Button>
             ) : bodyFillCounts.failed ? (
               // 走到这里只剩「有失败但没筛选」一种：失败的项停在「待填写」里，给出去处。
-              <span className="shrink-0 text-[11px] text-outline">点开「待填写」标签重试失败项</span>
+              <span className="shrink-0 text-xs text-outline">点开「待填写」标签重试失败项</span>
             ) : null}
           </div>
         </div>
@@ -2942,7 +2914,7 @@ export default function TechnicalGapRecognition({ showToast }) {
 
       <DataCard className="!p-0 overflow-hidden">
         <div className="business-section-head flex items-center border-b border-surface-container-high px-4 py-3">
-          <h3 className="text-base font-headline font-bold text-on-surface">技术目录</h3>
+          <h3 className="text-base font-headline font-semibold text-on-surface">技术目录</h3>
         </div>
 
         {!isCompleted ? (
@@ -2950,7 +2922,7 @@ export default function TechnicalGapRecognition({ showToast }) {
             <div className="w-14 h-14 rounded-full bg-surface-container-high flex items-center justify-center mb-4">
               <span className="material-symbols-outlined text-primary text-3xl">fact_check</span>
             </div>
-            <h4 className="text-lg font-headline font-bold text-on-surface mb-2">等待生成缺口计划</h4>
+            <h4 className="text-lg font-headline font-semibold text-on-surface mb-2">等待生成缺口计划</h4>
             <p className="text-sm text-on-surface-variant max-w-xl leading-relaxed">
               点击“识别缺口”后会按已确认目录、限定素材库、技术标 Wiki、投标机型和解析空副表生成第一步识别结果。
             </p>
@@ -2975,7 +2947,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                       type="button"
                       onClick={() => setTagFilter('')}
                       title="取消筛选"
-                      className="inline-flex items-center gap-0.5 rounded bg-surface-container-high px-1.5 py-0.5 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-dim"
+                      className="inline-flex items-center gap-0.5 rounded bg-surface-container-high px-1.5 py-0.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-dim"
                     >
                       {TECHNICAL_GAP_TAG_CONFIG[tagFilter]?.label}
                       <span className="material-symbols-outlined text-[13px]">close</span>
@@ -3035,7 +3007,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                               <span className="w-4 shrink-0" />
                             )}
                             <div className="min-w-0">
-                              <div className={`text-[11px] font-medium ${frozen || ignored ? 'text-outline/70' : 'text-outline'}`}>{item.number || item.section || '-'}</div>
+                              <div className={`text-xs font-medium ${frozen || ignored ? 'text-outline/70' : 'text-outline'}`}>{item.number || item.section || '-'}</div>
                               <div className={`mt-1 line-clamp-2 text-sm font-semibold leading-snug ${frozen || ignored ? 'text-on-surface-variant' : 'text-on-surface'}`}>{item.title}</div>
                             </div>
                           </div>
@@ -3063,7 +3035,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                         <TechnicalTocActionBadge item={selected} items={items} />
                       </div>
                       <div className="mt-1.5 flex items-center justify-between gap-3">
-                        <h3 className="min-w-0 truncate text-lg font-headline font-bold leading-snug text-on-surface">{selected.title}</h3>
+                        <h3 className="min-w-0 truncate text-lg font-headline font-semibold leading-snug text-on-surface">{selected.title}</h3>
                         <div className="flex shrink-0 items-center gap-2">
                           <TechnicalGapActionControls
                             item={selected}
@@ -3092,7 +3064,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                               {mergeArtifacts.length ? '本章合并清单' : '已选中素材'}
                             </div>
                             {!mergeArtifacts.length && defaultSelections.length > 1 ? (
-                              <span className="text-[10px] text-outline">
+                              <span className="text-xs text-outline">
                                 多机型 · 按此顺序铺开 {defaultSelections.length} 份
                               </span>
                             ) : null}
@@ -3131,9 +3103,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                     <div key={key} className="rounded-md border border-primary/25 bg-primary-fixed/35 px-3 py-3">
                                       <div className="flex items-center justify-between gap-3">
                                         <div className="flex min-w-0 items-center gap-3">
-                                          <span className="material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-[19px] text-on-primary">
-                                            auto_awesome
-                                          </span>
                                           <div className="min-w-0">
                                             <div className="flex items-center gap-2">
                                               <span className="text-xs font-semibold text-primary">AI 填写结果</span>
@@ -3148,7 +3117,6 @@ export default function TechnicalGapRecognition({ showToast }) {
                                           type="button"
                                           onClick={() => handlePreviewMergeArtifact(artifact)}
                                           disabled={Boolean(busyAction)}
-                                          icon={canCompare ? 'compare' : 'visibility'}
                                           size="sm"
                                           variant="primary"
                                         >
@@ -3227,15 +3195,15 @@ export default function TechnicalGapRecognition({ showToast }) {
                           ) : null}
                           {selectedPlaceholderLabels.total ? (
                             <div className="mt-3">
-                              <div className="text-[11px] font-semibold text-on-surface">识别到的待填字段</div>
+                              <div className="text-xs font-semibold text-on-surface">识别到的待填字段</div>
                               <div className="mt-2 flex flex-wrap gap-1.5">
                                 {selectedPlaceholderLabels.visible.map((label) => (
-                                  <span key={label} className="rounded bg-surface-container-low px-2 py-0.5 text-[11px] text-on-surface-variant">
+                                  <span key={label} className="rounded bg-surface-container-low px-2 py-0.5 text-xs text-on-surface-variant">
                                     {label}
                                   </span>
                                 ))}
                                 {selectedPlaceholderLabels.overflow ? (
-                                  <span className="rounded bg-surface-container-high px-2 py-0.5 text-[11px] text-outline">
+                                  <span className="rounded bg-surface-container-high px-2 py-0.5 text-xs text-outline">
                                     +{selectedPlaceholderLabels.overflow}
                                   </span>
                                 ) : null}
@@ -3269,7 +3237,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                             <div className="text-xs font-semibold text-on-surface">备选素材</div>
                             <div className="flex items-center gap-2">
                               {selectedSourceRouting ? (
-                                <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed">
+                                <span className="rounded bg-tertiary-fixed px-2 py-0.5 text-xs font-semibold text-on-tertiary-fixed">
                                   规则规定
                                 </span>
                               ) : null}
@@ -3279,7 +3247,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                                   setMultiPickOpen((prev) => !prev)
                                   setMultiPickKeys([])
                                 }}
-                                className={`rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                                className={`rounded px-2 py-0.5 text-xs font-semibold transition-colors ${
                                   multiPickOpen
                                     ? 'bg-primary text-on-primary'
                                     : 'bg-surface-container-high text-on-surface-variant hover:text-primary'
@@ -3291,12 +3259,12 @@ export default function TechnicalGapRecognition({ showToast }) {
                             </div>
                           </div>
                           {multiPickOpen ? (
-                            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs leading-relaxed text-on-surface-variant">
                               勾选顺序即正文里的铺开顺序，可在下方调整。
                             </div>
                           ) : null}
                           {selectedSourceRoutingSummary ? (
-                            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-xs leading-relaxed text-on-surface-variant">
                               {selectedSourceRoutingSummary}
                             </div>
                           ) : null}
@@ -3334,7 +3302,7 @@ export default function TechnicalGapRecognition({ showToast }) {
                                         aria-label={`勾选 ${wrapperMaterial?.name || wrapper.key}`}
                                       />
                                       {pickIndex >= 0 ? (
-                                        <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-on-primary">
+                                        <span className="rounded bg-primary px-1.5 py-0.5 text-xs font-semibold text-on-primary">
                                           {pickIndex + 1}
                                         </span>
                                       ) : null}
@@ -3346,12 +3314,12 @@ export default function TechnicalGapRecognition({ showToast }) {
                           </div>
                           {multiPickOpen && multiPickKeys.length ? (
                             <div className="mt-3 rounded-md border border-surface-container-high bg-surface-container-low p-2">
-                              <div className="mb-1.5 text-[11px] font-semibold text-on-surface">
+                              <div className="mb-1.5 text-xs font-semibold text-on-surface">
                                 将按此顺序铺开（{multiPickKeys.length} 份）
                               </div>
                               <ol className="space-y-1">
                                 {multiPickKeys.map((key, index) => (
-                                  <li key={key} className="flex items-center gap-2 text-[11px] text-on-surface-variant">
+                                  <li key={key} className="flex items-center gap-2 text-xs text-on-surface-variant">
                                     <span className="w-4 shrink-0 text-right font-semibold text-primary">{index + 1}</span>
                                     <span className="min-w-0 flex-1 truncate">{multiPickMaterialName(key)}</span>
                                     <button
@@ -3415,12 +3383,11 @@ export default function TechnicalGapRecognition({ showToast }) {
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="text-xs font-semibold text-on-surface">搜索 / 上传素材</div>
-                            <div className="mt-1 text-[11px] text-outline">
+                            <div className="mt-1 text-xs text-outline">
                               搜索只在当前项目、客户和通用素材边界内进行；上传的文件会直接选用为本目录项的匹配素材。
                             </div>
                           </div>
                           <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container ${busyAction ? 'pointer-events-none opacity-50' : ''}`}>
-                            <span className="material-symbols-outlined text-[16px]">upload_file</span>
                             {busyAction === `upload:${selected.id}` ? '上传中...' : '上传素材'}
                             <input
                               type="file"

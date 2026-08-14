@@ -2716,7 +2716,7 @@ class OpencodeClient:
             schema_hint = (
                 '{"schema":"bid-tech-fact-curate-v1","suggestionsPath":'
                 '"/data/documents/PRJ-0001/technical-workspace/s4_gap_workdir/fact_curate/fact_curate_suggestions.json",'
-                '"counts":{"fill":1,"fix":0,"confirmAdvice":0}}'
+                '"counts":{"fill":1,"fix":0}}'
             )
         elif repair_kind == "business_format":
             schema_hint = (

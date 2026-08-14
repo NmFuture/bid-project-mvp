@@ -204,17 +204,17 @@ export default function MarkdownLite({ content = '', compact = false }) {
   const blocks = parseMarkdownLite(content)
   const styles = compact
     ? {
-        empty: 'text-[13px] leading-[1.6] text-on-surface-variant',
-        root: 'space-y-2.5 text-[13px] leading-[1.6] text-on-surface-variant',
-        h1: 'text-lg leading-[1.5] font-headline font-bold text-on-surface mt-3',
-        h2: 'text-[15px] leading-[1.5] font-semibold text-on-surface mt-2.5',
-        h3: 'text-[14px] leading-[1.5] font-semibold text-on-surface mt-2',
-        table: 'w-full min-w-[640px] text-left text-[13px] leading-[1.6]',
+        empty: 'text-sm leading-[1.6] text-on-surface-variant',
+        root: 'space-y-2.5 text-sm leading-[1.6] text-on-surface-variant',
+        h1: 'text-lg leading-[1.5] font-headline font-semibold text-on-surface mt-3',
+        h2: 'text-sm leading-[1.5] font-semibold text-on-surface mt-2.5',
+        h3: 'text-sm leading-[1.5] font-semibold text-on-surface mt-2',
+        table: 'w-full min-w-[640px] text-left text-sm leading-[1.6]',
       }
     : {
         empty: 'text-sm text-on-surface-variant',
         root: 'space-y-3 text-sm text-on-surface-variant leading-relaxed',
-        h1: 'text-xl font-headline font-bold text-on-surface mt-4',
+        h1: 'text-xl font-headline font-semibold text-on-surface mt-4',
         h2: 'text-lg font-semibold text-on-surface mt-3',
         h3: 'text-base font-semibold text-on-surface mt-2',
         table: 'w-full min-w-[640px] text-left text-sm',

@@ -83,7 +83,6 @@ def _spec(seq: int, label: str, reference_file: str = "招标文件/招标公告
         "sourceFile": "招标文件-技术规范书",
         "placeholder": f"第一章 1.{seq}",
         "note": "",
-        "needsConfirmation": False,
         "referenceFile": reference_file,
         "valueRequired": True,
         "sourceKind": "tender",

@@ -164,7 +164,7 @@ async def settings_technical_fact_specs_upload(
     未绑定专属规则版本的项目；已绑定项目始终读自己的规则快照（R06-B04-02）。
 
     契约：multipart 单文件字段 file；成功返回
-    {"specTotal", "fillableTotal", "needsConfirmation", "template", "override": true}；
+    {"specTotal", "fillableTotal", "template", "override": true}；
     非法文件返回 400，且不写 override。
     """
     filename = str(file.filename or "")

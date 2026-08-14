@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { performanceAPI } from '../../../api'
+import Button from '../../../components/ui/Button'
+import Pagination from '../../../components/shared/Pagination'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import MaterialsViewSwitch from '../components/MaterialsViewSwitch'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
@@ -643,14 +645,14 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                 <option key={option.label} value={option.value}>{option.label}</option>
               ))}
             </select>
-            <button
+            <Button
               onClick={openSummaryChooser}
               disabled={previewing}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-sm font-semibold text-on-primary hover:brightness-95 disabled:opacity-50"
+              size="sm"
+              className="h-9 text-sm"
             >
-              <span aria-hidden="true" className="material-symbols-outlined text-base">upload_file</span>
               {previewing ? '解析中...' : '导入汇总表'}
-            </button>
+            </Button>
           </div>
         </section>
 
@@ -660,7 +662,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           ) : !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">暂无业绩明细，点击「导入」上传汇总表与合同</div>
           ) : (
-            <table className={`w-full min-w-[1320px] table-fixed text-left text-[13px] leading-5 transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
+            <table className={`w-full min-w-[1320px] table-fixed text-left text-sm leading-5 transition-opacity ${refreshing ? 'opacity-60' : ''}`}>
               <colgroup>
                 <col className="w-[20%]" />
                 <col className="w-[13%]" />
@@ -737,7 +739,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                                     className="min-w-0 flex-1 text-left"
                                   >
                                     <span className="block truncate">{attachment.fileName}</span>
-                                    <span className="block truncate text-[11px] text-outline">
+                                    <span className="block truncate text-xs text-outline">
                                       {attachment.matchMethod === 'row_order' ? '按行匹配' : '项目名匹配'} · {attachment.matchConfidence || 0}%
                                     </span>
                                   </button>
@@ -762,7 +764,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                           {row.categoryName || row.categoryId}
                         </button>
                         {row.categoryStatus === 'disabled' ? (
-                          <span className="mt-1 inline-flex rounded-full bg-error-container/70 px-1.5 py-0.5 text-[11px] leading-4 text-error ring-1 ring-error/25">已停用</span>
+                          <span className="mt-1 inline-flex rounded-full bg-error-container/70 px-1.5 py-0.5 text-xs leading-4 text-error ring-1 ring-error/25">已停用</span>
                         ) : null}
                       </td>
                       <td className="px-3 py-2.5">
@@ -802,11 +804,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-on-surface-variant">
           <span>共 {total} 条业绩明细</span>
-          <div className="flex items-center gap-2">
-            <button disabled={page <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))} className="rounded-md bg-surface-container-high px-3 py-1.5 disabled:opacity-50">上一页</button>
-            <span>{page} / {totalPages}</span>
-            <button disabled={page >= totalPages} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))} className="rounded-md bg-surface-container-high px-3 py-1.5 disabled:opacity-50">下一页</button>
-          </div>
+          <Pagination current={page} total={totalPages} onPageChange={setPage} />
         </div>
       </div>
 
@@ -815,7 +813,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           <div role="dialog" aria-modal="true" aria-label="导入业绩包" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between border-b border-surface-container-high px-5 py-4">
               <div>
-                <h2 className="text-base font-semibold">导入业绩包</h2>
+                <h2 className="text-lg font-semibold">导入业绩包</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">{preview.sourceFileName} · {preview.rowCount} 条明细 · 需同时上传合同附件</p>
               </div>
               <button onClick={closePreview} className="close-plain flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:text-primary" aria-label="关闭">
@@ -910,7 +908,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
         <div className="dialog-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 transition-opacity">
           <div role="alertdialog" aria-modal="true" aria-label="删除业绩类别" className="wizard-modal-surface w-full max-w-lg overflow-hidden rounded-lg border border-error/30 bg-surface-container-lowest animate-float-in">
             <div className="border-b border-surface-container-high px-5 py-4">
-              <h2 className="text-base font-semibold text-error">删除业绩类别</h2>
+              <h2 className="text-lg font-semibold text-error">删除业绩类别</h2>
               <p className="mt-1 text-sm text-on-surface-variant">{deleteTarget.name || deleteTarget.id}</p>
             </div>
             <div className="p-5">
@@ -946,7 +944,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           <div role="dialog" aria-modal="true" aria-label="编辑业绩明细" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
               <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold">{editTarget.id ? '编辑业绩明细' : '新增业绩明细'}</h2>
+                <h2 className="truncate text-lg font-semibold">{editTarget.id ? '编辑业绩明细' : '新增业绩明细'}</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">
                   {editTarget.id ? `${editTarget.projectName || editTarget.id} · ` : ''}{editTarget.categoryName || editTarget.categoryId}
                 </p>
@@ -989,7 +987,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           <div role="dialog" aria-modal="true" aria-label="业绩类别明细" className="wizard-modal-surface flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest animate-float-in">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-4">
               <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold">{currentDetailItem?.name || '业绩类别'}</h2>
+                <h2 className="truncate text-lg font-semibold">{currentDetailItem?.name || '业绩类别'}</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">{compactParts(currentDetailItem?.scene, currentDetailItem?.powerRating, `${currentDetailItem?.itemCount || 0} 条明细`, CATEGORY_STATUS_LABELS[currentDetailItem?.status] || '')}</p>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
@@ -1098,7 +1096,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                                     <div
                                       key={attachment.id}
                                       title={attachment.sourceTitle || attachment.fileName}
-                                      className="group flex w-full items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-left text-[11px] leading-4 text-primary hover:bg-primary/15"
+                                      className="group flex w-full items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-left text-xs leading-4 text-primary hover:bg-primary/15"
                                     >
                                       <button
                                         type="button"
@@ -1106,7 +1104,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                                         className="min-w-0 flex-1 text-left"
                                       >
                                         <span className="block truncate">{attachment.fileName}</span>
-                                        <span className="block truncate text-[10px] text-outline">
+                                        <span className="block truncate text-xs text-outline">
                                           {attachment.matchMethod === 'row_order' ? '按行匹配' : '项目名匹配'} · {attachment.matchConfidence || 0}%
                                         </span>
                                       </button>
@@ -1143,7 +1141,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
           <div role="dialog" aria-modal="true" aria-label="业绩附件在线预览" className="mx-auto flex h-full w-full max-w-[96rem] flex-col overflow-hidden rounded-lg border border-surface-container-high bg-surface-container-lowest shadow-xl">
             <div className="flex items-center justify-between gap-3 border-b border-surface-container-high px-5 py-3">
               <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold text-on-surface">{attachmentPreview.fileName || '附件预览'}</h2>
+                <h2 className="truncate text-lg font-semibold text-on-surface">{attachmentPreview.fileName || '附件预览'}</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">业绩附件在线预览</p>
               </div>
               <button onClick={closeAttachmentPreview} className="close-plain flex h-8 w-8 items-center justify-center rounded-md text-on-surface-variant hover:text-primary" aria-label="关闭预览">
@@ -1164,7 +1162,6 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
                         rel="noreferrer"
                         className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-on-primary hover:opacity-90"
                       >
-                        <span className="material-symbols-outlined text-sm">download</span>
                         下载原件
                       </a>
                     ) : null}

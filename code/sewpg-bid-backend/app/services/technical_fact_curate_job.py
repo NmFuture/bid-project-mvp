@@ -124,7 +124,7 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
         message = (
             "事实表维护完成："
             f"补抽 {counts.get('filled', 0)} 条、修正 {counts.get('fixed', 0)} 条、"
-            f"口径建议 {counts.get('advised', 0)} 条、未找到值 {counts.get('notFound', 0)} 条、"
+            f"未找到值 {counts.get('notFound', 0)} 条、"
             f"忽略 {counts.get('ignored', 0)} 条（已确认跳过 {counts.get('skippedConfirmed', 0)} 条）。"
         )
         if counts.get("ignored"):

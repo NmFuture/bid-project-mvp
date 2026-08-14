@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
-from docx.enum.section import WD_ORIENT
+from docx.enum.section import WD_HEADER_FOOTER, WD_ORIENT
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -28,6 +28,7 @@ from ..assembly.numbering_fixer import (
     strip_numPr_from_body,
     strip_numPr_from_heading_styles,
 )
+from ..assembly.style_index import StyleIndex, index_for_paragraph
 from ..assembly.verify import scan_docx
 
 
@@ -592,9 +593,23 @@ def _apply_document_headers(doc: Document, header_cfg: Any, project_name: str) -
         if template
         else ""
     )
+    # 逐节访问 section.header 时，"链接到前一节"的节要沿 preceding::w:sectPr 做
+    # 全文档反向扫描才能找到继承的定义；合并稿每份素材一个节（70+ 个），这一步
+    # 曾占清洗总耗时的三分之一。只在"节自带定义"时解析（O(1) 关系查找），继承的
+    # 节直接跳过——它们解析出来的也是同一份定义，本就会被去重跳过。唯一的例外
+    # 与逐节解析行为一致：首节缺定义时 python-docx 会就地新建一份，这里保留。
     seen: set[Any] = set()
-    for section in doc.sections:
-        for header in (section.header, section.first_page_header, section.even_page_header):
+    for index, section in enumerate(doc.sections):
+        sect_pr = section._sectPr
+        for hf_type, prop_name in (
+            (WD_HEADER_FOOTER.PRIMARY, "header"),
+            (WD_HEADER_FOOTER.FIRST_PAGE, "first_page_header"),
+            (WD_HEADER_FOOTER.EVEN_PAGE, "even_page_header"),
+        ):
+            has_reference = sect_pr.get_headerReference(hf_type) is not None
+            if not has_reference and index > 0:
+                continue
+            header = getattr(section, prop_name)
             marker = header._element
             if marker in seen:
                 continue
@@ -918,33 +933,17 @@ def _paragraph_heading_level(paragraph) -> int:
             if 0 <= value <= 8:
                 return value + 1
 
-    style = getattr(paragraph, "style", None)
-    visited: set[str] = set()
-    while style is not None:
-        style_id = str(getattr(style, "style_id", "") or "")
-        if style_id in visited:
-            break
-        visited.add(style_id)
-
-        style_name = str(getattr(style, "name", "") or "")
-        match = re.search(r"heading\s*(\d+)", style_name.strip().lower())
+    # 样式判断走预建索引：paragraph.style 每次都重扫样式表，是清洗阶段的主要耗时。
+    # 匹配规则保持本模块原有的宽松语义（子串匹配 heading N / 标题 N）。
+    for entry in index_for_paragraph(paragraph).iter_chain(StyleIndex.raw_style_id(paragraph)):
+        match = re.search(r"heading\s*(\d+)", entry.name.strip().lower())
         if match:
             return max(1, min(int(match.group(1)), 9))
-        match = re.search(r"标题\s*(\d+)", style_name)
+        match = re.search(r"标题\s*(\d+)", entry.name)
         if match:
             return max(1, min(int(match.group(1)), 9))
-
-        style_p_pr = style.element.find(qn("w:pPr"))
-        if style_p_pr is not None:
-            outline = style_p_pr.find(qn("w:outlineLvl"))
-            if outline is not None:
-                try:
-                    value = int(outline.get(qn("w:val")))
-                except (TypeError, ValueError):
-                    value = -1
-                if 0 <= value <= 8:
-                    return value + 1
-        style = getattr(style, "base_style", None)
+        if entry.outline_level is not None:
+            return entry.outline_level
     return 0
 
 
@@ -1033,18 +1032,27 @@ def _is_toc_heading_identifier(value: Any) -> bool:
     return normalized in {"toc", "tocheading", "目录标题"}
 
 
+def _effective_style_name(paragraph) -> str:
+    """段落生效样式的 UI 名，等价于 paragraph.style.name，但走预建索引不重扫样式表。"""
+    for entry in index_for_paragraph(paragraph).iter_chain(StyleIndex.raw_style_id(paragraph)):
+        return entry.name
+    return ""
+
+
 def _is_preserved_layout_paragraph(paragraph) -> bool:
     if _paragraph_uses_toc_style(paragraph) or _paragraph_uses_toc_heading_style(paragraph):
         return True
-    style = getattr(paragraph, "style", None)
-    style_name = str(getattr(style, "name", "") or "").strip().lower()
+    style_name = _effective_style_name(paragraph).strip().lower()
     if any(marker in style_name for marker in ("图片", "图注", "照片", "caption", "figure", "image")):
         return True
     return _looks_like_caption_or_table_title(paragraph.text)
 
 
 def _paragraph_uses_toc_style(paragraph) -> bool:
-    return _style_uses_toc_style(getattr(paragraph, "style", None))
+    for entry in index_for_paragraph(paragraph).iter_chain(StyleIndex.raw_style_id(paragraph)):
+        if _is_toc_style_identifier(entry.style_id) or _is_toc_style_identifier(entry.name):
+            return True
+    return False
 
 
 def _style_uses_toc_style(style) -> bool:
@@ -1063,12 +1071,10 @@ def _style_uses_toc_style(style) -> bool:
 
 
 def _paragraph_uses_toc_heading_style(paragraph) -> bool:
-    p_pr = paragraph._element.find(qn("w:pPr"))
-    p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
-    style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
-    style = getattr(paragraph, "style", None)
-    style_name = str(getattr(style, "name", "") or "")
-    return _is_toc_heading_identifier(style_id) or _is_toc_heading_identifier(style_name)
+    style_id = str(StyleIndex.raw_style_id(paragraph) or "")
+    return _is_toc_heading_identifier(style_id) or _is_toc_heading_identifier(
+        _effective_style_name(paragraph)
+    )
 
 
 def _clean_paragraph_text(text: str) -> str:

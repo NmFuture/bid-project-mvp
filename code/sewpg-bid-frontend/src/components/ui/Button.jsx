@@ -23,8 +23,6 @@ export default function Button({
   as,
   children,
   className = '',
-  icon,
-  iconPosition = 'left',
   size = 'md',
   type = 'button',
   variant = 'primary',
@@ -34,11 +32,6 @@ export default function Button({
   const content = typeof children === 'string' || typeof children === 'number'
     ? <span className="leading-none">{children}</span>
     : children
-  const iconNode = icon ? (
-    <span aria-hidden="true" className={cx('material-symbols-outlined', size === 'xs' || size === 'sm' ? 'text-[16px]' : 'text-[18px]')}>
-      {icon}
-    </span>
-  ) : null
 
   return (
     <Component
@@ -52,9 +45,7 @@ export default function Button({
       )}
       {...props}
     >
-      {iconPosition === 'left' ? iconNode : null}
       {content}
-      {iconPosition === 'right' ? iconNode : null}
     </Component>
   )
 }

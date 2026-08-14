@@ -1,3 +1,5 @@
+import Button from '../ui/Button'
+
 export function PageLoading({
   title = '加载中...',
   description = '正在获取最新数据。',
@@ -19,7 +21,6 @@ export function PageEmpty({
   description = '当前筛选条件下没有可展示内容。',
   actionText,
   onAction,
-  showActionIcon = true,
   containerClassName = '',
   cardClassName = '',
   cardStyle,
@@ -34,14 +35,9 @@ export function PageEmpty({
         <h3 className="mt-3 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
         {actionText && onAction && (
-          <button
-            type="button"
-            onClick={onAction}
-            className="ui-control mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant"
-          >
-            {showActionIcon ? <span aria-hidden="true" className="material-symbols-outlined text-base">refresh</span> : null}
+          <Button onClick={onAction} className="mt-4">
             {actionText}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -60,14 +56,9 @@ export function PageError({
         <h3 className="mt-3 text-lg font-semibold text-on-surface">{title}</h3>
         <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
         {onRetry && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="ui-control mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant"
-          >
-            <span aria-hidden="true" className="material-symbols-outlined text-base">refresh</span>
+          <Button onClick={onRetry} className="mt-4">
             重新加载
-          </button>
+          </Button>
         )}
       </div>
     </div>

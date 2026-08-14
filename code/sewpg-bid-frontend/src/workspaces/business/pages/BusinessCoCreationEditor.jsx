@@ -302,7 +302,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
 
   const renderFormatNumberInput = (field, label, props = {}) => (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
+      <span className="mb-1 block text-xs font-semibold text-on-surface-variant">{label}</span>
       <input
         type="number"
         value={customFormat[field]}
@@ -317,7 +317,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
 
   const renderFormatTextInput = (field, label, props = {}) => (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
+      <span className="mb-1 block text-xs font-semibold text-on-surface-variant">{label}</span>
       <input
         type="text"
         value={customFormat[field] || ''}
@@ -330,7 +330,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
 
   const renderFormatFontSelect = (field, label, options = DOCUMENT_FONT_OPTIONS.zh) => (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold text-on-surface-variant">{label}</span>
+      <span className="mb-1 block text-xs font-semibold text-on-surface-variant">{label}</span>
       <select
         value={customFormat[field] || options[0]?.value || ''}
         onChange={(event) => updateCustomFormat(field, event.target.value)}
@@ -393,7 +393,7 @@ export default function BusinessCoCreationEditor({ showToast }) {
                 key={`${message.role}-${index}`}
                 className={`rounded-lg px-3 py-2 text-sm leading-6 ${message.role === 'user' ? 'ml-8 bg-primary text-on-primary' : message.error ? 'mr-8 bg-error/10 text-error' : 'mr-8 bg-surface-container-low text-on-surface'}`}
               >
-                <div className="mb-1 text-[11px] font-semibold opacity-70">
+                <div className="mb-1 text-xs font-semibold opacity-70">
                   {message.role === 'user' ? '我' : message.fallbackModelUsed ? `AI助手（${message.modelLabel || '默认模型'}）` : 'AI助手'}
                 </div>
                 <div className="whitespace-pre-wrap">{message.content}</div>
@@ -415,8 +415,8 @@ export default function BusinessCoCreationEditor({ showToast }) {
               <h4 className="text-sm font-semibold text-on-surface">受控应用到 Word</h4>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-primary">人工确认后写入</span>
-              <span className="rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant">
+              <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-primary">人工确认后写入</span>
+              <span className="rounded-full bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant">
                 {controlledRewriteOpen ? '收起' : '展开'}
               </span>
             </div>
@@ -480,15 +480,15 @@ export default function BusinessCoCreationEditor({ showToast }) {
                       <span className="font-semibold">风险提示：</span>{rewriteSuggestion.riskTip || '请人工复核事实、金额、日期和承诺边界。'}
                     </div>
                   </div>
-                  <button
-                    type="button"
+                  <Button
                     onClick={handleApplyRewrite}
                     disabled={rewriteApplying || !rewriteSuggestion.replacementText}
-                    className="w-full rounded-md bg-secondary px-4 py-2 text-sm font-semibold text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
+                    variant="success"
+                    className="w-full"
                   >
                     {rewriteApplying ? '应用中...' : '确认应用到 Word'}
-                  </button>
-                  <p className="text-[11px] leading-5 text-on-surface-variant">
+                  </Button>
+                  <p className="text-xs leading-5 text-on-surface-variant">
                     如果原文在 Word 中找不到，或匹配到多处，系统会拒绝替换并提示重新选择更精确的原文。
                   </p>
                 </div>
@@ -602,14 +602,14 @@ export default function BusinessCoCreationEditor({ showToast }) {
       </div>
 
       <div className="border-t border-surface-container-high bg-surface-container-low p-3">
-        <button
-          type="button"
+        <Button
           onClick={() => handleApplyBusinessFormat(formatPreset)}
           disabled={!!formatApplying}
-          className="w-full rounded-md bg-secondary px-4 py-2 text-sm font-semibold text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
+          variant="success"
+          className="w-full"
         >
           {formatApplying ? '应用中...' : formatPreset === 'custom' ? '应用自定义格式' : '应用标准格式'}
-        </button>
+        </Button>
       </div>
     </>
   )
