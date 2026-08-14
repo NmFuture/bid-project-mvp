@@ -334,6 +334,7 @@ test('shares running and failed directory status predicates across page behavior
   assert.equal(isDirectoryProgressRunning({ status: 'running' }), true)
   assert.equal(isDirectoryProgressRunning({ status: 'processing' }), true)
   assert.equal(isDirectoryProgressRunning({ status: 'queued' }), true)
+  assert.equal(isDirectoryProgressRunning({ status: 'cancel_requested' }), true)
   assert.equal(isDirectoryProgressRunning({ status: 'completed' }), false)
   assert.equal(isDirectoryProgressFailed({ status: 'failed' }), true)
   assert.equal(isDirectoryProgressFailed({ status: 'error' }), true)

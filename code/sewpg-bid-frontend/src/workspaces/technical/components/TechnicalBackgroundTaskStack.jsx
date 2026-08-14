@@ -33,16 +33,22 @@ export default function TechnicalBackgroundTaskStack() {
     }
 
     const refresh = async () => {
+      const storedTasks = readTechnicalTasks()
       readRunningParses()
         .filter((marker) => marker.bidType !== 'business')
-        .forEach((marker) => markTechnicalTask({
-          taskType: 'parse',
-          projectId: marker.projectId,
-          projectName: marker.projectName || marker.projectId,
-          taskName: TECHNICAL_TASK_DEFINITIONS.parse.taskName,
-          status: 'running',
-          percentage: 0,
-        }))
+        .forEach((marker) => {
+          const currentTask = storedTasks.find((task) => (
+            task.taskType === 'parse' && task.projectId === marker.projectId
+          ))
+          markTechnicalTask({
+            taskType: 'parse',
+            projectId: marker.projectId,
+            projectName: marker.projectName || currentTask?.projectName || marker.projectId,
+            taskName: TECHNICAL_TASK_DEFINITIONS.parse.taskName,
+            status: 'running',
+            percentage: 0,
+          })
+        })
 
       const current = readTechnicalTasks()
       await Promise.allSettled(current.filter(technicalTaskIsActive).map(async (task) => {

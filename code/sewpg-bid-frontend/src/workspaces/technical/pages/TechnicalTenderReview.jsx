@@ -26,6 +26,7 @@ import ParseValidationNotice from '../components/ParseValidationNotice'
 import { parseValidationSummary } from '../components/parseValidationSummary'
 import { progressElapsedLine } from '../../../utils/progressDuration'
 import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
+import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
 import {
   selectTechnicalParseProjectId,
   shouldSyncTechnicalProjectParseResultRoute,
@@ -500,17 +501,6 @@ const TECHNICAL_STOP_PARSE_MESSAGE = '已请求停止技术标解析任务。'
 const isStoppedParseStatus = (status) => status === 'stopped' || status === 'cancelled'
 const RUNNING_PARSE_STATUSES = new Set(['running', 'processing', 'queued'])
 
-const buildStoppedParseProgress = (previous, summary) => ({
-  status: previous?.status === 'cancelled' ? 'cancelled' : 'stopped',
-  percentage: Math.max(0, Math.min(100, Number(previous?.percentage || 0))),
-  summary,
-  events: [
-    ...(Array.isArray(previous?.events) ? previous.events : []),
-    { step: 'stop', level: 'warning', message: summary },
-  ].slice(-8),
-  opencodeOutput: previous?.opencodeOutput || { parts: [] },
-})
-
 function ProjectBasicsTable({ title, fields = [] }) {
   const byKey = new Map(fields.map((field) => [field.key || field.fieldKey, field]))
   const normalizedFields = PROJECT_BASIC_FIELDS.map(([key, label]) => {
@@ -603,7 +593,15 @@ export default function TechnicalTenderReview({ showToast }) {
 
   const syncParsedProject = useCallback(async (targetProjectId) => {
     const latestProgress = await technicalParseAPI.progress(targetProjectId).catch(() => null)
-    if (latestProgress) setParseProgress((previous) => mergeMonotonicParseProgress(previous, latestProgress))
+    if (latestProgress) {
+      const summary = summarizeParseProgress(latestProgress)
+      setParseProgress((previous) => mergeMonotonicParseProgress(previous, latestProgress))
+      updateTechnicalTask('parse', targetProjectId, {
+        status: String(latestProgress.status || 'completed').toLowerCase(),
+        percentage: Number(latestProgress.percentage) || 0,
+        summary: summary.summary || latestProgress.summary || '',
+      })
+    }
     const latestProject = await technicalProjectsAPI.get(targetProjectId)
     setSelectedProjectId(targetProjectId)
     setProject(latestProject)
@@ -753,8 +751,19 @@ export default function TechnicalTenderReview({ showToast }) {
     return () => window.clearInterval(timer)
   }, [isParseRunning])
 
+  useEffect(() => {
+    if (!selectedProjectId || !parseProgress) return
+    const summary = summarizeParseProgress(parseProgress)
+    updateTechnicalTask('parse', selectedProjectId, {
+      status: String(parseProgress.status || 'running').toLowerCase(),
+      percentage: Number(parseProgress.percentage) || 0,
+      summary: summary.summary || parseProgress.summary || '',
+    })
+  }, [parseProgress, selectedProjectId])
+
   const handleStopParse = useCallback(async () => {
     const targetProjectId = activeParseProjectIdRef.current || selectedProjectId
+    if (!targetProjectId) return
     const cancelRequest = targetProjectId
       ? technicalParseAPI.cancel(targetProjectId).catch((error) => ({ error }))
       : Promise.resolve(null)
@@ -764,23 +773,43 @@ export default function TechnicalTenderReview({ showToast }) {
     parseAbortControllerRef.current = null
     setUploading(false)
     setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
-    setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
     showToast?.('正在请求停止技术标解析任务。')
 
     const cancelled = await cancelRequest
     if (cancelled?.error) {
+      const summary = `停止请求失败：${cancelled.error?.message || '请稍后查看最新进度。'}`
+      parseStoppedRef.current = false
+      setParseStopRequested(false)
       activeParseProjectIdRef.current = ''
-      showToast?.(`停止请求失败：${cancelled.error?.message || '请稍后查看最新进度。'}`, 'error')
+      setUploadError(summary)
+      setParseProgress((previous) => ({
+        ...previous,
+        status: RUNNING_PARSE_STATUSES.has(String(previous?.status || '').toLowerCase())
+          ? previous.status
+          : 'running',
+        summary,
+      }))
+      updateTechnicalTask('parse', targetProjectId, {
+        status: 'running',
+        percentage: Number(parseProgressPercentage) || 0,
+        summary,
+      })
+      showToast?.(summary, 'error')
       return
     }
     if (cancelled) {
       const summary = cancelled.summary || cancelled.message || TECHNICAL_STOP_PARSE_MESSAGE
       setUploadError(summary)
-      setParseProgress((previous) => buildStoppedParseProgress({ ...previous, ...cancelled }, summary))
+      setParseProgress((previous) => mergeMonotonicParseProgress(previous, { ...cancelled, summary }))
+      updateTechnicalTask('parse', targetProjectId, {
+        status: String(cancelled.status || 'cancel_requested').toLowerCase(),
+        percentage: Number(cancelled.percentage ?? parseProgressPercentage) || 0,
+        summary,
+      })
       showToast?.(summary)
     }
     activeParseProjectIdRef.current = ''
-  }, [selectedProjectId, showToast])
+  }, [parseProgressPercentage, selectedProjectId, showToast])
 
   useEffect(() => () => {
     parseAbortControllerRef.current?.abort()
@@ -807,6 +836,11 @@ export default function TechnicalTenderReview({ showToast }) {
           // 完成标记保留给全局提示条消费：跳离 /parse/ 路由后由它轮询到终态、
           // 展示"解析完成"通知并清除标记，避免完成状态在这里被提前吞掉。
           setParseData(snapshot.result)
+          updateTechnicalTask('parse', selectedProjectId, {
+            status: String(progress?.status || 'completed').toLowerCase(),
+            percentage: Number(progress?.percentage) || 100,
+            summary: summarizeParseProgress(progress).summary || progress?.summary || '技术标解析完成。',
+          })
           navigateToParseResult(selectedProjectId)
           return
         }
@@ -1002,9 +1036,11 @@ export default function TechnicalTenderReview({ showToast }) {
       return
     }
     let targetProjectId = selectedProjectId
+    let targetProjectName = project?.name || selectedProjectId
     if (!targetProjectId) {
       const created = await createReviewProject({ silent: true })
       targetProjectId = created?.id || ''
+      targetProjectName = created?.name || targetProjectId
       if (!targetProjectId) {
         const message = '上传解析入口准备失败，请刷新后重试。'
         setUploadError(message)
@@ -1027,6 +1063,15 @@ export default function TechnicalTenderReview({ showToast }) {
       summary: '正在上传技术招标文件。',
       events: [{ step: 'upload', level: 'info', message: '正在上传技术招标文件。' }],
       opencodeOutput: { parts: [] },
+    })
+    markTechnicalTask({
+      taskType: 'parse',
+      taskName: '技术标解析',
+      projectId: targetProjectId,
+      projectName: targetProjectName || targetProjectId,
+      status: 'running',
+      percentage: 3,
+      summary: '正在上传技术招标文件。',
     })
     const abortController = new AbortController()
     parseAbortControllerRef.current = abortController
@@ -1063,7 +1108,7 @@ export default function TechnicalTenderReview({ showToast }) {
       }
       if (parseStoppedRef.current || e?.code === 'ABORTED') {
         setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
-        setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
+        setParseProgress((previous) => ({ ...previous, summary: TECHNICAL_STOP_PARSE_MESSAGE }))
         return
       }
       if (isUploadAndRunTimeout(e) && targetProjectId) {
@@ -1081,7 +1126,7 @@ export default function TechnicalTenderReview({ showToast }) {
         })
         if (parseStoppedRef.current || recovered.stopped) {
           setUploadError(TECHNICAL_STOP_PARSE_MESSAGE)
-          setParseProgress((previous) => buildStoppedParseProgress(previous, TECHNICAL_STOP_PARSE_MESSAGE))
+          setParseProgress((previous) => ({ ...previous, summary: TECHNICAL_STOP_PARSE_MESSAGE }))
           return
         }
         if (recovered.completed) {
@@ -1095,6 +1140,7 @@ export default function TechnicalTenderReview({ showToast }) {
         if (recovered.failed) {
           const message = recovered.progress?.summary || '上传并解析失败'
           setUploadError(message)
+          setParseProgress((previous) => ({ ...previous, ...recovered.progress, status: 'failed', summary: message }))
           showToast?.(message, 'error')
           return
         }
@@ -1104,6 +1150,7 @@ export default function TechnicalTenderReview({ showToast }) {
       }
       const message = e?.message || '上传并解析失败'
       setUploadError(message)
+      setParseProgress((previous) => ({ ...previous, status: 'failed', summary: message }))
       showToast?.(message, 'error')
     } finally {
       if (parseAbortControllerRef.current === abortController) {
@@ -1120,6 +1167,24 @@ export default function TechnicalTenderReview({ showToast }) {
     const targetProjectId = selectedProjectId
     if (!targetProjectId) return
     setUploadError('')
+    setParseStopRequested(false)
+    parseStoppedRef.current = false
+    activeParseProjectIdRef.current = targetProjectId
+    const initialProgress = {
+      status: 'queued',
+      percentage: 0,
+      summary: '正在准备重新解析技术招标文件。',
+      events: [],
+      opencodeOutput: { parts: [] },
+    }
+    setParseProgress(initialProgress)
+    markTechnicalTask({
+      taskType: 'parse',
+      taskName: '技术标解析',
+      projectId: targetProjectId,
+      projectName: project?.name || targetProjectId,
+      ...initialProgress,
+    })
     try {
       const response = await technicalParseAPI.run(targetProjectId)
       if (response?.status === 'queued') {
@@ -1145,7 +1210,10 @@ export default function TechnicalTenderReview({ showToast }) {
       }
       const message = e?.message || '重新解析失败'
       setUploadError(message)
+      setParseProgress((previous) => ({ ...previous, status: 'failed', summary: message }))
       showToast?.(message, 'error')
+    } finally {
+      activeParseProjectIdRef.current = ''
     }
   }
 

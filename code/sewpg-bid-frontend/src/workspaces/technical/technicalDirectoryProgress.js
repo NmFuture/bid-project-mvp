@@ -1,6 +1,6 @@
 import { formatProgressDuration } from '../../utils/progressDuration.js'
 
-const runningStatuses = new Set(['running', 'processing', 'queued'])
+const runningStatuses = new Set(['running', 'processing', 'queued', 'cancel_requested'])
 const failedStatuses = new Set(['failed', 'error'])
 const internalDirectoryTextPattern = /futurecode|opencode|S2|Skill|session|流式片段|provider|model/i
 
