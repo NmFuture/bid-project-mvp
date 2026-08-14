@@ -826,6 +826,10 @@ def slice_heading_range(source_path: Path, start_anchor: str, end_anchor: str) -
     Heading 样式不会降级成 Normal——而样式一丢，assembler 的 strip_prefix /
     inject_prefix_to_headings 就跳过这段（两者开头都是 `if lvl is None: continue`），
     这段内容在最终稿里永远不会被编号。
+
+    这条正确性依赖原生 docxcompose 的 `Composer.insert` 行为。填写链路与 assembler 的
+    组装链路目前各用各的 Composer（后者是 assembly/merger.py 的 BatchComposer），
+    若哪天填写侧的样式合并改由 assembly/style_index 一类接管，此前提须重新验证。
     """
     doc = Document(str(source_path))
     body = doc.element.body
