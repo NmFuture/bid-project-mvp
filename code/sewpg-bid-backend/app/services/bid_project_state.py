@@ -133,6 +133,7 @@ def project_detail_state(project: dict[str, Any]) -> dict[str, Any]:
         "keyAccountId": project["keyAccountId"],
         "reviewComment": str(project.get("reviewComment") or ""),
         "materialCopyState": copy.deepcopy(project.get("materialCopyState") or {}),
+        "technicalParseAssetSyncState": copy.deepcopy(project.get("technicalParseAssetSyncState") or {}),
     }
 
 

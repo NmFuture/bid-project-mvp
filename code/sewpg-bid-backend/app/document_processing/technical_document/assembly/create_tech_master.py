@@ -26,6 +26,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
@@ -264,7 +265,7 @@ def _cleanup_orphan_rels(docx_path: Path) -> None:
     对 part X 的 rels 文件 X.rels，收集 X 里出现的所有 r:id/r:embed/r:link/r:link 等
     rId 值，仅保留这些 rId 的 Relationship 条目。
     """
-    ID_ATTR_PATTERN = re.compile(r'(?:r:id|r:embed|r:link|id)="(rId\d+)"')
+    ID_ATTR_PATTERN = re.compile(r'(?:r:id|r:embed|r:link|id)="(rId[^"]+)"')
 
     with zipfile.ZipFile(docx_path, "r") as zin:
         names = zin.namelist()
@@ -373,13 +374,14 @@ def prune_unreferenced_media(docx_path: Path) -> tuple[int, int]:
                 continue
             keep.add(rels_name)
             try:
-                text = zin.read(rels_name).decode("utf-8", errors="replace")
+                rels_root = ET.fromstring(zin.read(rels_name))
             except Exception:
                 continue
-            for m in re.finditer(r'Target="([^"]+)"', text):
-                tgt_raw = m.group(1)
-                # 外链跳过
-                if tgt_raw.startswith("http://") or tgt_raw.startswith("https://"):
+            for relationship in rels_root:
+                if str(relationship.attrib.get("TargetMode") or "").lower() == "external":
+                    continue
+                tgt_raw = str(relationship.attrib.get("Target") or "")
+                if not tgt_raw:
                     continue
                 tgt = _resolve_target(rels_name, tgt_raw)
                 if tgt in names and tgt not in keep:
@@ -412,24 +414,21 @@ def _fix_rels_after_prune(docx_path: Path, keep: set[str]) -> None:
     for name in list(data.keys()):
         if not name.endswith(".rels"):
             continue
-        text = data[name].decode("utf-8", errors="replace")
-
-        def drop_if_gone(match: "re.Match") -> str:
-            full = match.group(0)
-            tgt_m = re.search(r'Target="([^"]+)"', full)
-            if not tgt_m:
-                return full
-            tgt = tgt_m.group(1)
-            if tgt.startswith("http://") or tgt.startswith("https://"):
-                return full
-            resolved = _resolve_target(name, tgt)
-            if resolved in keep:
-                return full
-            return ""
-
-        new_text = re.sub(r'<Relationship\b[^>]*?/>', drop_if_gone, text)
-        if new_text != text:
-            data[name] = new_text.encode("utf-8")
+        try:
+            rels_root = ET.fromstring(data[name])
+        except ET.ParseError:
+            continue
+        removed = False
+        for relationship in list(rels_root):
+            if str(relationship.attrib.get("TargetMode") or "").lower() == "external":
+                continue
+            target = str(relationship.attrib.get("Target") or "")
+            if target and _resolve_target(name, target) in keep:
+                continue
+            rels_root.remove(relationship)
+            removed = True
+        if removed:
+            data[name] = ET.tostring(rels_root, encoding="utf-8", xml_declaration=True)
             changed = True
 
     if not changed:

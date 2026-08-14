@@ -4008,6 +4008,7 @@ def _slice_appendix_from_source(
     keep_start: int,
     keep_end: int,
     source_state: dict[str, Any] | None = None,
+    prune_unused_parts: bool = False,
 ) -> bool:
     """Produce ``target_docx`` by literally CUTTING children
     ``[keep_start, keep_end]`` (inclusive, by ``body_index``) out of the
@@ -4106,6 +4107,14 @@ def _slice_appendix_from_source(
                         dst.writestr(info, new_doc_xml)
                 else:
                     dst.writestr(info, data)
+
+        if prune_unused_parts:
+            # 技术标源文件可能带有数百个当前附表未引用的媒体部件；只保留从正文可达的 OPC 关系闭包。
+            from app.document_processing.technical_document.assembly.create_tech_master import (
+                prune_unreferenced_media,
+            )
+
+            prune_unreferenced_media(target_docx)
     except Exception:
         target_docx.unlink(missing_ok=True)
         return False
@@ -4261,6 +4270,7 @@ def materialize_appendix_docx(project_id: str, appendix: dict[str, Any], *, prof
                     keep_start_raw,
                     keep_end_raw,
                     source_state=source_state if isinstance(source_state, dict) else None,
+                    prune_unused_parts=profile.key == "technical",
                 )
         if sliced and profile.key == "business":
             item["extractionMode"] = "source_docx_slice"
