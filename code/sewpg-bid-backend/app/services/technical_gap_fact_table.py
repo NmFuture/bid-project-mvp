@@ -511,6 +511,45 @@ def is_human_authored_fact_field(field: dict[str, Any]) -> bool:
     return str(field.get("status") or "") == FACT_STATUS_NOT_APPLICABLE
 
 
+def compose_saved_fact_table(
+    project_id: str,
+    current: dict[str, Any],
+    incoming_fields: list[Any],
+    *,
+    confirm: bool,
+    operator: str,
+    saved_at: str,
+) -> dict[str, Any]:
+    """按页面提交的字段组出要落库的整张事实表（纯计算，不读写项目状态）。
+
+    保存接口与「刷新并 AI 填充」的后台任务共用同一份口径：任务把保存挪进了 worker，
+    两处再各写一遍必然漂移。
+
+    整表 confirm 只把表级 status 升为 confirmed（正文填写的准入闸门），不逐字段盖成
+    「已人工确认」——否则一次保存就把整表变成 AI 禁区，AI 自己填错的值再也纠正不了。
+    """
+    specs, specs_ref = resolve_fact_specs()
+    fields = [
+        normalize_project_fact_field(field, index=index, confirm=False, operator=operator, saved_at=saved_at)
+        for index, field in enumerate(incoming_fields, start=1)
+        if isinstance(field, dict)
+    ]
+    return {
+        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "projectId": project_id,
+        "status": "confirmed" if confirm else "draft",
+        "builtAt": str(current.get("builtAt") or saved_at),
+        "updatedAt": saved_at,
+        "confirmedAt": saved_at if confirm else str(current.get("confirmedAt") or ""),
+        "confirmedBy": operator if confirm else str(current.get("confirmedBy") or ""),
+        "fields": fields,
+        "summary": summarize_project_fact_fields(fields, spec_total=len(specs)),
+        "factSpecsRef": copy.deepcopy(current.get("factSpecsRef"))
+        if isinstance(current.get("factSpecsRef"), dict)
+        else copy.deepcopy(specs_ref),
+    }
+
+
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
     built_at = _now_iso()
     existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
