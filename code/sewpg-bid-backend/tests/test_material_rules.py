@@ -37,12 +37,14 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _build_specs_xlsx(path: Path, rows: list[tuple[str, str]], header: list[str] | None = None) -> Path:
-    """rows: (实际要填写的字段, 引用文件) 列表，引用文件决定 sourceKind。"""
+    """rows: (字段名, 引用文件) 列表；字段名写进占位符内容列，导入时剥离得出。"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(header if header is not None else EXPECTED_HEADER)
     for index, (label, reference_file) in enumerate(rows, start=1):
-        ws.append([index, "招标文件-技术规范书", "第一章 1.1", label, "", "", reference_file])
+        ws.append(
+            [index, "待填写", "标准文件", "招标文件-技术规范书", f"[{label}，待填写]", reference_file]
+        )
     wb.save(path)
     return path
 
@@ -81,7 +83,6 @@ def _spec(seq: int, label: str, reference_file: str = "招标文件/招标公告
         "sourceFile": "招标文件-技术规范书",
         "placeholder": f"第一章 1.{seq}",
         "note": "",
-        "needsConfirmation": False,
         "referenceFile": reference_file,
         "valueRequired": True,
         "sourceKind": "tender",

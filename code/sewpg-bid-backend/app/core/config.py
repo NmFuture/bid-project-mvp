@@ -150,11 +150,9 @@ class Settings:
     opencode_max_concurrency: int
     s1_parse_opencode_enabled: bool
     s1_parse_technical_shard_enabled: bool
-    s1_parse_shard_concurrency: int
     s4_llm_fill_timeout_sec: float | None
     body_fill_concurrency: int
     s1_appendix_workers: int
-    tech_outline_chapter_workers: int
     ocr_max_concurrent: int
     ocr_pdf_batch_size: int
     business_wiki_ocr_concurrency: int
@@ -255,20 +253,16 @@ settings = Settings(
         os.getenv("APP_ENV", "development") == "production",
     ),
     s1_parse_technical_shard_enabled=_bool_env("S1_PARSE_TECHNICAL_SHARD_ENABLED", True),
-    # projectBasics 与 6 个清单分片共 7 个独立会话，默认全部并发执行。
-    s1_parse_shard_concurrency=_int_env("S1_PARSE_SHARD_CONCURRENCY", 7),
     # LLM 填写会话明显变长：独立超时，缺省沿用 OPENCODE_TIMEOUT_SEC；
     # 5090 实测取值只写 docker-compose.5090.yml。
     s4_llm_fill_timeout_sec=_optional_float_env("S4_LLM_FILL_TIMEOUT_SEC"),
     # 一键填写（正文+附表）的 compute 并发度；本地安全默认值，5090 实测取值只写
     # docker-compose.5090.yml。使用处另有 1~8 的 clamp 兜底。
     body_fill_concurrency=_int_env("BODY_FILL_CONCURRENCY", 4),
-    # 以下六项此前是各服务模块内的硬编码常量，默认值与原值一致，仅打开调参能力；
+    # 以下五项此前是各服务模块内的硬编码常量，默认值与原值一致，仅打开调参能力；
     # 5090 实测取值只写 docker-compose.5090.yml。
     # S1 附表处理线程池，原为固定单线程。
     s1_appendix_workers=_int_env("S1_APPENDIX_WORKERS", 1),
-    # 目录生成分章并发线程数；总槽位为本值 +1（projectBasics 占一个）。
-    tech_outline_chapter_workers=_int_env("TECH_OUTLINE_CHAPTER_WORKERS", 6),
     # OcrService 自身的并发闸；真正的上限仍取决于 vLLM 单实例的批处理能力。
     ocr_max_concurrent=_int_env("OCR_MAX_CONCURRENT", 8),
     # 长 PDF 每批送入模型的页数，调大更省往返、调小更省显存。

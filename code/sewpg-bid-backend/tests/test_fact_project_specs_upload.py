@@ -22,12 +22,14 @@ TEST_USER = {"id": "u-facts", "name": "事实表测试用户"}
 
 
 def _build_xlsx(path: Path, rows: list[tuple[str, str]], header: list[str] | None = None) -> Path:
-    """rows: (实际要填写的字段, 引用文件) 列表，引用文件决定 sourceKind。"""
+    """rows: (字段名, 引用文件) 列表；字段名写进占位符内容列，导入时剥离得出。"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(header if header is not None else EXPECTED_HEADER)
     for index, (label, reference_file) in enumerate(rows, start=1):
-        ws.append([index, "招标文件-技术规范书", "第一章 1.1", label, "", "", reference_file])
+        ws.append(
+            [index, "待填写", "标准文件", "招标文件-技术规范书", f"[{label}，待填写]", reference_file]
+        )
     wb.save(path)
     return path
 

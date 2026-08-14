@@ -198,7 +198,6 @@ def _seed_technical_gap_project(plan: dict) -> str:
                         "sourceFile": "",
                         "placeholder": "",
                         "note": "",
-                        "needsConfirmation": False,
                         "referenceFile": "招标文件",
                         "valueRequired": True,
                         "sourceKind": "tender",

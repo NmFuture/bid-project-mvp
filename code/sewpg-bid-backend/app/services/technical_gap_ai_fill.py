@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -874,11 +876,90 @@ _EMBED_PLACEHOLDER_RE = re.compile(r"[\[【]\s*([^\]】\r\n]{1,80}?)\s*[,，、:
 _EMBED_NORM_RE = re.compile(r"[\s（）()、/\\:：；;，,。\-_—×*\[\]【】]+")
 # 素材分层的特异性：同名素材优先取更专的一层，同层撞名才交人工
 _EMBED_TIER_PRIORITY = {"project": 3, "customer": 2, "standard": 1}
-_EMBED_UNSUPPORTED_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
+# 非 docx 素材按需转 Word 后再嵌入，转换脚本取自 bid-material-format-cleaner
+_EMBED_CONVERT_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".pdf"}
+_EMBED_EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
+_EMBED_CONVERT_SCRIPTS: dict[str, Any] = {}
 
 
 def _embed_norm(value: Any) -> str:
     return _EMBED_NORM_RE.sub("", str(value or "").replace("　", " ").strip().lower())
+
+
+def _format_cleaner_script(script_name: str) -> Any:
+    """按路径加载 bid-material-format-cleaner 的转换脚本。
+
+    脚本是 Skill 的一部分，不在 app 包里；这里沿用目录生成 Skill 的加载方式引用同一份
+    实现，避免把转换逻辑在后端复制一遍后两边走偏。
+    """
+    module = _EMBED_CONVERT_SCRIPTS.get(script_name)
+    if module is not None:
+        return module
+    script_path = BASE_DIR / "opencode" / "skills" / "bid-material-format-cleaner" / "scripts" / script_name
+    spec = importlib.util.spec_from_file_location(f"bid_material_format_cleaner_{Path(script_name).stem}", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载素材转换脚本：{script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _EMBED_CONVERT_SCRIPTS[script_name] = module
+    return module
+
+
+def _embed_convert_kind(file_name: str, mime_type: str) -> str:
+    """判断原件该走哪个转换脚本；后缀缺失时回落 mime，都认不出返回空串。"""
+    suffix = Path(file_name).suffix.lower()
+    if suffix in _EMBED_EXCEL_SUFFIXES or "spreadsheetml" in mime_type or "ms-excel" in mime_type:
+        return "excel"
+    if suffix == ".pdf" or mime_type == "application/pdf":
+        return "pdf"
+    return ""
+
+
+def _embed_converted_docx(material_id: str, name: str, cache_dir: Path) -> tuple[Path, str]:
+    """把非 docx 素材的原件转成可嵌入的 Word，返回 (docx 路径, 转换类型)。
+
+    只取 raw 原件：清洗稿是 Wiki 预览链路的自动转换，Excel 会丢合并单元格、认错表头，
+    嵌进投标材料就是静默降级。转换脚本逐格读 Excel、逐页渲染 PDF，不经过预览链路。
+    PDF 转出来是图片版，正是型式认证一类盖章件要的——OCR 成文字反而丢公章。
+
+    产物落项目级共享缓存：同一素材常被多个附件专题各引一次（场址校核报告 X2/X3 都要），
+    而各专题 work_dir 互不相同，只有跨任务的共享缓存能让它真的只转一次。
+    """
+    awaitable = technical_material_store.raw_download_content(material_id)
+    try:
+        payload = _run_async(awaitable)
+    except Exception:
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise
+    file_name = _safe_filename(str(payload.get("fileName") or name), f"{material_id}原件")
+    kind = _embed_convert_kind(file_name, str(payload.get("mimeType") or ""))
+    if not kind:
+        raise ValueError(f"「{file_name}」既不是 Word，也不是可转换的 Excel/PDF。")
+    # 一素材一目录：产物名不带 material_id，否则 PDF 转换会把 id 写成 Word 里的标题
+    material_dir = cache_dir / _safe_filename(material_id, "material")
+    raw_path = material_dir / "raw" / file_name
+    docx_path = material_dir / f"{raw_path.stem}.docx"
+    if docx_path.exists():
+        return docx_path, kind
+    if not raw_path.exists():
+        minio_client.download_file(str(payload["bucket"]), str(payload["key"]), raw_path)
+    # 转换写线程唯一的临时目录再原子改名：一键填写并发后多个线程可能同时转同一素材，
+    # 直接落终名会让另一个线程读到写了一半的 docx。PDF 的中间页图随临时目录一起清掉。
+    temp_dir = material_dir / f".convert-{os.getpid()}-{threading.get_ident()}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if kind == "excel":
+            temp_docx = temp_dir / docx_path.name
+            _format_cleaner_script("excel_to_word.py").convert_excel_to_word(raw_path, temp_docx)
+        else:
+            # process_pdf 按 `output_dir / f"{原件 stem}.docx"` 落盘，文件名与 docx_path 一致
+            temp_docx = Path(_format_cleaner_script("pdf_to_word.py").process_pdf(raw_path, output_dir=temp_dir))
+        temp_docx.replace(docx_path)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    return docx_path, kind
 
 
 def _scan_embed_placeholders(docx_path: Path) -> list[str]:
@@ -917,6 +998,8 @@ def _embed_sources_for_fill(
     project: dict[str, Any],
     blank_docx_path: Path,
     work_dir: Path,
+    *,
+    cache_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """为待填写 Word 里的每个待插入占位符备好可嵌入的 Word 素材。
 
@@ -926,6 +1009,7 @@ def _embed_sources_for_fill(
     labels = _scan_embed_placeholders(blank_docx_path)
     if not labels:
         return []
+    cache_dir = cache_dir or (work_dir / "embed_converted")
     material_scope = build_project_material_scope(project)
     candidates = _allowed_technical_material_index(material_scope, project_turbine_model(project))
     by_key: dict[str, list[dict[str, Any]]] = {}
@@ -966,16 +1050,23 @@ def _embed_sources_for_fill(
                 }
             )
             continue
-        # 按素材原始后缀判断，不看能不能取到 docx：xlsx 若被 Wiki 预览转换过，
-        # 取素材时会拿到自动转换的清洗稿，那份转换有损（合并单元格丢失、表头认错），
-        # 悄悄嵌进投标材料就是静默降级。
-        if Path(name).suffix.lower() in _EMBED_UNSUPPORTED_SUFFIXES:
+        # 按素材原始后缀判断，不看能不能取到 docx：xlsx 若被 Wiki 预览转换过，取素材时会拿到
+        # 自动转换的清洗稿，那份转换有损（合并单元格丢失、表头认错）。原来据此退回人工，现在改为
+        # 取 raw 原件用 format-cleaner 重新转换——它逐格读原件、不经过预览链路，那层顾虑不成立了。
+        if Path(name).suffix.lower() in _EMBED_CONVERT_SUFFIXES:
+            try:
+                converted_path, converted_kind = _embed_converted_docx(material_id, name, cache_dir)
+            except Exception as exc:  # noqa: BLE001 - 单份素材转不了不能中断整份文件的填写
+                sources.append(
+                    {
+                        **entry,
+                        "status": "convert_failed",
+                        "statusMessage": f"素材「{name}」转 Word 失败：{exc}",
+                    }
+                )
+                continue
             sources.append(
-                {
-                    **entry,
-                    "status": "unsupported_format",
-                    "statusMessage": f"「{name}」是 Excel 素材，请人工另存为 Word 后重新上传。",
-                }
+                {**entry, "status": "ready", "sourceKind": converted_kind, "docxPath": str(converted_path)}
             )
             continue
         awaitable = _downloadable_technical_word_payload(material_id)
@@ -1604,7 +1695,12 @@ def compute_technical_ai_fill(
     embed_sources: list[dict[str, Any]] = []
     if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME:
         blank_source = _prepare_word_blank_source(blank_source, work_dir)
-        embed_sources = _embed_sources_for_fill(project, Path(str(blank_source["docxPath"])), work_dir)
+        embed_sources = _embed_sources_for_fill(
+            project,
+            Path(str(blank_source["docxPath"])),
+            work_dir,
+            cache_dir=_project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_embed_converted_cache",
+        )
     manifest = {
         "schemaVersion": WORD_FILL_SCHEMA_VERSION if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else TABLE_FILL_SCHEMA_VERSION,
         "projectId": str(project.get("id") or ""),

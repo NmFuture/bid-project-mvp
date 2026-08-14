@@ -60,8 +60,7 @@ FACT_CURATOR_SOURCE_REF_TYPE = "factCurator"
 
 CURATE_ACTION_FILL = "fill"
 CURATE_ACTION_FIX = "fix"
-CURATE_ACTION_CONFIRM_ADVICE = "confirm-advice"
-CURATE_ACTIONS = {CURATE_ACTION_FILL, CURATE_ACTION_FIX, CURATE_ACTION_CONFIRM_ADVICE}
+CURATE_ACTIONS = {CURATE_ACTION_FILL, CURATE_ACTION_FIX}
 
 # 字段全部了结（有值或人工标不适用）时表级才是 confirmed，否则降回 draft。
 _FACT_TERMINAL_STATUSES = {
@@ -226,8 +225,8 @@ def _is_curator_readonly_field(field: dict[str, Any]) -> bool:
 
 
 def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """按方案 B 的三件事给字段分桶，桶内只放 fieldKey。"""
-    targets: dict[str, list[str]] = {"fill": [], "fix": [], "confirmAdvice": []}
+    """按方案 B 的两件事给字段分桶，桶内只放 fieldKey。"""
+    targets: dict[str, list[str]] = {"fill": [], "fix": []}
     for field in fields:
         field_key = str(field.get("key") or "").strip()
         if not field_key:
@@ -239,12 +238,9 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
         # 补抽范围：招标类 + 素材/证书类未提取字段（模板/平台/自动生成类不交 AI 填）
         if status == FACT_STATUS_UNEXTRACTED:
             targets["fill"].append(field_key)
-        # 脏数据校验只针对从招标文件/素材抽出来的值；清单标了要核口径的走 confirmAdvice，
-        # 两个桶互斥（三态收敛前靠 pending_confirmation 状态天然分开，现在显式写出来）
-        if status == FACT_STATUS_CONFIRMED and not field.get("needsConfirmation"):
+        # 脏数据校验只针对从招标文件/素材抽出来的值
+        if status == FACT_STATUS_CONFIRMED:
             targets["fix"].append(field_key)
-        if field.get("needsConfirmation"):
-            targets["confirmAdvice"].append(field_key)
     return targets
 
 
@@ -444,7 +440,6 @@ def apply_fact_curator_suggestions(
         for bucket, action in (
             ("fill", CURATE_ACTION_FILL),
             ("fix", CURATE_ACTION_FIX),
-            ("confirmAdvice", CURATE_ACTION_CONFIRM_ADVICE),
         ):
             for target_key in targets.get(bucket) or []:
                 key = str(target_key or "").strip()
@@ -454,7 +449,6 @@ def apply_fact_curator_suggestions(
     report: dict[str, Any] = {
         "filled": [],
         "fixed": [],
-        "advised": [],
         "notFound": [],
         "skippedConfirmed": [],
         "ignored": [],
@@ -487,20 +481,6 @@ def apply_fact_curator_suggestions(
             "evidence": suggestion["evidence"],
             "confidence": suggestion["confidence"],
         }
-        if action == CURATE_ACTION_CONFIRM_ADVICE and str(field.get("value") or "").strip():
-            # 口径判断针对现值本身，SKILL 约定 suggestedValue 留空；仍须保存判断证据。
-            field["sourceRefs"] = normalize_fact_source_refs([*(field.get("sourceRefs") or []), ref])
-            origin_note = _cross_origin_note(suggestion, cross_materials)
-            if origin_note:
-                notes = str(field.get("notes") or "")
-                if origin_note not in notes:
-                    field["notes"] = f"{notes}；{origin_note}" if notes else origin_note
-            # 口径建议不改值，只留证据供人复核；状态按现值归一（旧态字段就地收敛）
-            field["status"] = normalize_fact_status(field.get("status"), has_value=True)
-            field["updatedAt"] = saved_at
-            field["updatedBy"] = operator
-            report["advised"].append(field_key)
-            continue
         if not value:
             # 找不到值：保持 unextracted 并在 notes 写原因，不硬填
             if str(field.get("status") or "") == FACT_STATUS_UNEXTRACTED:
@@ -591,7 +571,7 @@ def run_fact_curator_for_project(
             if artifact.is_file():
                 artifact.unlink()
     targets = manifest.get("targets") if isinstance(manifest.get("targets"), dict) else {}
-    target_total = sum(len(targets.get(key) or []) for key in ("fill", "fix", "confirmAdvice"))
+    target_total = sum(len(targets.get(key) or []) for key in ("fill", "fix"))
     notify("AI 分析素材", f"AI 正在按 {target_total} 个目标字段查证素材（耗时较长）。")
     result = run_technical_fact_curator_skill(manifest_path)
     notify("回收建议落表", "正在回收 AI 建议并写入事实表。")

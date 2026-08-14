@@ -1468,6 +1468,82 @@ def _run_local_tech_format_cleaner(manifest_path: Path) -> dict[str, Any]:
     )
 
 
+def regenerate_score_index_xref_for_project(
+    project_id: str,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any]:
+    """只重跑「生成章节索引」这一步，作用在当前成稿上。
+
+    与组装正文里的第 4 步是同一段 skill 逻辑，区别只有一点：输入取当前成稿而不是
+    格式清洗产物，这样共创页改过的内容会被保留，索引也按改后的章节重判。
+    产物直接顶回 `document_path`，不动 fill_state 的正文拼装结论。
+    """
+    project = get_workspace_project_runtime_state(
+        project_id,
+        bid_type=TECHNICAL_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: ValueError("重新生成章节索引仅支持技术标项目。"),
+    )
+    source_path = document_path(project_id)
+    if not source_path.exists():
+        raise ValueError("当前项目还没有可用的技术标成稿，请先生成正文。")
+
+    # 独立工作目录：s7_assembly_workdir 存着正文组装的全部中间产物，不能被本步骤清掉。
+    work_dir = technical_workspace_stage_dir(project_id, "s7_score_index_workdir")
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # run_manifest 强制 inputFile != outputFile，先把成稿拷进工作目录再产出到另一个文件。
+    staged_input = work_dir / f"{project_id}_成稿.docx"
+    shutil.copy2(source_path, staged_input)
+    output_path = work_dir / f"{project_id}_成稿_xref.docx"
+
+    started_at = time.monotonic()
+    xref = _run_tech_score_index_xref_step(
+        input_path=staged_input,
+        output_path=output_path,
+        work_dir=work_dir,
+        progress_callback=progress_callback,
+    )
+    run_duration_sec = max(1, int(round(time.monotonic() - started_at)))
+
+    produced = Path(str(xref.get("outputFile") or ""))
+    applied = xref.get("status") == "completed" and produced.exists()
+    if applied:
+        shutil.copy2(produced, source_path)
+
+    if progress_callback:
+        progress_callback(
+            "score_index_xref_applied" if applied else "score_index_xref_not_applied",
+            {"outputFile": str(produced) if applied else "", "documentPath": str(source_path)},
+        )
+
+    if applied:
+        project_for_update = require_workspace_project_for_update(
+            project_id,
+            bid_type=TECHNICAL_BID_TYPE,
+            not_found_error=KeyError,
+            wrong_type_error=lambda _project_id: ValueError("重新生成章节索引仅支持技术标项目。"),
+        )
+        # 换了盘上的 docx 必须顺带升版本换 documentKey，否则 OnlyOffice 会继续用缓存的旧稿。
+        document_state = project_for_update["document_state"]
+        next_version = int(document_state.get("version") or 1) + 1
+        document_state["version"] = next_version
+        document_state["lastSavedAt"] = now_iso()
+        document_state["onlyoffice"]["documentKey"] = f"{project_id}-v{next_version}"
+        persist_workspace_project_fields(project_for_update, "document_state")
+
+    return {
+        **xref,
+        "applied": applied,
+        "workDir": str(work_dir),
+        "documentPath": str(source_path),
+        "runDurationSec": run_duration_sec,
+        "projectName": str(project.get("name") or ""),
+    }
+
+
 def _run_tech_score_index_xref_step(
     *,
     input_path: Path,
@@ -1479,6 +1555,11 @@ def _run_tech_score_index_xref_step(
 
     跑在格式清洗之后：清洗会重排标题样式与文本编号，先建引用会让书签挂在被改写的段落上。
     文档里没有评分索引表、或本步骤失败时都不阻断出稿，调用方沿用格式清洗产物。
+
+    章节索引一律按当前文档重判，不看该列原来有没有内容：素材模板自带的索引和
+    重新生成前的旧索引都指向上一版章节号，沿用就会链到错章节。所以每次都丢弃
+    缓存映射、把所有行标成待判断、并覆盖写单元格。拿不到映射的行 fill_cells
+    会原样跳过，agent 不可用时退化成「保留原内容并建引用」，不会清空已有索引。
     """
     manifest_path = work_dir / "tech_score_index_xref_input.json"
     mapping_path = work_dir / "tech_score_index_xref_mapping.json"
@@ -1492,9 +1573,22 @@ def _run_tech_score_index_xref_step(
     mapping_source = ""
     mapping_error = ""
     try:
+        mapping_path.unlink(missing_ok=True)
         # 章节号只有正文组装完才存在，S3 的待填写填充只能在这一列留 `[待人工补充：章节索引]`。
-        # 所以先体检：还没判断章节就先让 agent 判断，判断结果落成映射再交给确定性脚本建引用。
+        # 所以先体检：把逐行现状和正文标题树导成简报，交给 agent 判断章节，
+        # 判断结果落成映射再交给确定性脚本建引用。
         probe = _probe_tech_score_index_xref(input_path, work_dir)
+        if probe.get("tableFound"):
+            probe = _mark_all_score_index_rows_pending(probe)
+        if progress_callback:
+            progress_callback(
+                "score_index_xref_probed",
+                {
+                    "tableFound": bool(probe.get("tableFound")),
+                    "rowCount": int(probe.get("rowCount") or 0),
+                    "pendingRowCount": int(probe.get("pendingRowCount") or 0),
+                },
+            )
         if probe.get("tableFound") and int(probe.get("pendingRowCount") or 0) > 0 and not mapping_path.exists():
             mapping_source, mapping_error = _request_score_index_xref_mapping(
                 probe=probe,
@@ -1511,6 +1605,8 @@ def _run_tech_score_index_xref_step(
             "updateFieldsWithWord": False,
             "syncTitle": False,
             "styledLink": False,
+            # 重判结果要能盖掉旧索引；没拿到映射的行 fill_cells 一律跳过，不会被清空。
+            "overwrite": True,
         }
         if mapping_path.exists():
             manifest["mappingFile"] = str(mapping_path)
@@ -1588,6 +1684,42 @@ def _probe_tech_score_index_xref(input_path: Path, work_dir: Path) -> dict[str, 
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return _run_local_tech_score_index_xref(manifest_path)
+
+
+def _mark_all_score_index_rows_pending(probe: dict[str, Any]) -> dict[str, Any]:
+    """把体检结果里的所有索引行重新标成待判断，并同步改写简报。
+
+    简报是给 agent 的唯一输入，prompt 明确「只处理 pending 为 true 的行」。
+    体检只把空格子和 `[待人工补充：章节索引]` 算作待判断，素材自带的旧索引
+    会让待判断数变成 0，agent 就认为无事可做，旧章节号原样留到成稿里。
+    """
+    updated = copy.deepcopy(probe)
+    rows = updated.get("rows") if isinstance(updated.get("rows"), list) else []
+    for row in rows:
+        if isinstance(row, dict):
+            row["pending"] = True
+    updated["rows"] = rows
+    updated["pendingRowCount"] = len(rows)
+
+    brief_file = str(updated.get("briefFile") or "")
+    if not brief_file:
+        return updated
+    brief_path = Path(brief_file)
+    try:
+        brief = json.loads(brief_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # 简报读不回来时不阻断：agent 那步会因为拿不到待判断行而降级，警告已由调用方记录。
+        return updated
+    if not isinstance(brief, dict):
+        return updated
+    brief_rows = brief.get("rows") if isinstance(brief.get("rows"), list) else []
+    for row in brief_rows:
+        if isinstance(row, dict):
+            row["pending"] = True
+    brief["rows"] = brief_rows
+    brief["pendingRowCount"] = len(brief_rows)
+    brief_path.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated
 
 
 def _request_score_index_xref_mapping(

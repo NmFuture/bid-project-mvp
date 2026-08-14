@@ -42,9 +42,7 @@ BUSINESS_OUTLINE_SKILL_COMMAND = "business-outline"
 TECH_OUTLINE_FINALIZE_COMMAND = "s2outline finalize"
 TECH_OUTLINE_FINALIZE_EARLY_COMMAND = "s2outline-finalize"
 TECH_OUTLINE_HANDOFF_DECISION_UNITS = 1
-TECH_OUTLINE_CHAPTER_WORKERS = settings.tech_outline_chapter_workers
-TECH_OUTLINE_TOTAL_WORKERS = TECH_OUTLINE_CHAPTER_WORKERS + 1
-_TECH_OUTLINE_REQUEST_SLOTS = threading.BoundedSemaphore(TECH_OUTLINE_TOTAL_WORKERS)
+_TECH_OUTLINE_REQUEST_SLOTS = threading.BoundedSemaphore(max(1, settings.opencode_max_concurrency))
 PUBLIC_EVIDENCE_DECISION_LIMIT = 80
 
 logger = logging.getLogger(__name__)
@@ -541,6 +539,13 @@ def _run_parallel_outline_chapters(
         progress_callback,
         appendix_total=len(appendix_items),
     )
+    parallel_workers = max(
+        1,
+        min(
+            max(1, int(settings.opencode_max_concurrency)),
+            len(chapters) + int(bool(appendix_items)),
+        ),
+    )
 
     def run_chapter(chapter: dict[str, Any]) -> tuple[str, str]:
         chapter_id = str(chapter["chapter_id"])
@@ -641,12 +646,7 @@ def _run_parallel_outline_chapters(
     appendix_predecided = not appendix_items
     try:
         aggregator.emit_initial()
-        with ThreadPoolExecutor(
-            max_workers=min(
-                TECH_OUTLINE_TOTAL_WORKERS,
-                max(1, len(chapters) + (1 if appendix_items else 0)),
-            )
-        ) as executor:
+        with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
             futures: dict[Any, tuple[str, Any]] = {
                 executor.submit(run_chapter, chapter): ("chapter", chapter)
                 for chapter in chapters
@@ -726,6 +726,7 @@ def _run_parallel_outline_chapters(
         ],
         "appendixResult": appendix_result,
         "appendixPredecided": appendix_predecided,
+        "parallelWorkers": parallel_workers,
     }
 
 
@@ -885,6 +886,7 @@ def _run_outline_skill(
         trusted_input = _capture_trusted_technical_outline_input(manifest_path)
         chapter_session_ids: list[str] = []
         parallel_appendix_result: dict[str, Any] | None = None
+        parallel_workers = 0
         appendix_predecided = False
         handoff_kwargs: dict[str, Any] = {}
         parallel_completed = False
@@ -912,6 +914,7 @@ def _run_outline_skill(
                 appendix_predecided = bool(
                     parallel_result.get("appendixPredecided")
                 )
+                parallel_workers = int(parallel_result.get("parallelWorkers") or 0)
             else:
                 # 兼容测试和历史调用方的章节会话列表。
                 chapter_session_ids = list(parallel_result or [])
@@ -1015,14 +1018,14 @@ def _run_outline_skill(
             ]
             output_trace["chapterSessionCount"] = len(chapter_session_ids)
             output_trace["parallelChapterWorkers"] = min(
-                TECH_OUTLINE_CHAPTER_WORKERS,
+                parallel_workers or max(1, settings.opencode_max_concurrency),
                 len(chapter_session_ids),
             )
             output_trace["parallelAppendixSessionCount"] = int(
                 bool(parallel_appendix_result)
             )
             output_trace["parallelDecisionWorkers"] = min(
-                TECH_OUTLINE_TOTAL_WORKERS,
+                parallel_workers or max(1, settings.opencode_max_concurrency),
                 len(chapter_session_ids) + int(bool(parallel_appendix_result)),
             )
         return loaded

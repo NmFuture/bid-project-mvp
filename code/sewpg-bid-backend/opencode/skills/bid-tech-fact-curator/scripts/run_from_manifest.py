@@ -205,7 +205,7 @@ def build_brief(manifest: dict[str, Any]) -> dict[str, Any]:
     fields = [field for field in (table.get("fields") or []) if isinstance(field, dict)]
     targets = manifest.get("targets") if isinstance(manifest.get("targets"), dict) else {}
     bucket_by_key: dict[str, str] = {}
-    for bucket, action in (("fill", "fill"), ("fix", "fix"), ("confirmAdvice", "confirm-advice")):
+    for bucket, action in (("fill", "fill"), ("fix", "fix")):
         for key in targets.get(bucket) or []:
             bucket_by_key[str(key)] = action
 
@@ -227,7 +227,6 @@ def build_brief(manifest: dict[str, Any]) -> dict[str, Any]:
                 "specKey": str(field.get("specKey") or ""),
                 "specSeq": field.get("specSeq"),
                 "sourceKind": str(field.get("sourceKind") or ""),
-                "needsConfirmation": bool(field.get("needsConfirmation")),
                 "flags": _dirty_flags(field) if action == "fix" else [],
                 "snippets": _snippets(field, corpus),
             }
@@ -258,10 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         brief_file.parent.mkdir(parents=True, exist_ok=True)
     brief_file.write_text(json.dumps(brief, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    counts = {"fill": 0, "fix": 0, "confirmAdvice": 0}
+    counts = {"fill": 0, "fix": 0}
     for field in brief["fields"]:
-        bucket = {"fill": "fill", "fix": "fix", "confirm-advice": "confirmAdvice"}[field["action"]]
-        counts[bucket] += 1
+        counts[field["action"]] += 1
     summary = {
         "schema": SCHEMA_VERSION,
         "phase": "brief",

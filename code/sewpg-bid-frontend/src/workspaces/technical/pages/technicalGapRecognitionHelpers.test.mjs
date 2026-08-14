@@ -254,20 +254,32 @@ test('共创导出页二次确认后沿用正文生成接口并刷新最新文�
   assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })
 
-test('素材范围变更后自动重建事实表，不保留手动刷新入口', async () => {
+test('素材范围保存与事实表重建解耦，重建只走「刷新并 AI 填充」', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const scopeStart = source.indexOf('const handleSaveMaterialPaths')
   const curateStart = source.indexOf('const handleCurateFacts')
   const scopeFlow = source.slice(scopeStart, curateStart)
 
   assert.ok(scopeStart >= 0 && curateStart > scopeStart)
-  assert.ok(scopeFlow.indexOf('saveMaterialSources') < scopeFlow.indexOf('buildFacts'))
-  // 没有独立的「生成/重建事实表」按钮：素材匹配完成后后端自动建一次，
-  // 之后重建走保存参考范围与「刷新并 AI 填充」两条既有流程
+  // 范围就是范围：保存范围只写范围，不顺带触发耗时约一分钟的整表重建
+  assert.ok(scopeFlow.includes('saveMaterialSources'))
+  assert.ok(!scopeFlow.includes('buildFacts'))
+  // 没有独立的「生成/重建事实表」按钮：建表与重建都由「刷新并 AI 填充」一个入口承担
   assert.doesNotMatch(source, /onBuild\b|handleBuildFacts/)
+  assert.match(source.slice(curateStart), /buildFacts/)
   // 清单只有全局一份，本页没有上传入口，只跳转到素材库 · 规则页
   assert.doesNotMatch(source, /uploadFactSpecs/)
   assert.match(source, /workspace\/tech\/materials\/rules/)
+})
+
+test('事实表为空但清单已上传时，「刷新并 AI 填充」兼职生成事实表', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  // 清单没上传仍禁用（后端会 400），上传后允许从空表直接建
+  assert.match(source, /disabled=\{busy \|\| \(!fields\.length && !specsImported\)\}/)
+  assert.match(source, /'刷新并 AI 填充' : '生成事实表并 AI 填充'/)
+  // 空表没有可保存的编辑，跳过 saveFacts 直接进构建
+  assert.match(source, /if \(factFields\.length\) \{\s*\n\s*const fieldsToSave/)
 })
 
 test('事实表弹窗使用动态视口高度并只滚动表格区域', async () => {

@@ -466,32 +466,191 @@ class ScoreIndexXrefPipelineTest(unittest.TestCase):
             self.assertIn("xref_index_column_pending", codes)
             self.assertTrue(output.exists())
 
-    def test_pipeline_skips_agent_when_column_already_filled(self) -> None:
+    def test_prefilled_column_is_rebuilt_against_the_current_document(self) -> None:
+        """素材模板自带的章节索引指向上一版章节号，组装正文时必须按当前文档重判并覆盖。
+
+        旧行为是「列非空就跳过 agent」，素材里的旧号会原样留到成稿里链到错章节。
+        """
         from app.services import tech_assembly
 
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             source = work / "成稿.docx"
+            output = work / "成稿_xref.docx"
             _build_docx(source, index_entries=["5.1 投标总体方案概述"])
-            called: list[int] = []
+            pending_counts: list[int] = []
 
             def fake_skill(brief_path: Path, mapping_path: Path):
-                called.append(1)
-                return {}
+                payload = json.loads(brief_path.read_text(encoding="utf-8"))
+                pending_counts.append(int(payload["pendingRowCount"]))
+                factor = payload["rows"][0]["factor"]
+                mapping_path.write_text(
+                    json.dumps({factor: ["5.3.3"]}, ensure_ascii=False), encoding="utf-8"
+                )
+                return {"mappingFile": str(mapping_path), "factorCount": 1}
 
             original = tech_assembly.run_technical_score_index_xref_skill
             tech_assembly.run_technical_score_index_xref_skill = fake_skill
             try:
                 result = tech_assembly._run_tech_score_index_xref_step(
                     input_path=source,
-                    output_path=work / "成稿_xref.docx",
+                    output_path=output,
                     work_dir=work,
                 )
             finally:
                 tech_assembly.run_technical_score_index_xref_skill = original
 
-            self.assertEqual(called, [])
+            # 所有行都被重新标成待判断，agent 才会重做已经填过的这一行
+            self.assertEqual(pending_counts, [1])
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["summary"]["filledRowCount"], 1)
+            # 覆盖生效：旧的 5.1 被换成按当前文档判断出来的 5.3.3
+            xml = _document_xml(output)
+            self.assertIn("5.3.3 叶片设计", xml)
+            self.assertNotIn("5.1 投标总体方案概述", xml.split("<w:tbl>")[-1])
+
+    def test_stale_mapping_from_a_previous_run_is_not_reused(self) -> None:
+        """工作目录里留着上一轮的映射时也要重判，否则重新生成索引会原样复现旧结果。"""
+        from app.services import tech_assembly
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "成稿.docx"
+            output = work / "成稿_xref.docx"
+            _build_docx(source, index_entries=[PLACEHOLDER])
+            stale = work / "tech_score_index_xref_mapping.json"
+            stale.write_text(
+                json.dumps({"风轮系统先进性及可靠性": ["5.1"]}, ensure_ascii=False), encoding="utf-8"
+            )
+
+            def fake_skill(brief_path: Path, mapping_path: Path):
+                payload = json.loads(brief_path.read_text(encoding="utf-8"))
+                factor = payload["rows"][0]["factor"]
+                mapping_path.write_text(
+                    json.dumps({factor: ["5.3.3"]}, ensure_ascii=False), encoding="utf-8"
+                )
+                return {"mappingFile": str(mapping_path), "factorCount": 1}
+
+            original = tech_assembly.run_technical_score_index_xref_skill
+            tech_assembly.run_technical_score_index_xref_skill = fake_skill
+            try:
+                tech_assembly._run_tech_score_index_xref_step(
+                    input_path=source,
+                    output_path=output,
+                    work_dir=work,
+                )
+            finally:
+                tech_assembly.run_technical_score_index_xref_skill = original
+
+            xml = _document_xml(output)
+            self.assertIn("5.3.3 叶片设计", xml)
+            self.assertNotIn("5.1 投标总体方案概述", xml.split("<w:tbl>")[-1])
+
+    def test_second_run_redecides_over_previously_generated_links(self) -> None:
+        """「重新生成索引」的真实场景：列里已经是上一轮生成的超链接 + PAGEREF 域，仍要重判并换掉。"""
+        from app.services import tech_assembly
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "成稿.docx"
+            first_out = work / "成稿_xref1.docx"
+            second_out = work / "成稿_xref2.docx"
+            _build_docx(source, index_entries=[PLACEHOLDER])
+            answers = [["5.1"], ["5.3.3"]]
+
+            def fake_skill(brief_path: Path, mapping_path: Path):
+                payload = json.loads(brief_path.read_text(encoding="utf-8"))
+                factor = payload["rows"][0]["factor"]
+                mapping_path.write_text(
+                    json.dumps({factor: answers.pop(0)}, ensure_ascii=False), encoding="utf-8"
+                )
+                return {"mappingFile": str(mapping_path), "factorCount": 1}
+
+            original = tech_assembly.run_technical_score_index_xref_skill
+            tech_assembly.run_technical_score_index_xref_skill = fake_skill
+            try:
+                first = tech_assembly._run_tech_score_index_xref_step(
+                    input_path=source, output_path=first_out, work_dir=work,
+                )
+                # 第一轮产物就是第二轮的输入，等同于共创导出页上点「重新生成索引」
+                second = tech_assembly._run_tech_score_index_xref_step(
+                    input_path=first_out, output_path=second_out, work_dir=work,
+                )
+            finally:
+                tech_assembly.run_technical_score_index_xref_skill = original
+
+            self.assertEqual(first["summary"]["linkedCount"], 1)
+            self.assertEqual(second["status"], "completed")
+            self.assertEqual(second["summary"]["filledRowCount"], 1)
+            self.assertEqual(second["summary"]["linkedCount"], 1)
+            # 两次判断都被采纳，且第二轮把第一轮的结果换掉而不是并存
+            first_xml = _document_xml(first_out)
+            second_xml = _document_xml(second_out)
+            self.assertIn("5.1 投标总体方案概述", first_xml)
+            self.assertIn("5.3.3 叶片设计", second_xml)
+            second_table = second_xml.split("<w:tbl>")[-1]
+            self.assertNotIn("5.1 投标总体方案概述", second_table)
+            # 旧的页码尾巴没有被累加成「，P1，P1」
+            self.assertEqual(second_table.count("PAGEREF"), 1)
+
+    def test_existing_index_is_kept_when_agent_returns_nothing(self) -> None:
+        """覆盖只作用在拿到映射的行；agent 不可用时原有索引不能被清空。"""
+        from app.services import tech_assembly
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "成稿.docx"
+            output = work / "成稿_xref.docx"
+            _build_docx(source, index_entries=["5.1 投标总体方案概述"])
+
+            def boom(brief_path: Path, mapping_path: Path):
+                raise RuntimeError("opencode 不可用")
+
+            original = tech_assembly.run_technical_score_index_xref_skill
+            tech_assembly.run_technical_score_index_xref_skill = boom
+            try:
+                result = tech_assembly._run_tech_score_index_xref_step(
+                    input_path=source,
+                    output_path=output,
+                    work_dir=work,
+                )
+            finally:
+                tech_assembly.run_technical_score_index_xref_skill = original
+
+            self.assertEqual(result["status"], "completed")
             self.assertEqual(result["summary"]["linkedCount"], 1)
+            self.assertIn("5.1 投标总体方案概述", _document_xml(output))
+
+    def test_probe_stage_reports_row_counts_for_progress(self) -> None:
+        """进度条的量化指标来自体检回调，缺了它前端只能显示百分比。"""
+        from app.services import tech_assembly
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "成稿.docx"
+            _build_docx(source, index_entries=[PLACEHOLDER, PLACEHOLDER])
+            probed: list[dict] = []
+
+            def record(stage: str, meta=None):
+                if stage == "score_index_xref_probed":
+                    probed.append(dict(meta or {}))
+
+            original = tech_assembly.run_technical_score_index_xref_skill
+            tech_assembly.run_technical_score_index_xref_skill = lambda *_args: {}
+            try:
+                tech_assembly._run_tech_score_index_xref_step(
+                    input_path=source,
+                    output_path=work / "成稿_xref.docx",
+                    work_dir=work,
+                    progress_callback=record,
+                )
+            finally:
+                tech_assembly.run_technical_score_index_xref_skill = original
+
+            self.assertEqual(len(probed), 1)
+            self.assertTrue(probed[0]["tableFound"])
+            self.assertEqual(probed[0]["rowCount"], 2)
+            self.assertEqual(probed[0]["pendingRowCount"], 2)
 
 
 if __name__ == "__main__":

@@ -523,10 +523,12 @@ class ShardedOrchestrationTests(unittest.TestCase):
         failing_shards: set[str] | None = None,
         silent_shards: set[str] | None = None,
         partial_shards: set[str] | None = None,
+        failing_after_first: set[str] | None = None,
     ):
         """模拟 opencode 会话：按分片提示词真实调用 s1parse CLI 提交。
 
-        failing_shards 模拟会话报错；silent_shards 模拟会话正常结束但没调 submit。
+        failing_shards 模拟会话报错；silent_shards 模拟会话正常结束但没调 submit；
+        failing_after_first 模拟首轮正常、修复轮报错。
         """
         import re
         import threading
@@ -535,6 +537,7 @@ class ShardedOrchestrationTests(unittest.TestCase):
         failing = failing_shards or set()
         silent = silent_shards or set()
         partial = partial_shards or set()
+        failing_on_repair = failing_after_first or set()
         seen: list[str] = []
         seen_lock = threading.Lock()
 
@@ -557,15 +560,20 @@ class ShardedOrchestrationTests(unittest.TestCase):
                 key = match.group(1) if match else "projectBasics"
                 with seen_lock:
                     seen.append(key)
+                    attempt = seen.count(key)
                 if key in failing:
                     raise RuntimeError(f"injected failure for {key}")
+                if key in failing_on_repair and attempt > 1:
+                    raise RuntimeError(f"injected repair failure for {key}")
                 if key in silent:
                     # 会话「正常结束」，但什么都没提交
                     return {"opencodeOutput": {"sessionId": f"ses-{key}", "status": "completed"}}
                 if key == "projectBasics":
+                    # 修复轮的模型会给出不同的值，否则等于没修；用 attempt 体现这一点。
+                    suffix = f"（修复轮第 {attempt - 1} 次）" if attempt > 1 else ""
                     payload = [
                         {"key": field_key, "label": field_key, "status": "missing",
-                         "value": "当前文件未提及，建议补充上传对应文件"}
+                         "value": f"当前文件未提及，建议补充上传对应文件{suffix}"}
                         for field_key in (
                             "projectName", "tenderNo", "projectUnit", "tenderer", "tenderAgency", "bidDeadline"
                         )
@@ -608,6 +616,32 @@ class ShardedOrchestrationTests(unittest.TestCase):
             )
         return resolved, message, seen
 
+    def test_shard_sessions_use_project_opencode_concurrency_as_worker_cap(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        fake_cls, _seen = self._fake_client_class()
+        worker_counts: list[int] = []
+        original_executor = parsing.ThreadPoolExecutor
+
+        class RecordingExecutor(original_executor):
+            def __init__(self, *args, **kwargs):
+                worker_counts.append(kwargs.get("max_workers", args[0] if args else None))
+                super().__init__(*args, **kwargs)
+
+        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+            parsing.settings, "opencode_max_concurrency", 2
+        ), patch.object(parsing, "ThreadPoolExecutor", RecordingExecutor):
+            parsing._run_technical_sharded_parse_skill(
+                self.manifest_path,
+                local_result={"items": [], "structured": {}},
+                profile=TECHNICAL_PARSE_PROFILE,
+            )
+
+        self.assertEqual(worker_counts, [2])
+
     def test_all_shards_run_once_and_finalize_covers_full_checklist(self) -> None:
         resolved, message, seen = self._run()
 
@@ -625,7 +659,8 @@ class ShardedOrchestrationTests(unittest.TestCase):
         rows = submissions["targets"]["technicalInterpretation"]
         self.assertEqual({int(r["rowNo"]) for r in rows}, {int(i["rowNo"]) for i in load_checklist()})
 
-    def test_finalize_validation_failure_raises_instead_of_returning_success(self) -> None:
+    def test_finalize_validation_failure_is_surfaced_without_falling_back(self) -> None:
+        """校验未通过时不再抛错回落单会话，但必须显式带回失败项，不能冒充成功。"""
         from unittest.mock import patch
 
         from app.services import parsing
@@ -655,12 +690,149 @@ class ShardedOrchestrationTests(unittest.TestCase):
             "_run_s1parse_cli",
             side_effect=failed_finalize,
         ):
-            with self.assertRaisesRegex(RuntimeError, "finalize 校验失败.*技术清单缺少第 1 行"):
-                parsing._run_technical_sharded_parse_skill(
-                    self.manifest_path,
-                    local_result={"items": [], "structured": {}},
-                    profile=TECHNICAL_PARSE_PROFILE,
-                )
+            resolved, message = parsing._run_technical_sharded_parse_skill(
+                self.manifest_path,
+                local_result={"items": [], "structured": {}},
+                profile=TECHNICAL_PARSE_PROFILE,
+            )
+
+        self.assertIn("finalize 校验未通过", message)
+        self.assertIn("技术清单缺少第 1 行", message)
+        workflow = resolved["structured"]["workflow"]
+        self.assertNotEqual(workflow.get("stage"), "finalized")
+        self.assertEqual(workflow["validationErrors"], ["技术清单缺少第 1 行"])
+
+    def test_validation_failure_repairs_only_the_offending_shard(self) -> None:
+        """只重跑校验失败字段所属的分片，其他分片产出必须原样保留。"""
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        fake_cls, seen = self._fake_client_class()
+        original_cli = parsing._run_s1parse_cli
+        finalize_calls: list[str] = []
+
+        def flaky_finalize(command: str, manifest_path: Path, *args: str) -> dict:
+            if command != "finalize":
+                return original_cli(command, manifest_path, *args)
+            finalize_calls.append(command)
+            if len(finalize_calls) > 1:
+                return original_cli(command, manifest_path, *args)
+            failed_result = {
+                "items": [],
+                "structured": {
+                    "workflow": {
+                        "stage": "failed",
+                        "validationErrors": [
+                            {
+                                "code": "project_basic_value_not_supported_by_evidence",
+                                "targetKey": "projectBasics",
+                                "fieldKey": "projectUnit",
+                                "evidenceIds": ["DOC-1:T0001"],
+                                "message": "项目基础信息字段 项目单位 的提交值与引用证据文本不一致。",
+                            }
+                        ],
+                    }
+                },
+            }
+            self.output_path.write_text(json.dumps(failed_result, ensure_ascii=False), encoding="utf-8")
+            return {"outputFile": str(self.output_path)}
+
+        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+            parsing,
+            "_run_s1parse_cli",
+            side_effect=flaky_finalize,
+        ):
+            resolved, message = parsing._run_technical_sharded_parse_skill(
+                self.manifest_path,
+                local_result={"items": [], "structured": {}},
+                profile=TECHNICAL_PARSE_PROFILE,
+            )
+
+        # 只有 projectBasics 被重跑，技术分片各自仍然只跑一次
+        self.assertEqual(seen.count("projectBasics"), 2)
+        for shard_key in shard_keys():
+            self.assertEqual(seen.count(shard_key), 1, f"{shard_key} 不应被重跑")
+        self.assertEqual(len(finalize_calls), 2)
+        self.assertEqual(resolved["structured"]["workflow"]["repairedShards"], ["projectBasics"])
+        self.assertEqual(message, "")
+
+        # 修复轮不得清空提交文件：技术解读仍覆盖完整清单
+        submissions = load_submissions(self.manifest_path, load_manifest(self.manifest_path))
+        rows = submissions["targets"]["technicalInterpretation"]
+        self.assertEqual({int(r["rowNo"]) for r in rows}, {int(i["rowNo"]) for i in load_checklist()})
+
+    def test_failed_repair_session_is_not_reported_as_repaired(self) -> None:
+        """修复会话失败时上一轮提交仍在文件里，不能因此把未修复记成已修复。"""
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        fake_cls, seen = self._fake_client_class(failing_after_first={"projectBasics"})
+        original_cli = parsing._run_s1parse_cli
+
+        def failed_finalize(command: str, manifest_path: Path, *args: str) -> dict:
+            if command != "finalize":
+                return original_cli(command, manifest_path, *args)
+            failed_result = {
+                "items": [],
+                "structured": {
+                    "workflow": {
+                        "stage": "failed",
+                        "validationErrors": [
+                            {
+                                "targetKey": "projectBasics",
+                                "fieldKey": "projectUnit",
+                                "message": "提交值与引用证据文本不一致。",
+                            }
+                        ],
+                    }
+                },
+            }
+            self.output_path.write_text(json.dumps(failed_result, ensure_ascii=False), encoding="utf-8")
+            return {"outputFile": str(self.output_path)}
+
+        with patch.object(parsing, "OpencodeClient", fake_cls), patch.object(
+            parsing,
+            "_run_s1parse_cli",
+            side_effect=failed_finalize,
+        ):
+            resolved, message = parsing._run_technical_sharded_parse_skill(
+                self.manifest_path,
+                local_result={"items": [], "structured": {}},
+                profile=TECHNICAL_PARSE_PROFILE,
+            )
+
+        # 修复轮确实跑了，但会话报错、没有新提交
+        self.assertEqual(seen.count("projectBasics"), 2)
+        workflow = resolved["structured"]["workflow"]
+        self.assertNotIn("projectBasics", workflow.get("repairedShards") or [])
+        self.assertIn("projectBasics", workflow["failedShards"])
+        self.assertIn("finalize 校验未通过", message)
+
+    def test_repair_prompt_carries_the_failed_validation_detail(self) -> None:
+        """修复轮的提示词必须带上未通过的校验项，否则模型只会重复上一轮的值。"""
+        from app.services.parsing import _shard_repair_prompt
+
+        task = {"key": "projectBasics", "label": "项目基础信息", "prompt": "原始提示词"}
+        errors = [
+            {
+                "targetKey": "projectBasics",
+                "fieldKey": "projectUnit",
+                "evidenceIds": ["DOC-1:T0001"],
+                "message": "提交值与引用证据文本不一致。",
+            },
+            {"targetKey": "technicalInterpretation", "rowNo": 3, "message": "与本分片无关"},
+        ]
+
+        prompt = _shard_repair_prompt(task, errors)
+
+        self.assertIn("原始提示词", prompt)
+        self.assertIn("提交值与引用证据文本不一致。", prompt)
+        self.assertIn("DOC-1:T0001", prompt)
+        self.assertNotIn("与本分片无关", prompt)
 
     def test_model_config_is_loaded_once_and_shared_by_all_sessions(self) -> None:
         from unittest.mock import patch
@@ -756,6 +928,190 @@ class ShardedOrchestrationTests(unittest.TestCase):
         self.assertEqual(seen.count(stale), 2, "本轮未提交的分片必须重试")
         self.assertIn(stale, resolved["structured"]["workflow"]["failedShards"])
         self.assertIn("没有提交结果", message)
+
+
+class ValidationErrorRoutingTests(unittest.TestCase):
+    """finalize 校验错误必须能定位到负责它的分片，否则修复轮不知道该重跑谁。"""
+
+    def test_project_basics_error_routes_to_project_basics_task(self) -> None:
+        from app.services.parsing import _validation_error_task_key
+
+        self.assertEqual(
+            _validation_error_task_key({"targetKey": "projectBasics", "fieldKey": "projectUnit"}),
+            "projectBasics",
+        )
+
+    def test_technical_error_routes_by_row_no(self) -> None:
+        from app.services.parsing import _validation_error_task_key
+
+        for row in load_checklist():
+            row_no = int(row["rowNo"])
+            self.assertEqual(
+                _validation_error_task_key({"targetKey": "technicalInterpretation", "rowNo": row_no}),
+                shard_of_row(row_no),
+            )
+
+    def test_digit_string_row_no_is_accepted(self) -> None:
+        from app.services.parsing import _validation_error_task_key
+
+        self.assertEqual(
+            _validation_error_task_key({"targetKey": "technicalInterpretation", "rowNo": "3"}),
+            shard_of_row(3),
+        )
+
+    def test_unroutable_errors_return_empty_key(self) -> None:
+        from app.services.parsing import _validation_error_task_key
+
+        # 纯字符串错误、缺 rowNo、越界 rowNo、未知 target 都不该指向任何分片
+        self.assertEqual(_validation_error_task_key("技术清单缺少第 1 行"), "")
+        self.assertEqual(_validation_error_task_key({"targetKey": "technicalInterpretation"}), "")
+        self.assertEqual(
+            _validation_error_task_key({"targetKey": "technicalInterpretation", "rowNo": 99999}), ""
+        )
+        self.assertEqual(_validation_error_task_key({"targetKey": "somethingElse"}), "")
+
+
+class TechnicalSingleSessionFinalizeGuardTests(unittest.TestCase):
+    """单会话链路必须过与分片链路同一道 finalize 门槛，否则回落即绕过证据校验。"""
+
+    @staticmethod
+    def _result(*, mode: str, stage: str) -> dict:
+        return {"items": [], "structured": {"workflow": {"mode": mode, "stage": stage}}}
+
+    def test_single_session_without_finalized_stage_needs_guard(self) -> None:
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        self.assertTrue(
+            _needs_technical_s1_finalize_guard(
+                profile=TECHNICAL_PARSE_PROFILE,
+                structured_result=self._result(mode="opencode-agentic-navigation", stage="failed"),
+            )
+        )
+
+    def test_single_session_already_finalized_skips_guard(self) -> None:
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        self.assertFalse(
+            _needs_technical_s1_finalize_guard(
+                profile=TECHNICAL_PARSE_PROFILE,
+                structured_result=self._result(mode="opencode-agentic-navigation", stage="finalized"),
+            )
+        )
+
+    def test_sharded_result_is_not_finalized_twice(self) -> None:
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        # 分片链路在编排内已经 finalize 过，再跑一次纯属浪费
+        self.assertFalse(
+            _needs_technical_s1_finalize_guard(
+                profile=TECHNICAL_PARSE_PROFILE,
+                structured_result=self._result(
+                    mode="opencode-agentic-navigation-sharded", stage="failed"
+                ),
+            )
+        )
+
+    def test_business_profile_is_untouched(self) -> None:
+        from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        self.assertFalse(
+            _needs_technical_s1_finalize_guard(
+                profile=BUSINESS_PARSE_PROFILE,
+                structured_result=self._result(mode="opencode-agentic-navigation", stage="failed"),
+            )
+        )
+
+    def test_non_agentic_result_is_not_finalized(self) -> None:
+        """本地兜底结果没走过 prepare/submit，跑 finalize 只会用空输出覆盖已算好的结果。"""
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+        from app.services.parsing import _needs_technical_s1_finalize_guard
+
+        for structured_result in (
+            {"items": [], "structured": {"categories": [{"label": "本地结果"}]}},
+            {"items": [], "structured": {"workflow": {}}},
+            self._result(mode="opencode-skill", stage=""),
+        ):
+            self.assertFalse(
+                _needs_technical_s1_finalize_guard(
+                    profile=TECHNICAL_PARSE_PROFILE, structured_result=structured_result
+                ),
+                structured_result,
+            )
+
+    def test_guard_surfaces_validation_failure(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        structured = {"workflow": {"stage": "failed"}}
+        resolved = {"items": [], "structured": structured}
+        errors = [
+            {
+                "targetKey": "projectBasics",
+                "fieldKey": "projectUnit",
+                "message": "提交值与引用证据文本不一致。",
+            }
+        ]
+        with patch.object(
+            parsing,
+            "_finalize_technical_and_validate",
+            return_value=(resolved, structured, {"stage": "failed"}, "failed", errors),
+        ):
+            guarded, warning = parsing._apply_technical_s1_finalize_guard(
+                Path("s1_parse_manifest.json"), {"items": []}, TECHNICAL_PARSE_PROFILE
+            )
+
+        self.assertIn("finalize 校验未通过（单会话链路）", warning)
+        self.assertIn("提交值与引用证据文本不一致", warning)
+        self.assertEqual(guarded["structured"]["workflow"]["validationErrors"], errors)
+        self.assertTrue(guarded["structured"]["workflow"]["backendFinalizeGuardApplied"])
+
+    def test_guard_marks_result_when_validation_passes(self) -> None:
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        structured = {"workflow": {"stage": "finalized"}}
+        resolved = {"items": [], "structured": structured}
+        with patch.object(
+            parsing,
+            "_finalize_technical_and_validate",
+            return_value=(resolved, structured, {"stage": "finalized"}, "finalized", []),
+        ):
+            guarded, warning = parsing._apply_technical_s1_finalize_guard(
+                Path("s1_parse_manifest.json"), {"items": []}, TECHNICAL_PARSE_PROFILE
+            )
+
+        self.assertEqual(warning, "")
+        self.assertTrue(guarded["structured"]["workflow"]["backendFinalizeGuardApplied"])
+        self.assertNotIn("validationErrors", guarded["structured"]["workflow"])
+
+    def test_guard_failure_keeps_the_original_result(self) -> None:
+        """收口本身失败时不能把已经拿到的解析结果打掉，但必须显式告警。"""
+        from unittest.mock import patch
+
+        from app.services import parsing
+        from app.services.parse_profiles import TECHNICAL_PARSE_PROFILE
+
+        original = {"items": [{"rowNo": 1}], "structured": {"workflow": {"stage": "running"}}}
+        with patch.object(
+            parsing,
+            "_finalize_technical_and_validate",
+            side_effect=RuntimeError("finalize exited 1"),
+        ):
+            guarded, warning = parsing._apply_technical_s1_finalize_guard(
+                Path("s1_parse_manifest.json"), original, TECHNICAL_PARSE_PROFILE
+            )
+
+        self.assertIs(guarded, original)
+        self.assertIn("收口失败", warning)
+        self.assertIn("finalize exited 1", warning)
 
 
 class DeterministicCliTests(unittest.TestCase):

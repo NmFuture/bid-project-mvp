@@ -6,12 +6,17 @@ fixture 为脱敏合成数据（通用领域词面，无真实项目数据）。
 """
 from __future__ import annotations
 
+import inspect
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Callable
 from unittest.mock import patch
 
 from app.services import technical_gap_ai_fill as ai_fill
+
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _write_docx(path: Path, paragraphs: list[str], cell_text: str = "") -> None:
@@ -24,6 +29,51 @@ def _write_docx(path: Path, paragraphs: list[str], cell_text: str = "") -> None:
         table = document.add_table(rows=1, cols=1)
         table.rows[0].cells[0].text = cell_text
     document.save(str(path))
+
+
+def _write_xlsx(path: Path, rows: list[list[Any]]) -> None:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows:
+        sheet.append(row)
+    workbook.save(str(path))
+
+
+def _write_pdf(path: Path, pages: int) -> None:
+    import fitz
+
+    document = fitz.open()
+    try:
+        for index in range(pages):
+            document.new_page().insert_text((72, 72), f"page {index + 1}")
+        document.save(str(path))
+    finally:
+        document.close()
+
+
+def _payload_stub(payload: dict[str, Any]) -> Callable[[object], dict[str, Any]]:
+    """替掉 _run_async：真实实现会 await 掉协程，mock 不 await，这里显式关闭免得留警告。"""
+
+    def _stub(awaitable: object) -> dict[str, Any]:
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        return payload
+
+    return _stub
+
+
+def _download_stub(source: Path) -> Callable[[str, str, Path], Path]:
+    """替掉 minio_client.download_file：把本地 fixture 拷到目标路径，冒充素材原件。"""
+
+    def _download(_bucket: str, _key: str, target_path: Path) -> Path:
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return target
+
+    return _download
 
 
 class ScanEmbedPlaceholdersTests(unittest.TestCase):
@@ -91,21 +141,6 @@ class EmbedSourcesTests(unittest.TestCase):
             patch.object(ai_fill, "_allowed_technical_material_index", return_value=materials),
         ):
             return ai_fill._embed_sources_for_fill(self.project, blank, tmp)
-
-    def test_excel_material_is_refused_by_original_suffix(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            sources = self._run(
-                Path(raw),
-                [{"id": "RAW-9", "name": "价格表.xlsx", "materialTier": "project", "folderPath": "技术标/项目定制"}],
-                ["[价格表，待插入]"],
-            )
-
-        self.assertEqual(len(sources), 1)
-        # 按原始后缀判断，不看能不能取到 docx：xlsx 被 Wiki 预览转换过时会拿到有损清洗稿，
-        # 悄悄嵌进投标材料就是静默降级
-        self.assertEqual(sources[0]["status"], "unsupported_format")
-        self.assertIn("另存为 Word", sources[0]["statusMessage"])
-        self.assertNotIn("docxPath", sources[0])
 
     def test_missing_material_is_reported_not_silently_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -191,6 +226,126 @@ class EmbedSourcesTests(unittest.TestCase):
 
         self.assertEqual(sources, [])
         lookup.assert_not_called()
+
+
+class EmbedConversionTests(unittest.TestCase):
+    """非 docx 素材按需转 Word。真跑转换脚本，不 mock 转换本身——嵌进投标材料的是产物内容。"""
+
+    def setUp(self) -> None:
+        self.project = {"id": "PRJ-0001", "name": "示例项目", "bidType": "技术标"}
+
+    def _run(
+        self,
+        work_dir: Path,
+        source: Path,
+        mime_type: str,
+        *,
+        cache_dir: Path | None = None,
+        material_id: str = "RAW-7",
+    ) -> list[dict]:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        blank = work_dir / "待填写-方案.docx"
+        _write_docx(blank, [f"[{source.stem}，待插入]"])
+        material = {"id": material_id, "name": source.name, "materialTier": "project"}
+        payload = {
+            "bucket": "materials",
+            "key": f"raw/{source.name}",
+            "fileName": source.name,
+            "mimeType": mime_type,
+        }
+        with (
+            patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
+            patch.object(ai_fill, "project_turbine_model", return_value={}),
+            patch.object(ai_fill, "_allowed_technical_material_index", return_value=[material]),
+            patch.object(ai_fill, "_run_async", side_effect=_payload_stub(payload)),
+            patch.object(ai_fill.minio_client, "download_file", side_effect=_download_stub(source)),
+        ):
+            return ai_fill._embed_sources_for_fill(self.project, blank, work_dir, cache_dir=cache_dir)
+
+    def test_excel_material_is_converted_and_ready_to_embed(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            excel = tmp / "基础弯矩表.xlsx"
+            _write_xlsx(excel, [["工况", "弯矩"], ["额定", -149696.921875], ["极限", -211003.5]])
+
+            sources = self._run(tmp / "run", excel, EXCEL_MIME)
+            docx_path = Path(sources[0]["docxPath"])
+            tables = Document(str(docx_path)).tables
+
+        self.assertEqual(sources[0]["status"], "ready")
+        self.assertEqual(sources[0]["sourceKind"], "excel")
+        # 表头 + 2 行数据全部落进 Word 表格，不是空壳；产物名不带 materialId，
+        # 否则 PDF 分支会把 id 写成 Word 标题
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(len(tables[0].rows), 3)
+        self.assertEqual([cell.text for cell in tables[0].rows[0].cells], ["工况", "弯矩"])
+        self.assertEqual(docx_path.name, "基础弯矩表.docx")
+
+    def test_pdf_material_is_converted_page_by_page(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            pdf = tmp / "载荷安全性评估报告.pdf"
+            _write_pdf(pdf, pages=3)
+
+            sources = self._run(tmp / "run", pdf, "application/pdf")
+            docx_path = Path(sources[0]["docxPath"])
+            document = Document(str(docx_path))
+            leftover = list(docx_path.parent.glob(".convert-*"))
+
+        self.assertEqual(sources[0]["status"], "ready")
+        self.assertEqual(sources[0]["sourceKind"], "pdf")
+        # 每页一张图：盖章件要的是图片版，OCR 成文字反而丢公章
+        self.assertEqual(len(document.inline_shapes), 3)
+        # 中间页图随临时目录清掉，不在缓存里长期占地
+        self.assertEqual(leftover, [])
+
+    def test_same_material_is_converted_only_once_across_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            shared_cache = tmp / "_embed_converted_cache"
+            excel = tmp / "变桨轴承场址校核报告.xlsx"
+            _write_xlsx(excel, [["项", "值"], ["A", 1]])
+
+            first = self._run(tmp / "gap-X2", excel, EXCEL_MIME, cache_dir=shared_cache)
+            # 第二个专题引用同一素材：命中共享缓存就不该再碰转换脚本
+            with patch.object(
+                ai_fill, "_format_cleaner_script", side_effect=AssertionError("同一素材不应重复转换")
+            ):
+                second = self._run(tmp / "gap-X3", excel, EXCEL_MIME, cache_dir=shared_cache)
+
+        self.assertEqual(second[0]["status"], "ready")
+        self.assertEqual(second[0]["docxPath"], first[0]["docxPath"])
+
+    def test_conversion_failure_is_reported_not_silently_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            excel = tmp / "价格表.xlsx"
+            _write_xlsx(excel, [["项", "值"]])
+
+            with patch.object(ai_fill, "_format_cleaner_script", side_effect=RuntimeError("openpyxl 打不开")):
+                sources = self._run(tmp / "run", excel, EXCEL_MIME)
+
+        # 一份素材转不了不能中断整份文件的填写，也不能悄悄少嵌一份
+        self.assertEqual(sources[0]["status"], "convert_failed")
+        self.assertIn("openpyxl 打不开", sources[0]["statusMessage"])
+        self.assertNotIn("docxPath", sources[0])
+
+    def test_pdf_render_zoom_stays_at_one_and_a_half(self) -> None:
+        parameters = inspect.signature(
+            ai_fill._format_cleaner_script("pdf_to_word.py").split_pdf_to_images
+        ).parameters
+        # 1.5x 约 108 dpi：投标看图纸和公章足够，比 2x 省约 30% 体积
+        self.assertEqual(parameters["zoom"].default, 1.5)
+
+    def test_convert_kind_falls_back_to_mime_when_suffix_missing(self) -> None:
+        # 型式认证扫描件常以无扩展名上传，只能靠 mime 认
+        self.assertEqual(ai_fill._embed_convert_kind("型式认证证书", "application/pdf"), "pdf")
+        self.assertEqual(ai_fill._embed_convert_kind("参数清单", "application/vnd.ms-excel"), "excel")
+        self.assertEqual(ai_fill._embed_convert_kind("说明", "text/plain"), "")
 
 
 if __name__ == "__main__":

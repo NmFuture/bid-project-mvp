@@ -7,6 +7,9 @@ Heading 编号处理器（方案 B）
 3. strip_handwritten_numbering_in_body — 正文手写编号擦除（"7.10 xxx" 之类）
 
 方案 B 下 Heading text 直接带章节号字符串，禁用 Word 多级列表。
+
+本文件在 opencode/skills/bid-tech-assembler/scripts/ 与
+app/document_processing/technical_document/assembly/ 各有一份，修改须同步。
 """
 
 from __future__ import annotations
@@ -669,10 +672,19 @@ _HAND_NUMBER_PREFIX = re.compile(
 )
 
 
+# 句读一票否决：带句读的段落是正文条款（承诺函 "2.3 上述承诺电量基于…。"），不是伪标题。
+# 判据与 _looks_like_bold_body_subheading 一致。
+_BODY_SENTENCE_PUNCT = re.compile(r"[，,。；;！!？?：:]")
+
+
 def strip_handwritten_numbering_in_body(doc, *, only_normal_style: bool = True) -> int:
     """擦除正文段落首的手写多级编号（"5.1 xxx" → "xxx"）。
 
     只处理 Normal / 正文 / 空样式段落，不碰 Heading 样式。
+
+    目标是伪标题（该用 Heading 却用了 Normal 样式）残留的编号；正文条款编号
+    （承诺函 "2.1~2.9"）必须保留，其编号有法律引用意义，且擦除不可逆——
+    inject_prefix_to_headings 只处理 Heading 样式段，不会把它补回来。
 
     Returns:
         修改段落数
@@ -687,6 +699,8 @@ def strip_handwritten_numbering_in_body(doc, *, only_normal_style: bool = True) 
             continue
         new = _HAND_NUMBER_PREFIX.sub(r"\1", old, count=1)
         if new != old:
+            if _BODY_SENTENCE_PUNCT.search(new):
+                continue
             _replace_paragraph_text_preserve_format(para, new)
             count += 1
     return count

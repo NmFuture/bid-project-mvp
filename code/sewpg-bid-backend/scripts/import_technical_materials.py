@@ -10,17 +10,16 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
 from app.models import async_session
 from app.models.materials import RawFile, RawFileVersion, RawFolder
 from app.services.identity import canonical_customer, generate_material_project_id
+from app.services.material_raw_object_operations import purge_raw_file_objects
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.material_store import material_store
 from app.services.material_taxonomy import (
     MATERIAL_LIBRARY_ALLOWED_SUFFIXES,
     clean_status_for_new_file,
 )
-from app.services.minio_client import minio_client
 
 
 DEFAULT_LIBRARY_ROOT = Path("/Users/sean/Downloads/技术标-0615/技术标素材库-20260615")
@@ -97,7 +96,6 @@ def _iter_material_files(root: Path) -> list[Path]:
 
 async def _purge_technical_material_store() -> None:
     """只清技术标素材，保留商务标等其它档，避免误删共享底座数据。"""
-    bucket = settings.minio_buckets["materials"]
     async with async_session() as session:
         await ensure_material_runtime_tables(session)
         tech_folders = (
@@ -110,12 +108,10 @@ async def _purge_technical_material_store() -> None:
                 await session.execute(select(RawFile).where(RawFile.folder_id.in_(folder_ids)))
             ).scalars().all()
         for item in tech_files:
-            key = str(item.minio_key or "")
-            if key:
-                try:
-                    minio_client.remove_object(item.minio_bucket or bucket, key)
-                except Exception:  # noqa: BLE001 - 缺对象不阻断清理
-                    pass
+            # MinIO 对象删除复用 purge_raw_file_objects：除 minio_key 外一并清
+            # ext_fields.cleanedMinioKey 清洗产物和 raw-versions/ 历史版本对象；
+            # 单个对象缺失只告警不阻断清理。
+            await purge_raw_file_objects(session, item, ensure_runtime_tables=ensure_material_runtime_tables)
             file_id = int(item.id)
             await session.execute(delete(RawFileVersion).where(RawFileVersion.file_id == file_id))
             await session.execute(delete(RawFile).where(RawFile.id == file_id))

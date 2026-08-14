@@ -26,7 +26,7 @@ from app.services.job_queue import (
     requeue_processing_job,
     renew_generation_lock,
 )
-from app.services.job_timing import run_job_timing_writer
+from app.services.job_timing import record_phase, run_job_timing_writer
 from app.services.job_timing_events import track_job_timing
 from app.services.workspace_project_access import get_any_workspace_project_runtime_state
 
@@ -232,6 +232,16 @@ def _run_job(job: dict[str, Any]) -> bool:
             _run_fill_generation_job(project_id, data, user, bid_type=bid_type)
             project_state = _runtime_state(project_id)
             final_state = project_state.get("fill_state") if isinstance(project_state.get("fill_state"), dict) else {}
+        elif job_type == "score_index_xref":
+            from app.services.technical_score_index_flow import run_score_index_job
+
+            run_score_index_job(project_id, data, user)
+            project_state = _runtime_state(project_id)
+            final_state = (
+                project_state.get("score_index_state")
+                if isinstance(project_state.get("score_index_state"), dict)
+                else {}
+            )
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
             from app.services.material_wiki_auto import on_material_cleaning_job_finished
@@ -331,6 +341,15 @@ def _run_job(job: dict[str, Any]) -> bool:
         elif job_type == "s1_parse_continue":
             from app.services.bid_parse_service import _run_s1_parse_job
 
+            # 耗时埋点：续跑要有自己的阶段锚点。S1 各 job 共享父 runId，而 record_phase
+            # 是 HSETNX（同 step 只记首次），续跑若没推进出新 step，phases 里就只剩首轮
+            # 那条（通常是 upload），末阶段耗时又一律算到 finished_at，于是整轮续跑时间
+            # 会被全部记到「文件上传落盘」上。补这一锚点即可把 upload 截断在续跑开始处。
+            record_phase(
+                str(job.get("parentJobId") or job.get("id") or ""),
+                "s1_parse_continue",
+                "解析续跑",
+            )
             workflow_terminal = True
             service = _s1_parse_service(data)
             terminal_progress = _terminal_parse_progress(service, project_id, str(workflow_parent["id"]))

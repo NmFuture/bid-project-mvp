@@ -18,6 +18,10 @@ ProjectNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
 # `_rev` 是 payload 内的乐观锁版本号：读时带出，写时校验，不匹配即拒绝写入。
 PROJECT_REVISION_KEY = "_rev"
 
+# 项目编号序列。编号一旦发出就不再回收：删项目不回退，进程重启也不重新推导，
+# 避免新项目拿到旧编号后落进同名的磁盘工作区、读到上一轮的状态文件。
+PROJECT_ID_SEQUENCE = "project_id_seq"
+
 
 class ProjectConcurrentUpdateError(RuntimeError):
     """CAS 失败：读取快照后已有其他进程写入同一项目。"""
@@ -68,6 +72,64 @@ class ProjectStateRepository:
                 )
                 """
             )
+            connection.commit()
+
+    def ensure_project_id_sequence(self) -> None:
+        """建项目编号序列，并把它对齐到不低于库里已有的最大编号。
+
+        序列只前进不后退：`setval` 取「已有最大编号」与「序列当前值」的较大者，
+        因此重复调用幂等，也不会因为删掉高编号项目而回退。调用方只在进程启动时
+        执行一次（`AppStore._ensure_db`），不要放进 `ensure_db`——后者每次读写
+        项目都会跑，多一次全表扫描不划算。
+        """
+        if not self.uses_postgres:
+            return
+        with closing(self._connect()) as connection:
+            connection.execute(f"CREATE SEQUENCE IF NOT EXISTS {PROJECT_ID_SEQUENCE}")
+            # is_called=false 时 last_value 就是下一个要发的号，为 true 时下一个是 last_value+1。
+            # 不读这个标志直接 setval 会把「还没发出的 1」当成「已发出的 1」，每次初始化白吃一个号。
+            state = connection.execute(
+                f"SELECT last_value, is_called FROM {PROJECT_ID_SEQUENCE}"
+            ).fetchone() or {}
+            last_value = int(state.get("last_value") or 0)
+            next_value = last_value + 1 if bool(state.get("is_called")) else last_value
+
+            row = connection.execute(
+                """
+                SELECT COALESCE(
+                    MAX(CASE WHEN id ~ '^PRJ-[0-9]+$' THEN substring(id from 5)::bigint END),
+                    0
+                ) AS max_existing
+                FROM projects
+                """
+            ).fetchone() or {}
+            max_existing = int(row.get("max_existing") or 0)
+
+            # 只在序列会发出已被占用的编号时才前进，正常启动不动序列。
+            if max_existing >= next_value:
+                connection.execute(
+                    f"SELECT setval('{PROJECT_ID_SEQUENCE}', %s, true)", (max_existing,)
+                )
+            connection.commit()
+
+    def next_project_number(self) -> int:
+        """取下一个项目编号。
+
+        编号来自独立序列，不参考 `projects` 表的当前内容，因此删除项目（乃至清空
+        整张表）都不会让编号回收复用。
+        """
+        with closing(self._connect()) as connection:
+            row = connection.execute(f"SELECT nextval('{PROJECT_ID_SEQUENCE}') AS value").fetchone()
+            connection.commit()
+        return int((row or {}).get("value") or 0)
+
+    def reset_project_id_sequence(self) -> None:
+        """仅供测试重置：把序列拨回从 1 重新发号。"""
+        if not self.uses_postgres:
+            return
+        with closing(self._connect()) as connection:
+            connection.execute(f"CREATE SEQUENCE IF NOT EXISTS {PROJECT_ID_SEQUENCE}")
+            connection.execute(f"SELECT setval('{PROJECT_ID_SEQUENCE}', 1, false)")
             connection.commit()
 
     @staticmethod
