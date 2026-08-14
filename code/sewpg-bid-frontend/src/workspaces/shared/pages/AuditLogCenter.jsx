@@ -1108,7 +1108,7 @@ export default function AuditLogCenter({ showToast = () => {} }) {
   const [mode, setMode] = useState('audit')
 
   return (
-    <div className="flex w-full flex-col gap-3 animate-fade-in">
+    <div className="flex w-full flex-col gap-3">
       <PageHeader
         variant="panel"
         title={lockedBidType ? `${lockedBidType}日志` : '日志'}

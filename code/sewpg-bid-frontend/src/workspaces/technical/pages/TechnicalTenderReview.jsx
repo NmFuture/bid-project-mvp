@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { technicalParseAPI, technicalProjectsAPI } from '../../../api'
+import { invalidatePageCache } from '../../../utils/pageCache'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
@@ -699,6 +700,8 @@ export default function TechnicalTenderReview({ showToast }) {
         isParseDraft: true,
         reviewDecision: 'pending',
       })
+      invalidatePageCache('tech:projects')
+      invalidatePageCache('dashboard')
       await loadProjects()
       setSelectedProjectId(created?.id || '')
       if (!silent) {
@@ -1161,6 +1164,8 @@ export default function TechnicalTenderReview({ showToast }) {
     setDeciding(decision)
     try {
       await technicalProjectsAPI.delete(selectedProjectId)
+      invalidatePageCache('tech:projects')
+      invalidatePageCache('dashboard')
       setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
       setSelectedProjectId('')
       setProject(null)
@@ -1181,6 +1186,8 @@ export default function TechnicalTenderReview({ showToast }) {
     try {
       if (selectedProjectId && String(project?.reviewDecision || 'pending') !== 'participate') {
         await technicalProjectsAPI.delete(selectedProjectId)
+        invalidatePageCache('tech:projects')
+        invalidatePageCache('dashboard')
         setProjects((prev) => prev.filter((item) => item.id !== selectedProjectId))
       }
       setSelectedProjectId('')
@@ -1285,13 +1292,13 @@ export default function TechnicalTenderReview({ showToast }) {
     )
   }
 
-  if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
+  // 列表与详情合并为一个加载态，避免进解析页连续两次整页替换
+  if (loadingProjects || loadingDetail) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
-  if (loadingDetail) return <PageLoading title="正在加载解析详情..." />
 
   if (showTechnicalCompactUpload) {
     return (
-      <div className="review-page business-ui-shell flex w-full max-w-none flex-col gap-4 animate-fade-in">
+      <div className="review-page business-ui-shell flex w-full max-w-none flex-col gap-4">
         <PageHeader
           variant="panel"
           title="技术标解析"
@@ -1382,7 +1389,7 @@ export default function TechnicalTenderReview({ showToast }) {
   }
 
   return (
-    <div className="review-page flex max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
+    <div className="review-page flex max-w-none flex-col gap-4 sm:gap-6">
       <PageHeader
         variant="panel"
         title={reviewConfig.pageTitle}
@@ -1696,6 +1703,8 @@ export default function TechnicalTenderReview({ showToast }) {
             setShowProjectInfoModal(false)
             setProjectToComplete(null)
             setProject(updatedProject)
+            invalidatePageCache('tech:projects')
+            invalidatePageCache('dashboard')
             setProjects((prev) => prev.map((item) => (
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item
             )))

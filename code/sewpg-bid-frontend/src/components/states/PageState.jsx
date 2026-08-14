@@ -1,16 +1,35 @@
 import Button from '../ui/Button'
+import Skeleton from '../shared/Skeleton'
 
+// 页面加载态与真实页面同构：页头/工具条/内容区骨架占位、顶部对齐、全宽展开，
+// 避免加载中居中卡片与真实内容之间的高度跳变（路由切换闪动治理）。
 export function PageLoading({
   title = '加载中...',
   description = '正在获取最新数据。',
-  containerClassName = 'min-h-[40vh]',
+  containerClassName = '',
 }) {
   return (
-    <div role="status" aria-live="polite" aria-busy="true" className={`flex items-center justify-center ${containerClassName}`.trim()}>
-      <div className="w-full max-w-xl rounded-lg border border-outline-variant bg-surface-container-lowest p-6 text-center sm:p-8">
-        <div aria-hidden="true" className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
-        <h3 className="mt-4 text-lg font-semibold text-on-surface">{title}</h3>
-        <p className="mt-1 text-sm text-on-surface-variant">{description}</p>
+    <div
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      className={`flex w-full flex-col gap-4 ${containerClassName}`.trim()}
+    >
+      <span className="sr-only">{`${title} ${description}`}</span>
+      <div className="flex items-center justify-between gap-3">
+        <Skeleton className="h-8 w-44 rounded-md" />
+        <Skeleton className="h-9 w-28 rounded-md" />
+      </div>
+      <Skeleton className="h-11 w-full rounded-md" />
+      <div className="overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest">
+        <div className="border-b border-surface-container-high bg-surface-container-low px-4 py-2.5">
+          <Skeleton className="h-4 w-2/5 rounded" />
+        </div>
+        <div className="flex flex-col gap-3 p-4">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Skeleton key={index} className="h-6 w-full rounded" />
+          ))}
+        </div>
       </div>
     </div>
   )

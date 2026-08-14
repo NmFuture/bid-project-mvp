@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import enterpriseLogo from '../../assets/logo-removebg.png'
 import {
@@ -60,6 +60,13 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
   const location = useLocation()
   const navigate = useNavigate()
   const [showUserMenu, setShowUserMenu] = useState(false)
+  const mainRef = useRef(null)
+
+  // main 是独立滚动容器且跨路由常驻：路由切换时复位滚动位置，
+  // 避免上一页的滚动残留/钳制导致新页面内容到达时二次跳变
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  }, [location.pathname])
 
   const userName = String(currentUser?.name || '当前用户')
   const userEmail = String(currentUser?.email || '')
@@ -276,6 +283,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
 
         <main
           id="main-content"
+          ref={mainRef}
           tabIndex={-1}
           className={`${isWorkspaceExperience ? 'workspace-shell-main' : 'bg-surface-bright'} shell-scroll-area min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-24 pt-4 focus:outline-none md:ml-[78px] md:px-6 md:py-5 lg:px-8 lg:py-6 xl:px-10`}
         >

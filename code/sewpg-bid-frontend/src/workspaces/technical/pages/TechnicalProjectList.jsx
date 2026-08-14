@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { technicalProjectsAPI } from '../../../api'
+import { invalidatePageCache, usePageData } from '../../../utils/pageCache'
 import Pagination from '../../../components/shared/Pagination'
 import PageHeader from '../../../components/shared/PageHeader'
 import { PageLoading, PageEmpty, PageError } from '../../../components/states/PageState'
@@ -23,47 +24,37 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
   const routeWorkspaceSlug = useWorkspaceSlug()
   const workspaceSlug = workspaceKind || routeWorkspaceSlug
   const lockedBidType = '技术标'
-  const [projects, setProjects] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
   const [currentPage, setCurrentPage] = useState(1)
-  const [pagination, setPagination] = useState({ page: 1, pageSize: 12, total: 0 })
   const [activeMenuId, setActiveMenuId] = useState('')
   const [actionLoadingId, setActionLoadingId] = useState('')
   const effectiveBidType = '技术标'
 
-  const loadProjects = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const data = await technicalProjectsAPI.list({
-        status: statusFilter !== 'all' ? statusFilter : '',
-        bidType: effectiveBidType,
-        reviewDecision: 'participate',
-        dateRange: dateFilter !== 'all' ? dateFilter : '',
-        page: currentPage,
-        pageSize: pagination.pageSize,
-      })
-      const items = Array.isArray(data?.items) ? data.items : []
-      const total = Number(data?.total ?? items.length)
-      const pageSize = Number(data?.pageSize || pagination.pageSize || 12)
-      setProjects(items)
-      setPagination({ page: currentPage, pageSize, total })
-    } catch (e) {
-      setError(e?.message || '项目列表加载失败')
-    } finally {
-      setLoading(false)
+  // 会话缓存：key 自包含筛选与分页参数；二次进入相同组合直接渲染缓存，后台静默刷新
+  const listCacheKey = `tech:projects:${statusFilter}:${dateFilter}:${currentPage}`
+  const { data: listResult, loading, error, reload: reloadProjects } = usePageData(listCacheKey, async () => {
+    const payload = await technicalProjectsAPI.list({
+      status: statusFilter !== 'all' ? statusFilter : '',
+      bidType: effectiveBidType,
+      reviewDecision: 'participate',
+      dateRange: dateFilter !== 'all' ? dateFilter : '',
+      page: currentPage,
+      pageSize: 12,
+    })
+    const items = Array.isArray(payload?.items) ? payload.items : []
+    return {
+      items,
+      total: Number(payload?.total ?? items.length),
+      pageSize: Number(payload?.pageSize || 12),
     }
-  }, [currentPage, dateFilter, effectiveBidType, pagination.pageSize, statusFilter])
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      loadProjects()
-    }, 0)
-    return () => clearTimeout(timer)
-  }, [loadProjects])
+  })
+  const projects = listResult?.items || []
+  const pagination = {
+    page: currentPage,
+    pageSize: listResult?.pageSize || 12,
+    total: listResult?.total || 0,
+  }
 
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
@@ -94,8 +85,10 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
     setActionLoadingId(projectId)
     try {
       await technicalProjectsAPI.delete(projectId)
+      invalidatePageCache('tech:projects')
+      invalidatePageCache('dashboard')
       showToast('项目已删除')
-      await loadProjects()
+      await reloadProjects()
     } catch (e) {
       console.error(e)
       if (e?.status === 404) {
@@ -128,18 +121,18 @@ export default function TechnicalProjectList({ showToast, viewMode = 'projects',
     return <PageLoading title="正在加载项目列表..." />
   }
 
-  if (error) {
+  if (error && !listResult) {
     return (
       <PageError
         title="项目列表加载失败"
         description={error}
-        onRetry={loadProjects}
+        onRetry={reloadProjects}
       />
     )
   }
 
   return (
-    <div className="project-list-page flex min-h-0 w-full flex-col gap-4 animate-fade-in">
+    <div className="project-list-page flex min-h-0 w-full flex-col gap-4">
       <PageHeader
         variant="panel"
         title={`${lockedBidType}${viewMode === 'flow' ? '撰写流程' : '项目'}`}

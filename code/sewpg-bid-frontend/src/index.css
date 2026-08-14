@@ -342,6 +342,11 @@ input,
   scrollbar-gutter: stable;
 }
 
+/* workspace 路由下 main 的背景（此前类名无定义，透出根容器色，与非 workspace 路由差一个色阶） */
+.workspace-shell-main {
+  background-color: var(--color-workspace);
+}
+
 .layout-standard,
 .layout-reading {
   min-width: 0;

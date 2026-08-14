@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { businessProjectsAPI } from '../../../api'
+import { invalidatePageCache, usePageData } from '../../../utils/pageCache'
 import FilterBar from '../../../components/shared/FilterBar'
 import Pagination from '../../../components/shared/Pagination'
 import PageHeader from '../../../components/shared/PageHeader'
@@ -37,47 +38,37 @@ const formatDateTime = (value) => {
 
 export default function BusinessProjectList({ showToast }) {
   const navigate = useNavigate()
-  const [projects, setProjects] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [dateFilter, setDateFilter] = useState('all')
   const [currentPage, setCurrentPage] = useState(1)
-  const [pagination, setPagination] = useState({ page: 1, pageSize: 12, total: 0 })
   const [showWizard, setShowWizard] = useState(false)
   const [activeMenuId, setActiveMenuId] = useState('')
   const [actionLoadingId, setActionLoadingId] = useState('')
 
-  const loadProjects = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const data = await businessProjectsAPI.list({
-        status: statusFilter !== 'all' ? statusFilter : '',
-        bidType: BUSINESS_BID_TYPE,
-        reviewDecision: 'participate',
-        dateRange: dateFilter !== 'all' ? dateFilter : '',
-        page: currentPage,
-        pageSize: pagination.pageSize,
-      })
-      const items = Array.isArray(data?.items) ? data.items : []
-      const total = Number(data?.total ?? items.length)
-      const pageSize = Number(data?.pageSize || pagination.pageSize || 12)
-      setProjects(items)
-      setPagination({ page: currentPage, pageSize, total })
-    } catch (e) {
-      setError(e?.message || '商务标项目列表加载失败')
-    } finally {
-      setLoading(false)
+  // 会话缓存：key 自包含筛选与分页参数；二次进入相同组合直接渲染缓存，后台静默刷新
+  const listCacheKey = `business:projects:${statusFilter}:${dateFilter}:${currentPage}`
+  const { data: listResult, loading, error, reload: reloadProjects } = usePageData(listCacheKey, async () => {
+    const payload = await businessProjectsAPI.list({
+      status: statusFilter !== 'all' ? statusFilter : '',
+      bidType: BUSINESS_BID_TYPE,
+      reviewDecision: 'participate',
+      dateRange: dateFilter !== 'all' ? dateFilter : '',
+      page: currentPage,
+      pageSize: 12,
+    })
+    const items = Array.isArray(payload?.items) ? payload.items : []
+    return {
+      items,
+      total: Number(payload?.total ?? items.length),
+      pageSize: Number(payload?.pageSize || 12),
     }
-  }, [currentPage, dateFilter, pagination.pageSize, statusFilter])
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      loadProjects()
-    }, 0)
-    return () => clearTimeout(timer)
-  }, [loadProjects])
+  })
+  const projects = listResult?.items || []
+  const pagination = {
+    page: currentPage,
+    pageSize: listResult?.pageSize || 12,
+    total: listResult?.total || 0,
+  }
 
   const getProjectEntryRoute = (project) => {
     const reviewDecision = String(project?.reviewDecision || 'participate')
@@ -111,8 +102,10 @@ export default function BusinessProjectList({ showToast }) {
     setActionLoadingId(projectId)
     try {
       await businessProjectsAPI.delete(projectId)
+      invalidatePageCache('business:projects')
+      invalidatePageCache('dashboard')
       showToast('商务标项目已删除')
-      await loadProjects()
+      await reloadProjects()
     } catch (e) {
       if (e?.status === 404) {
         showToast('删除失败：商务标项目不存在或已被移除，请刷新列表后重试。', 'error')
@@ -131,18 +124,18 @@ export default function BusinessProjectList({ showToast }) {
     return <PageLoading title="正在加载商务标项目..." />
   }
 
-  if (error) {
+  if (error && !listResult) {
     return (
       <PageError
         title="商务标项目加载失败"
         description={error}
-        onRetry={loadProjects}
+        onRetry={reloadProjects}
       />
     )
   }
 
   return (
-    <div className="project-list-page flex min-h-0 w-full flex-col gap-4 animate-fade-in">
+    <div className="project-list-page flex min-h-0 w-full flex-col gap-4">
       <PageHeader
         variant="panel"
         title="商务标项目"
@@ -225,7 +218,7 @@ export default function BusinessProjectList({ showToast }) {
           title="当前没有商务标项目"
           description="你可以先创建一个商务标项目，或者调整筛选条件后重试。"
           actionText="重新加载"
-          onAction={loadProjects}
+          onAction={reloadProjects}
         />
       ) : (
         <div className="mt-2 flex min-h-0 flex-1 flex-col gap-3">
@@ -356,7 +349,9 @@ export default function BusinessProjectList({ showToast }) {
           onCreated={() => {
             setShowWizard(false)
             showToast('商务标项目创建成功！')
-            loadProjects()
+            invalidatePageCache('business:projects')
+            invalidatePageCache('dashboard')
+            reloadProjects()
           }}
         />
       )}

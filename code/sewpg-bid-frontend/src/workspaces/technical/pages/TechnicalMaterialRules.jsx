@@ -213,7 +213,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
   const selectedProjectOutlineReady = Number(selectedProject?.currentStage) >= 3
 
   return (
-    <div className="flex min-h-0 flex-col gap-3 animate-fade-in">
+    <div className="flex min-h-0 flex-col gap-3">
       <MaterialsViewSwitch
         active="rules"
         title="技术标素材库"

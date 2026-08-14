@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { monitoringAPI } from '../api'
+import { readPageCache, writePageCache } from '../utils/pageCache'
 import StatusBadge from '../components/shared/StatusBadge'
 import EmptyState from '../components/shared/EmptyState'
 import PageHeader from '../components/shared/PageHeader'
@@ -227,9 +228,11 @@ function JobRow({ item, expanded, detailState, onToggle }) {
 export default function JobMonitor() {
   const [jobType, setJobType] = useState('')
   const [status, setStatus] = useState('')
-  const [summary, setSummary] = useState(null)
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入监控页直接渲染上次快照，轮询后台静默刷新
+  const [cachedSnapshot] = useState(() => readPageCache('monitor::'))
+  const [summary, setSummary] = useState(cachedSnapshot?.summary || null)
+  const [items, setItems] = useState(cachedSnapshot?.items || [])
+  const [loading, setLoading] = useState(!cachedSnapshot)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [details, setDetails] = useState({})
@@ -246,6 +249,7 @@ export default function JobMonitor() {
       if (!mountedRef.current || requestId !== requestIdRef.current) return
       setSummary(summaryPayload)
       setItems(listPayload?.items || [])
+      writePageCache(`monitor:${jobType}:${status}`, { summary: summaryPayload, items: listPayload?.items || [] })
       setError(null)
     } catch (err) {
       if (!mountedRef.current || requestId !== requestIdRef.current) return
@@ -340,7 +344,7 @@ export default function JobMonitor() {
   ]
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       <PageHeader
         variant="panel"
         title="耗时监控"
