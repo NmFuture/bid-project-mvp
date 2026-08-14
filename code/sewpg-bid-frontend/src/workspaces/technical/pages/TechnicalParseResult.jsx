@@ -130,10 +130,10 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const isParseCompleted = data?.status === 'completed'
   // 只认后端明确的参与决策，不再以"解析完成+有源文件"放宽，否则参与闸门被旁路
   const isReviewApproved = reviewDecision === 'participate'
+  // 负责人为可选项，补全弹窗未将其列为必填，这里不再纳入完整性校验
   const isProjectInfoComplete = Boolean(
     String(project?.name || '').trim()
     && String(project?.customerName || '').trim()
-    && String(project?.manager || '').trim()
     && String(project?.startDate || '').trim()
     && String(project?.endDate || project?.deadline || '').trim(),
   )
