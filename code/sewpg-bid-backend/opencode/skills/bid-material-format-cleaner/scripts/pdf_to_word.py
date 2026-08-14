@@ -7,7 +7,7 @@ pdf_to_word.py — 将 PDF 按页拆分成图片并合并成 Word 文档。
 
 每个 PDF 的处理流程:
   1. 在 PDF 所在目录创建与 PDF 同名的子文件夹
-  2. 用 PyMuPDF 将每页导出为 page_N.png (2x 缩放)
+  2. 用 PyMuPDF 将每页导出为 page_N.png (1.5x 缩放)
   3. 将图片按页码合并到一个 docx 文件中, 放在 PDF 所在目录
 
 Word 文档格式严格按投标技术标模板:
@@ -49,10 +49,10 @@ def _check_deps() -> None:
 # ---------- 1. PDF -> images ----------
 
 
-def split_pdf_to_images(pdf_path: Path, out_dir: Path, zoom: float = 2.0) -> List[Path]:
+def split_pdf_to_images(pdf_path: Path, out_dir: Path, zoom: float = 1.5) -> List[Path]:
     """将 PDF 按页拆分为 PNG, 返回按页码排序的图片路径列表。
 
-    zoom=2.0 对应约 144 dpi, 清晰度较好且文件大小适中。
+    zoom=1.5 对应约 108 dpi, 看图纸和公章足够, 比 2x 省约 30% 体积。
     """
     import fitz
 

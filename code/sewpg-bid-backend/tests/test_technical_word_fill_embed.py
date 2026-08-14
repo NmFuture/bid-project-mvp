@@ -134,8 +134,8 @@ class EmbedRunTests(unittest.TestCase):
                     "materialId": "RAW-0002",
                     "name": "价格表.xlsx",
                     "materialTier": "project",
-                    "status": "unsupported_format",
-                    "statusMessage": "「价格表.xlsx」是 Excel 素材，请人工另存为 Word 后重新上传。",
+                    "status": "convert_failed",
+                    "statusMessage": "素材「价格表.xlsx」转 Word 失败：openpyxl 打不开该文件。",
                 },
             ],
         }
@@ -188,7 +188,7 @@ class EmbedRunTests(unittest.TestCase):
 
         by_label = {item["label"]: item for item in report["embedDetails"]}
         self.assertEqual(by_label["设备清单"]["action"], "embed")
-        self.assertIn("Excel 素材", by_label["价格表"]["message"])
+        self.assertIn("转 Word 失败", by_label["价格表"]["message"])
         self.assertEqual(by_label["附件材料"]["status"], "not_standalone")
         self.assertEqual(by_label["表内素材"]["status"], "not_standalone")
 
