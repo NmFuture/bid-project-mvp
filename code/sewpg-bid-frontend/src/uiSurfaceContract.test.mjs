@@ -76,10 +76,10 @@ test('耗时监控指标使用标准字号并与加载布局保持一致', () =>
   )?.[1]
 
   assert.ok(metricValueClasses, '应能定位耗时指标数值样式')
-  assert.match(metricValueClasses, /(?:^|\s)text-xl(?:\s|$)/)
-  assert.doesNotMatch(metricValueClasses, /(?:^|\s)(?:sm:|md:|lg:|xl:)?text-(?:2xl|3xl|4xl|5xl|6xl|7xl|8xl|9xl|\[[^\]]+\])(?:\s|$)/)
-  assert.match(jobMonitorSource, /grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4/)
-  assert.match(jobMonitorSource, /h-\[76px\]/)
+  assert.match(metricValueClasses, /(?:^|\s)text-2xl(?:\s|$)/)
+  assert.doesNotMatch(metricValueClasses, /(?:^|\s)(?:sm:|md:|lg:|xl:)?text-(?:3xl|4xl|5xl|6xl|7xl|8xl|9xl|\[[^\]]+\])(?:\s|$)/)
+  assert.match(jobMonitorSource, /grid gap-3 sm:grid-cols-2 lg:grid-cols-4/)
+  assert.match(jobMonitorSource, /min-h-\[76px\]/)
 })
 
 test('技术标与商务标解析页统一使用标题面板', () => {
