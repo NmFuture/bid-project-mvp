@@ -23,7 +23,13 @@ from app.services.bid_outline_state import (
 )
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_project_service import BidProjectService
-from app.services.job_queue import EnqueueResult, enqueue_generation_job, is_generation_locked
+from app.services.background_task_cancel import (
+    BackgroundTaskCancelled,
+    cancel_task_state,
+    raise_if_task_cancel_requested,
+    request_task_cancel,
+)
+from app.services.job_queue import EnqueueResult, enqueue_generation_job, is_generation_locked, request_job_cancel
 from app.services.job_timing import current_locked_job_id, record_phase
 from app.services.local_job_executor import submit_local_job
 from app.services.onlyoffice_documents import build_editor_session_key
@@ -168,6 +174,15 @@ def _update_directory_state(project_id: str, **kwargs: Any) -> dict[str, Any]:
         return state
 
 
+def _cancel_directory_generation(project_id: str) -> dict[str, Any]:
+    with _directory_state_write_lock:
+        project = _any_project_for_update(project_id)
+        state = cancel_task_state(project.get("directory_state"), "目录生成已停止。")
+        project["directory_state"] = state
+        persist_workspace_project_fields(project, "directory_state")
+        return state
+
+
 def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     with _directory_state_write_lock:
         project = _any_project_for_update(project_id)
@@ -177,6 +192,7 @@ def _fail_directory_generation(project_id: str, message: str, tasks: list[dict[s
 
 
 def _handle_directory_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
+    raise_if_task_cancel_requested(_any_project(project_id).get("directory_state"))
     meta = details or {}
     if stage == "decision_progress":
         # 高频计数上报：不写事件、不进耗时埋点，只更新计数与百分比
@@ -348,11 +364,14 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
 
 def _run_directory_generation_job(project_id: str, data: dict[str, Any]) -> None:
     try:
+        raise_if_task_cancel_requested(_any_project(project_id).get("directory_state"))
         generate_outline_for_project_with_progress(
             project_id,
             data,
             progress_callback=lambda stage, details=None: _handle_directory_progress(project_id, stage, details),
         )
+    except BackgroundTaskCancelled:
+        _cancel_directory_generation(project_id)
     except ValueError as exc:
         _fail_directory_generation(
             project_id,
@@ -581,6 +600,15 @@ class BidDirectoryService:
             project_id,
             self.directory_state(project_id),
         )
+
+    async def cancel_generation(self, project_id: str) -> dict[str, Any]:
+        project = self.require_project_for_update(project_id)
+        current = directory_state_with_rule_evidence(project)
+        payload = request_task_cancel(current, "已请求停止目录生成，正在等待安全停止点。")
+        project["directory_state"] = payload
+        persist_workspace_project_fields(project, "directory_state")
+        request_job_cancel(current_locked_job_id("directory_generation", project_id))
+        return payload
 
     async def generation_stream(self, project_id: str, request: Request) -> StreamingResponse:
         self.directory_state(project_id)

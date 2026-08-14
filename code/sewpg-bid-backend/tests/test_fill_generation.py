@@ -20,6 +20,7 @@ from app.services.bid_outline_state import confirm_outline_state, save_generated
 from app.services.bid_parse_state import complete_parse_state
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.bid_runtime_state import now_iso
+from app.services.onlyoffice_documents import document_path
 from app.services.store import store
 from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import confirm_technical_review, prepare_technical_review_document
@@ -246,6 +247,41 @@ class FillGenerationTests(unittest.TestCase):
         )
         _confirm_outline_for_tests(project_id)
         return project_id
+
+    def test_cancel_fill_generation_is_idempotent(self) -> None:
+        project_id = self._prepare_project_after_outline()
+        _start_fill_generation_for_tests(project_id)
+
+        first = self.client.post(
+            f"/api/technical/projects/{project_id}/fill-generation/cancel",
+            headers=self.headers,
+        )
+        second = self.client.post(
+            f"/api/technical/projects/{project_id}/fill-generation/cancel",
+            headers=self.headers,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["status"], "cancel_requested")
+        self.assertTrue(first.json()["cancelRequested"])
+        self.assertEqual(first.json()["cancelRequestedAt"], second.json()["cancelRequestedAt"])
+
+    def test_cancelled_fill_job_does_not_call_generator(self) -> None:
+        from app.services.bid_generation_flow import _run_fill_generation_job
+
+        project_id = self._prepare_project_after_outline()
+        _start_fill_generation_for_tests(project_id)
+        self.client.post(
+            f"/api/technical/projects/{project_id}/fill-generation/cancel",
+            headers=self.headers,
+        )
+
+        with patch("app.services.bid_generation_flow.generate_technical_draft_for_project_with_progress") as generate:
+            _run_fill_generation_job(project_id, {}, bid_type=TECHNICAL_BID_TYPE)
+
+        generate.assert_not_called()
+        self.assertEqual(_fill_state_for_tests(project_id)["status"], "cancelled")
 
     def _prepare_project_for_s7(self) -> str:
         project_id = self._prepare_project_after_outline()
@@ -881,6 +917,56 @@ class FillGenerationTests(unittest.TestCase):
 
         self.assertEqual(staging_alive_at_restore, [True])
         self.assertFalse(staging_dirs[0].exists())
+
+    def test_fill_generation_checks_cancel_before_replacing_draft(self) -> None:
+        from app.services import tech_assembly
+
+        project_id = self._prepare_project_after_outline()
+        project = store._require(project_id)
+        project["gap_state"] = {
+            "plan": {
+                "schemaVersion": "bid-tech-gap-plan-v1",
+                "status": "ready",
+                "items": [],
+            }
+        }
+        store._persist_project(project)
+        target = document_path(project_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"previous draft")
+
+        def fake_run_assembler_manifest(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            output_file = Path(manifest["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            Document().save(output_file)
+            plan_file = output_file.parent / "assembly_plan.json"
+            plan_file.write_text("[]", encoding="utf-8")
+            return {
+                "schema_version": "bid-tech-assembly-v1",
+                "outputFile": str(output_file),
+                "planFile": str(plan_file),
+                "mediaVaultFile": _write_empty_media_vault(output_file.parent),
+                "summary": {"total": 0, "byStatus": {}, "usedPathCount": 0},
+                "warnings": [],
+            }
+
+        def cancel_before_publish(stage, _details=None):
+            if stage == "ready_to_publish":
+                raise RuntimeError("cancel before publish")
+
+        with patch.object(
+            tech_assembly,
+            "_run_assembler_manifest",
+            side_effect=fake_run_assembler_manifest,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cancel before publish"):
+                tech_assembly.assemble_tech_bid_for_project_with_progress(
+                    project_id,
+                    progress_callback=cancel_before_publish,
+                )
+
+        self.assertEqual(target.read_bytes(), b"previous draft")
 
     def test_selected_materials_cleanup_after_assembler_failure(self) -> None:
         from app.services import tech_assembly

@@ -8,8 +8,15 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.services.bid_generation_flow import _record_generation_audit, _record_generation_audit_sync
+from app.services.background_task_cancel import (
+    BackgroundTaskCancelled,
+    cancel_task_state,
+    raise_if_task_cancel_requested,
+    request_task_cancel,
+)
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked
+from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked, request_job_cancel
+from app.services.job_timing import current_locked_job_id
 from app.services.local_job_executor import submit_local_job
 from app.services.tech_assembly import regenerate_score_index_xref_for_project
 from app.services.technical_score_index_state import (
@@ -70,6 +77,14 @@ def _finish_state(project_id: str, **kwargs: Any) -> dict[str, Any]:
     return payload
 
 
+def _cancel_state(project_id: str) -> dict[str, Any]:
+    project = _project_for_update(project_id)
+    payload = cancel_task_state(score_index_state(project), "索引生成已停止。")
+    project["score_index_state"] = payload
+    persist_workspace_project_fields(project, "score_index_state")
+    return payload
+
+
 def _parse_iso_datetime(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -125,6 +140,7 @@ def _index_summary_text(done: int, total: int) -> str:
 
 
 def handle_score_index_progress(project_id: str, stage: str, details: dict[str, Any] | None = None) -> None:
+    raise_if_task_cancel_requested(_current_state(project_id))
     meta = details or {}
 
     if stage == "calling_score_index_xref":
@@ -201,10 +217,24 @@ def handle_score_index_progress(project_id: str, stage: str, details: dict[str, 
 def run_score_index_job(project_id: str, data: dict[str, Any] | None = None, user: dict[str, Any] | None = None) -> None:
     request_data = dict(data or {})
     try:
+        raise_if_task_cancel_requested(_current_state(project_id))
         result = regenerate_score_index_xref_for_project(
             project_id,
             progress_callback=lambda stage, details=None: handle_score_index_progress(project_id, stage, details),
         )
+    except BackgroundTaskCancelled:
+        _cancel_state(project_id)
+        _record_generation_audit_sync(
+            project_id=project_id,
+            action="停止重新生成章节索引",
+            status="已停止",
+            user=user,
+            bid_type=TECHNICAL_BID_TYPE,
+            data=request_data,
+            diff={"before": {}, "after": {"status": "cancelled"}},
+            metadata={},
+        )
+        return
     except ValueError as exc:
         _finish_state(
             project_id,
@@ -330,6 +360,15 @@ class TechnicalScoreIndexService:
         if _is_stale(current):
             current = _recover_stale(project_id)
         return copy.deepcopy(current)
+
+    async def cancel(self, project_id: str) -> dict[str, Any]:
+        project = _project_for_update(project_id)
+        current = score_index_state(project)
+        payload = request_task_cancel(current, "已请求停止索引生成，正在等待安全停止点。")
+        project["score_index_state"] = payload
+        persist_workspace_project_fields(project, "score_index_state")
+        request_job_cancel(current_locked_job_id(SCORE_INDEX_JOB_TYPE, project_id))
+        return payload
 
     async def run(
         self,

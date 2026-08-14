@@ -857,6 +857,12 @@ def generate_outline_for_project_with_progress(
                 "chapterCount": len(nodes),
             },
         )
+        progress_callback(
+            "ready_to_publish",
+            {
+                "chapterCount": len(nodes),
+            },
+        )
 
     generated_at = now_iso()
     project_for_update = require_any_workspace_project_for_update(project_id, not_found_error=KeyError)

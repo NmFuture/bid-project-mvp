@@ -276,6 +276,11 @@ async def run_technical_directory_generation(
     return await technical_directory_service.run_generation(project_id, data)
 
 
+@router.post("/api/technical/projects/{project_id}/directory-generation/cancel")
+async def cancel_technical_directory_generation(project_id: str) -> dict[str, Any]:
+    return await technical_directory_service.cancel_generation(project_id)
+
+
 @router.get("/api/technical/projects/{project_id}/outline")
 async def get_technical_outline(project_id: str, request: Request, fileId: str = "") -> dict[str, Any]:
     return await technical_directory_service.outline(project_id, request, file_id=fileId)
@@ -532,6 +537,11 @@ async def run_technical_fill_generation(
     return await technical_generation_service.run(project_id, request, data, user)
 
 
+@router.post("/api/technical/projects/{project_id}/fill-generation/cancel")
+async def cancel_technical_fill_generation(project_id: str) -> dict[str, Any]:
+    return await technical_generation_service.cancel(project_id)
+
+
 @router.get("/api/technical/projects/{project_id}/score-index")
 async def get_technical_score_index(project_id: str) -> dict[str, Any]:
     return await technical_score_index_service.status(project_id)
@@ -545,6 +555,11 @@ async def run_technical_score_index(
     user: dict[str, Any] = Depends(current_user),
 ) -> JSONResponse:
     return await technical_score_index_service.run(project_id, request, data, user)
+
+
+@router.post("/api/technical/projects/{project_id}/score-index/cancel")
+async def cancel_technical_score_index(project_id: str) -> dict[str, Any]:
+    return await technical_score_index_service.cancel(project_id)
 
 
 @router.get("/api/technical/projects/{project_id}/coverage")
