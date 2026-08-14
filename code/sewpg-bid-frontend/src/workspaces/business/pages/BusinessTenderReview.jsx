@@ -1669,10 +1669,10 @@ export default function BusinessTenderReview({ showToast }) {
               disabled={uploading || reviewDecision === 'abandon'}
               onChange={handleFilesPicked}
             />
-            <div className="mt-3">
+            <div className="mt-2">
               {renderPickedFiles()}
             </div>
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
               <Button
                 type="button"
                 onClick={handleUploadAndParse}

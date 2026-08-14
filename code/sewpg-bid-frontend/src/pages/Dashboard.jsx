@@ -10,14 +10,6 @@ import PageHeader from '../components/shared/PageHeader'
 import Skeleton, { SkeletonCard } from '../components/shared/Skeleton'
 import Button from '../components/ui/Button'
 
-const METRIC_TONE = {
-  primary: 'bg-primary-fixed text-primary',
-  success: 'bg-secondary-fixed text-secondary',
-  warn: 'bg-tertiary-fixed text-on-tertiary-fixed-variant',
-  error: 'bg-error-container text-error',
-  info: 'bg-ai-accent-light text-tertiary',
-}
-
 const fmtPct = (p) => `${Math.round((p || 0) * 100)}%`
 
 const formatCurrentTime = (date) => {
@@ -48,28 +40,14 @@ function Greeting({ name, role }) {
 }
 
 function MetricCard({ metric }) {
-  const tone = METRIC_TONE[metric.tone] || METRIC_TONE.primary
   return (
-    <div className="flex min-h-[84px] items-center gap-3 rounded-lg border border-outline-variant/70 bg-white px-4 py-3 shadow-[0_1px_2px_rgba(13,33,55,0.04)] lg:px-5">
-      <span
-        className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${tone}`}
-        aria-hidden="true"
-      >
-        <span
-          className="material-symbols-outlined text-[20px]"
-          style={{ fontVariationSettings: "'FILL' 1" }}
-        >
-          {metric.icon}
+    <div className="flex min-h-[84px] flex-col justify-center rounded-lg border border-outline-variant/70 bg-white px-4 py-3 shadow-[var(--shadow-panel)] lg:px-5">
+      <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="text-2xl font-headline font-semibold leading-none text-on-surface tabular-nums">
+          {metric.value}
         </span>
-      </span>
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
-        <div className="mt-0.5 flex items-baseline gap-2">
-          <span className="text-[26px] font-headline font-semibold leading-none text-on-surface tabular-nums">
-            {metric.value}
-          </span>
-          {metric.trend && <span className="text-xs text-outline">{metric.trend}</span>}
-        </div>
+        {metric.trend && <span className="text-xs text-outline">{metric.trend}</span>}
       </div>
     </div>
   )

@@ -148,11 +148,10 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
           <span className="truncate font-headline text-sm font-semibold leading-none text-white">
             投标智能体平台
           </span>
-        </div>
 
         {showSwitcher && (
           <div
-            className={`hidden md:flex items-center gap-1 rounded-full bg-white/10 p-0.5 ${isWorkspaceExperience ? 'border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'backdrop-blur'}`}
+            className={`ml-4 hidden md:flex items-center gap-1 rounded-full bg-white/10 p-0.5 ${isWorkspaceExperience ? 'border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'backdrop-blur'}`}
             role="group"
             aria-label="切换工作区"
           >
@@ -181,6 +180,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
             })}
           </div>
         )}
+        </div>
 
         <div className="flex items-center gap-2">
           {userRole && (

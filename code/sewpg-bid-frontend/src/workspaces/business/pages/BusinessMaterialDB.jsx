@@ -472,36 +472,6 @@ const projectLabel = (option) => {
   return `${option.name}（${parts.join(' / ')}）`
 }
 
-function IconButton({
-  icon,
-  label,
-  title = label,
-  onClick,
-  disabled = false,
-  variant = 'neutral',
-  children,
-}) {
-  const tone = variant === 'primary'
-    ? 'bg-primary text-on-primary hover:bg-primary-container'
-    : variant === 'danger'
-      ? 'bg-error-container/45 text-error hover:bg-error-container'
-      : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={label}
-      className={`inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded px-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${tone}`}
-    >
-      {icon ? <span aria-hidden="true" className="material-symbols-outlined text-[17px]">{icon}</span> : null}
-      {children ? <span className="leading-none">{children}</span> : null}
-    </button>
-  )
-}
-
 function TagInput({
   value,
   inputValue,
@@ -1950,13 +1920,13 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
         </div>
 
         <div className="flex flex-wrap items-center justify-start gap-1.5 xl:justify-end" role="toolbar" aria-label="素材目录工具栏">
-          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
+          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-md px-2.5 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface">
             展开
           </button>
-          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
+          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-md px-2.5 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface">
             收起
           </button>
-          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
+          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-md border border-outline-variant/60 bg-surface-container-low px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-45">
             新建文件夹
           </button>
           <button
@@ -1964,7 +1934,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
             title={selectedFolderPath && isProtectedDeleteFolderPath(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
             onClick={handleDeleteFolder}
             disabled={!canDeleteFolder}
-            className="rounded-lg bg-error-container/45 px-3 py-2 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
+            className="rounded-md border border-error/20 bg-error/10 px-3 py-2 text-xs font-semibold text-error hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-45"
           >
             删除文件夹
           </button>
@@ -1972,7 +1942,7 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
             type="button"
             onClick={() => openUploadModal({ mode: 'path', targetPath: selectedFolderPath })}
             disabled={!canManageCurrentFolder || !selectedFolderPath}
-            className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-45"
+            className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-on-primary-fixed-variant disabled:cursor-not-allowed disabled:opacity-45"
           >
             上传
           </button>

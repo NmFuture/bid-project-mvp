@@ -174,7 +174,7 @@ export default function BusinessProjectList({ showToast }) {
                   <option value="completed">已完成</option>
                   <option value="archived">已归档</option>
                 </select>
-                <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-secondary">arrow_drop_down</span>
+                <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-outline">arrow_drop_down</span>
               </label>
               <label className="relative min-w-0 sm:min-w-[170px]">
                 <span className="sr-only">时间范围</span>
@@ -192,7 +192,7 @@ export default function BusinessProjectList({ showToast }) {
                 <option value="30d">最近30天</option>
                 <option value="quarter">本季度</option>
               </select>
-                <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-secondary">arrow_drop_down</span>
+                <span aria-hidden="true" className="material-symbols-outlined pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-outline">arrow_drop_down</span>
               </label>
             </div>
           </>
