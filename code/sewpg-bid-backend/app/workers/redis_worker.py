@@ -50,6 +50,34 @@ def _request_stop(signum: int, _: Any) -> None:
     _stop_requested = True
 
 
+def _finalize_abandoned_job(job: dict[str, Any]) -> None:
+    """恢复上限判死任务后，把对应的业务状态也收口成失败。
+
+    只标 Redis 里的任务失败不够：页面读的是项目自己的生成状态，不收口就会一直显示
+    运行中，直到一小时后的过期兜底才恢复——那样这条"死循环出口"就只走了一半。
+    """
+    job_type = str(job.get("type") or "")
+    project_id = str(job.get("projectId") or "")
+    message = str(job.get("__abandonMessage") or "任务连续多次异常中断，已判定为失败，请重新发起。")
+    if not project_id:
+        return
+    if job_type == "fill_generation":
+        from app.services.bid_generation_flow import _fail_fill_generation
+
+        _fail_fill_generation(project_id, message)
+        return
+    if job_type == "directory_generation":
+        from app.services.bid_directory_flow import _fail_directory_generation
+
+        _fail_directory_generation(project_id, message)
+        return
+    logger.warning(
+        "Abandoned %s job for %s has no business-state finalizer; UI falls back to the stale sweep.",
+        job_type or "unknown",
+        project_id,
+    )
+
+
 def _runtime_state(project_id: str) -> dict[str, Any]:
     return get_any_workspace_project_runtime_state(project_id, not_found_error=KeyError)
 
@@ -440,7 +468,7 @@ def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> Non
                 continue
 
             if not recovery_done:
-                recover_processing_jobs(queue_key)
+                recover_processing_jobs(queue_key, on_abandon=_finalize_abandoned_job)
                 if queue_key == QUEUE_KEY:
                     # 兼容升级前已登记、但尚未使用 processing 列表的 continuation。
                     recover_inflight_jobs("s1_parse_continue", QUEUE_KEY)

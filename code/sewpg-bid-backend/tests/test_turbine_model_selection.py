@@ -13,6 +13,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
+from app.document_processing.technical_document.assembly import MediaVault
 from app.main import app
 from app.core.config import settings
 from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
@@ -24,6 +25,11 @@ from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.turbine_models import extract_turbine_model_options_from_xlsx_bytes
 from app.services.workspace_artifacts import technical_workspace_dir
+
+
+def _write_empty_media_vault(work_dir: Path) -> str:
+    """假组装器也要交出图片索引：真组装器把图片旁路后由它记账，成稿归位全靠它。"""
+    return str(MediaVault().save(work_dir / "media_vault.json"))
 
 
 def _xlsx_payload() -> str:
@@ -350,6 +356,7 @@ class TurbineModelSelectionTests(unittest.TestCase):
                 "schema_version": "bid-tech-assembly-v1",
                 "outputFile": str(output_file),
                 "planFile": str(plan_file),
+                "mediaVaultFile": _write_empty_media_vault(output_file.parent),
                 "assemblyReport": str(report),
                 "needsReview": str(review),
                 "summary": {"total": 0, "byStatus": {}, "usedPathCount": 0},

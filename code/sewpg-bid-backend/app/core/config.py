@@ -198,6 +198,7 @@ class Settings:
     redis_job_queue_lock_ttl_sec: int
     redis_job_result_ttl_sec: int
     redis_worker_poll_timeout_sec: int
+    redis_job_max_recover_attempts: int
 
     # S1 parse async job
     s1_parse_job_max_attempts: int
@@ -339,6 +340,9 @@ settings = Settings(
     redis_job_queue_lock_ttl_sec=_int_env("REDIS_JOB_QUEUE_LOCK_TTL_SEC", 6 * 60 * 60),
     redis_job_result_ttl_sec=_int_env("REDIS_JOB_RESULT_TTL_SEC", 24 * 60 * 60),
     redis_worker_poll_timeout_sec=_int_env("REDIS_WORKER_POLL_TIMEOUT_SEC", 5),
+    # 同一个任务被异常中断后最多再捞回几次。worker 崩溃或部署重启属于正常情况，
+    # 但反复崩在同一份输入上就是毒任务，必须判死，不能无限重跑把 worker 一直打死。
+    redis_job_max_recover_attempts=_int_env("REDIS_JOB_MAX_RECOVER_ATTEMPTS", 2),
     s1_parse_job_max_attempts=_int_env("S1_PARSE_JOB_MAX_ATTEMPTS", 3),
     s1_parse_job_retry_backoff_sec=_int_tuple_env("S1_PARSE_JOB_RETRY_BACKOFF_SEC", (30, 120)),
     parse_progress_persist_interval_sec=float(

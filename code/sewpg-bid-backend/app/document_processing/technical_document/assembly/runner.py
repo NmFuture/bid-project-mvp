@@ -15,6 +15,7 @@ from docx import Document
 from .build_assembly import apply_gap_plan, build_plan, rearrange_appendices
 from .create_tech_master import apply_page_setup, apply_style_overrides, prune_unreferenced_media, strip_body
 from .finalize import force_update_fields, insert_toc_field, reapply_heading_fonts, replace_header_text
+from .media_vault import MediaVault, restore_media, strip_media
 from .merger import merge
 from .numbering_fixer import (
     enforce_no_auto_numbering_on_numbered_headings,
@@ -46,7 +47,7 @@ def _safe_filename(value: str, fallback: str) -> str:
     return re.sub(r"\s+", " ", text).strip(" .") or fallback
 
 
-def _create_master(manifest: dict[str, Any], work_dir: Path) -> Path:
+def _create_master(manifest: dict[str, Any], work_dir: Path, vault: MediaVault) -> Path:
     target = work_dir / "templates" / "技术投标母版模板.docx"
     sample = _path(manifest.get("templateFile"))
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +55,9 @@ def _create_master(manifest: dict[str, Any], work_dir: Path) -> Path:
         Document().save(str(target))
         return target
     try:
-        shutil.copy2(sample, target)
+        # 招标模板动辄 200MB 且几乎全是图片，母版只要它的样式和页面设置。先旁路掉
+        # 图片字节，后面 strip_body、样式改写和部件剪枝就都只在几 MB 的 XML 上跑。
+        strip_media(sample, target, vault)
         style_cfg = json.loads(STYLE_SPEC_PATH.read_text(encoding="utf-8"))
         doc = Document(str(target))
         strip_body(doc)
@@ -162,21 +165,32 @@ def run_from_manifest(
     plan_file = work_dir / "assembly_plan.json"
     plan_file.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     merged_file = work_dir / "bid_merged.docx"
+    # 组装全程只搬 XML，图片字节留在素材原件里由 vault 记账；成稿在整条链路收尾时
+    # 由调用方做一次 restore_media 归位，因此这里的产物是轻量稿。
+    vault = MediaVault()
     merge_result = merge(
-        _create_master(manifest, work_dir),
+        _create_master(manifest, work_dir, vault),
         plan,
         material_library,
         params,
         work_dir / "bid_prep",
         merged_file,
         progress_callback=_throttled_merge_progress(progress_callback),
+        vault=vault,
     )
+    vault_file = vault.save(work_dir / "media_vault.json")
 
     requested_output = _path(manifest.get("outputFile"))
     finalize_output = manifest.get("finalizeOutput", True) is not False
     output_file = requested_output or merged_file
     if finalize_output:
-        finalize_merged_output(merged_file, output_file, params)
+        # finalizeOutput 表示"直接要可交付成稿"，所以这里把旁路的图片字节归位。
+        # 置 False 的调用方（技术标主链路）要接着做题注和格式清洗，继续用轻量稿更快，
+        # 由它在链路收尾时自己归位。
+        light_output = output_file.with_name(f"{output_file.stem}.light{output_file.suffix}")
+        finalize_merged_output(merged_file, light_output, params)
+        restore_media(light_output, output_file, vault)
+        light_output.unlink(missing_ok=True)
     else:
         output_file = merged_file
     scan = scan_docx(output_file)
@@ -189,6 +203,9 @@ def run_from_manifest(
         "projectParamsFile": str(params_file),
         "gapPlanFile": str(gap_plan),
         "outputFile": str(output_file),
+        "mediaVaultFile": str(vault_file),
+        "mediaBypassedCount": len(vault),
+        "mediaBypassedBytes": vault.total_bytes(),
         "summary": summary,
         "warnings": warnings,
     }
