@@ -3,10 +3,10 @@ import { technicalMaterialsAPI } from '../../../api'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
 
-// 列与 Excel 模板（序号/待填写文件/原占位符位置/实际要填写的字段/必要说明/复核/来源文件）
-// 一一对应，表头即模板表头；key/sourceKind 等派生字段不在界面暴露，保存时按
-// 导入解析器（technical_fact_spec_import.py）同款规则自动推导，保证弹窗编辑
-// 与 Excel 导入产物完全一致。
+// 列直接对应 spec 字段，不是 Excel 模板表头的镜像——Excel 清单现为
+// 序号/类型/文件夹/文件名/占位符内容/引用文件，字段名由占位符正文剥离得出，
+// 与这里的编辑列不是一一对应关系。key/sourceKind 等派生字段不在界面暴露，
+// 保存时按导入解析器（technical_fact_spec_import.py）同款规则自动推导。
 // table-fixed 按百分比分摊弹窗宽度：序号/操作收紧，长文本列多分
 const COLUMNS = [
   { field: 'seq', label: '序号', type: 'number', width: 'w-12' },
@@ -97,8 +97,8 @@ const toPayloadSpec = (row, index) => {
   }
 }
 
-// 事实表清单在线编辑：界面与 Excel 模板同构（7 列中文表头），整表行编辑，
-// 保存时整表 PUT 回后端；key/来源类别等派生字段按导入规则自动推导。
+// 事实表清单在线编辑：按 spec 字段整表行编辑，保存时整表 PUT 回后端；
+// key/来源类别等派生字段按导入规则自动推导。走的不是 Excel 解析路径。
 export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToast = () => {} }) {
   const [rows, setRows] = useState(null)
   const [loadError, setLoadError] = useState('')
@@ -161,7 +161,7 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
       <DialogHeader onClose={saving ? undefined : onClose}>
         <h3 className="text-lg font-headline font-semibold text-on-surface">编辑项目事实表清单（全局）</h3>
         <p className="mt-1 text-xs text-outline">
-          与 Excel 模板列一致，全局一份、所有技术标项目共用，保存后整表生效。来源文件决定取数方式：招标文件 / 项目定制 / 认证证书 / 平台输入 / 自动生成，留空表示模板占位不取数；说明里写「需确认」的字段会标记为需人工确认。
+          按事实表字段逐行编辑，全局一份、所有技术标项目共用，保存后整表生效。来源文件决定取数方式：招标文件 / 项目定制 / 认证证书 / 平台输入 / 自动生成，留空表示模板占位不取数。
         </p>
       </DialogHeader>
       <div className="min-h-0 flex-1 overflow-auto">
