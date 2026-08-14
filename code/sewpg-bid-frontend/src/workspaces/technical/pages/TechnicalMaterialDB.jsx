@@ -338,36 +338,6 @@ const statusColor = (status) => {
   return 'bg-surface-container-high text-on-surface-variant'
 }
 
-function IconButton({
-  icon,
-  label,
-  title = label,
-  onClick,
-  disabled = false,
-  variant = 'neutral',
-  children,
-}) {
-  const tone = variant === 'primary'
-    ? 'bg-primary text-on-primary hover:bg-primary-container'
-    : variant === 'danger'
-      ? 'bg-error-container/45 text-error hover:bg-error-container'
-      : 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={label}
-      className={`inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded px-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${tone}`}
-    >
-      {icon ? <span aria-hidden="true" className="material-symbols-outlined text-[17px]">{icon}</span> : null}
-      {children ? <span className="leading-none">{children}</span> : null}
-    </button>
-  )
-}
-
 function TagInput({
   value,
   inputValue,
@@ -1929,21 +1899,21 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
         </div>
 
         <div className="flex flex-wrap items-center justify-start gap-1.5 xl:justify-end" role="toolbar" aria-label="素材目录工具栏">
-          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
+          <button type="button" onClick={() => setCollapseForAll(false)} className="rounded-md px-2.5 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface">
             展开
           </button>
-          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim">
+          <button type="button" onClick={() => setCollapseForAll(true)} className="rounded-md px-2.5 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface">
             收起
           </button>
           <button
             type="button"
             title={bulkMode ? '退出多选模式' : '进入多选模式，可批量删除或打标签'}
             onClick={() => (bulkMode ? exitBulkMode() : setBulkMode(true))}
-            className={`rounded-lg px-3 py-2 text-xs font-semibold ring-1 ring-inset ring-outline-variant/60 ${bulkMode ? 'bg-primary text-on-primary' : 'bg-surface-container-high text-on-surface hover:bg-surface-dim'}`}
+            className={`rounded-md px-2.5 py-2 text-xs font-semibold ${bulkMode ? 'bg-primary text-on-primary' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'}`}
           >
             {bulkMode ? '退出多选' : '多选'}
           </button>
-          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45">
+          <button type="button" onClick={handleCreateFolder} disabled={!canCreateFolder} className="rounded-md border border-outline-variant/60 bg-surface-container-low px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-45">
             新建文件夹
           </button>
           <button
@@ -1951,7 +1921,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
             title="按目录结构（机型/类别）为当前目录下的素材自动打标签，只增不删、可重复执行"
             onClick={handleAutoTags}
             disabled={!selectedFolderPath || autoTagLoading}
-            className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface ring-1 ring-inset ring-outline-variant/60 hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-45"
+            className="rounded-md border border-outline-variant/60 bg-surface-container-low px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-45"
           >
             {autoTagLoading ? '打标中...' : '自动打标签'}
           </button>
@@ -1959,7 +1929,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
             type="button"
             onClick={() => openUploadModal({ targetPath: selectedFolderPath })}
             disabled={!canManageCurrentFolder || !selectedFolderPath}
-            className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-container disabled:cursor-not-allowed disabled:opacity-45"
+            className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-on-primary-fixed-variant disabled:cursor-not-allowed disabled:opacity-45"
           >
             上传
           </button>
@@ -2129,7 +2099,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
             <div className="flex min-w-0 items-center gap-2">
               <h3 className="truncate text-sm font-semibold text-on-surface">素材目录</h3>
               <span className="rounded-lg bg-surface-container-high px-2 py-1 text-xs font-semibold text-on-surface-variant">
-                {hasActiveFilters ? '筛选' : '已加载'} {fileItems.length}
+                {hasActiveFilters ? '筛选出' : '共'} {fileItems.length} 个文件
               </span>
             </div>
           </div>
@@ -2191,7 +2161,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
                   type="button"
                   disabled={bulkOperating}
                   onClick={handleBulkDelete}
-                  className="rounded-lg bg-error-container/45 px-3 py-1.5 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
+                  className="rounded-md border border-error/20 bg-error/10 px-3 py-1.5 text-xs font-semibold text-error hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {bulkOperating ? '处理中…' : '批量删除'}
                 </button>

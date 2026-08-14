@@ -31,10 +31,9 @@ from app.services.turbine_models import project_turbine_model
 from app.services.technical_gap_fact_table import (
     PROJECT_FACT_TABLE_SCHEMA_VERSION,
     build_project_fact_table,
+    compose_saved_fact_table,
     empty_project_fact_table,
-    normalize_project_fact_field,
     project_fact_material_work_dir,
-    summarize_project_fact_fields,
 )
 from app.services.project_fact_materials import (
     materialize_project_fact_material,
@@ -71,6 +70,7 @@ from app.services.technical_gap_domain import (
 from app.services.technical_fact_curate_job import (
     fact_curate_locked,
     fact_curate_running,
+    fact_curate_stale,
     fact_curate_state,
     schedule_fact_curate_job,
 )
@@ -362,6 +362,21 @@ def _schedule_gap_detection_job(project_id: str) -> None:
     if queue_result.queued or queue_result.locked:
         return
     submit_local_job(run_technical_gap_detection_job, project_id)
+
+
+def _require_no_fact_curate_running(project_id: str, gap_state: dict[str, Any]) -> None:
+    """AI 匹配填充运行中时，一切会改动事实表的入口都返回 409。
+
+    这一轮把保存与重建也搬进了 curate 任务，三步之间不再有空隙；对应地，三个接口
+    必须共用同一把锁，否则用户在等待期间点保存或刷新，正在跑的那一轮又会失去前提。
+    正文填写也拦：它读事实表来填 Word，这时候读到的是重建到一半的表。
+
+    stale 判断不能省：worker 被杀会把状态永久留在 running，没有它就只能改库才能恢复。
+    """
+    if fact_curate_locked(project_id) or (
+        fact_curate_running(gap_state) and not fact_curate_stale(gap_state, project_id)
+    ):
+        raise PeripheralError(409, "AI 匹配填充正在进行中，请等待本轮完成。", "FACT_CURATE_RUNNING")
 
 
 class TechnicalGapService:
@@ -1419,6 +1434,7 @@ class TechnicalGapService:
             gap_state = ensure_technical_gap_state(snapshot)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别，再维护项目事实表。")
+            _require_no_fact_curate_running(project_id, gap_state)
             specs, _ = resolve_fact_specs()
             if not specs:
                 raise ValueError("尚未上传事实表清单，请先到素材库 · 规则页上传后再生成。")
@@ -1453,37 +1469,22 @@ class TechnicalGapService:
             gap_state = ensure_technical_gap_state(snapshot)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别，再维护项目事实表。")
+            _require_no_fact_curate_running(project_id, gap_state)
             payload = data or {}
             current = gap_state.get("projectFactTable")
             if not isinstance(current, dict) or current.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
                 current = await asyncio.to_thread(build_project_fact_table, snapshot, gap_state)
-            specs, specs_ref = resolve_fact_specs()
             incoming_fields = payload.get("fields") if isinstance(payload.get("fields"), list) else current.get("fields") or []
-            confirm = bool(payload.get("confirm") or payload.get("confirmed"))
-            operator = str(payload.get("operator") or "当前用户")
             saved_at = now_iso()
-            # 整表 confirm 只把表级 status 升为 confirmed（正文填写的准入闸门），
-            # 不逐字段盖成"已人工确认"——字段级确认只由 PATCH 单字段接口产生。
-            # 否则一次保存就把 148 个字段全变成 AI 禁区，AI 自己填错的值再也纠正不了。
-            fields = [
-                normalize_project_fact_field(field, index=index, confirm=False, operator=operator, saved_at=saved_at)
-                for index, field in enumerate(incoming_fields, start=1)
-                if isinstance(field, dict)
-            ]
-            table = {
-                "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
-                "projectId": project_id,
-                "status": "confirmed" if confirm else "draft",
-                "builtAt": str(current.get("builtAt") or saved_at),
-                "updatedAt": saved_at,
-                "confirmedAt": saved_at if confirm else str(current.get("confirmedAt") or ""),
-                "confirmedBy": operator if confirm else str(current.get("confirmedBy") or ""),
-                "fields": fields,
-                "summary": summarize_project_fact_fields(fields, spec_total=len(specs)),
-                "factSpecsRef": copy.deepcopy(current.get("factSpecsRef"))
-                if isinstance(current.get("factSpecsRef"), dict)
-                else copy.deepcopy(specs_ref),
-            }
+            table = compose_saved_fact_table(
+                project_id,
+                current,
+                incoming_fields,
+                confirm=bool(payload.get("confirm") or payload.get("confirmed")),
+                operator=str(payload.get("operator") or "当前用户"),
+                saved_at=saved_at,
+            )
+
             def apply(project: dict[str, Any]) -> None:
                 ensure_technical_gap_state(project)["projectFactTable"] = copy.deepcopy(table)
                 project["updatedAt"] = saved_at
@@ -1494,27 +1495,18 @@ class TechnicalGapService:
             _raise_gap_error(exc, "Gap facts not found")
 
     async def curate_facts(self, project_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-        """提交 AI 匹配填充任务：立即返回，执行交给后台 worker，进度经 curate_status 轮询。
+        """提交「刷新并 AI 填充」任务：立即返回，执行交给后台 worker，进度经 curate_status 轮询。
 
-        单轮 curate 要跑几分钟，同步返回会把连接占满整轮且关页面就丢结果；任务化后
-        弹窗关闭、页面刷新都不影响执行，状态持久化在 gap_state["factCurateState"]。
+        保存当前编辑、重建事实表、AI 补抽三步都在任务里跑（data["fields"] 带页面上的
+        编辑）。以前保存与重建是前端另外两次接口调用，中间的空隙里再点一次按钮就会
+        改表、让正在跑的那一轮失去前提——实测一次 16 分钟的运行因此全部作废。
         """
         try:
             project = require_technical_gap_project_for_update(project_id)
             gap_state = ensure_technical_gap_state(project)
             if gap_state["recognitionStatus"] != "completed":
                 raise ValueError("请先完成缺口识别，再维护项目事实表。")
-            table = gap_state.get("projectFactTable")
-            if not isinstance(table, dict) or table.get("schemaVersion") != PROJECT_FACT_TABLE_SCHEMA_VERSION:
-                table = await asyncio.to_thread(build_project_fact_table, project, gap_state)
-
-                def store_table(latest: dict[str, Any]) -> None:
-                    ensure_technical_gap_state(latest)["projectFactTable"] = copy.deepcopy(table)
-                    latest["updatedAt"] = now_iso()
-
-                mutate_technical_gap_project(project_id, store_table)
-            if fact_curate_running(gap_state) or fact_curate_locked(project_id):
-                raise HTTPException(status_code=409, detail="AI 匹配填充正在进行中，请等待本轮完成。")
+            _require_no_fact_curate_running(project_id, gap_state)
             state = await asyncio.to_thread(schedule_fact_curate_job, project_id, data or {})
             return {
                 "factCurateState": state,
@@ -1625,6 +1617,9 @@ class TechnicalGapService:
                 raise ValueError("请先完成缺口识别。")
             if repair_technical_gap_state_fill_task_skills(gap_state):
                 self._persist_fill_task_skill_repair(project_id)
+            # AI 匹配填充跑着时事实表正在被重建和改写，这时候填出来的正文用的是半截数据；
+            # 两者还共用 opencode 的那 8 个槽位，同时跑只会互相饿死
+            _require_no_fact_curate_running(project_id, gap_state)
             self._require_confirmed_project_fact_table(gap_state)
             # 僵尸状态（worker 被重启/杀掉，状态停在 running 但队列锁已释放）不挡新任务，
             # 否则前端永远显示「填写中」，只能改库才能恢复

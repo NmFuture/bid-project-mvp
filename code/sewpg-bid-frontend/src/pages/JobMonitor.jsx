@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { monitoringAPI } from '../api'
+import { readPageCache, writePageCache } from '../utils/pageCache'
 import StatusBadge from '../components/shared/StatusBadge'
 import EmptyState from '../components/shared/EmptyState'
 import PageHeader from '../components/shared/PageHeader'
@@ -22,13 +23,6 @@ const STATUS_META = {
   failed: { variant: 'error', label: '失败' },
   cancelled: { variant: 'pending', label: '已取消' },
   running: { variant: 'running', label: '运行中' },
-}
-
-const METRIC_TONE = {
-  primary: 'bg-primary-fixed text-primary',
-  success: 'bg-secondary-fixed text-secondary',
-  warn: 'bg-tertiary-fixed text-on-tertiary-fixed-variant',
-  info: 'bg-surface-container-high text-on-surface-variant',
 }
 
 const jobTypeLabel = (jobType) => JOB_TYPE_LABELS[jobType] || jobType || '未知类型'
@@ -75,27 +69,13 @@ const buildCards = (agg) => [
 ]
 
 function MetricCard({ metric }) {
-  const tone = METRIC_TONE[metric.tone] || METRIC_TONE.primary
   return (
-    <div className="flex min-h-[76px] min-w-0 items-center gap-3 bg-white px-4 py-3 lg:px-5">
-      <span
-        className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${tone}`}
-        aria-hidden="true"
-      >
-        <span
-          className="material-symbols-outlined text-[20px]"
-          style={{ fontVariationSettings: "'FILL' 1" }}
-        >
-          {metric.icon}
+    <div className="flex min-h-[76px] min-w-0 flex-col justify-center rounded-lg border border-outline-variant bg-white px-4 py-3 shadow-[var(--shadow-panel)] lg:px-5">
+      <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="font-headline text-2xl font-semibold leading-none text-on-surface tabular-nums">
+          {metric.value}
         </span>
-      </span>
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
-        <div className="mt-0.5 flex items-baseline gap-2">
-          <span className="font-headline text-xl font-semibold text-on-surface tabular-nums">
-            {metric.value}
-          </span>
-        </div>
       </div>
     </div>
   )
@@ -227,9 +207,11 @@ function JobRow({ item, expanded, detailState, onToggle }) {
 export default function JobMonitor() {
   const [jobType, setJobType] = useState('')
   const [status, setStatus] = useState('')
-  const [summary, setSummary] = useState(null)
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入监控页直接渲染上次快照，轮询后台静默刷新
+  const [cachedSnapshot] = useState(() => readPageCache('monitor::'))
+  const [summary, setSummary] = useState(cachedSnapshot?.summary || null)
+  const [items, setItems] = useState(cachedSnapshot?.items || [])
+  const [loading, setLoading] = useState(!cachedSnapshot)
   const [error, setError] = useState(null)
   const [expandedId, setExpandedId] = useState(null)
   const [details, setDetails] = useState({})
@@ -246,6 +228,7 @@ export default function JobMonitor() {
       if (!mountedRef.current || requestId !== requestIdRef.current) return
       setSummary(summaryPayload)
       setItems(listPayload?.items || [])
+      writePageCache(`monitor:${jobType}:${status}`, { summary: summaryPayload, items: listPayload?.items || [] })
       setError(null)
     } catch (err) {
       if (!mountedRef.current || requestId !== requestIdRef.current) return
@@ -340,7 +323,7 @@ export default function JobMonitor() {
   ]
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       <PageHeader
         variant="panel"
         title="耗时监控"
@@ -397,7 +380,7 @@ export default function JobMonitor() {
             title={group.title}
             hint={group.agg ? `${group.agg.count} 次任务` : '暂无数据'}
           />
-          <div className="grid gap-px overflow-hidden rounded-lg border border-outline-variant bg-outline-variant sm:grid-cols-2 lg:grid-cols-4 stagger">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 stagger">
             {buildCards(group.agg).map((metric) => (
               <MetricCard key={metric.key} metric={metric} />
             ))}
@@ -405,14 +388,12 @@ export default function JobMonitor() {
         </section>
       ))}
 
-      <section>
-        <SectionHeader title="阶段耗时榜" hint="按平均耗时排序" />
-        {phaseRanking.length === 0 ? (
-          <EmptyState icon="bar_chart" title="暂无阶段耗时数据" className="rounded-lg border border-outline-variant bg-white" />
-        ) : (
+      {phaseRanking.length > 0 ? (
+        <section>
+          <SectionHeader title="阶段耗时榜" hint="按平均耗时排序" />
           <PhaseRanking phases={phaseRanking} />
-        )}
-      </section>
+        </section>
+      ) : null}
 
       <section>
         <SectionHeader title="最近任务" hint={`最近 ${LIST_LIMIT} 条，点击行展开阶段瀑布`} />

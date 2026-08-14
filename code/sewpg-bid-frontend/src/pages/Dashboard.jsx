@@ -1,20 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { dashboardAPI } from '../api'
+import { usePageData } from '../utils/pageCache'
 import { workspaceRoute } from '../utils/workspace'
 import StatusBadge from '../components/shared/StatusBadge'
 import RoleChip from '../components/shared/RoleChip'
 import EmptyState from '../components/shared/EmptyState'
 import PageHeader from '../components/shared/PageHeader'
 import Skeleton, { SkeletonCard } from '../components/shared/Skeleton'
-
-const METRIC_TONE = {
-  primary: 'bg-primary-fixed text-primary',
-  success: 'bg-secondary-fixed text-secondary',
-  warn: 'bg-tertiary-fixed text-on-tertiary-fixed-variant',
-  error: 'bg-error-container text-error',
-  info: 'bg-ai-accent-light text-tertiary',
-}
+import Button from '../components/ui/Button'
 
 const fmtPct = (p) => `${Math.round((p || 0) * 100)}%`
 
@@ -46,28 +40,14 @@ function Greeting({ name, role }) {
 }
 
 function MetricCard({ metric }) {
-  const tone = METRIC_TONE[metric.tone] || METRIC_TONE.primary
   return (
-    <div className="flex min-h-[84px] items-center gap-3 rounded-lg border border-outline-variant/70 bg-white px-4 py-3 shadow-[0_1px_2px_rgba(13,33,55,0.04)] lg:px-5">
-      <span
-        className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${tone}`}
-        aria-hidden="true"
-      >
-        <span
-          className="material-symbols-outlined text-[20px]"
-          style={{ fontVariationSettings: "'FILL' 1" }}
-        >
-          {metric.icon}
+    <div className="flex min-h-[84px] flex-col justify-center rounded-lg border border-outline-variant/70 bg-white px-4 py-3 shadow-[var(--shadow-panel)] lg:px-5">
+      <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="text-2xl font-headline font-semibold leading-none text-on-surface tabular-nums">
+          {metric.value}
         </span>
-      </span>
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-on-surface-variant">{metric.label}</div>
-        <div className="mt-0.5 flex items-baseline gap-2">
-          <span className="text-[26px] font-headline font-semibold leading-none text-on-surface tabular-nums">
-            {metric.value}
-          </span>
-          {metric.trend && <span className="text-xs text-outline">{metric.trend}</span>}
-        </div>
+        {metric.trend && <span className="text-xs text-outline">{metric.trend}</span>}
       </div>
     </div>
   )
@@ -209,28 +189,11 @@ function PanelHeader({ title, hint, action }) {
 
 export default function Dashboard({ currentUser }) {
   const navigate = useNavigate()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    let mounted = true
-    dashboardAPI
-      .get()
-      .then((payload) => {
-        if (!mounted) return
-        setData(payload)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (!mounted) return
-        setError(err?.message || '加载失败')
-        setLoading(false)
-      })
-    return () => {
-      mounted = false
-    }
-  }, [])
+  // 会话缓存：二次进入工作台直接渲染上次数据，后台静默刷新
+  const { data, loading, error } = usePageData(
+    `dashboard:${currentUser?.id || 'guest'}`,
+    () => dashboardAPI.get(),
+  )
 
   const role = data?.role || currentUser?.role
   const userName = currentUser?.name || '用户'
@@ -249,7 +212,7 @@ export default function Dashboard({ currentUser }) {
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="mx-auto w-full max-w-[1600px]">
         <EmptyState
@@ -276,7 +239,7 @@ export default function Dashboard({ currentUser }) {
   const metrics = (data?.metrics || []).filter((metric) => !['aiSaved', 'todo'].includes(metric.key))
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       <Greeting name={userName} role={role} />
 
       {/* 顶部统计 */}
@@ -297,19 +260,30 @@ export default function Dashboard({ currentUser }) {
             title={isTB ? '在跑项目（双流程并列）' : `我负责的${role === 'B' ? '商务标' : '技术标'}项目`}
             hint={isTB ? `${projectsParallel.length} 个项目` : `${projects.length} 个项目`}
             action={
-              <button
-                type="button"
-                onClick={() => navigate(workspaceRoute(role === 'B' ? 'business' : 'tech', '/projects'))}
-                className="min-h-11 rounded-md px-2 text-sm font-medium text-primary hover:bg-primary-fixed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <span>查看全部</span>
-              </button>
+              (isTB ? projectsParallel.length : projects.length) > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => navigate(workspaceRoute(role === 'B' ? 'business' : 'tech', '/projects'))}
+                  className="min-h-11 rounded-md px-2 text-sm font-medium text-primary hover:bg-primary-fixed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <span>查看全部</span>
+                </button>
+              ) : null
             }
           />
           {isTB ? (
             <div className="space-y-3 stagger">
               {projectsParallel.length === 0 ? (
-                <EmptyState icon="folder_off" title="暂无在跑项目" />
+                <EmptyState
+                  icon="folder_off"
+                  title="暂无在跑项目"
+                  description="从解析一份招标文件开始，确认参与后项目会出现在这里。"
+                  action={(
+                    <Button onClick={() => navigate('/parse/technical')}>
+                      去解析招标文件
+                    </Button>
+                  )}
+                />
               ) : (
                 projectsParallel.map((p) => <ParallelProjectCard key={p.id} project={p} />)
               )}
@@ -317,7 +291,17 @@ export default function Dashboard({ currentUser }) {
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,30rem),1fr))] gap-3 stagger">
               {projects.length === 0 ? (
-                <EmptyState icon="folder_off" title="暂无在跑项目" className="col-span-full" />
+                <EmptyState
+                  icon="folder_off"
+                  title="暂无在跑项目"
+                  description="从解析一份招标文件开始，确认参与后项目会出现在这里。"
+                  className="col-span-full"
+                  action={(
+                    <Button onClick={() => navigate(role === 'B' ? '/parse/business' : '/parse/technical')}>
+                      去解析招标文件
+                    </Button>
+                  )}
+                />
               ) : (
                 projects.map((p) => (
                   <ProjectCard key={p.id} project={p} workspaceSlug={role === 'B' ? 'business' : 'tech'} />

@@ -20,7 +20,7 @@ from app.core.config import BASE_DIR, settings
 from app.services import technical_fact_curator as curator
 from app.services.job_queue import EnqueueResult
 from app.services.store import store
-from app.services.technical_fact_curate_job import run_fact_curate_job
+from app.services.technical_fact_curate_job import _now_iso, run_fact_curate_job
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
 
 SCRIPT_PATH = (
@@ -813,10 +813,22 @@ class FactCurateApiTests(unittest.TestCase):
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
 
+        # 真实入队会同时拿到队列锁，两者必须一起 mock：只 mock 入队的话，僵尸判定
+        # （jobId 在但锁没了 = worker 死了）会把刚提交的任务当成死的，锁形同虚设
+        locked = {"value": False}
+
+        def fake_enqueue(job_type, target_project_id, payload):
+            locked["value"] = True
+            return EnqueueResult(queued=True, job_id="JOB-CURATE-1")
+
         with (
             patch(
                 "app.services.technical_fact_curate_job.enqueue_generation_job",
-                return_value=EnqueueResult(queued=True, job_id="JOB-CURATE-1"),
+                side_effect=fake_enqueue,
+            ),
+            patch(
+                "app.services.technical_fact_curate_job.is_generation_locked",
+                side_effect=lambda *args, **kwargs: locked["value"],
             ),
             patch.object(curator, "run_technical_fact_curator_skill") as skill,
         ):
@@ -834,6 +846,77 @@ class FactCurateApiTests(unittest.TestCase):
                 f"/api/technical/projects/{project_id}/gaps/facts/curate", json={}
             )
             self.assertEqual(conflict.status_code, 409, conflict.text)
+
+            # 保存与重建现在归同一把锁管：三步都在任务里跑，中途放任何一步进来都会
+            # 改表、让正在跑的那一轮失去前提（旧实现只锁 curate，实测 16 分钟白跑）
+            save_conflict = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": [], "operator": "测试用户"},
+            )
+            self.assertEqual(save_conflict.status_code, 409, save_conflict.text)
+            build_conflict = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/facts/build"
+            )
+            self.assertEqual(build_conflict.status_code, 409, build_conflict.text)
+            # 正文填写读事实表来填 Word，这时候读到的是重建到一半的表
+            body_fill_conflict = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/body-fill", json={}
+            )
+            self.assertEqual(body_fill_conflict.status_code, 409, body_fill_conflict.text)
+
+    def test_zombie_curate_state_does_not_lock_out_save_and_build(self) -> None:
+        """worker 被杀留下的 running 状态不能永久锁死页面。
+
+        没有这道判断，保存和刷新会跟着一起卡住，只能改库才能恢复——三个接口共用一把锁
+        之后，僵尸状态的代价比只锁 curate 时大得多。
+        """
+        project_id = self._create_project()
+        self.assertEqual(
+            self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build").status_code, 200
+        )
+        project = store._require(project_id)
+        project["gap_state"]["factCurateState"] = {
+            "status": "running",
+            "jobId": "JOB-DEAD",
+            "phase": "AI 分析素材",
+            "message": "",
+            "startedAt": "2026-07-30T00:00:00Z",
+        }
+        store._persist_project(project)
+
+        # jobId 在但队列锁没了 = worker 死了：放行
+        with patch("app.services.technical_fact_curate_job.is_generation_locked", return_value=False):
+            save_response = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": [], "operator": "测试用户"},
+            )
+            self.assertEqual(save_response.status_code, 200, save_response.text)
+
+    def test_local_executor_run_is_not_mistaken_for_zombie(self) -> None:
+        """Redis 不可用时任务走本地执行器，没有队列锁可查——不能因此把它当成僵尸。
+
+        只照抄「锁没了就是僵尸」会让本地路径下每个在跑的任务都被判死，这把锁等于没加。
+        """
+        project_id = self._create_project()
+        self.assertEqual(
+            self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build").status_code, 200
+        )
+        project = store._require(project_id)
+        project["gap_state"]["factCurateState"] = {
+            "status": "running",
+            "jobId": "",  # 本地执行器：从来没进过 Redis 队列
+            "phase": "AI 分析素材",
+            "message": "",
+            "startedAt": _now_iso(),
+        }
+        store._persist_project(project)
+
+        with patch("app.services.technical_fact_curate_job.is_generation_locked", return_value=False):
+            save_response = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": [], "operator": "测试用户"},
+            )
+            self.assertEqual(save_response.status_code, 409, save_response.text)
 
     def test_curate_endpoint_requires_completed_recognition(self) -> None:
         project_id = self._create_project()
@@ -871,39 +954,104 @@ class FactCurateApiTests(unittest.TestCase):
             [(field["key"], field["value"], field["status"]) for field in before["fields"]],
         )
 
-    def test_curate_endpoint_does_not_overwrite_concurrent_manual_edit(self) -> None:
+    def test_curate_keeps_concurrent_manual_edit_and_still_lands_the_rest(self) -> None:
+        """期间被人工改过的字段让位，其余照落——整轮不再作废。
+
+        旧实现是整表快照比对，表被动过一个字节就抛异常整轮不保存，实测让一次 16 分钟的
+        运行全部白跑。现在按字段合并：只有被人工接手的那个字段跳过，并在 dropped 里带原因。
+        """
         project_id = self._create_project()
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
-        target = build_response.json()["fields"][0]
+        fields = build_response.json()["fields"]
+        edited = fields[0]
+        # 对照字段必须是 AI 可写的：平台输入/模板占位/自动生成本来就在只读门禁里，
+        # 拿它做对照会分不清「被人工挡住」和「本来就不许 AI 碰」
+        untouched_by_human = next(
+            field
+            for field in fields
+            if field["key"] != edited["key"] and field.get("sourceKind") not in {"template", "platform", "derived"}
+        )
 
         def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+            # AI 跑的这段时间里，人在页面上改了第一个字段（真实路径会带 manualEdit 标记）
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
             latest_table["fields"][0]["value"] = "人工运行中修改"
-            latest_table["fields"][0]["status"] = "extracted"
+            latest_table["fields"][0]["sourceRefs"] = [
+                {"type": "manualEdit", "title": "人工修改", "field": edited.get("label") or ""}
+            ]
             latest_table["updatedAt"] = "2026-07-30T12:00:00Z"
             store._persist_project(latest)
 
-            stale_result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
-            stale_result["fields"][0]["value"] = "AI 旧快照结果"
-            return stale_result, {"counts": {}, "ignored": []}
+            # AI 基于开跑时的旧快照，两个字段都写了值
+            result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
+            by_key = {field["key"]: field for field in result["fields"]}
+            by_key[edited["key"]]["value"] = "AI 旧快照结果"
+            by_key[untouched_by_human["key"]]["value"] = "AI 正常结果"
+            by_key[untouched_by_human["key"]]["status"] = "confirmed"
+            return result, {
+                "counts": {"filled": 2},
+                "ignored": [],
+                "touchedKeys": [edited["key"], untouched_by_human["key"]],
+            }
 
         with patch(
             "app.services.technical_fact_curator.run_fact_curator_for_project",
             side_effect=fake_run,
         ):
-            with self.assertRaises(ValueError):
-                run_fact_curate_job(project_id, {"operator": "测试用户"})
+            run_fact_curate_job(project_id, {"operator": "测试用户"})
 
         status_payload = self.client.get(
             f"/api/technical/projects/{project_id}/gaps/facts/curate"
         ).json()
-        self.assertEqual(status_payload["factCurateState"]["status"], "failed")
-        self.assertIn("本次结果未覆盖保存", status_payload["factCurateState"]["message"])
+        self.assertEqual(status_payload["factCurateState"]["status"], "succeeded")
+        dropped = status_payload["curateReport"]["dropped"]
+        self.assertEqual([item["fieldKey"] for item in dropped], [edited["key"]])
+        self.assertIn("人工", dropped[0]["reason"])
+        # 未覆盖的条数要出现在给用户看的文案里，不能静默少写
+        self.assertIn("1 条", status_payload["factCurateState"]["message"])
+
         after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
-        by_id = {field["id"]: field for field in after["fields"]}
-        self.assertEqual(by_id[target["id"]]["value"], "人工运行中修改")
+        by_key = {field["key"]: field for field in after["fields"]}
+        self.assertEqual(by_key[edited["key"]]["value"], "人工运行中修改")
+        self.assertEqual(by_key[untouched_by_human["key"]]["value"], "AI 正常结果")
+
+    def test_curate_drops_field_that_vanished_from_latest_table(self) -> None:
+        """期间换过清单、字段已不在最新表里：跳过并带原因，不静默丢也不整轮失败。"""
+        project_id = self._create_project()
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+        gone = build_response.json()["fields"][0]
+
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+            latest = store._require(project_id)
+            latest_table = latest["gap_state"]["projectFactTable"]
+            latest_table["fields"] = [
+                field for field in latest_table["fields"] if field["key"] != gone["key"]
+            ]
+            store._persist_project(latest)
+
+            result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
+            for field in result["fields"]:
+                if field["key"] == gone["key"]:
+                    field["value"] = "AI 给这个已消失字段的值"
+            return result, {"counts": {"filled": 1}, "ignored": [], "touchedKeys": [gone["key"]]}
+
+        with patch(
+            "app.services.technical_fact_curator.run_fact_curator_for_project",
+            side_effect=fake_run,
+        ):
+            run_fact_curate_job(project_id, {"operator": "测试用户"})
+
+        status_payload = self.client.get(
+            f"/api/technical/projects/{project_id}/gaps/facts/curate"
+        ).json()
+        self.assertEqual(status_payload["factCurateState"]["status"], "succeeded")
+        dropped = status_payload["curateReport"]["dropped"]
+        self.assertEqual([item["fieldKey"] for item in dropped], [gone["key"]])
+        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
+        self.assertNotIn(gone["key"], {field["key"] for field in after["fields"]})
 
 
 # ---------------------------------------------------------------- T3 定向增强

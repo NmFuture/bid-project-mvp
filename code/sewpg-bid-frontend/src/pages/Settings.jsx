@@ -381,7 +381,7 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1600px] space-y-4 animate-fade-in">
+    <div className="mx-auto w-full max-w-[1600px] space-y-4">
       <PageHeader
         variant="panel"
         title="系统设置"
@@ -417,7 +417,7 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
                   aria-pressed={activeSection === item.id}
                   className={`flex min-h-11 shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary lg:mb-1 lg:min-h-10 lg:w-full ${
                     activeSection === item.id
-                      ? 'border-outline-variant/70 bg-surface-container-low font-semibold text-on-surface'
+                      ? 'border-primary/25 bg-primary-fixed font-semibold text-primary'
                       : 'border-transparent text-on-surface-variant hover:border-outline-variant/60 hover:bg-surface-container-low hover:text-on-surface'
                   }`}
                 >

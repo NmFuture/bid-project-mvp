@@ -453,6 +453,9 @@ def apply_fact_curator_suggestions(
         "skippedConfirmed": [],
         "ignored": [],
     }
+    # 本轮真正写过的字段的**表内规范 key**（不是 agent 回传的 fieldKey，后者可能是别名或
+    # 大小写变体）。落表时按它逐字段合并进最新的表，见 merge_curator_fields_into_table。
+    touched_keys: set[str] = set()
     for suggestion in suggestions:
         field_key = suggestion["fieldKey"]
         field = _lookup(field_key)
@@ -490,10 +493,12 @@ def apply_fact_curator_suggestions(
                 if note not in notes:
                     field["notes"] = f"{notes}；{note}" if notes else note
                 report["notFound"].append(field_key)
+                touched_keys.add(str(field.get("key") or ""))
             else:
                 report["ignored"].append(field_key)
             continue
 
+        touched_keys.add(str(field.get("key") or ""))
         field["sourceRefs"] = normalize_fact_source_refs([*(field.get("sourceRefs") or []), ref])
         # 跨项目素材证据：notes 追加来源标注，人工确认时可追溯
         origin_note = _cross_origin_note(suggestion, cross_materials)
@@ -534,7 +539,70 @@ def apply_fact_curator_suggestions(
         table["confirmedAt"] = ""
         table["confirmedBy"] = ""
     report["counts"] = {key: len(value) for key, value in report.items() if isinstance(value, list)}
+    # counts 统计完再挂，否则 touchedKeys 会混进前端展示的计数里
+    report["touchedKeys"] = sorted(key for key in touched_keys if key)
     return table, report
+
+
+def merge_curator_fields_into_table(
+    latest_table: dict[str, Any],
+    curated_table: dict[str, Any],
+    touched_keys: list[str],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """把本轮 curator 写过的字段并进**最新**的事实表，返回 (合并后的表, 被丢弃的字段)。
+
+    不做整表快照对比：AI 一轮要跑十几分钟，期间只要表被动过一个字节，整表比对就把
+    整轮结果作废（实测 16 分钟白跑）。这里只搬 touched_keys 点名的字段，其余一律保留
+    最新值；每个字段写入前拿**最新那份**重过一次只读门禁，人工在此期间填写或裁定过的
+    自动让位，不需要靠"禁止任何人动表"来保证安全。
+
+    丢弃项带原因返回，由调用方写进报告——静默少写几个字段比整轮失败更难排查。
+    """
+    merged = copy.deepcopy(latest_table)
+    latest_fields = [field for field in (merged.get("fields") or []) if isinstance(field, dict)]
+    latest_index_by_key: dict[str, int] = {}
+    for index, field in enumerate(latest_fields):
+        key = str(field.get("key") or "").strip()
+        if key and key not in latest_index_by_key:
+            latest_index_by_key[key] = index
+    curated_by_key: dict[str, dict[str, Any]] = {}
+    for field in curated_table.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if key and key not in curated_by_key:
+            curated_by_key[key] = field
+
+    dropped: list[dict[str, str]] = []
+    for raw_key in touched_keys:
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        curated = curated_by_key.get(key)
+        if curated is None:
+            dropped.append({"fieldKey": key, "reason": "本轮结果里找不到该字段"})
+            continue
+        index = latest_index_by_key.get(key)
+        if index is None:
+            dropped.append({"fieldKey": key, "reason": "字段已不在最新事实表中（期间重建过或换了清单）"})
+            continue
+        if _is_curator_readonly_field(latest_fields[index]):
+            dropped.append({"fieldKey": key, "reason": "AI 匹配期间该字段已由人工填写或裁定，保留人工结果"})
+            continue
+        latest_fields[index] = copy.deepcopy(curated)
+
+    merged["fields"] = latest_fields
+    previous_summary = merged.get("summary") if isinstance(merged.get("summary"), dict) else {}
+    merged["summary"] = summarize_project_fact_fields(latest_fields, spec_total=previous_summary.get("specTotal"))
+    merged["updatedAt"] = _now_iso()
+    # 与 apply_fact_curator_suggestions 同一条规则：出现非终态字段就把表降回 draft 待人工
+    if str(merged.get("status") or "") == "confirmed" and not all(
+        str(field.get("status") or "") in _FACT_TERMINAL_STATUSES for field in latest_fields
+    ):
+        merged["status"] = "draft"
+        merged["confirmedAt"] = ""
+        merged["confirmedBy"] = ""
+    return merged, dropped
 
 
 def run_fact_curator_for_project(
