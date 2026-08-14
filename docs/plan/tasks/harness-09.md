@@ -1,7 +1,7 @@
 ---
 id: harness-09
 scope: Harness / Skill 注册机制
-status: ready
+status: done
 depends-on: []
 ---
 

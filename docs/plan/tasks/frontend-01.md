@@ -1,7 +1,7 @@
 ---
 id: frontend-01
 scope: 前端 / 技术标缺口页
-status: ready
+status: done
 depends-on: []
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: harness-07
 scope: Harness / 配置治理
-status: ready
+status: done
 depends-on: []
 ---
 
@@ -18,14 +18,14 @@ depends-on: []
 
 ## path
 
-- `code/sewpg-bid-backend/app/core/config.py`（:244 `OPENCODE_TIMEOUT_SEC` 默认 1800）
+- `code/sewpg-bid-backend/app/core/config.py`（:261 `OPENCODE_TIMEOUT_SEC` 默认 1800）
 - `code/sewpg-bid-backend/app/services/system_settings.py`（:145/:223/:324 timeoutMs 默认 30000）
-- `code/sewpg-bid-backend/app/services/opencode_client.py`（:57-58 与 :1104-1107 的缝合逻辑）
+- `code/sewpg-bid-backend/app/services/agent_engine/opencode_engine.py`（:116-118 与 :1301 的缝合逻辑；原 `opencode_client.py` 已拆分为 `agent_engine` 包）
 
-## 现状（2026-08-12 复核证据）
+## 现状（2026-08-12 复核，2026-08-14 刷新引用）
 
 - 两套超时并存：环境变量 1800s vs 系统设置页 timeoutMs 默认 30s。
-- 实际生效值靠 `:57-58`（`raw_timeout_ms or opencode_timeout_sec*1000`）和 `:1104-1107`（`max(configured_read, idle_timeout + 60.0)`）缝合，语义不直观，调超时的人无法预期结果。
+- 实际生效值靠 `opencode_engine.py:116-118`（`raw_timeout_ms or settings.opencode_timeout_sec*1000`）和 `:1301`（`max(120, min(timeout, 900))` 隐式钳制）缝合，语义不直观，调超时的人无法预期结果。
 
 ## 改造方案
 

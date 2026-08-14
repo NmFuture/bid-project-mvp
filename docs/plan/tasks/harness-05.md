@@ -1,7 +1,7 @@
 ---
 id: harness-05
 scope: Harness / 部署安全
-status: ready
+status: done
 depends-on: []
 ---
 

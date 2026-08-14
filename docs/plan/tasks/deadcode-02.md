@@ -1,7 +1,7 @@
 ---
 id: deadcode-02
 scope: Harness / opencode Skill 库
-status: ready
+status: done
 depends-on: []
 ---
 

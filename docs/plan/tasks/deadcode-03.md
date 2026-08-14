@@ -1,7 +1,7 @@
 ---
 id: deadcode-03
 scope: 前端 / API 封装层
-status: ready
+status: done
 depends-on: []
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: deadcode-01
 scope: 后端 / 基础设施与通用
-status: ready
+status: done
 depends-on: []
 ---
 

@@ -1,7 +1,7 @@
 ---
 id: harness-11
 scope: Harness / Skill 命名体系
-status: ready
+status: done
 depends-on: []
 ---
 

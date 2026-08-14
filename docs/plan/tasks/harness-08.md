@@ -1,7 +1,7 @@
 ---
 id: harness-08
 scope: Harness / 配置治理
-status: ready
+status: done
 depends-on: []
 ---
 
@@ -18,14 +18,14 @@ depends-on: []
 
 ## path
 
-- `code/sewpg-bid-backend/app/core/config.py`（:10 默认模型、:17-18 映射）
-- `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`（:24-36 runtime 改写、:66-69 INTERNAL_LLM 分支、:138-141 legacy 分支）
-- `code/docker-compose.yml`（:307-308 默认值）
+- `code/sewpg-bid-backend/app/core/config.py`（:10 默认模型、:13-26 `normalize_opencode_model_selection`）
+- `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`（:24-36 runtime.json 改写、:64-69 INTERNAL_LLM 分支、:136-144 legacy 分支）
+- `code/docker-compose.yml`（:41/:144/:320 默认值）
 
-## 现状（2026-08-12 复核证据）
+## 现状（2026-08-12 复核，2026-08-14 刷新引用）
 
-- 同一映射散在 4 处：config.py:17-18 + entrypoint 三处（:24-36、:66-69、:138-141），新增/更换模型要同步改多处，漏改即行为分裂。
-- 当前默认模型已是 `deepseek/deepseek-v4-flash`（config.py:10、compose:307-308、entrypoint 两分支默认一致），文档已更正。
+- 同一映射散在 4 处：config.py:13-26 + entrypoint 三处（:24-36、:64-69、:136-144），新增/更换模型要同步改多处，漏改即行为分裂。
+- 当前默认模型已是 `deepseek/deepseek-v4-flash`（config.py:10、compose:41/:144/:320、entrypoint 两分支默认一致），文档已更正。
 
 ## 改造方案
 

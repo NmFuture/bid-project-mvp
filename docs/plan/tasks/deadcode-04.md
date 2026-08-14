@@ -1,7 +1,7 @@
 ---
 id: deadcode-04
 scope: 后端 / API 路由层
-status: pending
+status: done
 depends-on: [deadcode-03]
 ---
 

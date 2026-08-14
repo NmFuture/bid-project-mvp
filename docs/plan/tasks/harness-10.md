@@ -1,7 +1,7 @@
 ---
 id: harness-10
 scope: Harness / 部署运维
-status: ready
+status: done
 depends-on: []
 ---
 
@@ -21,12 +21,12 @@ depends-on: []
 
 - `code/opencode-auth/`（新建 README + `.gitkeep`；**不放真实 auth.json**，真实凭证禁止提交）
 - `code/sewpg-bid-backend/opencode/docker-entrypoint.sh`（:7-9 现有拷贝逻辑，仅作说明对象，非必须改）
-- `code/.env.example`（:67 附近变量说明补全）
+- `code/.env.example`（:68 `OPENCODE_AUTH_HOST_DIR` 裸变量，说明补全）
 
-## 现状（2026-08-12 复核证据）
+## 现状（2026-08-12 复核，2026-08-14 刷新引用）
 
-- `code/opencode-auth/` 已不在仓库（git 不跟踪空目录），但 `docker-compose.yml:337` 仍默认挂载 `./opencode-auth`。
-- auth.json 仅有 entrypoint 的拷贝逻辑和 `.env.example` 一个变量名；来源/格式/生成方式无文档，新环境无法自举。
+- `code/opencode-auth/` 已不在仓库（git 不跟踪空目录），但 `docker-compose.yml:349` 仍默认挂载 `./opencode-auth`（`${OPENCODE_AUTH_HOST_DIR:-./opencode-auth}`）。
+- auth.json 仅有 entrypoint 的拷贝逻辑（:7-9）和 `.env.example:68` 一个裸变量；来源/格式/生成方式无文档，新环境无法自举。
 
 ## 改造方案
 

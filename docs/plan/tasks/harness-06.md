@@ -1,7 +1,7 @@
 ---
 id: harness-06
 scope: Harness / opencode 客户端
-status: pending
+status: done
 depends-on: [harness-01]
 ---
 
