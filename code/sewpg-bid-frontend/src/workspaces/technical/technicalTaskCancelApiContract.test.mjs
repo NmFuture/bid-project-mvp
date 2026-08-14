@@ -10,3 +10,10 @@ test('四类技术标长任务都暴露 cancel 客户端', () => {
   assert.match(source, /fill-generation\/cancel`,\s*\{\s*method:\s*'POST'\s*\}\)/)
   assert.match(source, /score-index\/cancel`,\s*\{\s*method:\s*'POST'\s*\}\)/)
 })
+
+test('技术标重新解析请求支持透传 AbortSignal', () => {
+  assert.match(
+    source,
+    /run:\s*\(projectId,\s*data\s*=\s*\{\}\)\s*=>[\s\S]*?parse-results\/run`[\s\S]*?signal:\s*data\?\.signal/,
+  )
+})

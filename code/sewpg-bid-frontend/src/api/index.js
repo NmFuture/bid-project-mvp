@@ -478,7 +478,11 @@ export const technicalParseAPI = {
   results: (projectId) => request(`/technical/projects/${projectId}/parse-results`),
   progress: (projectId) => request(`/technical/projects/${projectId}/parse-results/progress`),
   cancel: (projectId) => request(`/technical/projects/${projectId}/parse-results/cancel`, { method: 'POST' }),
-  run: (projectId) => request(`/technical/projects/${projectId}/parse-results/run`, { method: 'POST' }),
+  run: (projectId, data = {}) =>
+    request(`/technical/projects/${projectId}/parse-results/run`, {
+      method: 'POST',
+      signal: data?.signal,
+    }),
   uploadAndRun: (projectId, data) =>
     request(`/technical/projects/${projectId}/parse-results/upload-and-run`, {
       method: 'POST',

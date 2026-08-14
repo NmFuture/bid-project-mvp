@@ -158,6 +158,12 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   }, [isDirectoryRunning])
 
   useEffect(() => {
+    if (isDirectoryRunning) return undefined
+    const timer = window.setTimeout(() => setDirectoryStopRequested(false), 0)
+    return () => window.clearTimeout(timer)
+  }, [isDirectoryRunning])
+
+  useEffect(() => {
     if (!isDirectoryRunning) return undefined
     return subscribeDirectoryProgress({
       openStream: (handlers) => technicalDirectoryAPI.stream(id, handlers),
@@ -300,6 +306,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       return
     }
     if (generatingDirectory || isDirectoryRunning) return
+    setDirectoryStopRequested(false)
     setGeneratingDirectory(true)
     try {
       if (templateFiles.length) {

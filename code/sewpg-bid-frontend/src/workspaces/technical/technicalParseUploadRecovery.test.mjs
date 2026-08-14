@@ -139,6 +139,7 @@ test('stops technical timeout recovery polling when abort signal is raised', asy
 
 test('continues polling after technical upload request ends while backend is running', () => {
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'running', percentage: 40 } }), true)
+  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'cancel_requested', percentage: 40 } }), true)
   assert.equal(shouldPollParseProgress({
     uploading: true,
     stopped: true,
