@@ -14,7 +14,7 @@ export default function PageHeader({
     <header
       className={`flex min-w-0 flex-col items-start justify-between gap-4 md:flex-row ${
         panel
-          ? 'min-h-[72px] rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-4 py-4 sm:px-5 md:items-center'
+          ? 'min-h-[72px] rounded-lg border border-outline-variant/45 bg-surface-container-lowest px-4 py-4 shadow-[var(--shadow-panel)] sm:px-5 md:items-center'
           : 'md:items-end'
       } ${className}`.trim()}
     >

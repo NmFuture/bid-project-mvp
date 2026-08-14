@@ -47,7 +47,7 @@ export function PageEmpty({
   return (
     <div className={`min-h-[55vh] flex items-center justify-center ${containerClassName}`.trim()}>
       <div
-        className={`w-full max-w-2xl rounded-lg border border-outline-variant bg-surface-container-lowest px-6 py-12 text-center sm:px-10 ${cardClassName}`.trim()}
+        className={`w-full max-w-2xl rounded-lg border border-outline-variant bg-surface-container-lowest px-6 py-12 text-center shadow-[var(--shadow-panel)] sm:px-10 ${cardClassName}`.trim()}
         style={cardStyle}
       >
         <span aria-hidden="true" className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-surface-container-low">
@@ -72,7 +72,7 @@ export function PageError({
 }) {
   return (
     <div role="alert" className="flex min-h-[55vh] items-center justify-center">
-      <div className="w-full max-w-2xl rounded-lg border border-error/20 bg-surface-container-lowest px-6 py-12 text-center sm:px-10">
+      <div className="w-full max-w-2xl rounded-lg border border-error/20 bg-surface-container-lowest px-6 py-12 text-center shadow-[var(--shadow-panel)] sm:px-10">
         <span aria-hidden="true" className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-error-container">
           <span className="material-symbols-outlined text-[28px] text-error">error</span>
         </span>
@@ -94,7 +94,7 @@ export function PagePermissionDenied({
 }) {
   return (
     <div className="flex min-h-[55vh] items-center justify-center">
-      <div className="w-full max-w-2xl rounded-lg border border-tertiary/30 bg-surface-container-lowest px-6 py-12 text-center sm:px-10">
+      <div className="w-full max-w-2xl rounded-lg border border-tertiary/30 bg-surface-container-lowest px-6 py-12 text-center shadow-[var(--shadow-panel)] sm:px-10">
         <span aria-hidden="true" className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-tertiary-fixed">
           <span className="material-symbols-outlined text-[28px] text-tertiary">lock</span>
         </span>

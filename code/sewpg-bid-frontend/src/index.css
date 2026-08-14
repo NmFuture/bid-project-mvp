@@ -29,7 +29,7 @@
   --color-brand-deep: #05202e;
   --color-brand-muted: #d6ebff;
   --color-brand-avatar: #0e3a5b;
-  --color-workspace: #f6f8fb;
+  --color-workspace: #edf1f6;
   --color-shell-header-border: #154e7a;
   --color-shell-avatar: #20679f;
   --color-shell-avatar-border: #8fb8d8;
@@ -65,7 +65,7 @@
 
   /* Surface / Background */
   --color-surface: #ffffff;
-  --color-surface-bright: #f7f9fb;
+  --color-surface-bright: #eef2f7;
   --color-surface-dim: #d9e0e8;
   --color-surface-container: #e9eff5;
   --color-surface-container-high: #e1e8f0;
@@ -123,8 +123,8 @@
   --text-lg--line-height: 1.5;
   --text-xl: 1.125rem;
   --text-xl--line-height: 1.45;
-  --text-2xl: 1.375rem;
-  --text-2xl--line-height: 1.36;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.33;
   --text-3xl: 1.5rem;
   --text-3xl--line-height: 1.33;
   --text-4xl: 2rem;
@@ -242,6 +242,12 @@ input,
   /* 历史页面将 outline 同时用作辅助正文；文字使用可读的次级前景色。 */
   .text-outline:not(.material-symbols-outlined):not(:disabled) {
     color: var(--color-on-surface-variant);
+  }
+
+  /* 卡片边框收敛：surface-container-high 作边框色时统一到 outline-variant，
+     消灭两种卡片边框深浅并存；表格行分隔线走 base 层 var() 不受影响 */
+  .border-surface-container-high {
+    border-color: var(--color-outline-variant);
   }
 }
 
