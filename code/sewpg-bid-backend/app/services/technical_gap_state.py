@@ -13,6 +13,14 @@ def ensure_technical_gap_state(project: dict[str, Any]) -> dict[str, Any]:
         gap_state = {}
         project["gap_state"] = gap_state
     gap_state.setdefault("recognitionStatus", "idle")
+    gap_state.setdefault("percentage", 0)
+    gap_state.setdefault("taskSummary", "")
+    gap_state.setdefault("startedAt", "")
+    gap_state.setdefault("completedAt", "")
+    gap_state.setdefault("error", "")
+    gap_state.setdefault("cancelRequested", False)
+    gap_state.setdefault("cancelRequestedAt", "")
+    gap_state.setdefault("cancelledAt", "")
     gap_state.setdefault("recognizedAt", "")
     gap_state.setdefault("submittedForReview", False)
     gap_state.setdefault("reviewConfirmed", False)

@@ -42,6 +42,12 @@ from app.services.project_fact_materials import (
 )
 from app.services.peripheral import PeripheralError
 from app.services.bid_runtime_state import count_outline_nodes, now_iso
+from app.services.background_task_cancel import (
+    BackgroundTaskCancelled,
+    cancel_task_state,
+    raise_if_task_cancel_requested,
+    request_task_cancel,
+)
 from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
     TECHNICAL_WORD_FILL_SKILL_NAME,
@@ -79,12 +85,20 @@ from app.services.technical_body_fill_job import (
     plan_item_snapshot,
     schedule_body_fill_job,
 )
-from app.services.job_queue import acquire_ai_fill_lock, release_ai_fill_lock
+from app.services.job_queue import (
+    acquire_ai_fill_lock,
+    enqueue_generation_job,
+    release_ai_fill_lock,
+    request_job_cancel,
+)
+from app.services.job_timing import current_locked_job_id
+from app.services.local_job_executor import submit_local_job
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_repository import (
     get_technical_gap_project_runtime_state,
     mutate_technical_gap_project,
+    persist_technical_gap_project,
     require_technical_gap_project_for_update,
 )
 from app.services.technical_gap_state import (
@@ -99,6 +113,7 @@ from app.services.url_utils import onlyoffice_backend_base_url
 logger = logging.getLogger(__name__)
 
 PROJECT_FACT_CONFIRMED_STATUSES = {"confirmed"}
+GAP_DETECTION_JOB_TYPE = "technical_gap_detection"
 
 _artifact_callback_locks: dict[tuple[str, str], threading.Lock] = {}
 _artifact_callback_locks_guard = threading.Lock()
@@ -295,6 +310,60 @@ def _require_no_body_fill_running(project_id: str, gap_state: dict[str, Any]) ->
         raise PeripheralError(409, "一键填写任务正在执行，暂不可单条填写，请等待完成后再试。", "BODY_FILL_RUNNING")
 
 
+def _write_gap_detection_task_state(project_id: str, **fields: Any) -> dict[str, Any]:
+    def apply(project: dict[str, Any]) -> dict[str, Any]:
+        state = ensure_technical_gap_state(project)
+        state.update(fields)
+        project["updatedAt"] = now_iso()
+        return build_technical_gap_detection_payload(project, state)
+
+    return mutate_technical_gap_project(project_id, apply)
+
+
+def _gap_cancel_state(state: dict[str, Any], summary: str, *, terminal: bool = False) -> dict[str, Any]:
+    task_state = {**state, "status": state.get("recognitionStatus")}
+    updated = cancel_task_state(task_state, summary) if terminal else request_task_cancel(task_state, summary)
+    updated["recognitionStatus"] = updated.pop("status")
+    return updated
+
+
+def run_technical_gap_detection_job(project_id: str) -> None:
+    try:
+        state = ensure_technical_gap_state(require_technical_gap_project_for_update(project_id))
+        raise_if_task_cancel_requested({**state, "status": state.get("recognitionStatus")})
+        _write_gap_detection_task_state(
+            project_id,
+            recognitionStatus="running",
+            percentage=10,
+            taskSummary="正在分析目录并匹配技术标素材。",
+        )
+        technical_gap_service.run_detection(project_id)
+    except BackgroundTaskCancelled:
+        snapshot = require_technical_gap_project_for_update(project_id)
+        current = ensure_technical_gap_state(snapshot)
+        cancelled = _gap_cancel_state(current, "素材匹配已停止。", terminal=True)
+        cancelled["percentage"] = int(current.get("percentage") or 0)
+        snapshot["gap_state"] = cancelled
+        snapshot["updatedAt"] = now_iso()
+        persist_technical_gap_project(snapshot)
+    except Exception as exc:  # noqa: BLE001 - 后台失败必须写回可轮询状态
+        _write_gap_detection_task_state(
+            project_id,
+            recognitionStatus="failed",
+            percentage=100,
+            taskSummary=f"素材匹配失败：{exc}",
+            completedAt=now_iso(),
+            error=str(exc),
+        )
+
+
+def _schedule_gap_detection_job(project_id: str) -> None:
+    queue_result = enqueue_generation_job(GAP_DETECTION_JOB_TYPE, project_id, {})
+    if queue_result.queued or queue_result.locked:
+        return
+    submit_local_job(run_technical_gap_detection_job, project_id)
+
+
 class TechnicalGapService:
     def ensure_project(self, project_id: str) -> dict[str, Any]:
         return get_technical_gap_project_runtime_state(project_id)
@@ -455,12 +524,73 @@ class TechnicalGapService:
         if count_outline_nodes(nodes) < 1:
             raise ValueError("投标目录为空，请先在目录审核页补充至少一个目录节点。")
 
+    def start_detection(self, project_id: str) -> JSONResponse:
+        snapshot = require_technical_gap_project_for_update(project_id)
+        self._require_confirmed_outline(snapshot)
+        current = ensure_technical_gap_state(snapshot)
+        if current.get("recognitionStatus") in {"queued", "running", "cancel_requested"}:
+            return JSONResponse(
+                status_code=202,
+                content=build_technical_gap_detection_payload(snapshot, current),
+            )
+
+        started_at = now_iso()
+
+        def apply(project: dict[str, Any]) -> dict[str, Any]:
+            state = ensure_technical_gap_state(project)
+            state.update(
+                {
+                    "recognitionStatus": "running",
+                    "percentage": 3,
+                    "taskSummary": "素材匹配任务正在启动，请稍候。",
+                    "startedAt": started_at,
+                    "completedAt": "",
+                    "error": "",
+                    "cancelRequested": False,
+                    "cancelRequestedAt": "",
+                    "cancelledAt": "",
+                }
+            )
+            project["updatedAt"] = started_at
+            return build_technical_gap_detection_payload(project, state)
+
+        payload = mutate_technical_gap_project(project_id, apply)
+        _schedule_gap_detection_job(project_id)
+        return JSONResponse(status_code=202, content=payload)
+
+    def cancel_detection(self, project_id: str) -> dict[str, Any]:
+        def apply(project: dict[str, Any]) -> dict[str, Any]:
+            current = ensure_technical_gap_state(project)
+            updated = _gap_cancel_state(
+                current,
+                "已请求停止素材匹配，正在等待安全停止点。",
+            )
+            project["gap_state"] = updated
+            project["updatedAt"] = now_iso()
+            return build_technical_gap_detection_payload(project, updated)
+
+        payload = mutate_technical_gap_project(project_id, apply)
+        request_job_cancel(current_locked_job_id(GAP_DETECTION_JOB_TYPE, project_id))
+        return payload
+
     def run_detection(self, project_id: str) -> dict[str, Any]:
         try:
             # planner 是重活，先在快照上算完计划，再把结果原子写回最新状态
             snapshot = require_technical_gap_project_for_update(project_id)
             self._require_confirmed_outline(snapshot)
+            state = ensure_technical_gap_state(snapshot)
+            if state.get("recognitionStatus") in {"running", "cancel_requested"}:
+                raise_if_task_cancel_requested(
+                    {**state, "status": state.get("recognitionStatus")}
+                )
             plan = build_technical_gap_plan_for_project(snapshot)
+            latest = ensure_technical_gap_state(
+                require_technical_gap_project_for_update(project_id)
+            )
+            if latest.get("recognitionStatus") in {"running", "cancel_requested"}:
+                raise_if_task_cancel_requested(
+                    {**latest, "status": latest.get("recognitionStatus")}
+                )
             items = legacy_technical_gap_items_from_plan(plan)
             recognized_at = now_iso()
             plan["summary"] = summarize_technical_gap_plan(plan)
@@ -471,6 +601,13 @@ class TechnicalGapService:
                 gap_state.update(
                     {
                         "recognitionStatus": "completed",
+                        "percentage": 100,
+                        "taskSummary": "素材匹配完成。",
+                        "completedAt": recognized_at,
+                        "error": "",
+                        "cancelRequested": False,
+                        "cancelRequestedAt": "",
+                        "cancelledAt": "",
                         "recognizedAt": recognized_at,
                         "submittedForReview": False,
                         "reviewConfirmed": False,

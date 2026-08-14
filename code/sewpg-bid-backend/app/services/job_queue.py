@@ -44,6 +44,7 @@ KNOWN_JOB_TYPES = {
     "material_wiki_generation",
     "s1_parse",
     "score_index_xref",
+    "technical_gap_detection",
     "technical_body_fill",
     *INTERNAL_JOB_TYPES,
 }

@@ -333,8 +333,13 @@ async def get_technical_gap_detection(project_id: str, request: Request) -> dict
 
 
 @router.post("/api/technical/projects/{project_id}/gaps-detection/run")
-def run_technical_gap_detection(project_id: str) -> dict[str, Any]:
-    return technical_gap_service.run_detection(project_id)
+def run_technical_gap_detection(project_id: str) -> JSONResponse:
+    return technical_gap_service.start_detection(project_id)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps-detection/cancel")
+def cancel_technical_gap_detection(project_id: str) -> dict[str, Any]:
+    return technical_gap_service.cancel_detection(project_id)
 
 
 @router.get("/api/technical/projects/{project_id}/gaps/plan-export")

@@ -242,6 +242,20 @@ def _run_job(job: dict[str, Any]) -> bool:
                 if isinstance(project_state.get("score_index_state"), dict)
                 else {}
             )
+        elif job_type == "technical_gap_detection":
+            from app.services.technical_gap_service import run_technical_gap_detection_job
+
+            run_technical_gap_detection_job(project_id)
+            project_state = _runtime_state(project_id)
+            gap_state = (
+                project_state.get("gap_state")
+                if isinstance(project_state.get("gap_state"), dict)
+                else {}
+            )
+            final_state = {
+                "status": str(gap_state.get("recognitionStatus") or ""),
+                "summary": str(gap_state.get("taskSummary") or ""),
+            }
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
             from app.services.material_wiki_auto import on_material_cleaning_job_finished
