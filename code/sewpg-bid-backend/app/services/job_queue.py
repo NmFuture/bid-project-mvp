@@ -92,7 +92,7 @@ _RECOVER_PROCESSING_JOB_SCRIPT = (
     "if attempts > tonumber(ARGV[4]) then "
     "redis.call('hset', job_key, 'status', 'failed', 'updatedAt', ARGV[2], 'message', ARGV[5]) "
     "redis.call('expire', job_key, ARGV[3]) "
-    "return {'abandoned', job_id} end "
+    "return {'abandoned', payload} end "
     "redis.call('lpush', KEYS[2], payload) "
     "redis.call('hset', job_key, 'status', 'queued', 'updatedAt', ARGV[2]) "
     "redis.call('expire', job_key, ARGV[3]) "
@@ -801,11 +801,50 @@ def _parse_iso(value: str) -> datetime | None:
         return None
 
 
-def recover_processing_jobs(queue_key: str) -> int:
+def _decode_job_payload(payload: str) -> dict[str, Any]:
+    try:
+        job = json.loads(payload)
+    except ValueError:
+        return {}
+    return job if isinstance(job, dict) else {}
+
+
+def _release_abandoned_job(
+    job: dict[str, Any],
+    on_abandon: Callable[[dict[str, Any]], None] | None,
+    message: str,
+) -> None:
+    """判死的任务当场释放生成锁并交给调用方收口业务状态。
+
+    这里的失败不能再往上抛：恢复流程本身必须走完，否则剩余残留任务捞不回来。
+    """
+    job_type = str(job.get("type") or "")
+    project_id = str(job.get("projectId") or "")
+    if job_type in KNOWN_JOB_TYPES and project_id:
+        try:
+            force_release_generation_lock(job_type, project_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to release generation lock for abandoned job: %s", exc)
+    if on_abandon is None or not job:
+        return
+    try:
+        on_abandon({**job, "__abandonMessage": message})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to finalize business state for abandoned job: %s", exc)
+
+
+def recover_processing_jobs(
+    queue_key: str,
+    on_abandon: Callable[[dict[str, Any]], None] | None = None,
+) -> int:
     """把 BLMOVE 留在 processing 列表中的任务原子放回原队列。
 
     反复异常中断的任务不再放回：超过 redis_job_max_recover_attempts 次就判为失败。
     这条上限是"worker 崩溃→重启→原样重跑"死循环的唯一出口。
+
+    判死时必须当场收口，否则出口只走了一半：Redis 里的任务是失败了，但项目仍占着
+    生成锁、页面仍显示运行中，要等一小时的过期兜底才恢复。这里同步释放生成锁，
+    并把任务交给 on_abandon 让调用方收口对应的业务状态。
     """
 
     client = get_redis_client()
@@ -840,12 +879,14 @@ def recover_processing_jobs(queue_key: str) -> int:
         state = str(outcome[0]) if isinstance(outcome, (list, tuple)) and outcome else ""
         if state == "abandoned":
             abandoned += 1
+            job = _decode_job_payload(str(outcome[1]))
             logger.error(
                 "Job %s exceeded %s recovery attempts and was marked failed; not requeued to %s.",
-                str(outcome[1]),
+                str(job.get("id") or "?"),
                 max_attempts,
                 queue_key,
             )
+            _release_abandoned_job(job, on_abandon, abandon_message)
             continue
         recovered += 1
     if recovered:

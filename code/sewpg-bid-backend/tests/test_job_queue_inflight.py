@@ -70,16 +70,42 @@ def test_recover_processing_job_moves_payload_back_atomically() -> None:
     assert first_call.args[8] == max(1, settings.redis_job_max_recover_attempts)
 
 
-def test_recover_processing_job_abandoned_is_not_counted_as_recovered() -> None:
-    """反复崩溃的任务由脚本判死后，恢复计数不能把它算成"又放回队列了"。"""
+def test_recover_processing_job_abandoned_releases_lock_and_finalizes_business_state() -> None:
+    """判死必须当场收口：光标 Redis 任务失败，项目还占着生成锁、页面仍显示运行中。"""
+    poison = json.dumps({"id": "job-poison", "type": "fill_generation", "projectId": "project-1"})
     client = MagicMock()
-    client.eval.side_effect = [["abandoned", "job-poison"], None]
+    client.eval.side_effect = [["abandoned", poison], None]
+    finalized: list[dict] = []
 
-    with patch.object(job_queue, "get_redis_client", return_value=client):
-        recovered = job_queue.recover_processing_jobs(job_queue.QUEUE_KEY)
+    with patch.object(job_queue, "get_redis_client", return_value=client), \
+        patch.object(job_queue, "force_release_generation_lock") as release_lock:
+        recovered = job_queue.recover_processing_jobs(
+            job_queue.QUEUE_KEY,
+            on_abandon=finalized.append,
+        )
 
     assert recovered == 0
-    assert client.eval.call_count == 2
+    release_lock.assert_called_once_with("fill_generation", "project-1")
+    assert [item["id"] for item in finalized] == ["job-poison"]
+    assert "不再自动重试" in finalized[0]["__abandonMessage"]
+
+
+def test_recover_processing_job_survives_a_failing_abandon_handler() -> None:
+    """收口失败不能中断恢复流程，否则剩下的残留任务捞不回来。"""
+    poison = json.dumps({"id": "job-poison", "type": "fill_generation", "projectId": "project-1"})
+    other = json.dumps({"id": "job-ok", "type": "fill_generation", "projectId": "project-2"})
+    client = MagicMock()
+    client.eval.side_effect = [["abandoned", poison], ["requeued", other], None]
+
+    def boom(_job: dict) -> None:
+        raise RuntimeError("状态收口失败")
+
+    with patch.object(job_queue, "get_redis_client", return_value=client), \
+        patch.object(job_queue, "force_release_generation_lock"):
+        recovered = job_queue.recover_processing_jobs(job_queue.QUEUE_KEY, on_abandon=boom)
+
+    assert recovered == 1
+    assert client.eval.call_count == 3
 
 
 def test_recover_inflight_job_marked_failed_after_attempt_cap() -> None:

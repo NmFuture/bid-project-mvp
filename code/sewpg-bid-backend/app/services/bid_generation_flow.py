@@ -409,7 +409,8 @@ def _handle_fill_progress(
         media_mb = int(meta.get("mediaBytes") or 0) / 1024 / 1024
         _update_fill_generation(
             project_id,
-            percentage=95,
+            # 归位是全链路最后一步，必须排在评分索引的 98% 之后，否则进度条会往回跳。
+            percentage=99,
             summary=f"正在把 {media_count} 张图片按原件字节写入成稿（约 {media_mb:.0f} MB）。",
             tasks=_fill_tasks("done", "done", "running", bid_type),
             event_message=(
