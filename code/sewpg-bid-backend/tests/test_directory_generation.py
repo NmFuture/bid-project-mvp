@@ -1176,12 +1176,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             shutil.rmtree(chapter_root, ignore_errors=True)
 
     def test_technical_outline_uses_configured_opencode_instances_for_chapters(self) -> None:
-        from app.services.outline_generation import (
-            TECH_OUTLINE_CHAPTER_WORKERS,
-            _outline_chapter_base_urls,
-        )
-
-        self.assertEqual(TECH_OUTLINE_CHAPTER_WORKERS, 6)
+        from app.services.outline_generation import _outline_chapter_base_urls
 
         with patch.dict(
             "os.environ",

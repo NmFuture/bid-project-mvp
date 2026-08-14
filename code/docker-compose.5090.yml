@@ -23,3 +23,17 @@ services:
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       NVIDIA_VISIBLE_DEVICES: "0"
       CUDA_VISIBLE_DEVICES: "0"
+
+  # OpencodeClient 的并发闸是进程内信号量，fastapi / worker / material-worker
+  # 各持有一份。开发测试阶段保留 .env 覆盖能力，不写死取值。
+  fastapi:
+    environment:
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-8}
+
+  worker:
+    environment:
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-8}
+
+  material-worker:
+    environment:
+      OPENCODE_MAX_CONCURRENCY: ${OPENCODE_MAX_CONCURRENCY:-8}

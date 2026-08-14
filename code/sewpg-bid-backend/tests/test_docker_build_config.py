@@ -440,11 +440,27 @@ def test_compose_overrides_include_docling_worker_and_bind_ocr_to_gpu_zero() -> 
 def test_5090_overlay_binds_docling_and_ocr_only_to_gpu_zero() -> None:
     overlay = yaml.safe_load((CODE_ROOT / "docker-compose.5090.yml").read_text(encoding="utf-8"))
 
-    assert set(overlay["services"]) == {"docling-worker", "ocr"}
+    assert set(overlay["services"]) == {
+        "docling-worker",
+        "ocr",
+        "fastapi",
+        "worker",
+        "material-worker",
+    }
     for service_name in ("docling-worker", "ocr"):
         service = overlay["services"][service_name]
         assert service["environment"]["NVIDIA_VISIBLE_DEVICES"] == "0"
         assert service["environment"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+    # 并发覆盖项只调 OpencodeClient 的进程内信号量，不得引入任何 GPU 绑定。
+    for service_name in ("fastapi", "worker", "material-worker"):
+        service = overlay["services"][service_name]
+        assert "deploy" not in service
+        assert "NVIDIA_VISIBLE_DEVICES" not in service["environment"]
+        assert (
+            service["environment"]["OPENCODE_MAX_CONCURRENCY"]
+            == "${OPENCODE_MAX_CONCURRENCY:-8}"
+        )
 
     docling_worker = overlay["services"]["docling-worker"]
     devices = docling_worker["deploy"]["resources"]["reservations"]["devices"]
