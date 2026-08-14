@@ -56,7 +56,8 @@ brief 只是线索：**取值结论必须回到原文确认上下文**（该数�
 
 用法：处理某字段时先看它的 `materialClass`，在 materials 里挑同类素材（`materialClass` 相同）优先读；
 `tender` 类字段只查 tenderSources。素材的 `crossProject: true` 表示来自其他项目（`homeProject` 为来源项目名），
-引用前必须核对正文中项目名/场址/机型与本项目一致，evidence 保留素材 id；拿不准就 `action: "confirm"` 写清疑点。
+引用前必须核对正文中项目名/场址/机型与本项目一致，evidence 保留素材 id；拿不准时仍按所属桶给 `fill`/`fix`，
+把 `confidence` 压到 0.4 以下并在 evidence 写清疑点（分档见第五节），不要另造 action——后端只认 `fill`/`fix`。
 
 ## 五、置信度指引
 

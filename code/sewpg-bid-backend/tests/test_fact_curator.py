@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,11 @@ from app.services.technical_fact_field_specs import fillable_specs, load_specs
 SCRIPT_PATH = (
     BASE_DIR / "opencode" / "skills" / "bid-tech-fact-curator" / "scripts" / "run_from_manifest.py"
 )
+SKILL_DIR = BASE_DIR / "opencode" / "skills" / "bid-tech-fact-curator"
+
+# Skill 文档里 `action: "值"` / `"action": "值"` 形式声明的 action，即它教 agent 回传什么。
+# 只认冒号赋值形式：`{type, action, evidence}` 这类结构说明里的 action 不带值，不该被算进来。
+_DOC_ACTION_RE = re.compile(r"action[\"'`]?\s*[:：]\s*[\"'`]?([a-z][a-z\s|-]*)")
 
 
 def _test_fact_specs() -> dict:
@@ -148,6 +154,24 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     }
     assert manifest["briefFile"].endswith("fact_curate_brief.json")
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
+
+
+def test_skill_docs_only_teach_legal_actions() -> None:
+    """SKILL 文档教的 action 必须都在 CURATE_ACTIONS 里。
+
+    文档是 prompt 不是编译期契约：教 agent 回传一个后端不认的 action，建议会被判非法、
+    连 evidence 一起丢弃，而且静默无告警。曾经出过这个问题——铁律 7 教「拿不准就给
+    `action: "confirm"`」，但 confirm 从来不是合法值，最需要人工裁决的跨项目素材建议
+    因此全被丢掉。这里把文档与代码钉在一起，再犯就直接红。
+    """
+    taught: set[str] = set()
+    for doc in (SKILL_DIR / "SKILL.md", SKILL_DIR / "references" / "rules.md"):
+        for raw in _DOC_ACTION_RE.findall(doc.read_text(encoding="utf-8")):
+            taught.update(part.strip() for part in raw.split("|") if part.strip())
+
+    assert taught, "两份文档都没声明 action，正则或文档结构变了，这个守卫已失效"
+    illegal = taught - curator.CURATE_ACTIONS
+    assert not illegal, f"文档教了非法 action {sorted(illegal)}；合法值只有 {sorted(curator.CURATE_ACTIONS)}"
 
 
 def test_manifest_uses_isolated_run_directory(workspace_dirs, monkeypatch) -> None:

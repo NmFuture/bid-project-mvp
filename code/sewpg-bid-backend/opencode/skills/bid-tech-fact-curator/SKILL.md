@@ -25,7 +25,7 @@ allowed-tools: [Bash, Glob, Grep]
 4. **宁缺毋滥。** 没把握就降低 `confidence`，由人工在界面裁决；你的产出全部被后端置为 pending_confirmation。
 5. **只写 `outputFile`。** 不修改 manifest、brief、招标文件和素材等任何输入文件。
 6. **定向取数。** 每个字段优先在其 `materialClass` 对应类别的素材中找值（类别对照表见 `references/rules.md`）；`referenceFile` 为「招标文件」的字段只从 tenderSources 取数，不要去素材里找。
-7. **跨项目素材先核对再用。** `crossProject: true` 的素材来自其他项目，必须核对素材正文中的项目名/场址/机型与本项目（manifest 的 `projectName` / `projectTurbineModel`）一致才可给值；evidence 中必须保留素材 id（RAW-xxx）；拿不准就给 `action: "confirm"` 并在 evidence 写明疑点，交人工裁决。
+7. **跨项目素材先核对再用。** `crossProject: true` 的素材来自其他项目，必须核对素材正文中的项目名/场址/机型与本项目（manifest 的 `projectName` / `projectTurbineModel`）一致才可给值；evidence 中必须保留素材 id（RAW-xxx）；拿不准时不要另造 action——仍按所属桶给 `fill`/`fix`，把 `confidence` 压到 0.4 以下并在 evidence 写明存疑点，交人工在页面裁决。后端只认 `fill`/`fix`，其他 action 一律判非法，建议连同证据一起丢弃。
 
 ## 两件事
 
