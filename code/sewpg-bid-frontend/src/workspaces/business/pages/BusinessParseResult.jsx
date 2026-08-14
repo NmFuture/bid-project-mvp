@@ -383,7 +383,7 @@ export default function BusinessParseResult({ showToast }) {
         <DataCard className="!p-0 overflow-hidden">
           <div className="business-section-head flex items-center px-4 py-4 sm:px-6 sm:py-5">
             <div className="flex items-center">
-              <h2 className="text-xl font-headline font-extrabold text-primary sm:text-2xl">生成投标文件目录</h2>
+              <h2 className="text-xl font-headline font-semibold text-primary sm:text-2xl">生成投标文件目录</h2>
             </div>
           </div>
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.82fr)]">
@@ -424,7 +424,6 @@ export default function BusinessParseResult({ showToast }) {
             <Button
               onClick={() => document.getElementById('s1-template-upload')?.click()}
               className="min-w-[180px] bg-white text-on-surface shadow-sm hover:bg-surface-container-low"
-              icon="upload_file"
               size="lg"
               variant="quiet"
             >
@@ -487,7 +486,7 @@ export default function BusinessParseResult({ showToast }) {
         <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
+              <h3 className="text-base font-headline font-semibold text-on-surface">目录生成</h3>
                 <span
                   className={[
                     'inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold',

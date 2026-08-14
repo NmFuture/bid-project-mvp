@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import Button from '../ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog'
 
 const flattenObject = (input, prefix = '', output = {}) => {
@@ -82,7 +83,7 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
     <Dialog open onClose={onClose} size="xl" className="max-w-5xl">
         <DialogHeader onClose={onClose}>
           <div>
-            <h2 className="text-xl font-headline font-bold text-on-surface">日志详情</h2>
+            <h2 className="text-xl font-headline font-semibold text-on-surface">日志详情</h2>
             <p className="text-xs text-outline mt-1">日志 ID：{auditId}</p>
           </div>
         </DialogHeader>
@@ -168,9 +169,9 @@ export default function AuditDetailModal({ auditId, onClose, loadDetail }) {
         </DialogBody>
 
         <DialogFooter>
-          <button type="button" onClick={onClose} className="ui-control h-9 rounded-md px-5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high">
+          <Button variant="ghost" onClick={onClose}>
             关闭
-          </button>
+          </Button>
         </DialogFooter>
     </Dialog>
   )

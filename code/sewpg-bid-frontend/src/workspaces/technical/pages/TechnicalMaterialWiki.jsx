@@ -431,7 +431,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         <div key={node.id}>
           <div
             style={{ paddingLeft: `${12 + level * 18}px` }}
-            className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
+            className={`group flex items-center gap-1.5 pr-2 py-2 rounded-lg text-sm leading-[1.6] cursor-pointer transition-colors border ${
               selected
                 ? 'border-outline-variant bg-surface-container-low text-on-surface'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
@@ -479,7 +479,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             {!folder && previewStatus && (
               <span
                 title={previewStatus.label}
-                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] leading-none ${previewStatus.className}`}
+                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded border px-1.5 text-xs leading-none ${previewStatus.className}`}
               >
                 <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
                   {previewStatus.icon}
@@ -523,7 +523,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             <button
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-[13px] leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-sm leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
             >
               {refreshingWiki
                 ? `刷新并重试中${WIKI_JOB_PHASE_LABELS[wikiJobPhase] ? `（${WIKI_JOB_PHASE_LABELS[wikiJobPhase]}）` : ''}...`
@@ -532,7 +532,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
             <button
               onClick={handleRebuildWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-[13px] leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-sm leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
               {rebuildingWiki
                 ? `重建中${WIKI_JOB_PHASE_LABELS[wikiJobPhase] ? `（${WIKI_JOB_PHASE_LABELS[wikiJobPhase]}）` : ''}...`
@@ -574,7 +574,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
           <div className="shrink-0 px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <h3 className="text-[14px] leading-[1.6] font-semibold text-on-surface">目录树</h3>
+                <h3 className="text-sm leading-[1.6] font-semibold text-on-surface">目录树</h3>
               </div>
             </div>
           </div>
@@ -612,9 +612,6 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
                     onClick={handleOpenFulltext}
                     className="ml-auto inline-flex h-7 items-center gap-1 rounded border border-primary/30 bg-primary/5 px-2 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
                   >
-                    <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
-                      article
-                    </span>
                     查看全文
                   </button>
                 )}
@@ -651,7 +648,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         >
           <div className="flex shrink-0 items-start justify-between gap-3 border-b border-surface-container-high px-5 py-4">
             <div className="min-w-0">
-              <h3 className="truncate text-[15px] leading-[1.6] font-semibold text-on-surface">
+              <h3 className="truncate text-sm leading-[1.6] font-semibold text-on-surface">
                 {fulltextState.data?.name || '提取全文'}
               </h3>
               {fulltextState.data && (
@@ -684,7 +681,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
                 {fulltextState.error}
               </div>
             ) : (
-              <pre className="whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.8] text-on-surface">
+              <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-[1.8] text-on-surface">
                 {formatFulltextForDisplay(fulltextState.data?.text)}
               </pre>
             )}

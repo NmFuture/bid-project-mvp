@@ -27,7 +27,7 @@ test('重新生成索引按钮与重新生成正文同款次要样式，且在�
   assert.match(editorSource, /\{scoreIndexStarting \|\| scoreIndexRunning \? '重新生成中\.\.\.' : '重新生成索引'\}/)
   assert.match(
     editorSource,
-    /onClick=\{handleRegenerateScoreIndex\}\s*\n\s*disabled=\{scoreIndexStarting \|\| scoreIndexRunning \|\| generationRunning\}\s*\n\s*icon="refresh"\s*\n\s*size="sm"\s*\n\s*variant="secondary"/,
+    /onClick=\{handleRegenerateScoreIndex\}\s*\n\s*disabled=\{scoreIndexStarting \|\| scoreIndexRunning \|\| generationRunning\}\s*\n\s*size="sm"\s*\n\s*variant="secondary"/,
   )
 })
 

@@ -396,7 +396,6 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
             type="button"
             onClick={() => loadAll({ silent: true })}
             className="w-full sm:w-24"
-            icon="refresh"
             size="md"
             variant="secondary"
           >
@@ -422,7 +421,6 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
                       : 'border-transparent text-on-surface-variant hover:border-outline-variant/60 hover:bg-surface-container-low hover:text-on-surface'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-lg" aria-hidden="true">{item.icon}</span>
                   {item.label}
                 </button>
               ))}
@@ -706,7 +704,6 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
                     onClick={() => defaultTemplateFileInputRef.current?.click()}
                     disabled={defaultTemplateUploading}
                     className="w-full sm:w-40"
-                    icon="upload_file"
                     size="md"
                     variant="primary"
                   >

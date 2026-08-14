@@ -110,7 +110,7 @@ export default function TechnicalAppendixRulesEditModal({ customerName, onClose,
   return (
     <Dialog open onClose={saving ? undefined : onClose} size="full">
       <DialogHeader onClose={saving ? undefined : onClose}>
-        <h3 className="text-lg font-headline font-bold text-on-surface">编辑附表填写规则（{customerName}）</h3>
+        <h3 className="text-lg font-headline font-semibold text-on-surface">编辑附表填写规则（{customerName}）</h3>
         <p className="mt-1 text-xs text-outline">
           每个客户一份，该客户名下项目缺口识别时自动套用。来源多个值用「、」分隔；保存后整表覆盖该客户规则。
         </p>
@@ -119,7 +119,7 @@ export default function TechnicalAppendixRulesEditModal({ customerName, onClose,
         {loadError ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
             <p className="text-sm text-error">{loadError}</p>
-            <Button type="button" size="sm" variant="quiet" icon="refresh" onClick={loadRows}>
+            <Button type="button" size="sm" variant="quiet" onClick={loadRows}>
               重试
             </Button>
           </div>
@@ -190,7 +190,7 @@ export default function TechnicalAppendixRulesEditModal({ customerName, onClose,
       </div>
       <DialogFooter>
         <div className="mr-auto flex items-center gap-3">
-          <Button type="button" size="sm" variant="quiet" icon="add" onClick={addRow} disabled={rows === null || saving}>
+          <Button type="button" size="sm" variant="quiet" onClick={addRow} disabled={rows === null || saving}>
             新增行
           </Button>
           {rows ? <span className="text-xs text-outline">共 {rows.length} 行</span> : null}
@@ -198,7 +198,7 @@ export default function TechnicalAppendixRulesEditModal({ customerName, onClose,
         <Button type="button" size="sm" variant="quiet" onClick={onClose} disabled={saving}>
           取消
         </Button>
-        <Button type="button" size="sm" variant="primary" icon="save" onClick={handleSave} disabled={rows === null || saving}>
+        <Button type="button" size="sm" variant="primary" onClick={handleSave} disabled={rows === null || saving}>
           {saving ? '保存中...' : '保存'}
         </Button>
       </DialogFooter>
