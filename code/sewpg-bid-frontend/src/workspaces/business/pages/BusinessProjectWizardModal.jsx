@@ -152,7 +152,6 @@ export default function BusinessProjectWizardModal({
       items.push('普通客户')
     }
     if (materialProjectMode === 'library' && !selectedMaterialProjectId) items.push('重点项目')
-    if (!form.manager.trim()) items.push('负责人')
     if (!form.startDate) items.push('起始日期')
     if (!form.endDate) items.push('截止日期')
     return items
@@ -271,7 +270,7 @@ export default function BusinessProjectWizardModal({
                 />
               </div>
               <div>
-                <label htmlFor="business-project-manager" className="block text-sm font-semibold text-on-surface mb-2">负责人 *</label>
+                <label htmlFor="business-project-manager" className="block text-sm font-semibold text-on-surface mb-2">负责人</label>
                 <input
                   id="business-project-manager"
                   name="projectManager"
