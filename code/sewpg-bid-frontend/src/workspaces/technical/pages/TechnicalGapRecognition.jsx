@@ -717,12 +717,18 @@ const FactMaintenanceModal = ({
               <Button
                 type="button"
                 onClick={onCurate}
-                disabled={busy || !fields.length}
-                title="先按最新素材范围刷新事实表，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）"
+                disabled={busy || (!fields.length && !specsImported)}
+                title={
+                  fields.length
+                    ? '先按最新素材范围刷新事实表，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）'
+                    : '按事实表清单生成字段，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）'
+                }
                 size="md"
                 variant="success"
               >
-                {curating ? (curatePhase || '刷新填充中...') : '刷新并 AI 填充'}
+                {curating
+                  ? (curatePhase || '刷新填充中...')
+                  : (fields.length ? '刷新并 AI 填充' : '生成事实表并 AI 填充')}
               </Button>
               <Button type="button" onClick={onAddField} disabled={busy} icon="add" size="md" variant="secondary">
                 新增字段
@@ -1006,7 +1012,7 @@ const FactMaintenanceModal = ({
                 {specsImported ? (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      事实表「{specsFileName || '已上传'}」尚未生成字段，请到素材库 · 规则页重新上传后重试。
+                      事实表清单「{specsFileName || '已上传'}」已就位，点右上角「生成事实表并 AI 填充」按清单生成字段；换清单请到素材库 · 规则页重新上传。
                     </p>
                     <button
                       type="button"
@@ -2650,25 +2656,13 @@ export default function TechnicalGapRecognition({ showToast }) {
   const handleSaveMaterialPaths = async (paths) => {
     if (busyAction) return false
     setBusyAction('facts-material-sources')
-    let pathsSaved = false
     try {
       const payload = await technicalGapsAPI.saveMaterialSources(id, { paths })
       setFactMaterialPaths(Array.isArray(payload?.paths) ? payload.paths : [])
-      pathsSaved = true
-      const table = await technicalGapsAPI.buildFacts(id)
-      setFactTable(table)
-      setFactFields(asObjectArray(table?.fields))
-      setFactCurateReport(null)
-      setData((current) => (current ? { ...current, projectFactTable: table } : current))
-      showToast?.('参考范围已保存，事实表已自动更新')
+      showToast?.('参考范围已保存，点「刷新并 AI 填充」按新范围重建事实表')
       return true
     } catch (e) {
-      showToast?.(
-        pathsSaved
-          ? `参考范围已保存，但事实表自动更新失败：${e?.message || '请重试保存范围'}`
-          : (e?.message || '参考范围保存失败'),
-        'error',
-      )
+      showToast?.(e?.message || '参考范围保存失败', 'error')
       return false
     } finally {
       setBusyAction('')
@@ -2689,15 +2683,18 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     setBusyAction('facts-curate')
     try {
-      const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
-      const savedTable = await technicalGapsAPI.saveFacts(id, {
-        fields: fieldsToSave,
-        confirm: false,
-        operator: '当前用户',
-      })
-      setFactTable(savedTable)
-      setFactFields(asObjectArray(savedTable?.fields))
-      setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
+      // 表还没建过（清单刚上传）时没有可保存的编辑，跳过保存直接进构建
+      if (factFields.length) {
+        const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
+        const savedTable = await technicalGapsAPI.saveFacts(id, {
+          fields: fieldsToSave,
+          confirm: false,
+          operator: '当前用户',
+        })
+        setFactTable(savedTable)
+        setFactFields(asObjectArray(savedTable?.fields))
+        setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
+      }
       // 先按最新素材范围刷新事实表（重跑规则抽取，并把无值的终态字段复位为未提取），
       // 再交给 AI 补抽——否则上一轮标成「缺少来源」的字段不会进 AI 的工作清单。
       const rebuiltTable = await technicalGapsAPI.buildFacts(id)

@@ -556,8 +556,12 @@ export const technicalGapsAPI = {
   submitReview: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/submit-review`, { method: 'POST' }),
   facts: (projectId) => request(`/technical/projects/${projectId}/gaps/facts`),
+  // 整表构建按清单逐字段扫素材，实测 160 余字段约 1 分钟，默认 12s 超时必挂
   buildFacts: (projectId) =>
-    request(`/technical/projects/${projectId}/gaps/facts/build`, { method: 'POST' }),
+    request(`/technical/projects/${projectId}/gaps/facts/build`, {
+      method: 'POST',
+      timeoutMs: 10 * 60 * 1000,
+    }),
   saveMaterialSources: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts/material-sources`, { method: 'PUT', body: data }),
   // 提交后台任务，立即返回；执行进度经 curateFactsStatus 轮询
