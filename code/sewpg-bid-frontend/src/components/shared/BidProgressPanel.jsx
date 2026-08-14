@@ -62,7 +62,7 @@ export default function BidProgressPanel({
           </div>
         </div>
         <span className={[
-          'shrink-0 self-start rounded-md px-2.5 py-1 text-sm font-bold tabular-nums',
+          'shrink-0 self-start rounded-md px-2.5 py-1 text-sm font-semibold tabular-nums',
           badgeClass,
         ].join(' ')}>
           {Math.floor(safePercentage)}%

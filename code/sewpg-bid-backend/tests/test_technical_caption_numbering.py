@@ -322,11 +322,11 @@ class CaptionNumberStepTest(unittest.TestCase):
 
     def test_step_degrades_without_blocking(self) -> None:
         """题注编号失败时如实标 failed 并给出 warning，由调用方沿用组装原稿。"""
-        original = self.tech_assembly.run_caption_manifest
-        self.tech_assembly.run_caption_manifest = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        original = self.tech_assembly._run_local_caption_number
+        self.tech_assembly._run_local_caption_number = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("boom")
         )
-        self.addCleanup(setattr, self.tech_assembly, "run_caption_manifest", original)
+        self.addCleanup(setattr, self.tech_assembly, "_run_local_caption_number", original)
 
         step, stages = self._run_step()
         self.assertEqual(step["status"], "failed")

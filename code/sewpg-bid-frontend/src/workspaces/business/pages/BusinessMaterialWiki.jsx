@@ -166,7 +166,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         <div key={node.id}>
           <div
             style={{ paddingLeft: `${12 + level * 18}px` }}
-            className={`group flex items-center gap-2 pr-2 py-2 rounded-lg text-[13px] leading-[1.6] cursor-pointer transition-colors border ${
+            className={`group flex items-center gap-2 pr-2 py-2 rounded-lg text-sm leading-[1.6] cursor-pointer transition-colors border ${
               selected
                 ? 'border-outline-variant bg-surface-container-low text-on-surface'
                 : 'border-transparent hover:bg-surface-container-low text-on-surface-variant'
@@ -228,14 +228,14 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
             <button
               onClick={handleRefreshWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-[13px] leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-lg bg-primary px-3 text-sm leading-[1.6] font-medium text-on-primary transition-colors hover:bg-primary-container hover:text-on-primary-container disabled:cursor-not-allowed disabled:opacity-50"
             >
               {refreshingWiki ? '刷新中...' : '刷新Wiki'}
             </button>
             <button
               onClick={handleRebuildWiki}
               disabled={refreshingWiki || rebuildingWiki}
-              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-[13px] leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-lg bg-surface-container-high px-3 text-sm leading-[1.6] font-medium text-on-surface-variant transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
               {rebuildingWiki ? '重建中...' : '重建Wiki'}
             </button>
@@ -254,7 +254,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
           <div className="px-4 py-4 border-b border-surface-container-high">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <h3 className="text-[14px] leading-[1.6] font-semibold text-on-surface">目录树</h3>
+                <h3 className="text-sm leading-[1.6] font-semibold text-on-surface">目录树</h3>
               </div>
             </div>
           </div>

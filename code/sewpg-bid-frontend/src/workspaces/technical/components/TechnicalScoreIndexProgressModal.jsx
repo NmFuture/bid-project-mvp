@@ -48,7 +48,7 @@ export default function TechnicalScoreIndexProgressModal({ open, status, onClose
   return (
     <Dialog open={open} onClose={onClose} size="sm">
       <DialogHeader onClose={onClose}>
-        <h3 className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+        <h3 className="text-lg font-headline font-semibold text-on-surface">{title}</h3>
       </DialogHeader>
       <DialogBody className="space-y-4 p-5">
         <BidProgressPanel

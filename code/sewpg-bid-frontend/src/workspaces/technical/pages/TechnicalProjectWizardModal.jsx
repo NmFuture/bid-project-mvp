@@ -519,7 +519,6 @@ export default function TechnicalProjectWizardModal({
                     onClick={addTurbineRow}
                     className="inline-flex h-8 items-center gap-1 rounded-md bg-primary-fixed px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary-fixed-dim"
                   >
-                    <span aria-hidden="true" className="material-symbols-outlined text-[16px]">add</span>
                     添加机型
                   </button>
                 </div>

@@ -601,28 +601,29 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
         self.assertFalse(cleaner._is_toc_field_instruction(" PAGEREF _Toc123456789 \\h "))
 
     def test_tech_assembly_delegates_to_application_cleaner(self) -> None:
-        tree = ast.parse(TECH_ASSEMBLY_PATH.read_text(encoding="utf-8"), filename=str(TECH_ASSEMBLY_PATH))
-        imported = any(
-            isinstance(node, ast.ImportFrom)
-            and node.module == "app.document_processing.technical_document.formatting"
-            and any(alias.name == "run_manifest" and alias.asname == "run_format_manifest" for alias in node.names)
-            for node in tree.body
-        )
-        self.assertTrue(imported)
+        """格式清洗必须落到本仓库的 python 清洗器，而不是外部 agent。
 
+        清洗跑在子进程里（大文档超内存时只死子进程，不拖垮 worker），所以这里断言的是
+        交给 run_stage 的目标指向本仓库的 formatting 模块。
+        """
+        tree = ast.parse(TECH_ASSEMBLY_PATH.read_text(encoding="utf-8"), filename=str(TECH_ASSEMBLY_PATH))
         function = next(
             node
             for node in tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name == "_run_local_tech_format_cleaner"
         )
-        self.assertTrue(
-            any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "run_format_manifest"
-                for node in ast.walk(function)
-            )
+        stage_calls = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "run_stage"
+        ]
+        self.assertEqual(len(stage_calls), 1)
+        target = stage_calls[0].args[0]
+        self.assertIsInstance(target, ast.Constant)
+        self.assertEqual(
+            target.value,
+            "app.document_processing.technical_document.formatting:run_manifest",
         )
 
 

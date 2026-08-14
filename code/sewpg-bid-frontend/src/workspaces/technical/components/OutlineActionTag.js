@@ -28,7 +28,7 @@ export const getImmediateTooltipPosition = (trigger, bounds, viewport) => {
 }
 
 export default function OutlineActionTag({ action, basis, reason, onFocusBasis }) {
-  const className = `shrink-0 rounded border px-2 py-1 text-[11px] font-semibold ${actionClassName(action)}`
+  const className = `shrink-0 rounded border px-2 py-1 text-xs font-semibold ${actionClassName(action)}`
   const canFocusBasis = Boolean(basis) && (action === '必要' || action === '建议增加')
   const tooltip = canFocusBasis
     ? (reason ? `${reason}；点击定位招标依据` : '点击定位招标依据')

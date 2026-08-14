@@ -12,13 +12,12 @@ from typing import Any, Callable
 
 from app.core.config import BASE_DIR, settings
 from app.document_processing.technical_document.assembly import (
+    MediaVault,
     finalize_merged_output,
-    run_from_manifest as run_assembly_manifest,
 )
 from app.document_processing.technical_document.assembly.parse_toc import display_chapter_no
-from app.document_processing.technical_document.captioning import run_manifest as run_caption_manifest
-from app.document_processing.technical_document.formatting import run_manifest as run_format_manifest
 from app.services.bid_fill_generation_state import save_fill_generation_result_state
+from app.services.docx_stage_runner import run_stage
 from app.services.bid_project_state import project_parse_input_records
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.minio_client import minio_client
@@ -80,7 +79,6 @@ def assemble_tech_bid_for_project_with_progress(
         gap_plan_path,
         material_library_dir,
     )
-    assembler_owns_material_cleanup = False
     try:
         template_file = _select_template_file(template_file_records)
         project_params = _build_project_params(project, toc_json_path)
@@ -127,13 +125,9 @@ def assemble_tech_bid_for_project_with_progress(
                     "workDir": str(work_dir),
                 },
             )
-        assembler_owns_material_cleanup = True
-        result = _run_assembler_with_selected_material_cleanup(
-            manifest_path,
-            material_library_dir,
-            progress_callback=progress_callback,
-        )
+        result = _run_assembler_manifest(manifest_path, progress_callback=progress_callback)
     except Exception as assembly_error:
+        _clear_selected_materials(material_library_dir)
         try:
             assembly_gap_plan_path.unlink(missing_ok=True)
         except Exception as cleanup_error:
@@ -142,71 +136,82 @@ def assemble_tech_bid_for_project_with_progress(
                 [assembly_error, cleanup_error],
             ) from assembly_error
         raise
-    finally:
-        if not assembler_owns_material_cleanup:
-            _clear_selected_materials(material_library_dir)
-    assembled_path = Path(str(result.get("outputFile") or output_file))
-    if not assembled_path.exists():
-        raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
 
-    plan_path = Path(str(result.get("planFile") or work_dir / "assembly_plan.json"))
-    plan = _load_json_list(plan_path)
-    assembly_summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
-    assembly_warnings = _normalize_warnings(result.get("warnings"))
-    coverage = _build_material_coverage(plan, material_cards)
-    sections = _sections_from_plan(plan)
-    content = _build_fallback_content(plan, assembly_summary, assembly_warnings)
+    # 已选素材要留到图片归位用完才能删：组装、题注、清洗、交叉引用产出的都是只含 XML
+    # 的轻量稿，图片字节始终躺在这些素材原件里，直到最后一步才字节级搬进成稿。
+    try:
+        assembled_path = Path(str(result.get("outputFile") or output_file))
+        if not assembled_path.exists():
+            raise RuntimeError(f"S4 生成标书未生成输出文件：{assembled_path}")
 
-    if progress_callback:
-        progress_callback(
-            "assembling_result",
-            {
-                "sectionCount": len(sections),
-                "usedMaterialCount": coverage["fullCover"],
-                "unassembledMaterialCount": coverage["noCover"],
-            },
+        plan_path = Path(str(result.get("planFile") or work_dir / "assembly_plan.json"))
+        plan = _load_json_list(plan_path)
+        assembly_summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        assembly_warnings = _normalize_warnings(result.get("warnings"))
+        coverage = _build_material_coverage(plan, material_cards)
+        sections = _sections_from_plan(plan)
+        content = _build_fallback_content(plan, assembly_summary, assembly_warnings)
+
+        if progress_callback:
+            progress_callback(
+                "assembling_result",
+                {
+                    "sectionCount": len(sections),
+                    "usedMaterialCount": coverage["fullCover"],
+                    "unassembledMaterialCount": coverage["noCover"],
+                },
+            )
+
+        # 题注编号排在格式清洗之前：清洗器会把"短 + 加粗"的素材图名保守提升成 Heading 3/4，
+        # 而题注工具对 Heading 样式段绝不改写，只会另插一行造成重复并污染目录。先编上号，
+        # 段落变成"图1-1 xxx"后正好命中清洗器的题注判定，被划入保留段不再动它。
+        caption_number = _run_tech_caption_number_step(
+            input_path=assembled_path,
+            output_path=work_dir / f"{assembled_path.stem}_captioned{assembled_path.suffix}",
+            work_dir=work_dir,
+            progress_callback=progress_callback,
         )
+        caption_output_path = Path(str(caption_number.get("outputFile") or ""))
+        format_input_path = assembled_path
+        if caption_number.get("status") == "completed" and caption_output_path.exists():
+            format_input_path = caption_output_path
 
-    # 题注编号排在格式清洗之前：清洗器会把"短 + 加粗"的素材图名保守提升成 Heading 3/4，
-    # 而题注工具对 Heading 样式段绝不改写，只会另插一行造成重复并污染目录。先编上号，
-    # 段落变成"图1-1 xxx"后正好命中清洗器的题注判定，被划入保留段不再动它。
-    caption_number = _run_tech_caption_number_step(
-        input_path=assembled_path,
-        output_path=work_dir / f"{assembled_path.stem}_captioned{assembled_path.suffix}",
-        work_dir=work_dir,
-        progress_callback=progress_callback,
-    )
-    caption_output_path = Path(str(caption_number.get("outputFile") or ""))
-    format_input_path = assembled_path
-    if caption_number.get("status") == "completed" and caption_output_path.exists():
-        format_input_path = caption_output_path
+        format_output_path = output_file
+        if output_file.resolve() in {assembled_path.resolve(), format_input_path.resolve()}:
+            format_output_path = work_dir / f"{output_file.stem}_formatted{output_file.suffix}"
 
-    format_output_path = output_file
-    if output_file.resolve() in {assembled_path.resolve(), format_input_path.resolve()}:
-        format_output_path = work_dir / f"{output_file.stem}_formatted{output_file.suffix}"
+        format_clean = _run_tech_format_cleaner_step(
+            project=project,
+            toc_json_path=toc_json_path,
+            assembled_path=format_input_path,
+            output_path=format_output_path,
+            project_params=project_params,
+            work_dir=work_dir,
+            progress_callback=progress_callback,
+        )
+        final_output_path = Path(str(format_clean.get("outputFile") or format_input_path))
+        if not final_output_path.exists():
+            final_output_path = format_input_path
 
-    format_clean = _run_tech_format_cleaner_step(
-        project=project,
-        toc_json_path=toc_json_path,
-        assembled_path=format_input_path,
-        output_path=format_output_path,
-        project_params=project_params,
-        work_dir=work_dir,
-        progress_callback=progress_callback,
-    )
-    final_output_path = Path(str(format_clean.get("outputFile") or format_input_path))
-    if not final_output_path.exists():
-        final_output_path = format_input_path
+        score_index_xref = _run_tech_score_index_xref_step(
+            input_path=final_output_path,
+            output_path=work_dir / f"{final_output_path.stem}_xref{final_output_path.suffix}",
+            work_dir=work_dir,
+            progress_callback=progress_callback,
+        )
+        xref_output_path = Path(str(score_index_xref.get("outputFile") or ""))
+        if score_index_xref.get("status") == "completed" and xref_output_path.exists():
+            final_output_path = xref_output_path
 
-    score_index_xref = _run_tech_score_index_xref_step(
-        input_path=final_output_path,
-        output_path=work_dir / f"{final_output_path.stem}_xref{final_output_path.suffix}",
-        work_dir=work_dir,
-        progress_callback=progress_callback,
-    )
-    xref_output_path = Path(str(score_index_xref.get("outputFile") or ""))
-    if score_index_xref.get("status") == "completed" and xref_output_path.exists():
-        final_output_path = xref_output_path
+        assembled_light_path = final_output_path
+        final_output_path = _restore_delivered_document(
+            light_path=assembled_light_path,
+            delivered_path=work_dir / "deliverable" / output_file.name,
+            vault_path=Path(str(result.get("mediaVaultFile") or work_dir / "media_vault.json")),
+            progress_callback=progress_callback,
+        )
+    finally:
+        _clear_selected_materials(material_library_dir)
 
     target_path = document_path(project_id)
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,6 +254,7 @@ def assemble_tech_bid_for_project_with_progress(
             "planFile": str(plan_path),
             "rawOutputFile": str(assembled_path),
             "captionNumberFile": str(caption_number.get("outputFile") or ""),
+            "assembledLightFile": str(assembled_light_path),
             "outputFile": str(final_output_path),
             "scoreIndexXrefFile": str(score_index_xref.get("outputFile") or ""),
         },
@@ -1076,15 +1082,40 @@ def _clear_selected_materials(staging_dir: Path) -> None:
         shutil.rmtree(staging_dir)
 
 
-def _run_assembler_with_selected_material_cleanup(
-    manifest_path: Path,
-    staging_dir: Path,
+def _restore_delivered_document(
+    *,
+    light_path: Path,
+    delivered_path: Path,
+    vault_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
-) -> dict[str, Any]:
-    try:
-        return _run_assembler_manifest(manifest_path, progress_callback=progress_callback)
-    finally:
-        _clear_selected_materials(staging_dir)
+) -> Path:
+    """把整条链路旁路掉的图片字节一次性搬回成稿。
+
+    组装、题注、清洗、交叉引用全程只处理 XML，图片一直留在素材原件里。这里按索引
+    做一次字节级搬运产出最终交付稿——整份大文档在全链路中只被完整写出这一次。
+
+    保真范围以字节为准：图片与内嵌对象与素材原件逐字节一致，不压缩、不重编码。
+    素材自带的页眉页脚不在保真范围内，也不应该在——整份标书的页眉页脚由后续格式
+    清洗按项目统一设置，沿用素材各自的页眉反而会让成稿出现几十种页眉。
+    """
+    if not vault_path.exists():
+        raise RuntimeError(f"图片索引缺失，无法产出成稿：{vault_path}")
+    vault = MediaVault.load(vault_path)
+    if progress_callback:
+        progress_callback(
+            "restoring_media",
+            {"mediaCount": len(vault), "mediaBytes": vault.total_bytes()},
+        )
+    delivered_path.parent.mkdir(parents=True, exist_ok=True)
+    run_stage(
+        "app.document_processing.technical_document.assembly:restore_media_from_vault",
+        args=[str(light_path), str(delivered_path), str(vault_path)],
+        spec_path=_stage_spec_path(light_path.parent, "restore_media"),
+        label="成稿图片归位",
+    )
+    if not delivered_path.exists():
+        raise RuntimeError(f"成稿图片归位未产出文件：{delivered_path}")
+    return delivered_path
 
 
 def _copy_material_to_library(material_id: str, original_path: str, target_path: Path) -> None:
@@ -1236,6 +1267,10 @@ def _material_relative_path(scope: str, category: str, file_name: str) -> str:
     return str(Path(root) / _safe_filename(category, "素材") / _safe_filename(file_name, "material.docx"))
 
 
+def _stage_spec_path(work_dir: Path, label: str) -> Path:
+    return work_dir / "stages" / f"{label}.json"
+
+
 def _run_assembler_manifest(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
@@ -1247,7 +1282,15 @@ def _run_local_assembler(
     manifest_path: Path,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
-    return run_assembly_manifest(manifest_path, progress_callback=progress_callback)
+    work_dir = manifest_path.parent
+    return run_stage(
+        "app.document_processing.technical_document.assembly:run_from_manifest",
+        args=[str(manifest_path)],
+        spec_path=_stage_spec_path(work_dir, "assembly"),
+        label="正文组装",
+        progress=True,
+        progress_callback=progress_callback,
+    )
 
 
 def _run_tech_caption_number_step(
@@ -1281,7 +1324,7 @@ def _run_tech_caption_number_step(
         )
 
     try:
-        result = run_caption_manifest(manifest_path)
+        result = _run_local_caption_number(manifest_path)
         summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
         warnings = _normalize_warnings(result.get("warnings"))
         status = str(result.get("status") or "completed")
@@ -1407,8 +1450,22 @@ def _run_tech_format_cleaner_step(
         return clean
 
 
+def _run_local_caption_number(manifest_path: Path) -> dict[str, Any]:
+    return run_stage(
+        "app.document_processing.technical_document.captioning:run_manifest",
+        args=[str(manifest_path)],
+        spec_path=_stage_spec_path(manifest_path.parent, "caption_number"),
+        label="图表题注编号",
+    )
+
+
 def _run_local_tech_format_cleaner(manifest_path: Path) -> dict[str, Any]:
-    return run_format_manifest(manifest_path)
+    return run_stage(
+        "app.document_processing.technical_document.formatting:run_manifest",
+        args=[str(manifest_path)],
+        spec_path=_stage_spec_path(manifest_path.parent, "format_clean"),
+        label="格式规范化",
+    )
 
 
 def regenerate_score_index_xref_for_project(
@@ -1735,17 +1792,12 @@ def run_technical_score_index_xref_skill(brief_path: Path, mapping_path: Path) -
 
 
 def _run_local_tech_score_index_xref(manifest_path: Path) -> dict[str, Any]:
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "bid_tech_score_index_xref_runner",
-        SCORE_INDEX_XREF_RUNNER,
+    return run_stage(
+        f"path:{SCORE_INDEX_XREF_RUNNER}:run_manifest",
+        args=[str(manifest_path)],
+        spec_path=_stage_spec_path(manifest_path.parent, f"score_index_xref_{manifest_path.stem}"),
+        label="评分索引交叉引用",
     )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载交叉引用脚本：{SCORE_INDEX_XREF_RUNNER}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_manifest(manifest_path)
 
 
 def _prepare_tech_format_outline(toc_json_path: Path, work_dir: Path) -> Path:

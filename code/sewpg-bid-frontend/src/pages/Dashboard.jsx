@@ -152,13 +152,6 @@ function ParallelProjectCard({ project }) {
         className="group min-w-0 flex-1 rounded-lg border border-outline-variant bg-white p-3 transition-colors hover:border-primary/60 hover:bg-primary-fixed/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         <div className="flex items-center gap-1.5 mb-1.5 text-xs">
-          <span
-            className="material-symbols-outlined text-[16px] text-primary"
-            style={{ fontVariationSettings: "'FILL' 1" }}
-            aria-hidden="true"
-          >
-            {kind === 'tech' ? 'engineering' : 'request_quote'}
-          </span>
           <span className="font-semibold text-on-surface">{kind === 'tech' ? '技术标' : '商务标'}</span>
           <StatusBadge variant={ws.status} icon={null} className="ml-auto">
             {ws.stage} · {ws.stageLabel}
@@ -202,18 +195,11 @@ function ParallelProjectCard({ project }) {
   )
 }
 
-function PanelHeader({ icon, title, hint, action }) {
+function PanelHeader({ title, hint, action }) {
   return (
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span
-          className="material-symbols-outlined text-[20px] text-primary"
-          style={{ fontVariationSettings: "'FILL' 1" }}
-          aria-hidden="true"
-        >
-          {icon}
-        </span>
-        <h2 className="text-base font-headline font-semibold text-on-surface">{title}</h2>
+        <h2 className="text-lg font-headline font-semibold text-on-surface">{title}</h2>
         {hint && <span className="text-xs text-outline">{hint}</span>}
       </div>
       {action}
@@ -274,7 +260,7 @@ export default function Dashboard({ currentUser }) {
             <button
               type="button"
               onClick={() => window.location.reload()}
-              className="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-container hover:text-on-primary-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              className="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-on-primary transition-colors hover:bg-on-primary-fixed-variant focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
             >
               重新加载
             </button>
@@ -308,7 +294,6 @@ export default function Dashboard({ currentUser }) {
       {/* 项目列表 / 双流程并列 */}
       <section className="min-w-0 space-y-3">
           <PanelHeader
-            icon="folder_open"
             title={isTB ? '在跑项目（双流程并列）' : `我负责的${role === 'B' ? '商务标' : '技术标'}项目`}
             hint={isTB ? `${projectsParallel.length} 个项目` : `${projects.length} 个项目`}
             action={
@@ -318,9 +303,6 @@ export default function Dashboard({ currentUser }) {
                 className="min-h-11 rounded-md px-2 text-sm font-medium text-primary hover:bg-primary-fixed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <span>查看全部</span>
-                <span className="material-symbols-outlined ml-1 align-middle text-[16px]" aria-hidden="true">
-                  arrow_forward
-                </span>
               </button>
             }
           />

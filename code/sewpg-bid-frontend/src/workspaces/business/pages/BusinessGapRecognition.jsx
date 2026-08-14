@@ -313,7 +313,7 @@ function StatCard({ label, value }) {
     <div className="business-metric rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
       <div className="flex min-h-7 items-center justify-between gap-3">
         <div className="min-w-0 truncate text-xs font-semibold text-on-surface-variant">{label}</div>
-        <div className="shrink-0 text-lg font-headline font-bold tabular-nums text-primary">{value || 0}</div>
+        <div className="shrink-0 text-lg font-headline font-semibold tabular-nums text-primary">{value || 0}</div>
       </div>
     </div>
   )
@@ -324,13 +324,13 @@ function tocLevelStyles(levelValue) {
   if (level === 1) {
     return {
       itemClass: 'py-2.5 bg-surface-container-low',
-      titleClass: 'text-sm font-bold text-on-surface',
+      titleClass: 'text-sm font-semibold text-on-surface',
     }
   }
   if (level === 2) {
     return {
       itemClass: 'py-2',
-      titleClass: 'text-[13px] font-semibold text-on-surface',
+      titleClass: 'text-sm font-semibold text-on-surface',
     }
   }
   return {
@@ -431,7 +431,7 @@ function FactMaintenanceModal({
         <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-5">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 id="business-fact-modal-title" className="text-lg font-headline font-bold text-on-surface">商务标项目事实表维护</h3>
+              <h3 id="business-fact-modal-title" className="text-lg font-headline font-semibold text-on-surface">商务标项目事实表维护</h3>
               <Badge shape="square" variant={status === 'confirmed' ? 'done' : 'warn'}>
                 {factStatusLabels[status] || status}
               </Badge>
@@ -447,7 +447,6 @@ function FactMaintenanceModal({
               disabled={busy}
               size="sm"
               variant="secondary"
-              icon="add"
             >
               新增字段
             </Button>
@@ -497,7 +496,7 @@ function FactMaintenanceModal({
                             onChange={(event) => onFieldChange(index, 'label', event.target.value)}
                             className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-2 text-sm font-semibold text-on-surface"
                           />
-                          <div className="mt-1 text-[11px] text-outline">
+                          <div className="mt-1 text-xs text-outline">
                             {field.category || '项目事实'}
                             {field.sourceMode ? ` · ${factSourceModeLabels[field.sourceMode] || field.sourceMode}` : ''}
                           </div>
@@ -581,7 +580,7 @@ function BusinessGenerationProgressModal({
       <div role="dialog" aria-modal="true" aria-labelledby="business-generation-modal-title" className="w-full max-w-xl overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)]">
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 id="business-generation-modal-title" className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+            <h3 id="business-generation-modal-title" className="text-lg font-headline font-semibold text-on-surface">{title}</h3>
             <p className="mt-1 text-sm text-on-surface-variant">{summary}</p>
           </div>
           {!running ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
@@ -632,7 +631,7 @@ function BusinessGapPlanProgressModal({
       <div role="dialog" aria-modal="true" aria-labelledby="business-gap-plan-modal-title" className="w-full max-w-xl overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)]">
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 id="business-gap-plan-modal-title" className="text-lg font-headline font-bold text-on-surface">{title}</h3>
+            <h3 id="business-gap-plan-modal-title" className="text-lg font-headline font-semibold text-on-surface">{title}</h3>
           </div>
           {!running ? <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" /> : null}
         </div>
@@ -687,7 +686,7 @@ function BusinessMaterialPreviewDrawer({
         <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 id="business-material-preview-title" className="truncate text-lg font-headline font-bold text-on-surface">{title}</h3>
+              <h3 id="business-material-preview-title" className="truncate text-lg font-headline font-semibold text-on-surface">{title}</h3>
               {payload?.previewMode && (
                 <Badge shape="square" variant="info">
                   {payload.previewMode === 'native' ? '原件预览' : payload.previewMode === 'onlyoffice' ? '原件 OnlyOffice' : '下载核对'}
@@ -845,7 +844,7 @@ function BusinessMaterialPickerModal({
       <div role="dialog" aria-modal="true" aria-labelledby="business-material-picker-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 id="business-material-picker-title" className="text-lg font-headline font-bold text-on-surface">选择素材库材料/模板</h3>
+            <h3 id="business-material-picker-title" className="text-lg font-headline font-semibold text-on-surface">选择素材库材料/模板</h3>
           </div>
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
@@ -958,14 +957,14 @@ function BusinessMaterialPickerModal({
                             />
                           )}
                         </div>
-                        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
+                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-on-surface-variant">
                           <span>层级：{material.materialTier || '-'}</span>
                           <span>清洗：{material.cleanStatus || '-'}</span>
                           <span>依据：{material.segmentCount || 0}</span>
                           {material.turbineModelLabel && <span>机型：{material.turbineModelLabel}</span>}
                         </div>
                         {!!evidenceSegments.length && (
-                          <div className="mt-2 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
+                          <div className="mt-2 rounded bg-primary/5 px-2 py-1 text-xs text-on-surface-variant">
                             推荐依据：{evidenceSegments.slice(0, 2).map((segment) => segment.evidenceSegmentTitle || segment.materialName || segment.evidenceSegmentId).filter(Boolean).join('；')}
                             {evidenceSegments.length > 2 ? `；另有 ${evidenceSegments.length - 2} 个` : ''}
                           </div>
@@ -1046,7 +1045,7 @@ function BusinessTableFillModal({
       <div role="dialog" aria-modal="true" aria-labelledby="business-table-fill-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-6xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-5 py-4">
           <div className="min-w-0">
-            <h3 id="business-table-fill-title" className="text-lg font-headline font-bold text-on-surface">AI填写</h3>
+            <h3 id="business-table-fill-title" className="text-lg font-headline font-semibold text-on-surface">AI填写</h3>
           </div>
           <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
         </div>
@@ -1160,14 +1159,14 @@ function BusinessTableFillModal({
                               />
                             )}
                           </div>
-                          {!projectFact && <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
+                          {!projectFact && <div className="mt-1 flex flex-wrap gap-2 text-xs text-on-surface-variant">
                             <span>层级：{material.materialTier || '-'}</span>
                             <span>清洗：{material.cleanStatus || '-'}</span>
                             <span>依据：{material.segmentCount || evidenceSegments.length || 0}</span>
                             {material.turbineModelLabel && <span>机型：{material.turbineModelLabel}</span>}
                           </div>}
                           {!!evidenceSegments.length && (
-                            <div className="mt-2 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
+                            <div className="mt-2 rounded bg-primary/5 px-2 py-1 text-xs text-on-surface-variant">
                               依据：{evidenceSegments.slice(0, 2).map((segment) => segment.evidenceSegmentTitle || segment.materialName || segment.evidenceSegmentId).filter(Boolean).join('；')}
                               {evidenceSegments.length > 2 ? `；另有 ${evidenceSegments.length - 2} 个` : ''}
                             </div>
@@ -1888,7 +1887,7 @@ export default function BusinessGapRecognition({ showToast }) {
         </div>
         <div className="business-panel rounded-md border border-surface-container-high bg-surface-container-lowest px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
           {plan?.s1Consumption?.source ? (
-            <div className="mb-1 flex items-center gap-1 text-[11px] text-on-surface-variant">
+            <div className="mb-1 flex items-center gap-1 text-xs text-on-surface-variant">
               <span className="material-symbols-outlined text-[14px] leading-none">
                 {plan.s1Consumption.source === 'stageArtifacts.s1' ? 'verified' : 'history'}
               </span>
@@ -1907,8 +1906,8 @@ export default function BusinessGapRecognition({ showToast }) {
                 ['manual_upload', '人工补充'],
               ].map(([key, label]) => (
                 <div key={key} className="flex min-h-7 items-center justify-center gap-1 rounded-md bg-surface-container-low px-2 py-0.5">
-                  <span className="text-[11px] text-on-surface-variant">{label}</span>
-                  <span className="text-sm font-headline font-bold tabular-nums text-primary">{actionCounts[key] || 0}</span>
+                  <span className="text-xs text-on-surface-variant">{label}</span>
+                  <span className="text-sm font-headline font-semibold tabular-nums text-primary">{actionCounts[key] || 0}</span>
                 </div>
               ))}
             </div>
@@ -1920,7 +1919,7 @@ export default function BusinessGapRecognition({ showToast }) {
         <div className="grid gap-4 xl:h-[clamp(34rem,calc(100dvh-15rem),45rem)] xl:min-h-[32rem] xl:grid-cols-[460px_minmax(0,1fr)] 2xl:grid-cols-[520px_minmax(0,1fr)]">
           <DataCard className="!p-0 overflow-hidden">
             <div className="business-section-head flex items-center border-b border-surface-container-high px-4 py-3">
-              <h3 className="text-base font-headline font-bold text-on-surface">商务目录</h3>
+              <h3 className="text-base font-headline font-semibold text-on-surface">商务目录</h3>
             </div>
             <div className="max-h-[44dvh] overflow-auto p-3 xl:max-h-none xl:flex-1">
               {tocRefs.map((ref) => {
@@ -1956,7 +1955,7 @@ export default function BusinessGapRecognition({ showToast }) {
 
           <DataCard className="!p-0 overflow-hidden">
             <div className="business-section-head flex items-center border-b border-surface-container-high px-4 py-3">
-              <h3 className="text-base font-headline font-bold text-on-surface">
+              <h3 className="text-base font-headline font-semibold text-on-surface">
                 {selectedToc ? `${selectedToc.number ? `${selectedToc.number} ` : ''}${selectedToc.title}` : '请选择目录章节'}
               </h3>
             </div>
@@ -1967,12 +1966,11 @@ export default function BusinessGapRecognition({ showToast }) {
                 {!visibleTasks.length ? (
                   <div className="business-dropzone rounded-md border border-dashed border-surface-container-high p-8 text-center">
                     <span className="material-symbols-outlined text-4xl text-outline">inventory_2</span>
-                    <h3 className="mt-3 text-base font-headline font-bold text-on-surface">当前章节暂无系统任务</h3>
+                    <h3 className="mt-3 text-base font-headline font-semibold text-on-surface">当前章节暂无系统任务</h3>
                     <FileButton
                       accept={SUPPLEMENT_ACCEPT}
                       className="mt-4"
                       disabled={!!actionLoading}
-                      icon="add"
                       multiple
                       onChange={(event) => uploadSupplementForTask(event, null)}
                       variant="primary"
@@ -2006,7 +2004,7 @@ export default function BusinessGapRecognition({ showToast }) {
                       <Button type="button" onClick={() => openMaterialPicker(task)} disabled={!!actionLoading} size="sm" variant="primary">
                         选择素材库材料
                       </Button>
-                      <FileButton accept={SUPPLEMENT_ACCEPT} disabled={!!actionLoading} icon="" multiple onChange={(event) => uploadSupplementForTask(event, task)} size="sm" variant="primary">
+                      <FileButton accept={SUPPLEMENT_ACCEPT} disabled={!!actionLoading} multiple onChange={(event) => uploadSupplementForTask(event, task)} size="sm" variant="primary">
                         {actionLoading === 'upload' ? '上传中...' : '人工上传补充'}
                       </FileButton>
                       <Button type="button" disabled={!!actionLoading} onClick={() => openTableFillModal(task)} size="sm" variant="primary">
@@ -2024,7 +2022,7 @@ export default function BusinessGapRecognition({ showToast }) {
                             <h4 className="text-sm font-semibold text-on-surface">任务产物</h4>
                             <Badge size="xs" variant="pending">{resolvedArtifacts.length} 个</Badge>
                             {referenceArtifacts.length > 0 && (
-                              <span className="text-[11px] text-outline">另有 {referenceArtifacts.length} 个过程参考件</span>
+                              <span className="text-xs text-outline">另有 {referenceArtifacts.length} 个过程参考件</span>
                             )}
                           </div>
                           {resolvedArtifacts.map((artifact, artifactIndex) => {
@@ -2042,7 +2040,7 @@ export default function BusinessGapRecognition({ showToast }) {
                                       {confirmedArtifact ? '已确认' : reviewStatus === 'pending_review' ? '待审核' : reviewStatus || '待审核'}
                                     </Badge>
                                   </div>
-                                  {artifactTime && <div className="mt-0.5 text-[11px] text-outline">{artifactTime.replace('T', ' ').slice(0, 19)}</div>}
+                                  {artifactTime && <div className="mt-0.5 text-xs text-outline">{artifactTime.replace('T', ' ').slice(0, 19)}</div>}
                                 </div>
                                 <div className="group flex shrink-0 items-center gap-2">
                                   {artifact?.artifactId && (
@@ -2144,26 +2142,26 @@ export default function BusinessGapRecognition({ showToast }) {
                                       {kindLabel && <Badge size="xs" variant={kindLabel === '固定素材' ? 'done' : 'pending'}>{kindLabel}</Badge>}
                                     </div>
                                     <div className="mt-1 text-xs text-outline">匹配度 {matchScore}% · {material.reason}</div>
-                                    <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-on-surface-variant">
+                                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-on-surface-variant">
                                       {material.cleanStatus && <span>清洗：{material.cleanStatus}</span>}
                                       {material.cleanedFileName && <span>清洗稿可用</span>}
                                     </div>
                                     {segmentTitle && (
-                                      <div className="mt-1 rounded bg-primary/5 px-2 py-1 text-[11px] text-on-surface-variant">
+                                      <div className="mt-1 rounded bg-primary/5 px-2 py-1 text-xs text-on-surface-variant">
                                         Wiki依据：<span className="font-semibold text-primary">{segmentTitle}</span>
                                         {sourcePages ? ` · ${sourcePages}` : ''}
                                         {evidenceSegments.length > 1 ? ` · 另有 ${evidenceSegments.length - 1} 条依据` : ''}
                                       </div>
                                     )}
-                                    {evidenceSummary && <div className="mt-1 line-clamp-2 text-[11px] text-on-surface-variant">{evidenceSummary}</div>}
+                                    {evidenceSummary && <div className="mt-1 line-clamp-2 text-xs text-on-surface-variant">{evidenceSummary}</div>}
                                     {material.wikiCardId && (
-                                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-primary">
+                                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-primary">
                                         <Badge size="xs" variant="info">Wiki</Badge>
                                         <span>{material.wikiCardId} · {usageModeLabels[material.wikiUsageMode] || material.wikiUsageMode || '未标注用法'}</span>
                                       </div>
                                     )}
-                                    {evidence.validityStatus && <div className="mt-1 text-[11px] text-outline">有效期状态：{evidence.validityStatus}{evidence.expiryDate ? ` · ${evidence.expiryDate}` : ''}</div>}
-                                    {material.folderPath && <div className="mt-1 truncate text-[11px] text-outline">{material.folderPath}</div>}
+                                    {evidence.validityStatus && <div className="mt-1 text-xs text-outline">有效期状态：{evidence.validityStatus}{evidence.expiryDate ? ` · ${evidence.expiryDate}` : ''}</div>}
+                                    {material.folderPath && <div className="mt-1 truncate text-xs text-outline">{material.folderPath}</div>}
                                   </div>
                                 </div>
                                 <div className="flex shrink-0 flex-col gap-2">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { businessStagesAPI } from '../../../api'
+import Button from '../../../components/ui/Button'
 import StageProgress from '../../../components/shared/StageProgress'
 import { getStrictStageLockReason } from '../../../utils/stageLocking'
 import { projectRoute } from '../../../utils/workspace'
@@ -209,13 +210,9 @@ export default function BusinessProjectStageProgress({
       <section className="bg-transparent px-0 py-2" aria-label="阶段进度">
         <div className="flex flex-wrap items-center justify-between gap-3 border border-error/20 bg-error-container/20 px-4 py-3">
           <div role="alert" className="text-sm text-error">阶段进度加载失败：{error}</div>
-          <button
-            type="button"
-            onClick={loadStages}
-            className="min-h-10 rounded-md bg-error px-4 text-sm font-medium text-on-error"
-          >
+          <Button variant="danger" onClick={loadStages}>
             重试
-          </button>
+          </Button>
         </div>
       </section>
     )

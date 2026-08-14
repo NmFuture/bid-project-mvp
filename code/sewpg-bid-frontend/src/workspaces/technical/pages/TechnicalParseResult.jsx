@@ -337,7 +337,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
         <DataCard className="!p-0 overflow-hidden">
           <div className="business-section-head flex items-center px-4 py-4 sm:px-6 sm:py-5">
             <div className="flex items-center">
-              <h2 className="text-xl font-headline font-extrabold text-primary sm:text-2xl">生成投标文件目录</h2>
+              <h2 className="text-xl font-headline font-semibold text-primary sm:text-2xl">生成投标文件目录</h2>
             </div>
           </div>
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.82fr)]">
@@ -378,7 +378,6 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
             <Button
               onClick={() => document.getElementById('s1-template-upload')?.click()}
               className="min-w-[180px] bg-white text-on-surface shadow-sm hover:bg-surface-container-low"
-              icon="upload_file"
               size="lg"
               variant="quiet"
             >
@@ -460,7 +459,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           </div>
 
           <div className="flex flex-col gap-4 p-4 sm:p-6 lg:min-h-[388px]">
-            <h3 className="text-base font-headline font-bold text-on-surface">目录生成</h3>
+            <h3 className="text-base font-headline font-semibold text-on-surface">目录生成</h3>
 
           <div className="flex min-h-24 items-center sm:min-h-[132px]">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (

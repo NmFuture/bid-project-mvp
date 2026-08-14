@@ -12,6 +12,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 from starlette.datastructures import URL
 
+from app.document_processing.technical_document.assembly import MediaVault
 from app.main import app
 from app.core.config import settings
 from app.services.bid_fill_generation_state import save_fill_generation_result_state, start_fill_generation_state
@@ -25,6 +26,11 @@ from app.services.technical_gap_review import confirm_technical_review, prepare_
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_gap_state import ensure_technical_gap_state
 from app.services.workspace_artifacts import technical_workspace_dir, technical_workspace_stage_dir
+
+
+def _write_empty_media_vault(work_dir: Path) -> str:
+    """假组装器也要交出图片索引：真组装器把图片旁路后由它记账，成稿归位全靠它。"""
+    return str(MediaVault().save(work_dir / "media_vault.json"))
 
 
 class _DummyRequest:
@@ -832,43 +838,67 @@ class FillGenerationTests(unittest.TestCase):
         self.assertFalse(staging_dirs[0].exists())
         self.assertFalse(runtime_plan_path.exists())
 
-    def test_selected_materials_cleanup_after_assembler_success(self) -> None:
+    def test_selected_materials_survive_until_media_restore_then_cleaned(self) -> None:
+        """已选素材是成稿图片字节的唯一来源，必须活到归位之后才能删。
+
+        组装、题注、清洗全程只处理 XML，图片仍躺在这些素材原件里；提前清理会让
+        成稿归位时找不到原图。
+        """
         from app.services import tech_assembly
 
-        root = Path(self.temp_dir.name) / "assembler-cleanup-success"
-        staging_dir = root / "selected_materials"
-        staging_dir.mkdir(parents=True)
-        (staging_dir / "selected.docx").write_bytes(b"selected")
-        manifest_path = root / "manifest.json"
-        manifest_path.write_text("{}", encoding="utf-8")
+        project_id = self._prepare_project_for_s7()
+        staging_dirs: list[Path] = []
+        staging_alive_at_restore: list[bool] = []
 
-        with patch.object(tech_assembly, "_run_assembler_manifest", return_value={"status": "completed"}):
-            result = tech_assembly._run_assembler_with_selected_material_cleanup(
-                manifest_path,
-                staging_dir,
-            )
+        def fake_run_assembler_manifest(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            staging_dirs.append(Path(manifest["materialLibraryDir"]))
+            output_file = Path(manifest["outputFile"])
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            document = Document()
+            document.add_paragraph("技术方案")
+            document.save(output_file)
+            plan_file = output_file.parent / "assembly_plan.json"
+            plan_file.write_text("[]", encoding="utf-8")
+            return {
+                "schema_version": "bid-tech-assembly-v1",
+                "outputFile": str(output_file),
+                "planFile": str(plan_file),
+                "mediaVaultFile": _write_empty_media_vault(output_file.parent),
+                "summary": {"total": 0, "byStatus": {}, "usedPathCount": 0},
+                "warnings": [],
+            }
 
-        self.assertEqual(result["status"], "completed")
-        self.assertFalse(staging_dir.exists())
+        original_restore = tech_assembly._restore_delivered_document
+
+        def spy_restore(**kwargs):
+            staging_alive_at_restore.append(staging_dirs[0].exists())
+            return original_restore(**kwargs)
+
+        with patch.object(tech_assembly, "_run_assembler_manifest", side_effect=fake_run_assembler_manifest), \
+            patch.object(tech_assembly, "_restore_delivered_document", side_effect=spy_restore):
+            tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
+
+        self.assertEqual(staging_alive_at_restore, [True])
+        self.assertFalse(staging_dirs[0].exists())
 
     def test_selected_materials_cleanup_after_assembler_failure(self) -> None:
         from app.services import tech_assembly
 
-        root = Path(self.temp_dir.name) / "assembler-cleanup-failure"
-        staging_dir = root / "selected_materials"
-        staging_dir.mkdir(parents=True)
-        (staging_dir / "selected.docx").write_bytes(b"selected")
-        manifest_path = root / "manifest.json"
-        manifest_path.write_text("{}", encoding="utf-8")
+        project_id = self._prepare_project_for_s7()
+        staging_dirs: list[Path] = []
 
-        with patch.object(tech_assembly, "_run_assembler_manifest", side_effect=RuntimeError("assembler failed")):
+        def failing_assembler(manifest_path, progress_callback=None):
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            staging_dirs.append(Path(manifest["materialLibraryDir"]))
+            raise RuntimeError("assembler failed")
+
+        with patch.object(tech_assembly, "_run_assembler_manifest", side_effect=failing_assembler):
             with self.assertRaisesRegex(RuntimeError, "assembler failed"):
-                tech_assembly._run_assembler_with_selected_material_cleanup(
-                    manifest_path,
-                    staging_dir,
-                )
+                tech_assembly.assemble_tech_bid_for_project_with_progress(project_id)
 
-        self.assertFalse(staging_dir.exists())
+        self.assertEqual(len(staging_dirs), 1)
+        self.assertFalse(staging_dirs[0].exists())
 
     def test_s7_without_gap_plan_fails_before_runtime_material_matching(self) -> None:
         from app.services import tech_assembly
@@ -930,6 +960,7 @@ class FillGenerationTests(unittest.TestCase):
                 "schema_version": "bid-tech-assembly-v1",
                 "outputFile": str(output_file),
                 "planFile": str(plan_file),
+                "mediaVaultFile": _write_empty_media_vault(output_file.parent),
                 "assemblyReport": "",
                 "needsReview": "",
                 "summary": {
@@ -1245,6 +1276,7 @@ class FillGenerationTests(unittest.TestCase):
                 "schema_version": "bid-tech-assembly-v1",
                 "outputFile": str(output_file),
                 "planFile": str(plan_file),
+                "mediaVaultFile": _write_empty_media_vault(output_file.parent),
                 "assemblyReport": "",
                 "needsReview": "",
                 "summary": {"total": 1, "byStatus": {"MATCHED": 1}, "usedPathCount": 1},

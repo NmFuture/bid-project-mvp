@@ -9,6 +9,7 @@ import AuditDetailModal from '../../../components/modals/AuditDetailModal'
 import PageHeader from '../../../components/shared/PageHeader'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import Button from '../../../components/ui/Button'
+import SharedPagination from '../../../components/shared/Pagination'
 import { bidTypeFromWorkspace, useWorkspaceSlug } from '../../../utils/workspace'
 
 const PAGE_SIZE = 20
@@ -145,22 +146,7 @@ function Pagination({ page, total, onChange }) {
       <span className="text-xs text-outline">
         第 {page} / {totalPages} 页 · 共 {total || 0} 条
       </span>
-      <button
-        type="button"
-        onClick={() => onChange(page - 1)}
-        disabled={page <= 1}
-        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
-      >
-        上一页
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange(page + 1)}
-        disabled={page >= totalPages}
-        className="inline-flex min-h-11 items-center rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
-      >
-        下一页
-      </button>
+      <SharedPagination current={page} total={totalPages} onPageChange={onChange} />
     </div>
   )
 }
@@ -307,7 +293,6 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
             onClick={handleExportCsv}
             disabled={exporting}
             className="w-full whitespace-nowrap sm:w-28"
-            icon="download"
             size="md"
             variant="primary"
           >
@@ -423,7 +408,6 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
               type="button"
               onClick={handleApplyFilters}
               className="w-full sm:w-28"
-              icon="tune"
               size="md"
               variant="primary"
             >
@@ -459,7 +443,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-on-surface-variant">{log.time || '-'}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary-container text-xs font-bold text-on-primary">{log.userAvatar || '人'}</div>
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary-container text-xs font-semibold text-on-primary">{log.userAvatar || '人'}</div>
                         <span className="text-on-surface font-medium">{log.user || '-'}</span>
                       </div>
                     </td>
@@ -501,7 +485,6 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
               onClick={() => loadData(queryFilters, { silent: true })}
               className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
             >
-              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">refresh</span>
               刷新
             </button>
           </div>
@@ -677,7 +660,6 @@ function EventList({ eventsAPI, showToast }) {
               type="button"
               onClick={handleApplyFilters}
               className="w-full sm:w-28"
-              icon="tune"
               size="md"
               variant="primary"
             >
@@ -755,7 +737,6 @@ function EventList({ eventsAPI, showToast }) {
               onClick={() => loadData(queryFilters, page)}
               className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
             >
-              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">refresh</span>
               刷新
             </button>
           </div>
@@ -880,7 +861,6 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
               type="button"
               onClick={handleApplyFilters}
               className="w-full sm:w-28"
-              icon="tune"
               size="md"
               variant="primary"
             >
@@ -953,7 +933,6 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
               onClick={() => loadData(queryFilters, page)}
               className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-8"
             >
-              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">refresh</span>
               刷新
             </button>
           </div>
@@ -1040,7 +1019,6 @@ function SessionTimeline({ eventsAPI, sessionId, onBack }) {
           type="button"
           onClick={onBack}
           className="w-full whitespace-nowrap sm:w-36"
-          icon="arrow_back"
           size="md"
           variant="secondary"
         >

@@ -162,6 +162,68 @@ def replace_placeholders(doc, params: dict) -> int:
     return count
 
 
+# ---------- 断链图形引用清理 ----------
+
+_VML_NS = "urn:schemas-microsoft-com:vml"
+_OFFICE_NS = "urn:schemas-microsoft-com:office:office"
+_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_SVG_NS = "http://schemas.microsoft.com/office/drawing/2016/SVG/main"
+_DIAGRAM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+
+
+def _drop(element) -> bool:
+    parent = element.getparent()
+    if parent is None:
+        return False
+    parent.remove(element)
+    return True
+
+
+def sanitize_dangling_media_refs(doc) -> dict[str, int]:
+    """摘掉指向不存在关系的图形引用。
+
+    素材经 WPS 或 doc→docx 转换后常留下只有 o:title、连 r:id 都没有的空 v:imagedata。
+    docxcompose 的 add_shapes 取 r:id 时不判空，直接拿 rels[None] 取件，会让整份素材
+    以 KeyError: None 合并失败（实测每轮固定丢 2 份素材）。这类元素不指向任何图片，
+    摘掉不损失内容；父级 v:shape 保留，里面的文本框和文字原样保留。
+
+    带 o:relid 的老式写法先补成 r:id 再保留，能救回真正有图的那部分。
+    """
+    rels = doc.part.rels
+    stats = {"vml_repaired": 0, "vml_dropped": 0, "blip_dropped": 0, "diagram_dropped": 0}
+
+    for imagedata in list(doc.element.iter(f"{{{_VML_NS}}}imagedata")):
+        rid = imagedata.get(f"{{{_REL_NS}}}id")
+        if rid is not None and rid in rels:
+            continue
+        legacy = imagedata.get(f"{{{_OFFICE_NS}}}relid")
+        if rid is None and legacy and legacy in rels:
+            imagedata.set(f"{{{_REL_NS}}}id", legacy)
+            stats["vml_repaired"] += 1
+            continue
+        if _drop(imagedata):
+            stats["vml_dropped"] += 1
+
+    for tag in (f"{{{_DRAWING_NS}}}blip", f"{{{_SVG_NS}}}svgBlip"):
+        for blip in list(doc.element.iter(tag)):
+            for attr in ("embed", "link"):
+                key = f"{{{_REL_NS}}}{attr}"
+                rid = blip.get(key)
+                if rid is not None and rid not in rels:
+                    del blip.attrib[key]
+                    stats["blip_dropped"] += 1
+
+    for rel_ids in list(doc.element.iter(f"{{{_DIAGRAM_NS}}}relIds")):
+        # 四个部件缺一不可：docxcompose 会逐个取件，缺任何一个都按 rels[None] 崩掉。
+        if all(rel_ids.get(f"{{{_REL_NS}}}{item}") in rels for item in ("dm", "lo", "qs", "cs")):
+            continue
+        if _drop(rel_ids):
+            stats["diagram_dropped"] += 1
+
+    return stats
+
+
 # ---------- 清除 (新增)/(适配)/(如有) 标签 ----------
 
 _TAG_STRIP_PATTERN = re.compile(r"[（(](新增|适配|如有|可选|待定)[)）]")
@@ -185,16 +247,13 @@ def strip_tag_marks(doc) -> int:
 
 # ---------- Main ----------
 
-def preprocess(
-    in_path: Path,
-    out_path: Path,
-    params: Optional[dict] = None,
-    *,
-    verbose: bool = False,
-) -> dict:
-    doc = Document(str(in_path))
-    style_prune = prune_unused_styles(doc)
+def preprocess_doc(doc, params: Optional[dict] = None) -> dict:
+    """对已打开的素材文档就地做全部预处理。
 
+    合并链路直接用这个入口：素材只打开一次，预处理、标题映射和 section 隔离都在
+    同一份内存文档上完成，不再落中间文件反复重开。
+    """
+    style_prune = prune_unused_styles(doc)
     stats = {
         "styles_pruned": style_prune["removed"],
         # 素材标题样式在编号阶段按有效 outline/basedOn 识别，这里不再改写样式。
@@ -206,6 +265,19 @@ def preprocess(
         "tag_strip": strip_tag_marks(doc),
         "placeholder_replace": replace_placeholders(doc, params or {}),
     }
+    stats.update(sanitize_dangling_media_refs(doc))
+    return stats
+
+
+def preprocess(
+    in_path: Path,
+    out_path: Path,
+    params: Optional[dict] = None,
+    *,
+    verbose: bool = False,
+) -> dict:
+    doc = Document(str(in_path))
+    stats = preprocess_doc(doc, params)
 
     os.makedirs(os.fspath(out_path.parent), exist_ok=True)
     doc.save(str(out_path))

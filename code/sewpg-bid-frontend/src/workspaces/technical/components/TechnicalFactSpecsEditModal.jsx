@@ -159,7 +159,7 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
   return (
     <Dialog open onClose={saving ? undefined : onClose} size="full">
       <DialogHeader onClose={saving ? undefined : onClose}>
-        <h3 className="text-lg font-headline font-bold text-on-surface">编辑项目事实表清单（全局）</h3>
+        <h3 className="text-lg font-headline font-semibold text-on-surface">编辑项目事实表清单（全局）</h3>
         <p className="mt-1 text-xs text-outline">
           与 Excel 模板列一致，全局一份、所有技术标项目共用，保存后整表生效。来源文件决定取数方式：招标文件 / 项目定制 / 认证证书 / 平台输入 / 自动生成，留空表示模板占位不取数；说明里写「需确认」的字段会标记为需人工确认。
         </p>
@@ -168,7 +168,7 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
         {loadError ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
             <p className="text-sm text-error">{loadError}</p>
-            <Button type="button" size="sm" variant="quiet" icon="refresh" onClick={loadRows}>
+            <Button type="button" size="sm" variant="quiet" onClick={loadRows}>
               重试
             </Button>
           </div>
@@ -244,7 +244,7 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
       </div>
       <DialogFooter>
         <div className="mr-auto flex items-center gap-3">
-          <Button type="button" size="sm" variant="quiet" icon="add" onClick={addRow} disabled={rows === null || saving}>
+          <Button type="button" size="sm" variant="quiet" onClick={addRow} disabled={rows === null || saving}>
             新增行
           </Button>
           {rows ? <span className="text-xs text-outline">共 {rows.length} 行</span> : null}
@@ -252,7 +252,7 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
         <Button type="button" size="sm" variant="quiet" onClick={onClose} disabled={saving}>
           取消
         </Button>
-        <Button type="button" size="sm" variant="primary" icon="save" onClick={handleSave} disabled={rows === null || saving}>
+        <Button type="button" size="sm" variant="primary" onClick={handleSave} disabled={rows === null || saving}>
           {saving ? '保存中...' : '保存'}
         </Button>
       </DialogFooter>
