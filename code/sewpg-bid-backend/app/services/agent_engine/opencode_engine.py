@@ -10,7 +10,14 @@ from typing import Any, Callable
 
 import httpx
 
-from app.core.config import settings
+from app.core.config import (
+    OPENCODE_CONNECT_TIMEOUT_SEC,
+    OPENCODE_RUN_READ_GRACE_SEC,
+    opencode_auth_headers,
+    resolve_opencode_idle_timeout_sec,
+    resolve_opencode_read_timeout_sec,
+    settings,
+)
 from app.services.agent_engine import errors as engine_errors
 from app.services.agent_engine import json_utils
 from app.services.agent_engine import orchestrator as agent_orchestrator
@@ -22,6 +29,7 @@ from app.services.agent_engine.base import (
     iter_completed_bash_tool_events,
 )
 from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
+from app.services.agent_engine.monitor import SessionMonitor
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.system_settings import opencode_llm_config_active, system_settings_service
 
@@ -71,8 +79,9 @@ class OpencodeEngine:
     进程型引擎（codex/pi）进程池也并入该预算，总并发恒 ≤ `AGENT_CONCURRENCY_BUDGET`。
 
     A1（engine-02）后本类只剩引擎/传输层职责（改造方案 §1 A 层）：
-    会话生命周期、轮询监管（idle 超时/心跳/取消）、「bash 工具完成」事件检测与
-    提前收割框架、输出留痕。全部业务编排（`run_bid_*` / `_extract_*_json` /
+    会话生命周期、轮询循环、「bash 工具完成」事件检测与提前收割框架、输出留痕；
+    监管时钟（idle 超时/心跳/断线补偿）与取消判定复用
+    `agent_engine/monitor.py` 的 `SessionMonitor`（方案 §5）。全部业务编排（`run_bid_*` / `_extract_*_json` /
     finalize 判定 / stall 报错）已上移到 `agent_engine/orchestrator.py`，
     本类以同名委托保留对外方法名与签名（B1 起为 async）。
 
@@ -114,8 +123,13 @@ class OpencodeEngine:
         self.provider_id = str(provider_id or (config.get("providerId") if db_active else "") or settings.opencode_provider_id)
         self.model_id = str(model_id or ((config.get("modelId") or config.get("model")) if db_active else "") or settings.opencode_model_id)
         raw_timeout_ms = timeout_ms if timeout_ms is not None else config.get("timeoutMs")
-        timeout_sec = max(1.0, float(raw_timeout_ms or settings.opencode_timeout_sec * 1000) / 1000)
-        self.timeout = httpx.Timeout(timeout_sec, connect=10.0)
+        # harness-07：read 超时由统一推导点解析（系统设置页 timeoutMs 为入口，
+        # 未配置时回退 OPENCODE_TIMEOUT_SEC，公式见 app/core/config.py）。
+        self.read_timeout_sec = resolve_opencode_read_timeout_sec(raw_timeout_ms)
+        self.timeout = httpx.Timeout(self.read_timeout_sec, connect=OPENCODE_CONNECT_TIMEOUT_SEC)
+        # engine-10：OPENCODE_SERVER_PASSWORD 非空时所有请求带 Basic 鉴权头；
+        # 空密码（本地默认）为空 dict，请求形态与无鉴权现状完全一致。
+        self._auth_headers = opencode_auth_headers()
         self._request_slots = (
             request_slots if request_slots is not None else _OPENCODE_REQUEST_SLOTS
         )
@@ -130,7 +144,7 @@ class OpencodeEngine:
         for attempt in range(len(_SESSION_CREATE_RETRY_DELAYS_SEC) + 1):
             try:
                 async with self._request_slot():
-                    async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
+                    async with httpx.AsyncClient(timeout=self.timeout, trust_env=False, headers=self._auth_headers) as client:
                         response = await client.post(
                             f"{self.base_url}/session",
                             json={"title": title},
@@ -235,7 +249,7 @@ class OpencodeEngine:
             try:
                 # Queue before creating the HTTP client so waiting does not consume the model timeout.
                 async with self._request_slot():
-                    async with httpx.AsyncClient(timeout=timeout or self.timeout, trust_env=False) as client:
+                    async with httpx.AsyncClient(timeout=timeout or self.timeout, trust_env=False, headers=self._auth_headers) as client:
                         response = await client.post(
                             f"{self.base_url}/session/{session_id}/message",
                             json=payload,
@@ -265,6 +279,15 @@ class OpencodeEngine:
                     raise RuntimeError(
                         f"futurecode 生成失败：连接未建立（session {session_id}，已重发 {max_retries} 次）："
                         f"{self._short_http_error(exc)}"
+                    ) from exc
+                # 4xx（除 408/429 瞬态）= 服务端确定性拒绝：prompt 未进入执行，
+                # 不存在「投递不确定」，直接失败并说清是服务端拒绝（engine-04 P3-1）。
+                if engine_errors.is_definitive_rejection(exc):
+                    assert isinstance(exc, httpx.HTTPStatusError)
+                    raise RuntimeError(
+                        f"futurecode 生成失败：服务端拒绝请求（HTTP {exc.response.status_code}，"
+                        f"session {session_id}）：{self._short_http_error(exc)}。"
+                        f"prompt 被服务端明确拒收、未进入执行，请修正请求后重试。"
                     ) from exc
                 # 送达状态不确定：禁止自动重发（重复执行风险），显式报错保留上下文。
                 if isinstance(exc, httpx.TimeoutException):
@@ -415,9 +438,6 @@ class OpencodeEngine:
     async def run_bid_tech_gap_planner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return await self._orchestrator.run_bid_tech_gap_planner_with_trace(*args, **kwargs)
 
-    async def run_bid_tech_tag_importer_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self._orchestrator.run_bid_tech_tag_importer_with_trace(*args, **kwargs)
-
     async def run_bid_business_gap_planner_with_trace(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         return await self._orchestrator.run_bid_business_gap_planner_with_trace(*args, **kwargs)
 
@@ -461,7 +481,7 @@ class OpencodeEngine:
         误计为模型停滞。需要尽力而为语义的调用方用 `_best_effort_messages`；
         轮询监管链路用 `_poll_session_messages`（断线重连 + 断线耗时上报）。
         """
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False, headers=self._auth_headers) as client:
             response = await client.get(f"{self.base_url}/session/{session_id}/message")
             response.raise_for_status()
             payload = response.json()
@@ -513,7 +533,7 @@ class OpencodeEngine:
             # 切片 sleep 保取消响应：断线重连窗口内取消延迟不超过 0.5s。
             remaining = delay
             while remaining > 0:
-                if cancel_check is not None and cancel_check():
+                if SessionMonitor.should_cancel(cancel_check):
                     return [], time.monotonic() - disconnected_started
                 step = min(0.5, remaining)
                 await asyncio.sleep(step)
@@ -538,7 +558,7 @@ class OpencodeEngine:
         if not session_id:
             return False
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False, headers=self._auth_headers) as client:
                 response = await client.post(f"{self.base_url}/session/{session_id}/abort")
                 response.raise_for_status()
                 if not response.text.strip():
@@ -557,7 +577,7 @@ class OpencodeEngine:
         if not session_id:
             return
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=5.0), trust_env=False, headers=self._auth_headers) as client:
                 response = await client.delete(f"{self.base_url}/session/{session_id}")
             if response.status_code == 404:
                 return
@@ -624,11 +644,15 @@ class OpencodeEngine:
         )
 
         idle_timeout = self._session_polling_idle_timeout()
-        # 轮询监管的长任务：阻塞 message 请求的读超时不得短于轮询 idle 监管时限。
+        # 轮询监管的长任务：总超时（阻塞 message 请求的读超时）按显式公式
+        # max(read, idle + 60s 收尾宽限) 推导（harness-07，见 app/core/config.py）。
         # 系统设置的 timeoutMs（默认 30s）若直接作用于这里，脚本/生成阶段 HTTP 层先超时，
         # 后端 400 返回而 futurecode 会话仍在后台运行，产物（如事实表建议文件）无人回收。
         configured_read = float(self.timeout.read or 0.0)
-        run_timeout = httpx.Timeout(max(configured_read, idle_timeout + 60.0), connect=10.0)
+        run_timeout = httpx.Timeout(
+            max(configured_read, idle_timeout + OPENCODE_RUN_READ_GRACE_SEC),
+            connect=OPENCODE_CONNECT_TIMEOUT_SEC,
+        )
 
         async def worker() -> None:
             # 原 daemon 线程的 asyncio task 形态：异常收进 error_holder 由主协程抛出，
@@ -645,7 +669,7 @@ class OpencodeEngine:
 
         async def raise_if_cancelled() -> None:
             nonlocal abort_sent
-            if cancel_check is None or not cancel_check():
+            if not SessionMonitor.should_cancel(cancel_check):
                 return
             if not abort_sent:
                 abort_sent = True
@@ -657,25 +681,18 @@ class OpencodeEngine:
             raise ParseCancelledError("解析已取消。")
 
         command_label = early_completion.display_label if early_completion is not None else ""
-        progress_started_at = time.monotonic()
+        # 监管时钟（idle/心跳/断线补偿）复用 SessionMonitor（方案 §5）；语义不变。
+        monitor = SessionMonitor(
+            idle_timeout=idle_timeout,
+            heartbeat_interval=OPENCODE_PROGRESS_HEARTBEAT_SECONDS,
+        )
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
-        last_activity = progress_started_at
-        last_heartbeat = last_activity
-        heartbeat_index = 0
-
-        def apply_disconnect(disconnected: float) -> None:
-            # 断线时间不计入 idle：重连耗时加回活动/心跳时钟，
-            # 「opencode 服务重启」不被误判成「模型 stall」。
-            nonlocal last_activity, last_heartbeat
-            if disconnected > 0:
-                last_activity += disconnected
-                last_heartbeat += disconnected
 
         while not await self._wait_worker_stop(worker_task, 0.5):
             await raise_if_cancelled()
             previous_signature = last_signature
             messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
-            apply_disconnect(disconnected)
+            monitor.apply_disconnect(disconnected)
             snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
             if stream_callback is not None:
                 last_signature = self._emit_session_output_delta_from_snapshot(
@@ -683,34 +700,26 @@ class OpencodeEngine:
                     snapshot,
                     stream_callback,
                     last_signature,
-                    elapsed_seconds=time.monotonic() - progress_started_at,
+                    elapsed_seconds=monitor.elapsed_seconds(),
                 )
             elif early_completion is not None:
                 signature = snapshot.get("signature")
                 if signature is not None:
                     last_signature = signature
             if last_signature != previous_signature:
-                last_activity = time.monotonic()
-                last_heartbeat = last_activity
-                heartbeat_index = 0
+                monitor.note_progress()
             else:
-                now = time.monotonic()
-                if (
-                    stream_callback is not None
-                    and now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS
-                ):
-                    heartbeat_index += 1
+                if stream_callback is not None and monitor.heartbeat_due():
                     self._emit_session_progress_heartbeat(
                         session_id=session_id,
                         stream_callback=stream_callback,
                         snapshot=snapshot,
-                        idle_seconds=now - last_activity,
-                        elapsed_seconds=now - progress_started_at,
-                        heartbeat_index=heartbeat_index,
+                        idle_seconds=monitor.idle_seconds(),
+                        elapsed_seconds=monitor.elapsed_seconds(),
+                        heartbeat_index=monitor.take_heartbeat(),
                         early_tool_command=command_label,
                     )
-                    last_heartbeat = now
-                if now - last_activity > idle_timeout:
+                if monitor.is_idle_timeout():
                     if not abort_sent:
                         abort_sent = True
                         aborted = await self.abort_session(session_id)
@@ -734,7 +743,7 @@ class OpencodeEngine:
                     )
             if early_completion is not None and tool_completed is not None:
                 messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
-                apply_disconnect(disconnected)
+                monitor.apply_disconnect(disconnected)
                 self._raise_session_error_if_present(session_id, messages)
                 completed_event = self._find_early_completion_event(messages, tool_completed)
                 if completed_event is not None:
@@ -752,14 +761,14 @@ class OpencodeEngine:
                         completion_source=early_completion.completion_source,
                         stream_callback=stream_callback,
                         elapsed_seconds=(
-                            time.monotonic() - progress_started_at
+                            monitor.elapsed_seconds()
                             if early_completion.include_elapsed_in_loop
                             else None
                         ),
                     )
             if early_completion is not None and early_completion.on_assistant_stopped is not None:
                 messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
-                apply_disconnect(disconnected)
+                monitor.apply_disconnect(disconnected)
                 if self._session_messages_show_assistant_stop(messages):
                     await self._stop_session_after_early_completion(
                         session_id,
@@ -776,7 +785,7 @@ class OpencodeEngine:
                     )
             if assistant_stop_validator is not None:
                 messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
-                apply_disconnect(disconnected)
+                monitor.apply_disconnect(disconnected)
                 self._raise_session_error_if_present(session_id, messages)
                 if self._session_messages_show_assistant_stop(messages):
                     await self.abort_session(session_id)
@@ -825,21 +834,18 @@ class OpencodeEngine:
                         stream_callback=stream_callback,
                     )
                 if self._last_tool_is_running(self._last_tool_trace(messages)):
-                    stalled_until = time.monotonic() + idle_timeout
+                    # 宽限等待有自己的监管时钟：deadline 从进入宽限起算，
+                    # 断线耗时经 apply_disconnect 加回（不计入 idle）。
+                    grace_monitor = SessionMonitor(
+                        idle_timeout=idle_timeout,
+                        heartbeat_interval=OPENCODE_PROGRESS_HEARTBEAT_SECONDS,
+                    )
                     last_signature = self._get_session_output_snapshot_from_messages(session_id, messages).get("signature")
-                    last_activity = 0.0
-                    last_heartbeat = 0.0
-                    if stream_callback is not None:
-                        last_activity = time.monotonic()
-                        last_heartbeat = last_activity
-                    heartbeat_index = 0
-                    while time.monotonic() < stalled_until:
+                    while time.monotonic() < grace_monitor.deadline():
                         await raise_if_cancelled()
                         await asyncio.sleep(0.5)
                         messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
-                        apply_disconnect(disconnected)
-                        if disconnected > 0:
-                            stalled_until += disconnected
+                        grace_monitor.apply_disconnect(disconnected)
                         self._raise_session_error_if_present(session_id, messages)
                         completed_event = self._find_early_completion_event(messages, tool_completed)
                         if completed_event is not None:
@@ -850,17 +856,13 @@ class OpencodeEngine:
                                 trace_text=early_completion.immediate_trace_text,
                                 completion_source=early_completion.completion_source,
                                 stream_callback=stream_callback,
-                                elapsed_seconds=time.monotonic() - progress_started_at,
+                                elapsed_seconds=monitor.elapsed_seconds(),
                             )
                         snapshot = self._get_session_output_snapshot_from_messages(session_id, messages)
                         signature = snapshot.get("signature")
                         if signature != last_signature:
-                            stalled_until = time.monotonic() + idle_timeout
                             last_signature = signature
-                            heartbeat_index = 0
-                            if stream_callback is not None:
-                                last_activity = time.monotonic()
-                                last_heartbeat = last_activity
+                            grace_monitor.note_progress()
                             if stream_callback is not None:
                                 stream_callback(
                                     {
@@ -870,23 +872,19 @@ class OpencodeEngine:
                                         "modelId": self.model_id,
                                         "receivedAt": snapshot["receivedAt"],
                                         "parts": snapshot["parts"],
-                                        "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
+                                        "elapsedSeconds": max(0, int(monitor.elapsed_seconds())),
                                     }
                                 )
-                        elif stream_callback is not None:
-                            now = time.monotonic()
-                            if now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS:
-                                heartbeat_index += 1
-                                self._emit_session_progress_heartbeat(
-                                    session_id=session_id,
-                                    stream_callback=stream_callback,
-                                    snapshot=snapshot,
-                                    idle_seconds=now - last_activity,
-                                    elapsed_seconds=now - progress_started_at,
-                                    heartbeat_index=heartbeat_index,
-                                    early_tool_command=command_label,
-                                )
-                                last_heartbeat = now
+                        elif stream_callback is not None and grace_monitor.heartbeat_due():
+                            self._emit_session_progress_heartbeat(
+                                session_id=session_id,
+                                stream_callback=stream_callback,
+                                snapshot=snapshot,
+                                idle_seconds=grace_monitor.idle_seconds(),
+                                elapsed_seconds=monitor.elapsed_seconds(),
+                                heartbeat_index=grace_monitor.take_heartbeat(),
+                                early_tool_command=command_label,
+                            )
                         if not self._last_tool_is_running(self._last_tool_trace(messages)):
                             break
                     if self._last_tool_is_running(self._last_tool_trace(messages)):
@@ -902,7 +900,7 @@ class OpencodeEngine:
                 idle_timeout=idle_timeout,
                 stream_callback=stream_callback,
                 cancel_check=cancel_check,
-                progress_started_at=progress_started_at,
+                progress_started_at=monitor.started_at,
                 plan=early_completion,
             )
             if pending_response:
@@ -915,7 +913,7 @@ class OpencodeEngine:
                 session_id,
                 stream_callback,
                 last_signature,
-                elapsed_seconds=time.monotonic() - progress_started_at,
+                elapsed_seconds=monitor.elapsed_seconds(),
             )
         await worker_task
         await raise_if_cancelled()
@@ -943,26 +941,22 @@ class OpencodeEngine:
         )
         messages: list[dict[str, Any]] = []
         last_signature: tuple[str, tuple[tuple[str, str], ...]] | None = None
-        deadline = time.monotonic() + idle_timeout
+        # 监管时钟复用 SessionMonitor（方案 §5）：deadline = last_activity + idle_timeout，
+        # 断线耗时经 apply_disconnect 加回（断线不计入 idle/deadline）。
+        monitor = SessionMonitor(
+            idle_timeout=idle_timeout,
+            heartbeat_interval=OPENCODE_PROGRESS_HEARTBEAT_SECONDS,
+        )
         if progress_started_at is None:
-            progress_started_at = time.monotonic()
-        last_activity = 0.0
-        last_heartbeat = 0.0
-        if stream_callback is not None:
-            last_activity = time.monotonic()
-            last_heartbeat = last_activity
-        heartbeat_index = 0
+            progress_started_at = monitor.started_at
 
-        while time.monotonic() < deadline:
-            if cancel_check is not None and cancel_check():
+        while time.monotonic() < monitor.deadline():
+            if SessionMonitor.should_cancel(cancel_check):
                 await self.abort_session(session_id)
                 raise ParseCancelledError("解析已取消。")
             messages, disconnected = await self._poll_session_messages(session_id, cancel_check)
-            if disconnected > 0:
-                # 断线时间不计入 idle/deadline：服务重启不被误判成模型 stall。
-                deadline += disconnected
-                last_activity += disconnected
-                last_heartbeat += disconnected
+            # 断线时间不计入 idle/deadline：服务重启不被误判成模型 stall。
+            monitor.apply_disconnect(disconnected)
             self._raise_session_error_if_present(session_id, messages)
             completed_event = (
                 self._find_early_completion_event(messages, tool_completed)
@@ -999,11 +993,7 @@ class OpencodeEngine:
             signature = snapshot.get("signature")
             if signature != last_signature:
                 last_signature = signature
-                deadline = time.monotonic() + idle_timeout
-                heartbeat_index = 0
-                if stream_callback is not None:
-                    last_activity = time.monotonic()
-                    last_heartbeat = last_activity
+                monitor.note_progress()
                 if stream_callback is not None:
                     stream_callback(
                         {
@@ -1016,20 +1006,16 @@ class OpencodeEngine:
                             "elapsedSeconds": max(0, int(time.monotonic() - progress_started_at)),
                         }
                     )
-            elif stream_callback is not None:
-                now = time.monotonic()
-                if now - last_heartbeat >= OPENCODE_PROGRESS_HEARTBEAT_SECONDS:
-                    heartbeat_index += 1
-                    self._emit_session_progress_heartbeat(
-                        session_id=session_id,
-                        stream_callback=stream_callback,
-                        snapshot=snapshot,
-                        idle_seconds=now - last_activity,
-                        elapsed_seconds=now - progress_started_at,
-                        heartbeat_index=heartbeat_index,
-                        early_tool_command=plan.display_label,
-                    )
-                    last_heartbeat = now
+            elif stream_callback is not None and monitor.heartbeat_due():
+                self._emit_session_progress_heartbeat(
+                    session_id=session_id,
+                    stream_callback=stream_callback,
+                    snapshot=snapshot,
+                    idle_seconds=monitor.idle_seconds(),
+                    elapsed_seconds=time.monotonic() - progress_started_at,
+                    heartbeat_index=monitor.take_heartbeat(),
+                    early_tool_command=plan.display_label,
+                )
             await asyncio.sleep(0.5)
 
         if plan.on_idle_stalled is not None:
@@ -1298,8 +1284,8 @@ class OpencodeEngine:
     @staticmethod
     def _session_polling_idle_timeout(early_tool_command: str = "") -> float:
         # early_tool_command 形参仅为兼容保留（现状从不区分命令取值），A1 后不传。
-        timeout = max(120.0, min(float(settings.opencode_timeout_sec), 900.0))
-        return timeout
+        # harness-07：idle 超时走统一推导点（clamp(OPENCODE_TIMEOUT_SEC, 120, 900)）。
+        return resolve_opencode_idle_timeout_sec()
 
     def _build_tool_stalled_trace(
         self,

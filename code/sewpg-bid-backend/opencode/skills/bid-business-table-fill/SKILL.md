@@ -31,6 +31,7 @@ allowed-tools: [Read, Bash, Write]
 
 调用通道：
 
+- 阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`。
 - 后端优先通过 futurecode（OpenCode）会话执行命令 `businesstablefill <manifest>`（容器内 wrapper，等价于下面的本地命令），失败时自动回退本地 runner。
 
 ```bash

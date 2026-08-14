@@ -23,7 +23,6 @@ from app.services.onlyoffice_documents import (
     document_object_key,
     download_document_from_onlyoffice,
     ensure_document,
-    refresh_document_session,
     sync_document_to_minio,
     write_document,
 )
@@ -272,20 +271,6 @@ class BidDocumentService:
         sync_document_to_minio(doc_path, document_object_key(project_id))
         response_payload = self.build_document_payload(project_id, request, payload)
         return now_message("文档已保存并回写。", response_payload)
-
-    async def force_save_document(self, project_id: str, request: Request) -> dict[str, Any]:
-        project = self.require_project_for_update(project_id)
-        state = force_save_document_state(project, project_id)
-        persist_workspace_project_state(project)
-        doc_path = ensure_document(
-            project_id,
-            state["fileName"],
-            state["fallback"]["content"],
-        )
-        refresh_document_session(doc_path)
-        sync_document_to_minio(doc_path, document_object_key(project_id))
-        payload = self.build_document_payload(project_id, request, state)
-        return now_message("已刷新文档状态。", payload)
 
     async def final_document(self, project_id: str, request: Request) -> dict[str, Any]:
         project = self.ensure_project(project_id)

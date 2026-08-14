@@ -20,6 +20,8 @@ from app.services.business_s1_handoff import business_s1_parse_result
 from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.onlyoffice_documents import document_path
+from app.services.agent_engine.factory import AgentEngineFactory
+# 模块符号保留：既有测试经它 patch 类方法（默认引擎实际经 AgentEngineFactory 创建）。
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.file_utils import run_awaitable_sync
 from app.services.bid_runtime_state import now_iso
@@ -703,7 +705,9 @@ def _run_business_format_cleaner_manifest(
 ) -> dict[str, Any]:
     prompt = _build_business_format_cleaner_prompt(manifest_path)
     try:
-        return run_awaitable_sync(OpencodeEngine().run_bid_business_format_cleaner_with_trace(
+        # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）；
+        # 保留 OpencodeEngine 门面调用——既有测试经模块符号 patch 该类方法。
+        return run_awaitable_sync(AgentEngineFactory.create().run_bid_business_format_cleaner_with_trace(
             prompt,
             session_ready_callback=(
                 (lambda details: progress_callback("format_cleaner_session_ready", details))

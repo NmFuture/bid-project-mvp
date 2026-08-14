@@ -26,8 +26,6 @@ from app.services.material_certificate_time import (
 )
 from app.services.material_auto_tags import build_auto_tag_items
 from app.services.material_tags import GENERIC_MODEL_TAG
-from app.services.material_tag_import import build_preview, parse_tag_excel, same_name_file_ids
-from app.services.material_tag_import_fuzzy import run_tag_import_fuzzy_match
 from app.services.peripheral import PeripheralError
 from app.services.scoped_material_urls import rewrite_material_urls
 from app.services.technical_material_paths import (
@@ -44,12 +42,6 @@ from app.services.turbine_models import is_valid_turbine_model, material_model_f
 logger = logging.getLogger(__name__)
 
 
-def technical_material_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(data or {})
-    payload["bidType"] = TECHNICAL_BID_TYPE
-    return payload
-
-
 def _technical_tree(payload: dict[str, Any]) -> dict[str, Any]:
     tree = [
         item
@@ -63,18 +55,6 @@ def _force_technical_tree(payload: dict[str, Any]) -> dict[str, Any]:
     if "tree" not in payload:
         return payload
     return _technical_tree(payload)
-
-
-def _collect_wiki_ids(nodes: list[dict[str, Any]]) -> set[str]:
-    visible: set[str] = set()
-    stack = list(nodes)
-    while stack:
-        node = stack.pop()
-        node_id = str(node.get("id") or "")
-        if node_id:
-            visible.add(node_id)
-        stack.extend(list(node.get("children") or []))
-    return visible
 
 
 class TechnicalMaterialStore:
@@ -125,13 +105,6 @@ class TechnicalMaterialStore:
         )
         if not any(str(item.get("id") or "") == file_id for item in payload.get("items") or []):
             raise PeripheralError(400, "该文件不属于技术标素材库。", "TECHNICAL_RAW_FILE_SCOPE")
-
-    async def _ensure_wiki_node(self, node_id: str, label: str = "Wiki 节点") -> None:
-        if not node_id:
-            return
-        payload = await material_store.wiki_list("", TECHNICAL_BID_TYPE)
-        if node_id not in _collect_wiki_ids(list(payload.get("tree") or [])):
-            raise PeripheralError(400, f"{label}不属于技术标 Wiki。", "TECHNICAL_WIKI_NODE_SCOPE")
 
     async def identity_options(self) -> dict[str, Any]:
         # 技术标「项目来源」只列素材库里已成型的项目目录，不含尚未落地的解析草稿；
@@ -432,101 +405,6 @@ class TechnicalMaterialStore:
             page_size=100000,
         )
         return list(payload.get("items") or [])
-
-    async def raw_tag_import_preview(
-        self,
-        *,
-        target_path: str,
-        file_bytes: bytes,
-        use_fuzzy: bool = False,
-        import_mode: str = "merge",
-    ) -> dict[str, Any]:
-        mode = "overwrite" if import_mode == "overwrite" else "merge"
-        normalized_target = self.ensure_root_path(target_path, "目标目录")
-        rows = parse_tag_excel(file_bytes)
-        files = await self._raw_subtree_files(normalized_target)
-        files = (await self._with_current_index_tags({"items": files})).get("items") or []
-        preview = build_preview(rows, files, mode=mode)
-        preview["targetPath"] = normalized_target
-        preview["importMode"] = mode
-        preview["fuzzyAvailable"] = False
-        if use_fuzzy and preview.get("unmatched"):
-            preview = await self._augment_with_fuzzy(preview, files, mode=mode)
-        return preview
-
-    async def _augment_with_fuzzy(
-        self,
-        preview: dict[str, Any],
-        files: list[dict[str, Any]],
-        *,
-        mode: str = "merge",
-    ) -> dict[str, Any]:
-        """对 unmatched 行调用 opencode 模糊匹配 skill；失败则降级不阻断。"""
-
-        try:
-            fuzzy = await run_tag_import_fuzzy_match(
-                unmatched=preview.get("unmatched") or [],
-                candidates=files,
-                mode=mode,
-            )
-        except Exception as exc:  # pragma: no cover - 降级路径
-            preview["fuzzyAvailable"] = False
-            preview["fuzzyError"] = str(exc)
-            return preview
-
-        preview["fuzzy"] = fuzzy or []
-        preview["fuzzyAvailable"] = True
-        return preview
-
-    async def raw_tag_import_commit(
-        self,
-        *,
-        items: list[dict[str, Any]],
-        target_path: str = "",
-        import_mode: str = "merge",
-    ) -> dict[str, Any]:
-        merge_tags = str(import_mode or "").strip().lower() != "overwrite"
-        succeeded: list[dict[str, Any]] = []
-        failed: list[dict[str, Any]] = []
-        # applyToAllMatches 行需要按目标子树解析同名文件；惰性加载，避免普通导入多扫一次库
-        subtree_files: list[dict[str, Any]] | None = None
-        for item in items or []:
-            file_id = str(item.get("fileId") or "")
-            tags = item.get("tags")
-            if item.get("applyToAllMatches"):
-                # 跨机型批量应用：该行标签写入目标子树内所有同名文件（含原选定文件）
-                file_name = str(item.get("fileName") or "")
-                if subtree_files is None:
-                    normalized_target = self.ensure_root_path(target_path, "目标目录")
-                    subtree_files = await self._raw_subtree_files(normalized_target)
-                target_ids = same_name_file_ids(subtree_files, file_name)
-                if not target_ids:
-                    failed.append({"fileId": file_id, "fileName": file_name, "message": "目标目录内未找到同名文件。"})
-                    continue
-            elif file_id:
-                target_ids = [file_id]
-            else:
-                failed.append({"fileId": file_id, "message": "缺少文件 ID。"})
-                continue
-            for target_id in target_ids:
-                try:
-                    # overwrite 模式走 merge=False，用 preview 给出的 mergedTags 替换当前真值
-                    updated = await self.set_index_tags(target_id, tags, merge=merge_tags)
-                    succeeded.append(
-                        {
-                            "fileId": target_id,
-                            "name": str(updated.get("name") or ""),
-                            "tags": updated.get("tags") or [],
-                        }
-                    )
-                except PeripheralError as exc:
-                    failed.append({"fileId": target_id, "message": exc.detail})
-                except Exception as exc:  # pragma: no cover - 兜底
-                    failed.append({"fileId": target_id, "message": str(exc)})
-        message = f"标签导入完成：成功 {len(succeeded)} 个" + (
-            f"，失败 {len(failed)} 个" if failed else ""
-        )
-        return {"message": message, "succeeded": succeeded, "failed": failed}
 
     async def raw_auto_tag_apply(self, *, target_path: str) -> dict[str, Any]:
         """一键自动打标签：按目录结构（机型/类别/子类）推导标签并合并写入。
@@ -837,26 +715,6 @@ class TechnicalMaterialStore:
 
     async def wiki_list(self, node_id: str = "") -> dict[str, Any]:
         return self._with_urls(await material_store.wiki_list(node_id, TECHNICAL_BID_TYPE))
-
-    async def wiki_create(self, *, parent_id: str, title: str, is_folder: bool) -> dict[str, Any]:
-        await self._ensure_wiki_node(parent_id, "父级 Wiki 节点")
-        return self._with_urls(await material_store.wiki_create(
-            parent_id=parent_id,
-            title=title,
-            is_folder=is_folder,
-            bid_type=TECHNICAL_BID_TYPE,
-        ))
-
-    async def wiki_update(self, node_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        payload = technical_material_payload(data)
-        if "applicableTypes" in payload:
-            payload["applicableTypes"] = [TECHNICAL_BID_TYPE]
-        return self._with_urls(await material_store.wiki_update(node_id, payload, TECHNICAL_BID_TYPE))
-
-    async def wiki_delete(self, node_id: str) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        return self._with_urls(await material_store.wiki_delete(node_id, TECHNICAL_BID_TYPE))
 
     async def import_generated_wiki_blueprint(
         self,

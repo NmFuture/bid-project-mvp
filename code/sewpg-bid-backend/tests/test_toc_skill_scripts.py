@@ -1118,7 +1118,11 @@ class TocSkillScriptTests(unittest.TestCase):
                 outline_runner.finalize_manifest(manifest, manifest_path)
 
     def test_bid_outline_docker_command_exposes_review_navigation(self) -> None:
-        dockerfile = (BACKEND_ROOT / "opencode" / "Dockerfile").read_text(encoding="utf-8")
+        # harness-09：wrapper 改由 entrypoint 按 skills/commands.json 运行时生成，
+        # 这里直接校验注册表条目；生成行为由 test_skill_command_registration.py 覆盖。
+        registry_path = BACKEND_ROOT / "opencode" / "skills" / "commands.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        entries = {entry["name"]: entry for entry in registry["commands"]}
 
         commands = (
             "prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|"
@@ -1127,9 +1131,13 @@ class TocSkillScriptTests(unittest.TestCase):
             "appendix-predecision-batch|review-complete|decisions|compose|"
             "validate|status|finalize"
         )
-        self.assertIn(f"  {commands}) ;;", dockerfile)
-        self.assertIn(f"usage: s2outline [{commands}] <manifest> [...]", dockerfile)
-        self.assertIn('run_from_manifest.py --require-compose "$@"', dockerfile)
+        entry = entries["s2outline"]
+        self.assertEqual("|".join(entry["subcommands"]), commands)
+        self.assertEqual(entry["usage"], f"s2outline [{commands}] <manifest> [...]")
+        self.assertEqual(entry["prefix_args"], ["--require-compose"])
+        self.assertEqual(
+            entry["script"], "bid-tech-outline-generator/scripts/run_from_manifest.py"
+        )
 
     def test_bid_outline_template_headings_pages_complete_template_structure(self) -> None:
         outline_runner = load_outline_script("run_from_manifest")

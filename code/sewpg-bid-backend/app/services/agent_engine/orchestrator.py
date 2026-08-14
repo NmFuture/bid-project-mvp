@@ -829,20 +829,6 @@ class AgentOrchestrator:
             extractor=self._extract_gap_plan_json,
         )
 
-    async def run_bid_tech_tag_importer_with_trace(
-        self,
-        prompt_text: str,
-        session_ready_callback: Callable[[dict[str, Any]], None] | None = None,
-        stream_callback: Callable[[dict[str, Any]], None] | None = None,
-    ) -> dict[str, Any]:
-        return await self._run_traced_session(
-            session_title="技术标标签导入·模糊匹配",
-            prompt_text=prompt_text,
-            session_ready_callback=session_ready_callback,
-            stream_callback=stream_callback,
-            extractor=self._extract_tag_match_json,
-        )
-
     async def run_bid_business_gap_planner_with_trace(
         self,
         prompt_text: str,
@@ -1159,16 +1145,6 @@ class AgentOrchestrator:
             and not isinstance(parsed.get("items"), list)
         ):
             raise RuntimeError("futurecode 返回的缺口识别 JSON 结构不正确。")
-        return parsed
-
-    async def _extract_tag_match_json(self, response: dict[str, Any]) -> dict[str, Any]:
-        parsed = await self._extract_json_response(
-            response,
-            empty_message="futurecode 未返回标签模糊匹配结果。",
-            repair_kind="gap_plan",
-        )
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("matches"), list):
-            raise RuntimeError("futurecode 返回的标签匹配 JSON 结构不正确。")
         return parsed
 
     async def _extract_tender_parse_json(self, response: dict[str, Any]) -> dict[str, Any]:

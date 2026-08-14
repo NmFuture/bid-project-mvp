@@ -162,7 +162,10 @@ def _artifact_block_reason(artifact: dict[str, Any]) -> str:
         return "标记为未就绪：待填写模板尚未填完，或质检未通过"
     quality_report = artifact.get("qualityReport") if isinstance(artifact.get("qualityReport"), dict) else {}
     status = str(quality_report.get("status") or "")
-    unfilled = quality_report.get("unfilledPlaceholderCount")
+    # v1 质检报告（technical_gap_ai_fill._build_fill_quality_report）产出的真实字段是
+    # unfilledFieldCount / residualPlaceholderCount；历史误读的 unfilledPlaceholderCount
+    # 报告从不产出，恒为 undefined，未填字段数永远拼不进提示。
+    unfilled = quality_report.get("unfilledFieldCount") or quality_report.get("residualPlaceholderCount")
     detail = f"质检状态 {status or '缺失'}"
     if unfilled:
         detail += f"，{unfilled} 项未填字段"

@@ -19,6 +19,8 @@ manifest 必须包含：
 
 ## 执行命令
 
+阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`；容器内受控入口为 `businessformat <manifest>`（manifest 为位置参数）。
+
 ```bash
 python scripts/run_from_manifest.py examples/minimal_manifest.json --response summary
 ```

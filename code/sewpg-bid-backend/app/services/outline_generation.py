@@ -384,6 +384,7 @@ def _run_outline_appendix_session(
         emit_appendix_progress(int(snapshot.get("decidedCount") or 0))
 
     emit_appendix_progress(0)
+    # 保留直建：显式传 opencode 专有 timeout_ms（覆盖 DB timeoutMs 默认），非「只要默认引擎」。
     result = run_awaitable_sync(OpencodeEngine(
         timeout_ms=int(settings.opencode_timeout_sec * 1000),
     ).run_outline_decision_session(
@@ -578,6 +579,7 @@ def _run_parallel_outline_chapters(
                     return
                 aggregator.update(chapter_id, int(snapshot.get("decidedCount") or 0))
 
+        # 保留直建：章节并行按 base_url 分发到多个 opencode 实例（专有构造参数 base_url/timeout_ms/model_config/request_slots）。
         result = run_awaitable_sync(OpencodeEngine(
             base_url=chapter_base_urls[chapter_indexes[chapter_id] % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
@@ -625,6 +627,7 @@ def _run_parallel_outline_chapters(
             aggregator.update_appendix(int(snapshot.get("decidedCount") or 0))
 
         aggregator.update_appendix(0)
+        # 保留直建：附表并行预判按 base_url 分发到多个 opencode 实例（专有构造参数 base_url/timeout_ms/model_config/request_slots）。
         result = run_awaitable_sync(OpencodeEngine(
             base_url=chapter_base_urls[len(chapters) % len(chapter_base_urls)],
             timeout_ms=int(settings.opencode_timeout_sec * 1000),
@@ -994,6 +997,7 @@ def _run_outline_skill(
                 )
                 progress_callback("outline_delta", callback_details)
 
+            # 保留直建：显式传 opencode 专有 timeout_ms（覆盖 DB timeoutMs 默认），非「只要默认引擎」。
             generated = run_awaitable_sync(OpencodeEngine(
                 timeout_ms=int(settings.opencode_timeout_sec * 1000)
             ).generate_outline_with_trace(
@@ -1049,6 +1053,7 @@ def _run_business_outline_skill(
 ) -> dict[str, Any]:
     prompt = _build_business_outline_prompt(manifest_path)
     try:
+        # 保留直建：显式传 opencode 专有 timeout_ms（覆盖 DB timeoutMs 默认），非「只要默认引擎」。
         result = run_awaitable_sync(OpencodeEngine(timeout_ms=int(settings.opencode_timeout_sec * 1000)).generate_outline_with_trace(
             prompt,
             session_ready_callback=(

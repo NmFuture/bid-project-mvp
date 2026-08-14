@@ -14,6 +14,8 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 businessassemble <manifest>
 ```
 
+阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`。
+
 也支持本地 runner：
 
 ```bash

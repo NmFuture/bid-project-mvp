@@ -178,16 +178,24 @@ class S1ParseRouterTests(unittest.TestCase):
         run_path.assert_called_once_with(str(resolved_runner), run_name="__main__")
 
     def test_docker_s1parse_wrapper_forwards_agentic_commands(self) -> None:
-        dockerfile = ROUTER_PATH.parents[1] / "Dockerfile"
+        # harness-09：wrapper 改由 entrypoint 按 skills/commands.json 运行时生成，
+        # 这里直接校验注册表条目；生成行为由 test_skill_command_registration.py 覆盖。
+        registry_path = ROUTER_PATH.parent / "commands.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        entries = {entry["name"]: entry for entry in registry["commands"]}
 
-        content = dockerfile.read_text(encoding="utf-8")
-
-        self.assertIn('if [ "$#" -lt 1 ]; then', content)
-        self.assertIn(
-            "usage: s1parse [prepare|overview|search|read|table|window|submit|status|validate|finalize] <manifest> [...]",
-            content,
+        entry = entries["s1parse"]
+        self.assertEqual(entry["script"], "s1parse_router.py")
+        # 无 subcommands/argv：透传形态，wrapper 只做 $# -lt 1 检查
+        self.assertNotIn("subcommands", entry)
+        self.assertNotIn("argv", entry)
+        self.assertEqual(
+            entry["usage"],
+            "s1parse [prepare|overview|search|read|table|window|submit|status|validate|finalize] <manifest> [...]",
         )
-        self.assertIn('exec python3 /workspace/.opencode/skills/s1parse_router.py "$@"', content)
+
+        dockerfile = (ROUTER_PATH.parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("> /usr/local/bin/s1parse", dockerfile)
 
     def test_opencode_docker_context_excludes_legacy_skill_snapshots(self) -> None:
         dockerignore = ROUTER_PATH.parents[1] / ".dockerignore"
@@ -281,7 +289,7 @@ class S1ParseRouterTests(unittest.TestCase):
     def test_opencode_entrypoint_effective_config_preserves_existing_runtime_and_adds_data_volume_allowlist(self) -> None:
         entrypoint = ROUTER_PATH.parents[1] / "docker-entrypoint.sh"
         entrypoint_text = entrypoint.read_text(encoding="utf-8")
-        heredoc_start = entrypoint_text.index("python3 - \"$1\" \"${EFFECTIVE_CONFIG_PATH}\" <<'PY'\n")
+        heredoc_start = entrypoint_text.index("python3 - \"$1\" \"${EFFECTIVE_CONFIG_PATH}\" \"$2\" \"$3\" \"$4\" <<'PY'\n")
         heredoc_start = entrypoint_text.index("\n", heredoc_start) + 1
         heredoc_end = entrypoint_text.index("\nPY\n}", heredoc_start)
         merge_script = entrypoint_text[heredoc_start:heredoc_end]
@@ -306,7 +314,8 @@ class S1ParseRouterTests(unittest.TestCase):
             source.write_text(source_payload, encoding="utf-8")
 
             subprocess.run(
-                [sys.executable, "-c", merge_script, str(source), str(target)],
+                # 追加参数对应 entrypoint 的 $2~$4：原始 model 与统一解析后的 provider/model
+                [sys.executable, "-c", merge_script, str(source), str(target), "mimo/demo-model", "mimo", "demo-model"],
                 check=True,
                 capture_output=True,
                 text=True,

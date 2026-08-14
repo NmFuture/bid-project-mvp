@@ -65,7 +65,13 @@ compose_exec() {
 }
 
 echo "opencode_data 清理：保留窗口 ${RETENTION_DAYS} 天，模式 $([[ ${DELETE} -eq 1 ]] && echo apply || echo dry-run)。"
-compose_exec find "${DATA_DIR}" -xdev -type f -mtime "+${RETENTION_DAYS}" -printf '%s\n' 2>/dev/null \
+# 显式捕获 find 失败：dry-run 也不能静默吞错（此前 2>/dev/null 会把扫描失败
+# 误报成「0 个文件」）。命令替换保留 find 的 stderr 输出，失败即报错退出。
+SCAN_OUTPUT="$(compose_exec find "${DATA_DIR}" -xdev -type f -mtime "+${RETENTION_DAYS}" -printf '%s\n')" || {
+  echo "扫描 ${DATA_DIR} 失败（find 返回非零），中止；请检查 opencode 容器与卷状态。" >&2
+  exit 1
+}
+printf '%s' "${SCAN_OUTPUT}" \
   | awk '{files += 1; bytes += $1} END {printf "待清理：%d 个文件，共 %.1f MiB。\n", files, bytes / 1048576}'
 
 if [[ "${DELETE}" -eq 1 ]]; then

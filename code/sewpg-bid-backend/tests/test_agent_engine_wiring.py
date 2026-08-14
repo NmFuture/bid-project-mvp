@@ -81,6 +81,18 @@ class AgentEngineFactoryWiringTests(unittest.TestCase):
         pi_cls.assert_called_once_with(request_slots=slots)
 
 
+class OrphanFacadeRemovedTests(unittest.TestCase):
+    """bid-tech-tag-importer skill 与 fuzzy 链已删（deadcode-04/05），门面委托一并摘除。
+
+    防回归：符号重新出现 = 孤儿链路被复活。
+    """
+
+    def test_tag_importer_trace_facade_removed(self) -> None:
+        self.assertFalse(hasattr(OpencodeEngine, "run_bid_tech_tag_importer_with_trace"))
+        self.assertFalse(hasattr(AgentOrchestrator, "run_bid_tech_tag_importer_with_trace"))
+        self.assertFalse(hasattr(AgentOrchestrator, "_extract_tag_match_json"))
+
+
 class PlanToCallbackAdapterTests(unittest.TestCase):
     """EarlyCompletionPlan → 协议级 on_tool_completed 适配（engine-07 遗留）。"""
 

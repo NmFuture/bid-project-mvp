@@ -413,6 +413,29 @@ def test_compose_uses_one_opencode_service_for_parallel_chapter_sessions() -> No
     assert "TECH_OUTLINE_LLM_FINALIZE=false" in env_example
 
 
+def test_compose_opencode_loopback_port_auth_and_resource_limits() -> None:
+    """engine-10：4096 只绑回环、客户端密码透传、资源限额为本地安全默认值。"""
+    compose = yaml.safe_load((CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    opencode = services["opencode"]
+
+    assert opencode["ports"] == ["127.0.0.1:${OPENCODE_HOST_PORT:-4096}:4096"]
+    assert opencode["cpus"] == "${OPENCODE_CPU_LIMIT:-4.0}"
+    assert opencode["mem_limit"] == "${OPENCODE_MEMORY_LIMIT:-8g}"
+    assert opencode["environment"]["OPENCODE_SERVER_PASSWORD"] == "${OPENCODE_SERVER_PASSWORD:-}"
+    # 密码启用后容器健康检查也要带 Basic 鉴权，否则 401 会把容器打成 unhealthy
+    assert "OPENCODE_SERVER_PASSWORD" in str(opencode["healthcheck"]["test"])
+    for service_name in ("fastapi", "worker"):
+        assert services[service_name]["environment"]["OPENCODE_SERVER_PASSWORD"] == (
+            "${OPENCODE_SERVER_PASSWORD:-}"
+        )
+
+    env_example = (CODE_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "OPENCODE_SERVER_PASSWORD=" in env_example
+    assert "OPENCODE_CPU_LIMIT=" in env_example
+    assert "OPENCODE_MEMORY_LIMIT=" in env_example
+
+
 def test_compose_overrides_include_docling_worker_and_bind_ocr_to_gpu_zero() -> None:
     second = yaml.safe_load((CODE_ROOT / "docker-compose.second.yml").read_text(encoding="utf-8"))
     airgap = yaml.safe_load((CODE_ROOT / "docker-compose.airgap.yml").read_text(encoding="utf-8"))
@@ -440,11 +463,17 @@ def test_compose_overrides_include_docling_worker_and_bind_ocr_to_gpu_zero() -> 
 def test_5090_overlay_binds_docling_and_ocr_only_to_gpu_zero() -> None:
     overlay = yaml.safe_load((CODE_ROOT / "docker-compose.5090.yml").read_text(encoding="utf-8"))
 
-    assert set(overlay["services"]) == {"docling-worker", "ocr"}
+    assert set(overlay["services"]) == {"docling-worker", "ocr", "opencode"}
     for service_name in ("docling-worker", "ocr"):
         service = overlay["services"][service_name]
         assert service["environment"]["NVIDIA_VISIBLE_DEVICES"] == "0"
         assert service["environment"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+    # engine-10：opencode 在 5090 层只加生产 fail-fast 密码约束，不含 GPU 绑定/资源取值
+    opencode = overlay["services"]["opencode"]
+    assert opencode["environment"]["OPENCODE_SERVER_PASSWORD"].startswith("${OPENCODE_SERVER_PASSWORD:?")
+    assert "deploy" not in opencode
+    assert "NVIDIA_VISIBLE_DEVICES" not in opencode["environment"]
 
     docling_worker = overlay["services"]["docling-worker"]
     devices = docling_worker["deploy"]["resources"]["reservations"]["devices"]

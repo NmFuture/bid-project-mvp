@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,8 @@ DEFAULT_OPENCODE_MODEL_ID = "deepseek-v4-flash"
 
 
 def normalize_opencode_model_selection(provider_value: object, model_value: object) -> tuple[str, str]:
+    # harness-08：big-pickle → 默认模型的映射与 opencode/docker-entrypoint.sh 的
+    # resolve_model_selection() 互为镜像（entrypoint 内部已单点化），改动必须同步。
     provider_id = str(provider_value or DEFAULT_OPENCODE_PROVIDER_ID).strip() or DEFAULT_OPENCODE_PROVIDER_ID
     model_id = str(model_value or DEFAULT_OPENCODE_MODEL_ID).strip() or DEFAULT_OPENCODE_MODEL_ID
 
@@ -24,6 +27,61 @@ def normalize_opencode_model_selection(provider_value: object, model_value: obje
     if model_id.startswith(qualified_prefix):
         model_id = model_id[len(qualified_prefix):].strip()
     return provider_id, model_id or DEFAULT_OPENCODE_MODEL_ID
+
+
+# harness-07（超时配置统一）：opencode 超时的唯一推导点。
+# 三个概念命名分离，不再散落 max()/min() 隐式缝合：
+# - read 超时（read_timeout_sec）：opencode 单次 HTTP 请求的读超时。
+#   事实源 = 系统设置页 timeoutMs（用户可改）；未配置（空/0/非法）时回退
+#   OPENCODE_TIMEOUT_SEC。
+# - idle 超时（idle_timeout_sec）：轮询监管「无新输出即停滞」的判定时限。
+#   事实源 = OPENCODE_TIMEOUT_SEC，钳制在 [120, 900]s：低于 120s 时脚本/生成
+#   阶段无新消息的长会话会被误判停滞；高于 900s 则停滞会话悬挂过久才回收。
+# - 总超时（run_read_timeout_sec）：长轮询 message 请求的整体读超时，
+#   公式 = max(read, idle + 60s 收尾宽限)。不得短于 idle 监管时限，否则
+#   HTTP 层先于监管触发，后端报错而 opencode 会话仍在后台运行。
+OPENCODE_IDLE_TIMEOUT_MIN_SEC = 120.0
+OPENCODE_IDLE_TIMEOUT_MAX_SEC = 900.0
+OPENCODE_RUN_READ_GRACE_SEC = 60.0
+OPENCODE_CONNECT_TIMEOUT_SEC = 10.0
+
+
+@dataclass(frozen=True)
+class OpencodeTimeoutProfile:
+    """一次调用的生效超时（秒），字段语义见上方 harness-07 注释。"""
+
+    read_timeout_sec: float
+    idle_timeout_sec: float
+    run_read_timeout_sec: float
+
+
+def resolve_opencode_read_timeout_sec(configured_timeout_ms: object) -> float:
+    """read 超时（秒）：系统设置页 timeoutMs / 1000，下限 1s；未配置时回退 OPENCODE_TIMEOUT_SEC。"""
+    try:
+        timeout_ms = float(configured_timeout_ms or 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        timeout_ms = 0.0
+    if timeout_ms <= 0:
+        timeout_ms = float(settings.opencode_timeout_sec) * 1000
+    return max(1.0, timeout_ms / 1000)
+
+
+def resolve_opencode_idle_timeout_sec(timeout_sec: float | None = None) -> float:
+    """idle 超时（秒）：clamp(OPENCODE_TIMEOUT_SEC 或显式覆盖值, 120, 900)。"""
+    configured = float(timeout_sec or settings.opencode_timeout_sec)
+    return max(OPENCODE_IDLE_TIMEOUT_MIN_SEC, min(configured, OPENCODE_IDLE_TIMEOUT_MAX_SEC))
+
+
+def resolve_opencode_timeouts(configured_timeout_ms: object) -> OpencodeTimeoutProfile:
+    """从配置值推导三个超时（唯一推导点，公式见上方 harness-07 注释）。"""
+    read = resolve_opencode_read_timeout_sec(configured_timeout_ms)
+    idle = resolve_opencode_idle_timeout_sec()
+    run_read = max(read, idle + OPENCODE_RUN_READ_GRACE_SEC)
+    return OpencodeTimeoutProfile(
+        read_timeout_sec=read,
+        idle_timeout_sec=idle,
+        run_read_timeout_sec=run_read,
+    )
 
 
 def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -147,6 +205,10 @@ class Settings:
     opencode_provider_id: str
     opencode_model_id: str
     opencode_timeout_sec: float
+    # engine-10：opencode serve 的 HTTP Basic 鉴权（服务端原生读 OPENCODE_SERVER_PASSWORD）。
+    # 密码为空 = 不启用鉴权（本地安全默认）；生产由 docker-compose.5090.yml 强制非空。
+    opencode_server_username: str
+    opencode_server_password: str
     # B4（engine-06）：全局 Agent 并发预算（单一事实）。引擎默认请求槽、S1 分片槽、
     # 目录章节槽与进程型引擎（codex/pi）进程池全部从它派生，总并发恒 ≤ 预算。
     # 取代 OPENCODE_MAX_CONCURRENCY——原配置只限默认请求槽一个池，不代表总量，
@@ -258,7 +320,11 @@ settings = Settings(
     opencode_base_url=os.getenv("OPENCODE_BASE_URL", "http://127.0.0.1:4096"),
     opencode_provider_id=_configured_opencode_provider_id,
     opencode_model_id=_configured_opencode_model_id,
+    # harness-07：会话级超时（idle/总超时）的事实源，同时是系统设置页 timeoutMs
+    # 未配置时 read 超时的回退默认；推导公式见本文件 resolve_opencode_timeouts。
     opencode_timeout_sec=float(os.getenv("OPENCODE_TIMEOUT_SEC", "1800")),
+    opencode_server_username=os.getenv("OPENCODE_SERVER_USERNAME", "opencode").strip() or "opencode",
+    opencode_server_password=os.getenv("OPENCODE_SERVER_PASSWORD", "").strip(),
     agent_concurrency_budget=_int_env("AGENT_CONCURRENCY_BUDGET", 8),
     # B2（engine-04）：send_prompt 只对「确认未送达」（连接未建立）重发，默认 2 次；
     # 轮询断线重连默认 6 次、退避合计约 23s，覆盖常规服务重启窗口。
@@ -379,3 +445,16 @@ settings = Settings(
     default_ocr_api_key=_first_env("DEFAULT_OCR_API_KEY"),
     default_ocr_model=_first_env("DEFAULT_OCR_MODEL", default="deepseek-ai/DeepSeek-OCR"),
 )
+
+
+def opencode_auth_headers() -> dict[str, str]:
+    """opencode 客户端请求的 HTTP Basic 鉴权头（engine-10）。
+
+    密码为空返回空 dict：请求与无鉴权现状完全一致（本地安全默认）；
+    密码非空时统一带 `Authorization: Basic <base64(username:password)>`。
+    """
+    if not settings.opencode_server_password:
+        return {}
+    credential = f"{settings.opencode_server_username}:{settings.opencode_server_password}"
+    token = base64.b64encode(credential.encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}

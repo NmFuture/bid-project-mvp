@@ -2067,6 +2067,7 @@ class BidParseService:
             "aborted": False,
         }
         if session_id:
+            # 保留直建：按 opencode 会话 trace 里的 sessionId 取消在跑会话，opencode 专有语义。
             opencode_abort["aborted"] = run_awaitable_sync(OpencodeEngine().abort_session(session_id))
         if trace:
             trace["status"] = "cancelled"

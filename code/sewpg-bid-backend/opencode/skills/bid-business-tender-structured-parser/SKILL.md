@@ -5,6 +5,8 @@ description: Use when S1 parsing a business/commercial tender or procurement doc
 
 # 商务标 S1 结构化解析
 
+阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`。
+
 ## 角色
 
 你是招投标专家，不是关键词匹配器。你负责商务部分的解析，要像真实审阅招标文件一样，使用 `s1parse` 的小输出导航命令主动探索文档，按语义判断事实，最后只提交当前需要的交付清单字段。

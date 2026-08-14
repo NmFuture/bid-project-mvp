@@ -25,6 +25,8 @@ from app.services.bid_runtime_state import now_iso
 from app.services.identity import build_project_material_scope
 from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.minio_client import minio_client
+from app.services.agent_engine.factory import AgentEngineFactory
+# 模块符号保留：既有测试经它 patch 类方法（默认引擎实际经 AgentEngineFactory 创建）。
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.file_utils import run_awaitable_sync
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
@@ -207,7 +209,9 @@ def _business_material_feedback_index(state: Any) -> dict[str, Any]:
 def run_business_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
     prompt = _build_business_gap_planner_prompt(manifest_path)
     try:
-        return run_awaitable_sync(OpencodeEngine().run_bid_business_gap_planner_with_trace(prompt))
+        # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）；
+        # 保留 OpencodeEngine 门面调用——既有测试经模块符号 patch 该类方法。
+        return run_awaitable_sync(AgentEngineFactory.create().run_bid_business_gap_planner_with_trace(prompt))
     except Exception:
         return _run_local_skill_runner(BUSINESS_GAP_PLANNER_RUNNER, manifest_path, BUSINESS_GAP_PLAN_SCHEMA_VERSION)
 
@@ -215,7 +219,9 @@ def run_business_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
 def run_business_table_fill_skill(manifest_path: Path) -> dict[str, Any]:
     prompt = _build_business_table_fill_prompt(manifest_path)
     try:
-        return run_awaitable_sync(OpencodeEngine().run_bid_business_table_fill_with_trace(prompt))
+        # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）；
+        # 保留 OpencodeEngine 门面调用——同模块 gap planner 的既有测试经模块符号 patch 类方法。
+        return run_awaitable_sync(AgentEngineFactory.create().run_bid_business_table_fill_with_trace(prompt))
     except Exception:
         return _run_local_skill_runner(BUSINESS_TABLE_FILL_RUNNER, manifest_path, BUSINESS_TABLE_FILL_SCHEMA_VERSION)
 

@@ -469,6 +469,7 @@ def _send_business_split_ai_prompt(prompt: str) -> dict[str, Any]:
         # the provider/model and would hide the actual gateway error with a second unrelated error.
         if provider_id and provider_id not in {"opencode", "futurecode"}:
             raise RuntimeError(f"LLM 直连失败：{direct_error}") from None
+        # 保留直建：send_text_prompt 是 opencode 门面方法（非 AgentEngine 协议）且显式传 timeout_ms。
         try:
             result = run_awaitable_sync(OpencodeEngine(timeout_ms=90_000).send_text_prompt("商务素材语义切片", prompt))
             if not str(result.get("reply") or "").strip() and direct_error:
@@ -476,6 +477,7 @@ def _send_business_split_ai_prompt(prompt: str) -> dict[str, Any]:
             return result
         except Exception as opencode_exc:
             raise RuntimeError(f"LLM 直连失败：{direct_error}；opencode 调用失败：{opencode_exc}") from opencode_exc
+    # 保留直建：send_text_prompt 是 opencode 门面方法（非 AgentEngine 协议）且显式传 timeout_ms。
     return run_awaitable_sync(OpencodeEngine(timeout_ms=90_000).send_text_prompt("商务素材语义切片", prompt))
 
 

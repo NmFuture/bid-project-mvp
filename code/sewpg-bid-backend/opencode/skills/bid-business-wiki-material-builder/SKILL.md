@@ -37,6 +37,8 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, AskUserQuestion]
 
 ### 调用脚本
 
+容器内受控入口为 `wikibuild <manifest>`（与技术轨共享路由，按 manifest `targetBidType` 分发）；阶段命名与别名映射统一引用 `../STAGES.md`。
+
 ```bash
 python scripts/run_from_manifest.py <manifest.json>
 ```

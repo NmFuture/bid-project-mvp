@@ -35,6 +35,7 @@ from app.services.docling_engine import DoclingParseEngine
 from app.services.ocr_service import IMAGE_SUFFIXES, ocr_service
 from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
 from app.services.agent_engine.factory import AgentEngineFactory
+# 模块符号保留：既有测试经它 patch 类方法（默认引擎实际经 AgentEngineFactory 创建）。
 from app.services.agent_engine.opencode_engine import OpencodeEngine
 from app.services.agent_engine.orchestrator import AgentOrchestrator
 from app.services.parse_profiles import (
@@ -2110,7 +2111,9 @@ def _review_commitment_candidates_semantically(candidates: list[dict[str, Any]])
     if not candidates:
         return {}
     try:
-        result = _run_coroutine_blocking(OpencodeEngine().review_business_commitments_with_trace(
+        # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）；
+        # 保留 OpencodeEngine 门面调用——既有测试经模块符号 patch 该类方法。
+        result = _run_coroutine_blocking(AgentEngineFactory.create().review_business_commitments_with_trace(
             _build_commitment_semantic_review_prompt(candidates)
         ))
     except RuntimeError:
@@ -4965,7 +4968,8 @@ def _review_business_attachment_templates_semantically(appendices: list[dict[str
     if not candidates:
         return {}
     try:
-        result = _run_coroutine_blocking(OpencodeEngine().review_business_attachment_templates_with_trace(
+        # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）。
+        result = _run_coroutine_blocking(AgentEngineFactory.create().review_business_attachment_templates_with_trace(
             _build_business_template_review_prompt(candidates)
         ))
     except RuntimeError:
@@ -6745,7 +6749,9 @@ def _run_parse_skill(
         except RuntimeError as exc:
             # 分片链路整体失败时回落到原单会话链路，保证不因为新链路把解析打死。
             logger.warning("S1 技术标分片解析失败，回落到单会话链路：%s", exc)
-    client = OpencodeEngine()
+    # 默认引擎经 AgentEngineFactory 取（AGENT_ENGINE 默认恒为 opencode，行为不变）；
+    # 保留 OpencodeEngine 门面调用——既有测试经模块符号 patch 该类方法。
+    client = AgentEngineFactory.create()
     stream_callback = (
         (lambda details: progress_callback("opencode_delta", details))
         if progress_callback

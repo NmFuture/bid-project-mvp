@@ -25,8 +25,9 @@
 - 扩展 UI 对话请求（`extension_ui_request`）在 headless 下自动回 `cancelled`，
   避免 agent 侧无限等待。
 
-周边监管（heartbeat / idle 超时 / 进度增量 / cancel_check）按 opencode_engine.py
-的语义在引擎内实现；**刻意不抽公共 monitor.py**，留待后续三引擎统一（方案 §5）。
+周边监管（idle 超时 / heartbeat / 进度增量 / cancel_check）复用
+`agent_engine/monitor.py` 的 `SessionMonitor`（方案 §5 公共监管器，与
+opencode/codex 同源）；本类只保留 RPC 收发、事件折叠与进程生命周期。
 
 已知降级（显式记录，PoC 时复核）：
 - `tools` 按请求开关：Pi RPC 无对应命令，`run_session` 收到非 None 直接 ValueError。
@@ -50,6 +51,7 @@ from typing import Any, Callable
 
 from app.services.agent_engine.base import EngineRunResult, ToolCompletedEvent
 from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
+from app.services.agent_engine.monitor import SessionMonitor
 from app.services.bid_parse_cancel import ParseCancelledError
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,11 @@ PI_ABORT_TIMEOUT_SECONDS = 5.0
 PI_PROCESS_STOP_TIMEOUT_SECONDS = 10.0
 PI_DEFAULT_IDLE_TIMEOUT_SECONDS = 300.0
 _RUN_POLL_MAX_SECONDS = 0.5
+
+# 会话事件缓冲上限（engine-08 P3-2）：`session.events` 此前只增不减，长寿命多轮
+# 会话会无限涨内存。保留尾部 N 条（与 codex_engine stderr 有界尾部同思路），
+# run 游标按绝对序号计数，抗前部修剪；list_messages 走 RPC get_messages，不受影响。
+PI_SESSION_EVENT_BUFFER_MAX = 2000
 
 # stdout 行缓冲上限：asyncio 子进程流默认 64KiB，而 `tool_execution_end`/`message_end`
 # 单条 JSONL 携带 bash 工具完整 stdout——finalize 命令的完整 stdout 恰是提前收割载荷，
@@ -95,6 +102,7 @@ class _PiSession:
     reader_task: asyncio.Task[None] | None = None
     pending: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
+    events_trimmed: int = 0  # 前部累计修剪条数；事件绝对序号 = events_trimmed + 下标
     new_event: asyncio.Event = field(default_factory=asyncio.Event)
     terminating: bool = False
     exit_status: int | None = None
@@ -251,21 +259,34 @@ class PiEngine:
                 session.model_id = model_id or session.model_id
 
             state = _RunState()
-            cursor = len(session.events)
-            started_at = time.monotonic()
-            last_activity = started_at
-            last_heartbeat = started_at
-            heartbeat_index = 0
+            # 绝对序号游标：事件缓冲有界（前部修剪会推移下标），按
+            # events_trimmed + 下标 计数才不被修剪打乱。
+            cursor = session.events_trimmed + len(session.events)
+            # 监管时钟（idle/心跳/进度活动）复用 SessionMonitor（方案 §5）。
+            monitor = SessionMonitor(
+                idle_timeout=self.idle_timeout,
+                heartbeat_interval=self.heartbeat_interval,
+            )
             last_signature: tuple[tuple[str, str], ...] | None = None
 
             # prompt 被接受后事件流异步推进；success=false = 拒绝（未接受）。
             await self._rpc(session, {"type": "prompt", "message": prompt_text})
 
             while True:
-                while cursor < len(session.events):
-                    event = session.events[cursor]
+                if cursor < session.events_trimmed:
+                    # 极端溢出：未消费事件已被修剪丢弃，跳到现存最旧一条继续。
+                    logger.warning(
+                        "pi session %s 事件缓冲溢出，丢弃 %d 条未消费事件。",
+                        session_id,
+                        session.events_trimmed - cursor,
+                    )
+                    cursor = session.events_trimmed
+                index = cursor - session.events_trimmed
+                while index < len(session.events):
+                    event = session.events[index]
                     cursor += 1
-                    last_activity = time.monotonic()
+                    index += 1
+                    monitor.note_event()
                     self._handle_event(session, event, state, on_tool_completed)
                 if state.error is not None:
                     await self._terminate_session(session_id)
@@ -279,7 +300,7 @@ class PiEngine:
                                 session,
                                 state,
                                 status="received",
-                                elapsed_seconds=time.monotonic() - started_at,
+                                elapsed_seconds=monitor.elapsed_seconds(),
                                 extra={"earlyCompletion": True},
                             )
                         )
@@ -287,7 +308,7 @@ class PiEngine:
                         session_id=session_id,
                         reply_text=reply,
                         tool_outputs=state.tool_outputs,
-                        trace=self._build_trace(session, state, started_at, early_completion=True),
+                        trace=self._build_trace(session, state, monitor.started_at, early_completion=True),
                     )
                 if state.settled:
                     if stream_callback is not None:
@@ -295,45 +316,42 @@ class PiEngine:
                         if signature != last_signature:
                             stream_callback(
                                 self._stream_payload(
-                                    session, state, elapsed_seconds=time.monotonic() - started_at
+                                    session, state, elapsed_seconds=monitor.elapsed_seconds()
                                 )
                             )
                     return EngineRunResult(
                         session_id=session_id,
                         reply_text=state.reply_text,
                         tool_outputs=state.tool_outputs,
-                        trace=self._build_trace(session, state, started_at, early_completion=False),
+                        trace=self._build_trace(session, state, monitor.started_at, early_completion=False),
                     )
-                if cancel_check is not None and cancel_check():
+                if SessionMonitor.should_cancel(cancel_check):
                     await self._terminate_session(session_id)
                     raise ParseCancelledError("解析已取消。")
 
-                now = time.monotonic()
                 if stream_callback is not None:
                     signature = state.signature()
                     if signature != last_signature:
                         last_signature = signature
-                        last_heartbeat = now
-                        heartbeat_index = 0
+                        monitor.note_progress()
                         stream_callback(
-                            self._stream_payload(session, state, elapsed_seconds=now - started_at)
+                            self._stream_payload(session, state, elapsed_seconds=monitor.elapsed_seconds())
                         )
-                    elif now - last_heartbeat >= self.heartbeat_interval:
-                        heartbeat_index += 1
-                        last_heartbeat = now
+                    elif monitor.heartbeat_due():
+                        heartbeat_index = monitor.take_heartbeat()
                         stream_callback(
                             self._stream_payload(
                                 session,
                                 state,
-                                elapsed_seconds=now - started_at,
+                                elapsed_seconds=monitor.elapsed_seconds(),
                                 extra={
                                     "heartbeat": True,
                                     "heartbeatIndex": heartbeat_index,
-                                    "idleSeconds": max(1, int(now - last_activity)),
+                                    "idleSeconds": max(1, int(monitor.idle_seconds())),
                                 },
                             )
                         )
-                if now - last_activity > self.idle_timeout:
+                if monitor.is_idle_timeout():
                     await self._terminate_session(session_id)
                     raise RuntimeError(
                         f"pi idle timeout after {int(self.idle_timeout)} seconds without new events; "
@@ -343,8 +361,8 @@ class PiEngine:
                 # 等待粒度跟随最近的监管 deadline（心跳/idle），保证超时精度。
                 wait_seconds = min(
                     _RUN_POLL_MAX_SECONDS,
-                    max(0.05, last_activity + self.idle_timeout - now),
-                    max(0.05, last_heartbeat + self.heartbeat_interval - now)
+                    max(0.05, monitor.idle_remaining()),
+                    max(0.05, monitor.heartbeat_remaining())
                     if stream_callback is not None
                     else _RUN_POLL_MAX_SECONDS,
                 )
@@ -480,10 +498,21 @@ class PiEngine:
                     pending.set_exception(RuntimeError("Pi RPC 进程已退出，命令无响应。"))
             session.pending.clear()
             # 唤醒 run 循环：进程退出对未 settled 的运行是错误，对已 terminating 的是正常收尾。
-            session.events.append(
-                {"type": "_process_exit", "returncode": process.returncode, "terminating": session.terminating}
+            self._append_event(
+                session,
+                {"type": "_process_exit", "returncode": process.returncode, "terminating": session.terminating},
             )
-            session.new_event.set()
+
+    @staticmethod
+    def _append_event(session: _PiSession, record: dict[str, Any]) -> None:
+        """事件入会话缓冲（有界：只留尾部，engine-08 P3-2）并唤醒等待方。"""
+        session.events.append(record)
+        # 滞后修剪：超 2 倍上限才截到上限，摊销切片成本。
+        if len(session.events) > PI_SESSION_EVENT_BUFFER_MAX * 2:
+            overflow = len(session.events) - PI_SESSION_EVENT_BUFFER_MAX
+            del session.events[:overflow]
+            session.events_trimmed += overflow
+        session.new_event.set()
 
     def _dispatch_record(self, session: _PiSession, record: dict[str, Any]) -> None:
         record_type = str(record.get("type") or "")
@@ -503,8 +532,7 @@ class PiEngine:
             except Exception:
                 logger.warning("pi session %s 回写 extension_ui_response 失败。", session.session_id)
             return
-        session.events.append(record)
-        session.new_event.set()
+        self._append_event(session, record)
 
     # ------------------------------------------------------------------
     # 事件折叠（message/tool 事件 → 进度增量 / ToolCompletedEvent / 终态）
@@ -518,11 +546,20 @@ class PiEngine:
     ) -> None:
         event_type = str(event.get("type") or "")
         if event_type == "_process_exit":
-            if not event.get("terminating") and not state.settled and state.harvested is None:
-                state.error = RuntimeError(
-                    f"Pi RPC 进程意外退出（session {session.session_id}，"
-                    f"returncode={event.get('returncode')}）。"
+            if state.settled or state.harvested is not None:
+                return
+            if event.get("terminating"):
+                # 本循环的终态路径都在返回/抛错前才回收进程；运行中收到 terminating
+                # 退出事件 = 外部 abort/delete。主动打断等待（engine-08 P3-1），
+                # 不再干等 idle 超时。与 cancel_check 同为取消语义。
+                state.error = ParseCancelledError(
+                    f"Pi 会话已被外部中止（session {session.session_id}）。"
                 )
+                return
+            state.error = RuntimeError(
+                f"Pi RPC 进程意外退出（session {session.session_id}，"
+                f"returncode={event.get('returncode')}）。"
+            )
             return
         if event_type == "message_update":
             delta = event.get("assistantMessageEvent") or {}

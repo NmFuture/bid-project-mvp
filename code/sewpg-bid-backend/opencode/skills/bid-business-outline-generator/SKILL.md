@@ -15,6 +15,8 @@ description: 当用户要求生成商务标目录、商务标大纲、商务响�
 business-outline <manifest>
 ```
 
+阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`。
+
 后端通过 `manifest.templateFile` 提供用户上传的历史商务标或商务模板文件。必须使用该文件作为历史商务标来源，不要扫描当前工作目录寻找历史标书，也不要使用 `user_confirmed_inputs.json`。
 
 原生 skill 产物仍然是 `outline.json`，其 `schema_version` 固定为 `business_bid_outline.v1`，顶层包含 `sections[]`。`business-outline <manifest>` 运行器只负责准备输入和候选 JSON 文件，不得写入 `outline.json`，不得写入最终 `sections[]`，也不得作出最终 `required_status` 决策。opencode 负责语义选择、状态判断和保留/延后理由，然后写入 `outline_authoring_decisions.json`；固定的 `scripts/outline_authoring_helper.py` 只负责读取候选、保持 ID、组装/写回 `outline.json`、运行基础校验。为了兼容前端，后端会在 skill 完成后把最终 `outline.json.sections[]` 转换为 `manifest.outputFile`（`bid-toc-json-v1`）。

@@ -13,6 +13,8 @@ description: 当用户要求进行商务标 S3 缺口处理、商务响应件缺
 businessgap <manifest>
 ```
 
+阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`。
+
 也支持本地 runner 形式：
 
 ```bash

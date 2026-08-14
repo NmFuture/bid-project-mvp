@@ -302,31 +302,7 @@ class PeripheralRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wiki_payload["tree"], [])
         self.assertIn("tagOptions", wiki_payload)
         self.assertIsNone(wiki_payload["selectedNode"])
-
-        title = f"风资源说明-{self.run_id}"
-        updated_title = f"风资源说明-更新-{self.run_id}"
-        self.wiki_paths.update({title, updated_title})
-        created = await self.client.post(
-            "/api/technical/materials/wiki",
-            json={"title": title, "isFolder": False},
-        )
-        self.assertEqual(created.status_code, 200)
-        selected_node = created.json()["selectedNode"]
-        self.assertEqual(selected_node["title"], title)
-
-        node_id = selected_node["id"]
-        self.wiki_node_ids.add(int(node_id.replace("WIKI-", "")))
-        updated = await self.client.put(
-            f"/api/technical/materials/wiki/{node_id}",
-            json={
-                "title": updated_title,
-                "markdownContent": "# 风资源说明\n\n需要补充测风塔数据。",
-                "tags": ["风资源", "技术标"],
-                "applicableTypes": ["技术标"],
-            },
-        )
-        self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.json()["selectedNode"]["title"], updated_title)
+        # Wiki 节点 POST/PUT/DELETE 端点已删（deadcode-04）：Wiki 页只读，无消费方。
 
     async def test_audit_settings_and_export_routes_are_available(self) -> None:
         project_id = await self.create_project()

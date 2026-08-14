@@ -11,7 +11,6 @@ from app.services.material_folder_scope import (
 )
 from app.services.material_move_operations import _relocate_folder_subtree, rename_raw_folder
 from app.services.peripheral import PeripheralError
-from app.services.technical_material_store import TechnicalMaterialStore
 from app.services.technical_wiki_preview_generation import PREVIEW_EXT_FIELD, _preview_signature
 
 
@@ -132,38 +131,6 @@ class RelocateFolderSubtreeLockTests(IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 409)
         self.assertEqual(context.exception.code, "RAW_FOLDER_EXISTS")
         self.assertTrue(any("pg_advisory_xact_lock" in s for s in session.statements))
-
-
-class TagImportOverwriteTests(IsolatedAsyncioTestCase):
-    async def test_raw_tag_import_commit_overwrite_replaces_tags(self) -> None:
-        store = TechnicalMaterialStore()
-        with patch.object(
-            store,
-            "set_index_tags",
-            new=AsyncMock(return_value={"name": "file.docx", "tags": ["新标签"]}),
-        ) as mock_set_tags:
-            result = await store.raw_tag_import_commit(
-                items=[{"fileId": "RAW-0001", "tags": ["新标签"]}],
-                import_mode="overwrite",
-            )
-
-        self.assertEqual(len(result["succeeded"]), 1)
-        mock_set_tags.assert_awaited_once_with("RAW-0001", ["新标签"], merge=False)
-
-    async def test_raw_tag_import_commit_merge_merges_tags(self) -> None:
-        store = TechnicalMaterialStore()
-        with patch.object(
-            store,
-            "set_index_tags",
-            new=AsyncMock(return_value={"name": "file.docx", "tags": ["旧标签", "新标签"]}),
-        ) as mock_set_tags:
-            result = await store.raw_tag_import_commit(
-                items=[{"fileId": "RAW-0001", "tags": ["新标签"]}],
-                import_mode="merge",
-            )
-
-        self.assertEqual(len(result["succeeded"]), 1)
-        mock_set_tags.assert_awaited_once_with("RAW-0001", ["新标签"], merge=True)
 
 
 class CertificateScopeMigrationTests(IsolatedAsyncioTestCase):

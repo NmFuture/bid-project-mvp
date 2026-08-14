@@ -1118,26 +1118,25 @@ class OnlyOfficeDocumentTests(unittest.TestCase):
         self.assertEqual(document_file.status_code, 200)
         self.assertEqual(document_file.content[:2], b"PK")
 
-    def test_force_save_route_refreshes_document_session_key(self) -> None:
+    def test_force_save_state_refreshes_document_session_key(self) -> None:
+        # force-save 端点已删（deadcode-04），改为直调底层状态函数覆盖同一行为
         project_id = self.create_project()
 
         initial_response = self.client.get(f"/api/technical/projects/{project_id}/document")
         self.assertEqual(initial_response.status_code, 200)
         initial_key = initial_response.json()["onlyoffice"]["documentKey"]
 
-        refresh_response = self.client.post(f"/api/technical/projects/{project_id}/document/force-save")
-        self.assertEqual(refresh_response.status_code, 200)
-        refreshed_key = refresh_response.json()["payload"]["onlyoffice"]["documentKey"]
+        _force_save_document_for_tests(project_id)
+
+        latest_response = self.client.get(f"/api/technical/projects/{project_id}/document")
+        self.assertEqual(latest_response.status_code, 200)
+        refreshed_key = latest_response.json()["onlyoffice"]["documentKey"]
 
         self.assertNotEqual(initial_key, refreshed_key)
         self.assertEqual(
             refreshed_key,
-            build_editor_session_key(document_path(project_id), refresh_response.json()["payload"]["version"]),
+            build_editor_session_key(document_path(project_id), latest_response.json()["version"]),
         )
-
-        latest_response = self.client.get(f"/api/technical/projects/{project_id}/document")
-        self.assertEqual(latest_response.status_code, 200)
-        self.assertEqual(latest_response.json()["onlyoffice"]["documentKey"], refreshed_key)
 
     def test_route_payload_uses_real_document_file_keys(self) -> None:
         project_id = self.create_project()

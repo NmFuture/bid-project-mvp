@@ -2081,7 +2081,7 @@ def test_workspace_project_access_owns_bid_type_guards() -> None:
     assert "require_workspace_project_for_update(" in document_flow_source
     assert "persist_workspace_project_state(" in document_flow_source
     assert "save_document_content_state(project, project_id, content)" in document_flow_source
-    assert "force_save_document_state(project, project_id)" in document_flow_source
+    assert "force_save_document_state(project, project_id" in document_flow_source
     assert "final_document_state(project)" in document_flow_source
     assert "from app.services.store import store" not in directory_flow_source
     assert "store.get_directory_state(project_id)" not in directory_flow_source
@@ -2226,7 +2226,6 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
         "material_upload_metadata": Path("app/services/material_upload_metadata.py").read_text(encoding="utf-8"),
         "material_upload_operations": Path("app/services/material_upload_operations.py").read_text(encoding="utf-8"),
         "material_store": Path("app/services/material_store.py").read_text(encoding="utf-8"),
-        "peripheral": Path("app/services/peripheral.py").read_text(encoding="utf-8"),
         "template_store": Path("app/services/template_store.py").read_text(encoding="utf-8"),
         "tech_assembly": Path("app/services/tech_assembly.py").read_text(encoding="utf-8"),
         "business_material_splitter": Path("app/services/business_material_splitter.py").read_text(encoding="utf-8"),
@@ -2330,8 +2329,11 @@ def test_bid_type_rules_have_single_source_of_truth() -> None:
     ]:
         assert "bid_type: str = TECHNICAL_BID_TYPE" not in sources_using_bid_type[source_name]
         assert "requested_bid_type: str = TECHNICAL_BID_TYPE" not in sources_using_bid_type[source_name]
-    assert 'bid_type: str = "技术标"' not in sources_using_bid_type["peripheral"]
-    assert "bid_type: str = TECHNICAL_BID_TYPE" not in sources_using_bid_type["peripheral"]
+    # peripheral 已收敛为 PeripheralError/now_day（deadcode-01），不再使用 bid_type
+    peripheral_source = Path("app/services/peripheral.py").read_text(encoding="utf-8")
+    assert 'bid_type: str = "技术标"' not in peripheral_source
+    assert "bid_type: str = TECHNICAL_BID_TYPE" not in peripheral_source
+    assert "from app.services.bid_type import" not in peripheral_source
     assert 'bid_type: str = "技术标"' not in sources_using_bid_type["template_store"]
     assert "bid_type: str = TECHNICAL_BID_TYPE" not in sources_using_bid_type["template_store"]
     assert 'bid_type: str = "技术标"' not in sources_using_bid_type["parsing"]
@@ -2766,7 +2768,6 @@ def test_material_store_is_thin_operation_facade() -> None:
         "update_raw_file(",
         "raw_download_file_operation(",
         "wiki_list_operation(",
-        "create_wiki_node(",
         "upload_wiki_attachment(",
         "import_generated_wiki_blueprint_operation(",
         "move_raw_file(",
@@ -2845,10 +2846,8 @@ def test_raw_folder_move_scope_rules_are_outside_material_store() -> None:
 def test_wiki_node_scope_rules_are_outside_material_store() -> None:
     material_source = Path("app/services/material_store.py").read_text(encoding="utf-8")
     wiki_scope_source = Path("app/services/material_wiki_scope.py").read_text(encoding="utf-8")
-    node_source = Path("app/services/material_wiki_node_operations.py").read_text(encoding="utf-8")
 
     assert "wiki_node_bid_types" not in material_source
-    assert "wiki_node_bid_types" in node_source
     assert '[bid_type] if bid_type in {"技术标", "商务标"} else ["通用"]' not in material_source
     assert "def wiki_node_bid_types" in wiki_scope_source
     assert "DEFAULT_WIKI_APPLICABLE_TYPE = GENERAL_BID_TYPE" in wiki_scope_source
@@ -2884,9 +2883,11 @@ def test_wiki_node_operations_are_outside_material_store() -> None:
     material_source = Path("app/services/material_store.py").read_text(encoding="utf-8")
     node_source = Path("app/services/material_wiki_node_operations.py").read_text(encoding="utf-8")
 
-    assert "create_wiki_node(" in material_source
-    assert "update_wiki_node(" in material_source
-    assert "delete_wiki_node(" in material_source
+    # wiki 节点 create/update/delete 写操作已随 deadcode-04/05 移除（HTTP 端点先删，service 链失去入口）；
+    # 只保留 refresh_wiki_summary / move_wiki_node（商务轨仍有路由在用）。
+    assert "create_wiki_node(" not in material_source
+    assert "update_wiki_node(" not in material_source
+    assert "delete_wiki_node(" not in material_source
     assert "refresh_wiki_summary(" in material_source
     assert "move_wiki_node(" in material_source
     assert "新建节点，尚未生成摘要。" not in material_source
@@ -2895,15 +2896,15 @@ def test_wiki_node_operations_are_outside_material_store() -> None:
     assert "def collect(current: WikiNode" not in material_source
     assert "source.parent_id = new_parent_id" not in material_source
     assert "目标节点不存在。" not in material_source
-    assert "def create_wiki_node" in node_source
-    assert "def update_wiki_node" in node_source
-    assert "def delete_wiki_node" in node_source
+    assert "def create_wiki_node" not in node_source
+    assert "def update_wiki_node" not in node_source
+    assert "def delete_wiki_node" not in node_source
     assert "def refresh_wiki_summary" in node_source
     assert "def move_wiki_node" in node_source
-    assert "新建节点，尚未生成摘要。" in node_source
-    assert "请在此补充节点内容。" in node_source
-    assert "node_depths" in node_source
-    assert "def collect(current: WikiNode" in node_source
+    assert "新建节点，尚未生成摘要。" not in node_source
+    assert "请在此补充节点内容。" not in node_source
+    assert "node_depths" not in node_source
+    assert "def collect(current: WikiNode" not in node_source
     assert "source.parent_id = new_parent_id" in node_source
     assert "目标节点不存在。" in node_source
 
@@ -3311,7 +3312,7 @@ def test_legacy_peripheral_structured_material_api_is_removed() -> None:
     assert "STRUCTURED_MATERIAL_NOT_FOUND" not in peripheral_source
     assert "peripheral_store._structured_table_options" not in template_source
     assert "DEFAULT_EXCEL_TEMPLATE_TABLE_OPTIONS" in template_source
-    assert "_excel_table_options" in peripheral_source
+    assert "PeripheralStore" not in peripheral_source
 
 
 def test_turbine_options_are_technical_material_boundary() -> None:

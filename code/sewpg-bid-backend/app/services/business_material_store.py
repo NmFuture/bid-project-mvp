@@ -28,12 +28,6 @@ def ensure_business_material_path(path: str, label: str = "路径") -> str:
     return normalized
 
 
-def business_material_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(data or {})
-    payload["bidType"] = BUSINESS_BID_TYPE
-    return payload
-
-
 def _business_tree(payload: dict[str, Any]) -> dict[str, Any]:
     tree = [
         item
@@ -362,26 +356,6 @@ class BusinessMaterialStore:
 
     async def wiki_list(self, node_id: str = "") -> dict[str, Any]:
         return self._with_urls(await material_store.wiki_list(node_id, BUSINESS_BID_TYPE))
-
-    async def wiki_create(self, *, parent_id: str, title: str, is_folder: bool) -> dict[str, Any]:
-        await self._ensure_wiki_node(parent_id, "父级 Wiki 节点")
-        return self._with_urls(await material_store.wiki_create(
-            parent_id=parent_id,
-            title=title,
-            is_folder=is_folder,
-            bid_type=BUSINESS_BID_TYPE,
-        ))
-
-    async def wiki_update(self, node_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        payload = business_material_payload(data)
-        if "applicableTypes" in payload:
-            payload["applicableTypes"] = [BUSINESS_BID_TYPE]
-        return self._with_urls(await material_store.wiki_update(node_id, payload, BUSINESS_BID_TYPE))
-
-    async def wiki_delete(self, node_id: str) -> dict[str, Any]:
-        await self._ensure_wiki_node(node_id)
-        return self._with_urls(await material_store.wiki_delete(node_id, BUSINESS_BID_TYPE))
 
     async def wiki_move(self, *, node_id: str, target_id: str, mode: str) -> dict[str, Any]:
         await self._ensure_wiki_node(node_id)

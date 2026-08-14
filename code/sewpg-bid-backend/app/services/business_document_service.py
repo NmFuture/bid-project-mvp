@@ -53,6 +53,8 @@ def _business_project_for_update(project_id: str) -> dict[str, Any]:
 
 
 def _send_business_chat_prompt(title: str, prompt: str) -> dict[str, Any]:
+    # 保留直建：send_text_prompt 是 opencode 门面方法（非 AgentEngine 协议），且默认模型
+    # fallback 依赖 base_url/provider_id/model_id 专有构造与 is_model_not_found_error。
     try:
         return run_awaitable_sync(OpencodeEngine().send_text_prompt(title, prompt))
     except Exception as first_exc:

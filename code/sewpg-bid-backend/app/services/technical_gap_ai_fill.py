@@ -1109,6 +1109,7 @@ def _run_table_filler_llm(
     timeout_sec = settings.s4_llm_fill_timeout_sec or settings.opencode_timeout_sec
 
     try:
+        # 保留直建：显式传 opencode 专有 timeout_ms（S4 LLM 填写自定义超时），非「只要默认引擎」。
         result = run_awaitable_sync(OpencodeEngine(timeout_ms=int(timeout_sec * 1000)).run_bid_tech_table_filler_with_trace(
             prompt,
             stream_callback=(

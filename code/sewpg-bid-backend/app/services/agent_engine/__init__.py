@@ -14,4 +14,6 @@ C3（engine-09）：S1 分片链路经 `AgentEngineFactory` 接线（`AGENT_ENGI
 `run_session`、`list_messages`），plan→协议回调适配落
 `base.tool_completed_callback_from_plan`；codex/pi 按真实 CLI（0.147.0/0.73.1）
 校准命令拼法与事件键（PoC 记录见 docs/plan/reviews/engine-09-poc.md）。
+§5 收尾：`monitor.py` 落地公共监管器 `SessionMonitor`（idle 超时/心跳/断线补偿/
+取消判定），opencode/codex/pi 三引擎复用，内联监管时钟已删除。
 """

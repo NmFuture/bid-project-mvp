@@ -1595,10 +1595,11 @@ Use the {TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME} skill.
 
 def run_technical_score_index_xref_skill(brief_path: Path, mapping_path: Path) -> dict[str, Any]:
     """opencode 调用隔离点：测试 patch 本函数即可 mock 章节判断。"""
-    from app.services.agent_engine.opencode_engine import OpencodeEngine
+    from app.services.agent_engine.factory import AgentEngineFactory
     from app.services.file_utils import run_awaitable_sync
 
-    return run_awaitable_sync(OpencodeEngine().run_bid_tech_score_index_xref_with_trace(
+    # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）。
+    return run_awaitable_sync(AgentEngineFactory.create().run_bid_tech_score_index_xref_with_trace(
         _build_score_index_xref_prompt(brief_path, mapping_path),
     ))
 

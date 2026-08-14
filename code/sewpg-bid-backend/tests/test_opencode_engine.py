@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import itertools
 import json
 import threading
@@ -2475,6 +2476,47 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(http_client.post.call_count, 1)
         sleep.assert_not_called()
 
+    async def test_send_prompt_4xx_is_definitive_rejection_not_delivery_uncertain(self) -> None:
+        """4xx（除 408/429）= 服务端确定性拒绝：直接失败，文案不得误称「送达状态不确定」。"""
+        client = OpencodeEngine()
+        request = httpx.Request("POST", "http://opencode:4096/session/ses-1/message")
+        http_client = self._http_client_with_post_side_effect(
+            [httpx.Response(400, request=request)]
+        )
+
+        with (
+            patch("app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client),
+            patch("app.services.agent_engine.opencode_engine.asyncio.sleep") as sleep,
+        ):
+            with self.assertRaises(RuntimeError) as context:
+                await client.send_prompt("ses-1", "prompt")
+
+        self.assertNotIsInstance(context.exception, engine_errors.PromptDeliveryUncertainError)
+        self.assertIn("服务端拒绝", str(context.exception))
+        self.assertIn("400", str(context.exception))
+        self.assertNotIn("送达状态不确定", str(context.exception))
+        self.assertEqual(http_client.post.call_count, 1)
+        sleep.assert_not_called()
+
+    async def test_send_prompt_429_stays_delivery_uncertain(self) -> None:
+        """429 限流是瞬态 4xx：请求可能已进入服务端，保持投递不确定语义。"""
+        client = OpencodeEngine()
+        request = httpx.Request("POST", "http://opencode:4096/session/ses-1/message")
+        http_client = self._http_client_with_post_side_effect(
+            [httpx.Response(429, request=request)]
+        )
+
+        with (
+            patch("app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client),
+            patch("app.services.agent_engine.opencode_engine.asyncio.sleep") as sleep,
+        ):
+            with self.assertRaises(engine_errors.PromptDeliveryUncertainError) as context:
+                await client.send_prompt("ses-1", "prompt")
+
+        self.assertIn("429", str(context.exception))
+        self.assertEqual(http_client.post.call_count, 1)
+        sleep.assert_not_called()
+
     async def test_poll_recovers_from_transient_disconnect(self) -> None:
         """轮询 GET 中途断连（服务重启抖动）→ 按退避重连续轮询，不立即判死。"""
         client = OpencodeEngine()
@@ -2674,6 +2716,77 @@ class OpencodeEngineTests(unittest.IsolatedAsyncioTestCase):
         for status in (400, 404, 500):
             exc = httpx.HTTPStatusError("err", request=request, response=httpx.Response(status, request=request))
             self.assertFalse(engine_errors.is_recoverable_poll_error(exc), status)
+
+
+class OpencodeEngineAuthHeaderTests(unittest.IsolatedAsyncioTestCase):
+    """engine-10：OPENCODE_SERVER_PASSWORD 非空时所有 opencode 请求带 Basic 鉴权头；
+    空密码（本地默认）不带头，请求形态与无鉴权现状完全一致。"""
+
+    @staticmethod
+    def _basic_token(username: str, password: str) -> str:
+        return base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+
+    @staticmethod
+    def _http_client() -> MagicMock:
+        client = MagicMock()
+        client.__aenter__.return_value = client
+        client.post = AsyncMock()
+        client.get = AsyncMock()
+        client.delete = AsyncMock()
+        return client
+
+    async def test_empty_password_sends_no_auth_header(self) -> None:
+        with patch("app.services.agent_engine.opencode_engine.settings.opencode_server_password", ""):
+            client = OpencodeEngine(base_url="http://opencode:4096")
+        self.assertEqual(client._auth_headers, {})
+
+        response = MagicMock()
+        response.json.return_value = {"id": "ses-no-auth"}
+        http_client = self._http_client()
+        http_client.post.return_value = response
+        with patch(
+            "app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client
+        ) as async_client_cls:
+            session = await client.create_session("t")
+
+        self.assertEqual(session, "ses-no-auth")
+        self.assertEqual(async_client_cls.call_args.kwargs["headers"], {})
+
+    async def test_password_set_sends_basic_auth_header_on_all_methods(self) -> None:
+        expected = {"Authorization": f"Basic {self._basic_token('opencode', 's3cret')}"}
+        with patch("app.services.agent_engine.opencode_engine.settings.opencode_server_password", "s3cret"):
+            client = OpencodeEngine(base_url="http://opencode:4096")
+        self.assertEqual(client._auth_headers, expected)
+
+        http_client = self._http_client()
+        create_response = MagicMock()
+        create_response.json.return_value = {"id": "ses-auth"}
+        http_client.post.return_value = create_response
+        http_client.get.return_value = MagicMock(**{"json.return_value": []})
+        http_client.delete.return_value = MagicMock(status_code=200)
+        with patch(
+            "app.services.agent_engine.opencode_engine.httpx.AsyncClient", return_value=http_client
+        ) as async_client_cls:
+            await client.create_session("t")
+            await client.list_session_messages("ses-auth")
+            await client.abort_session("ses-auth")
+            await client.delete_session("ses-auth")
+
+        # create/post、list/get、abort/post、delete 四次建连全部带同一鉴权头
+        self.assertEqual(async_client_cls.call_count, 4)
+        for call in async_client_cls.call_args_list:
+            self.assertEqual(call.kwargs["headers"], expected)
+
+    async def test_custom_username_is_used_in_basic_token(self) -> None:
+        with (
+            patch("app.services.agent_engine.opencode_engine.settings.opencode_server_password", "s3cret"),
+            patch("app.services.agent_engine.opencode_engine.settings.opencode_server_username", "bidops"),
+        ):
+            client = OpencodeEngine(base_url="http://opencode:4096")
+        self.assertEqual(
+            client._auth_headers,
+            {"Authorization": f"Basic {self._basic_token('bidops', 's3cret')}"},
+        )
 
 
 class OpencodeEngineSessionRecycleTests(unittest.IsolatedAsyncioTestCase):

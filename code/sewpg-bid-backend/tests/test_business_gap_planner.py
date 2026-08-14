@@ -1588,7 +1588,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 assert "businesstablefill" in prompt_text
                 return traced
 
-        with patch.object(planning, "OpencodeEngine", _FakeClient):
+        with patch.object(planning.AgentEngineFactory, "create", return_value=_FakeClient()):
             self.assertEqual(planning.run_business_table_fill_skill(manifest_path), traced)
 
         class _BrokenClient:
@@ -1596,7 +1596,7 @@ class BusinessGapPlannerTests(unittest.TestCase):
                 raise RuntimeError("opencode unavailable")
 
         local_result = {"schemaVersion": "bid-business-table-fill-v1", "outputFile": "/tmp/local.docx"}
-        with patch.object(planning, "OpencodeEngine", _BrokenClient), patch.object(
+        with patch.object(planning.AgentEngineFactory, "create", return_value=_BrokenClient()), patch.object(
             planning, "_run_local_skill_runner", return_value=local_result
         ) as local_runner:
             self.assertEqual(planning.run_business_table_fill_skill(manifest_path), local_result)

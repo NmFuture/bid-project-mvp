@@ -729,26 +729,6 @@ async def business_wiki_job_status(job_id: str) -> dict[str, Any]:
     return material_wiki_job_status(job_id, BUSINESS_BID_TYPE)
 
 
-@router.post("/api/business/materials/wiki")
-async def business_wiki_create(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await business_material_store.wiki_create(
-        parent_id=str(data.get("parentId") or ""),
-        title=str(data.get("title") or "新建节点"),
-        is_folder=bool(data.get("isFolder")),
-    )
-
-
-@router.put("/api/business/materials/wiki/{node_id}")
-async def business_wiki_update(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await business_material_store.wiki_update(node_id, data)
-
-
-@router.delete("/api/business/materials/wiki/{node_id}")
-async def business_wiki_delete(node_id: str, bidType: str = Query(default="")) -> dict[str, Any]:
-    _ = bidType
-    return await business_material_store.wiki_delete(node_id)
-
-
 @router.post("/api/business/materials/wiki/{node_id}/move")
 async def business_wiki_move(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await business_material_store.wiki_move(

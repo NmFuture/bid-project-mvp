@@ -14,7 +14,12 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import desc, select
 
-from app.core.config import normalize_opencode_model_selection, settings
+from app.core.config import (
+    normalize_opencode_model_selection,
+    opencode_auth_headers,
+    resolve_opencode_timeouts,
+    settings,
+)
 from app.models import async_session
 from app.models.materials import BackupRecord, SystemConfig, TemplateAsset
 from app.services.audit_service import audit_service
@@ -920,6 +925,18 @@ class SystemSettingsService:
             str((llm_config or {}).get("opencodeBaseUrl") or "").strip() or settings.opencode_base_url
         )
         item = await self._check_http("svc-opencode", "OpenCode 服务", base_url)
+        # harness-07：健康检查展示「当前生效超时」（read/idle/总，推导公式见
+        # app/core/config.py），避免设置页配置与运行态口径不一致。
+        profile = resolve_opencode_timeouts((llm_config or {}).get("timeoutMs"))
+        item["effectiveTimeouts"] = {
+            "readSec": profile.read_timeout_sec,
+            "idleSec": profile.idle_timeout_sec,
+            "runReadSec": profile.run_read_timeout_sec,
+        }
+        item["detail"] = (
+            f"{item['detail']} 当前生效超时：read {profile.read_timeout_sec:g}s"
+            f" / idle {profile.idle_timeout_sec:g}s / 总 {profile.run_read_timeout_sec:g}s。"
+        )
         try:
             warning = await self._opencode_config_warning(llm_config)
         except Exception:
@@ -936,7 +953,9 @@ class SystemSettingsService:
         if not url:
             return None
         try:
-            async with httpx.AsyncClient(timeout=2.0, follow_redirects=False, trust_env=False) as client:
+            # engine-10：opencode 启用 OPENCODE_SERVER_PASSWORD 后 /config 也需鉴权，
+            # 否则此处 401 退化成「/config 不可用」的误报 warning。
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=False, trust_env=False, headers=opencode_auth_headers()) as client:
                 response = await client.get(f"{url}/config")
             if response.status_code >= 400:
                 return None

@@ -409,11 +409,6 @@ async def select_technical_gap_material(
     return await technical_gap_service.select_material(project_id, gap_id, request, data)
 
 
-@router.post("/api/technical/projects/{project_id}/gaps/submit-review")
-async def submit_technical_gap_review(project_id: str) -> dict[str, Any]:
-    return await technical_gap_service.submit_review(project_id)
-
-
 @router.get("/api/technical/projects/{project_id}/gaps/facts")
 async def get_technical_gap_project_facts(project_id: str) -> dict[str, Any]:
     return await technical_gap_service.facts(project_id)
@@ -487,11 +482,6 @@ async def update_technical_gap(
     return await technical_gap_service.update_gap(project_id, gap_id, data)
 
 
-@router.post("/api/technical/projects/{project_id}/gaps/recheck")
-async def recheck_technical_gaps(project_id: str) -> dict[str, Any]:
-    return await technical_gap_service.recheck(project_id)
-
-
 @router.post("/api/technical/projects/{project_id}/gaps/{gap_id}/ai-fill")
 def ai_fill_technical_gap_material(
     project_id: str,
@@ -531,6 +521,8 @@ async def run_technical_fill_generation(
     return await technical_generation_service.run(project_id, request, data, user)
 
 
+# coverage/export 端点有意不接前端页面（见前端 src/workspaces/README.md 的架构决策：
+# 不重新引入项目级 generate/coverage/export 页面）；保留供排查与脚本化调用。
 @router.get("/api/technical/projects/{project_id}/coverage")
 async def get_technical_coverage(project_id: str) -> dict[str, Any]:
     return await technical_coverage_service.coverage(project_id)
@@ -567,11 +559,6 @@ async def technical_onlyoffice_callback(
     data: dict[str, Any] = Body(default_factory=dict),
 ) -> JSONResponse:
     return await technical_document_service.document_callback(project_id, request, data)
-
-
-@router.post("/api/technical/projects/{project_id}/document/force-save")
-async def force_save_technical_document(project_id: str, request: Request) -> dict[str, Any]:
-    return await technical_document_service.force_save_document(project_id, request)
 
 
 @router.post("/api/technical/projects/{project_id}/document/technical-chat")
@@ -626,6 +613,7 @@ async def download_technical_final_document_pdf(
     return await technical_document_service.final_document_pdf_file(project_id, version)
 
 
+# 有意保留：export/export-check 无前端页面接线（同上方 coverage 的架构决策），供脚本化导出走查。
 @router.get("/api/technical/projects/{project_id}/export/check")
 async def technical_export_check(project_id: str) -> dict[str, Any]:
     return await technical_export_service.check(project_id)
@@ -874,36 +862,6 @@ async def technical_raw_upload(request: Request) -> dict[str, Any]:
     except Exception as auto_exc:
         logging.getLogger(__name__).warning("素材流水线自动衔接失败（上传钩子）：%s", auto_exc)
     return result
-
-
-@router.post("/api/technical/materials/raw/tag-import/preview")
-async def technical_raw_tag_import_preview(request: Request) -> dict[str, Any]:
-    form = await request.form()
-    upload = form.get("file")
-    if upload is None or not hasattr(upload, "read"):
-        raise PeripheralError(400, "请上传标签清单 Excel 文件。", "TAG_IMPORT_FILE_REQUIRED")
-    file_bytes = await upload.read()
-    use_fuzzy = str(form.get("useFuzzy") or "").strip().lower() in {"1", "true", "yes", "on"}
-    import_mode = "overwrite" if str(form.get("importMode") or "").strip().lower() == "overwrite" else "merge"
-    return await technical_material_store.raw_tag_import_preview(
-        target_path=str(form.get("targetPath") or ""),
-        file_bytes=file_bytes,
-        use_fuzzy=use_fuzzy,
-        import_mode=import_mode,
-    )
-
-
-@router.post("/api/technical/materials/raw/tag-import/commit")
-async def technical_raw_tag_import_commit(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    items = data.get("items")
-    if not isinstance(items, list) or not items:
-        raise PeripheralError(400, "没有可导入的标签条目。", "TAG_IMPORT_EMPTY_ITEMS")
-    import_mode = "overwrite" if str(data.get("importMode") or "").strip().lower() == "overwrite" else "merge"
-    return await technical_material_store.raw_tag_import_commit(
-        items=items,
-        target_path=str(data.get("targetPath") or ""),
-        import_mode=import_mode,
-    )
 
 
 @router.post("/api/technical/materials/raw/auto-tags")
@@ -1177,26 +1135,6 @@ async def technical_wiki_bootstrap_status() -> dict[str, Any]:
     if status.get("status") == "succeeded":
         status["result"] = await technical_material_store.wiki_list("")
     return status
-
-
-@router.post("/api/technical/materials/wiki")
-async def technical_wiki_create(data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.wiki_create(
-        parent_id=str(data.get("parentId") or ""),
-        title=str(data.get("title") or "新建节点"),
-        is_folder=bool(data.get("isFolder")),
-    )
-
-
-@router.put("/api/technical/materials/wiki/{node_id}")
-async def technical_wiki_update(node_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    return await technical_material_store.wiki_update(node_id, data)
-
-
-@router.delete("/api/technical/materials/wiki/{node_id}")
-async def technical_wiki_delete(node_id: str, bidType: str = Query(default="")) -> dict[str, Any]:
-    _ = bidType
-    return await technical_material_store.wiki_delete(node_id)
 
 
 @router.get("/api/technical/audit")

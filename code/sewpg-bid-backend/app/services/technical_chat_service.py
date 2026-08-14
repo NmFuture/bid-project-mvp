@@ -120,6 +120,8 @@ def _send_technical_chat_prompt(
     session_model_id: str = "",
     new_session_prompt: str = "",
 ) -> dict[str, Any]:
+    # 保留直建：多轮共创对话依赖 opencode 专有行为（按会话 base_url/provider/model 构造、
+    # keep_session 跨轮复用、默认模型 fallback），非「只要默认引擎」。
     configured_client = OpencodeEngine(
         base_url=session_base_url or None,
         provider_id=session_provider_id or None,

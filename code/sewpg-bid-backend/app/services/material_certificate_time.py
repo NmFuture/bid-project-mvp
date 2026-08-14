@@ -1176,6 +1176,7 @@ def _ai_extract_certificate_time(text: str) -> dict[str, Any]:
         "6. 发证日期必须早于有效期截止日期，不确定时宁可留空。\n"
         f"证书文本：\n{snippet}"
     )
+    # 保留直建：send_text_prompt 是 opencode 门面方法（非 AgentEngine 协议），非「只要默认引擎」。
     result = run_awaitable_sync(OpencodeEngine().send_text_prompt("证书时间识别", prompt))
     return _parse_ai_certificate_reply(str(result.get("reply") or ""))
 

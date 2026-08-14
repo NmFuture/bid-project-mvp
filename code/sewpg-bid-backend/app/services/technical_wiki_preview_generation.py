@@ -599,6 +599,8 @@ def _compute_batch_preview_payloads(plans: list[dict[str, Any]]) -> dict[str, di
         return out
 
     try:
+        # 保留直建：send_text_prompt 是 opencode 门面方法（非 AgentEngine 协议），
+        # 且复用 OpencodeEngine._parse_json_payload 静态工具。
         client = OpencodeEngine()
     except Exception as exc:  # noqa: BLE001 - 客户端都建不起来，逐份补打同样无意义
         for plan in plans:

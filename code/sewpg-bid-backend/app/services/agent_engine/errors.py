@@ -10,6 +10,10 @@ B2（engine-04）新增可恢复错误分类（对齐 create_session 既有
 - `PollReconnectExhaustedError`：轮询断线重连预算耗尽，显式报「断线」，
   不与「模型 stall（idle 超时）」混同。
 两者都是 RuntimeError 子类，调用方既有 `except RuntimeError` 语义不变。
+
+engine-04 P3-1 补充 `is_definitive_rejection`：4xx（除 408/429 瞬态）是服务端
+确定性拒绝，直接失败且文案说清「服务端拒绝」，不归入 `PromptDeliveryUncertainError`
+的投递不确定语义。
 """
 from __future__ import annotations
 
@@ -19,6 +23,10 @@ import httpx
 
 # 与 create_session 既有白名单同源：网关/服务端临时不可用。
 RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 502, 503, 504})
+
+# 瞬态 4xx：408 请求超时 / 429 限流——请求可能已进入服务端处理，送达状态不确定，
+# 不归入确定性拒绝（其余 4xx 是服务端明确拒收，prompt 未进入执行）。
+TRANSIENT_4XX_STATUS_CODES = frozenset({408, 429})
 
 
 class PromptDeliveryUncertainError(RuntimeError):
@@ -40,6 +48,19 @@ def is_pre_delivery_error(exc: Exception) -> bool:
     （注意它是 TimeoutException 子类而非 ConnectError 子类，需并列判断）。
     """
     return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
+def is_definitive_rejection(exc: Exception) -> bool:
+    """4xx（除 408/429 瞬态）= 服务端确定性拒绝：请求被明确拒收，prompt 未进入执行。
+
+    与「送达状态不确定」（读超时/5xx/中途断连）区分开：确定性拒绝重发不会
+    重复执行，但同参数重发必然同样被拒，文案须说清是服务端拒绝而非投递不确定。
+    """
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and 400 <= exc.response.status_code < 500
+        and exc.response.status_code not in TRANSIENT_4XX_STATUS_CODES
+    )
 
 
 def is_recoverable_poll_error(exc: Exception) -> bool:

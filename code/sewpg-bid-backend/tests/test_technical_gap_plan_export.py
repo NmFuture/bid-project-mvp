@@ -37,12 +37,13 @@ def _entry(payload: dict, gap_id: str) -> dict:
 
 def test_ai_artifact_pending_review_is_reported_as_blocked() -> None:
     # 用户实际撞上的那一类：填了、产物在，但质检没过又没人复核，组装静默跳过
+    # qualityReport 字段名按 v1 报告（_build_fill_quality_report）真实产出：unfilledFieldCount
     payload = _export(
         {
             "id": "GAP-0010",
             "title": "投标关键数据一览表",
             "resolvedArtifacts": [
-                _artifact("ART-1", qualityReport={"status": "needs_review", "unfilledPlaceholderCount": 13})
+                _artifact("ART-1", qualityReport={"status": "needs_review", "unfilledFieldCount": 13})
             ],
         }
     )
@@ -53,6 +54,20 @@ def test_ai_artifact_pending_review_is_reported_as_blocked() -> None:
     assert "13 项未填字段" in entry["sources"][0]["blockedBy"]
     assert payload["summary"]["blockedByReview"] == 1
     assert [item["id"] for item in payload["blockedItems"]] == ["GAP-0010"]
+
+
+def test_block_reason_falls_back_to_residual_placeholder_count() -> None:
+    # v1 报告的同值别名 residualPlaceholderCount 也要能拼进提示
+    payload = _export(
+        {
+            "id": "GAP-0010B",
+            "resolvedArtifacts": [
+                _artifact("ART-1B", qualityReport={"status": "needs_review", "residualPlaceholderCount": 2})
+            ],
+        }
+    )
+
+    assert "2 项未填字段" in _entry(payload, "GAP-0010B")["sources"][0]["blockedBy"]
 
 
 def test_human_confirmed_artifact_assembles() -> None:

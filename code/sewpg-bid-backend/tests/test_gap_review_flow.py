@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import base64
 import json
@@ -10,6 +11,7 @@ from urllib.parse import quote
 from unittest.mock import patch
 
 from docx import Document
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -19,6 +21,7 @@ from app.services.bid_outline_state import confirm_outline_state, save_generated
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
 from app.services.store import store
 from app.services.technical_fact_field_specs import fillable_specs
+from app.services.technical_gap_service import technical_gap_service
 from app.services.workspace_artifacts import technical_workspace_dir
 
 
@@ -2245,9 +2248,8 @@ class GapReviewFlowTests(unittest.TestCase):
                 )
             self.assertEqual(update_response.status_code, 200)
 
-        submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
-        self.assertEqual(submit_review_response.status_code, 200)
-        submit_payload = submit_review_response.json()["payload"]
+        # submit-review 端点已删（deadcode-04），改为直调 service 覆盖同一逻辑
+        submit_payload = asyncio.run(technical_gap_service.submit_review(project_id))["payload"]
         self.assertTrue(submit_payload["submittedForReview"])
         self.assertGreater(len(submit_payload["items"]), 0)
 
@@ -2257,9 +2259,10 @@ class GapReviewFlowTests(unittest.TestCase):
         detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
         self.assertEqual(detection_response.status_code, 200)
 
-        submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
-        self.assertEqual(submit_review_response.status_code, 400)
-        self.assertIn("缺口未解决", submit_review_response.json()["detail"])
+        with self.assertRaises(HTTPException) as blocked:
+            asyncio.run(technical_gap_service.submit_review(project_id))
+        self.assertEqual(blocked.exception.status_code, 400)
+        self.assertIn("缺口未解决", str(blocked.exception.detail))
 
         gaps_payload = self.client.get(f"/api/technical/projects/{project_id}/gaps").json()
         for item in gaps_payload["items"]:
@@ -2269,13 +2272,10 @@ class GapReviewFlowTests(unittest.TestCase):
             )
             self.assertEqual(update_response.status_code, 200)
 
-        recheck_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/recheck")
-        self.assertEqual(recheck_response.status_code, 200)
-        self.assertEqual(recheck_response.json()["integrity"]["status"], "passed")
+        recheck_payload = asyncio.run(technical_gap_service.recheck(project_id))
+        self.assertEqual(recheck_payload["integrity"]["status"], "passed")
 
-        submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
-        self.assertEqual(submit_review_response.status_code, 200)
-        submit_payload = submit_review_response.json()["payload"]
+        submit_payload = asyncio.run(technical_gap_service.submit_review(project_id))["payload"]
         self.assertTrue(submit_payload["submittedForReview"])
         self.assertGreater(len(submit_payload["items"]), 0)
         self.assertTrue(all(item["status"] == "skipped" for item in submit_payload["items"]))
@@ -2317,10 +2317,10 @@ class GapReviewFlowTests(unittest.TestCase):
         project["gap_state"]["plan"] = gap_plan
         store._persist_project(project)
 
-        response = self.client.post(f"/api/technical/projects/{project_id}/gaps/recheck")
+        # recheck 端点已删（deadcode-04），改为直调 service 覆盖同一逻辑
+        result = asyncio.run(technical_gap_service.recheck(project_id))
 
-        self.assertEqual(response.status_code, 200, response.text)
-        integrity = response.json()["integrity"]
+        integrity = result["integrity"]
         self.assertEqual(integrity["status"], "passed")
         self.assertEqual(integrity["blockingCount"], 0)
         self.assertEqual(integrity["blockingItems"], [])

@@ -1,0 +1,111 @@
+{
+  "schema_version": "bid-skill-commands-v1",
+  "_comment": "harness-09：命令别名注册表，容器启动时由 docker-entrypoint.sh 的 register_skill_commands 读取并生成 /usr/local/bin 下的 wrapper。新增 skill 别名只需在此登记（script 路径相对本目录），不再改 Dockerfile 重建注册逻辑。未登记的命令不会生成 wrapper；subcommands 白名单外的子命令在 wrapper 内直接拒绝（exit 64）。阶段命名与别名的人类可读映射见 STAGES.md，两者由 tests/test_skill_command_registration.py 强制对齐。",
+  "commands": [
+    {
+      "name": "s1parse",
+      "script": "s1parse_router.py",
+      "usage": "s1parse [prepare|overview|search|read|table|window|submit|status|validate|finalize] <manifest> [...]"
+    },
+    {
+      "name": "s2toc",
+      "script": "bid-tech-outline-generator/scripts/run_from_manifest.py",
+      "usage": "s2toc <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "s2outline",
+      "script": "bid-tech-outline-generator/scripts/run_from_manifest.py",
+      "usage": "s2outline [prepare|template|template-headings|headings|search|section|next-batch|read|window|table|tables|review-batch|decision-next|decision-batch|decision-reopen|review-corrections|appendix-next|appendix-decision-batch|appendix-predecision-next|appendix-predecision-batch|review-complete|decisions|compose|validate|status|finalize] <manifest> [...]",
+      "subcommands": [
+        "prepare", "template", "template-headings", "headings", "search", "section",
+        "next-batch", "read", "window", "table", "tables", "review-batch",
+        "decision-next", "decision-batch", "decision-reopen", "review-corrections",
+        "appendix-next", "appendix-decision-batch", "appendix-predecision-next",
+        "appendix-predecision-batch", "review-complete", "decisions", "compose",
+        "validate", "status", "finalize"
+      ],
+      "prefix_args": ["--require-compose"]
+    },
+    {
+      "name": "business-outline",
+      "script": "bid-business-outline-generator/scripts/run_from_manifest.py",
+      "usage": "business-outline <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "btplnav",
+      "script": "bid-business-template-extractor/scripts/run_from_manifest.py",
+      "usage": "btplnav [prepare|overview|search|read|window|submit|validate|status|finalize] <manifest> [...]",
+      "subcommands": [
+        "prepare", "overview", "search", "read", "window", "submit", "validate", "status", "finalize"
+      ]
+    },
+    {
+      "name": "businessassemble",
+      "script": "bid-business-assembler/scripts/run_from_manifest.py",
+      "usage": "businessassemble <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "businessformat",
+      "script": "bid-business-format-cleaner/scripts/run_from_manifest.py",
+      "usage": "businessformat <manifest>",
+      "argv": ["{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "s4gap",
+      "script": "bid-tech-gap-planner/scripts/run_from_manifest.py",
+      "usage": "s4gap <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "businessgap",
+      "script": "bid-business-gap-planner/scripts/run_from_manifest.py",
+      "usage": "businessgap <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "businesstablefill",
+      "script": "bid-business-table-fill/scripts/run_from_manifest.py",
+      "usage": "businesstablefill <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "s4fill-prepare",
+      "script": "bid-tech-table-filler/scripts/run_from_manifest.py",
+      "usage": "s4fill-prepare <manifest>",
+      "argv": ["--prepare", "{manifest}"]
+    },
+    {
+      "name": "s4fill-apply",
+      "script": "bid-tech-table-filler/scripts/run_from_manifest.py",
+      "usage": "s4fill-apply <manifest>",
+      "argv": ["--apply", "{manifest}"]
+    },
+    {
+      "name": "s4wordfill",
+      "script": "bid-tech-word-placeholder-filler/scripts/run_from_manifest.py",
+      "usage": "s4wordfill <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "factcurate",
+      "script": "bid-tech-fact-curator/scripts/run_from_manifest.py",
+      "usage": "factcurate <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "xrefindex",
+      "script": "bid-tech-score-index-xref/scripts/run_from_manifest.py",
+      "usage": "xrefindex <manifest>",
+      "argv": ["--manifest", "{manifest}", "--response", "summary"]
+    },
+    {
+      "name": "wikibuild",
+      "script": "wikibuild_router.py",
+      "usage": "wikibuild <manifest>",
+      "argv": ["{manifest}"]
+    }
+  ]
+}

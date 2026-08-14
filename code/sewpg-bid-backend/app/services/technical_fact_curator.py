@@ -24,7 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.config import BASE_DIR, settings
-from app.services.agent_engine.opencode_engine import OpencodeEngine
+from app.services.agent_engine.factory import AgentEngineFactory
 from app.services.file_utils import run_awaitable_sync
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_fact_material_classes import (
@@ -338,7 +338,8 @@ def run_technical_fact_curator_skill(manifest_path: Path) -> dict[str, Any]:
     # early_tool_command 只用于轮询 idle 监管；factcurate 不走提前返回——
     # 建议文件由 LLM 多轮迭代写出（先草稿后填值），「脚本完成/文件落地」都不代表终稿，
     # 提前返回会回收草稿并把会话孤儿化（实测三轮三种竞态），必须等会话自然完成
-    return run_awaitable_sync(OpencodeEngine().run_bid_tech_fact_curator_with_trace(
+    # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）。
+    return run_awaitable_sync(AgentEngineFactory.create().run_bid_tech_fact_curator_with_trace(
         prompt,
         early_tool_command="factcurate",
     ))

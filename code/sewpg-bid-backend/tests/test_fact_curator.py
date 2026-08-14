@@ -615,7 +615,7 @@ def test_run_skill_supervises_factcurate_without_early_return(tmp_path, monkeypa
             calls.update(kwargs)
             return {"schema": "bid-tech-fact-curate-v1"}
 
-    monkeypatch.setattr(curator, "OpencodeEngine", lambda: FakeClient())
+    monkeypatch.setattr(curator.AgentEngineFactory, "create", lambda **kwargs: FakeClient())
 
     curator.run_technical_fact_curator_skill(manifest_path)
 

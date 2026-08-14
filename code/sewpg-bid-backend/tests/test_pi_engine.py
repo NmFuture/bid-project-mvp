@@ -13,7 +13,12 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.services.agent_engine.factory import AgentEngineFactory
-from app.services.agent_engine.pi_engine import PI_RPC_PROTOCOL, PI_RPC_STREAM_LIMIT_BYTES, PiEngine
+from app.services.agent_engine.pi_engine import (
+    PI_RPC_PROTOCOL,
+    PI_RPC_STREAM_LIMIT_BYTES,
+    PI_SESSION_EVENT_BUFFER_MAX,
+    PiEngine,
+)
 from app.services.bid_parse_cancel import ParseCancelledError
 
 
@@ -462,6 +467,55 @@ class PiEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(process.killed)
         self.assertNotIn(session_id, engine._sessions)
         self.assertEqual(len(process.commands("abort")), 1)
+
+    async def test_external_abort_interrupts_run_without_waiting_idle(self) -> None:
+        """run 中外部 abort 必须主动打断等待（engine-08 P3-1），不干等 idle 超时。"""
+        engine = self._engine(idle_timeout_sec=30.0)  # 足够大：若等 idle 本用例会超时
+        process = FakePiProcess()  # prompt 仅自动 ack，无后续事件
+        session_id = await self._create(engine, process)
+
+        run_task = asyncio.create_task(engine.run_session(session_id, "run"))
+        await asyncio.sleep(0.1)  # 让 run 进入事件等待
+        await engine.abort_session(session_id)
+
+        with self.assertRaises(ParseCancelledError):
+            await asyncio.wait_for(run_task, timeout=5.0)
+        self.assertTrue(process.killed)
+        self.assertNotIn(session_id, engine._sessions)
+
+    # ------------------------------------------------------------------
+    # 事件缓冲有界（engine-08 P3-2）
+    # ------------------------------------------------------------------
+    async def test_event_buffer_is_bounded_and_keeps_tail(self) -> None:
+        engine = self._engine()
+        process = FakePiProcess()
+        session_id = await self._create(engine, process)
+        session = engine._sessions[session_id]
+
+        total = PI_SESSION_EVENT_BUFFER_MAX * 2 + 100
+        for index in range(total):
+            engine._dispatch_record(session, {"type": "message_update", "seq": index})
+
+        self.assertLessEqual(len(session.events), PI_SESSION_EVENT_BUFFER_MAX * 2)
+        self.assertGreater(session.events_trimmed, 0)
+        # 尾部保留：最新事件还在缓冲里
+        self.assertEqual(session.events[-1]["seq"], total - 1)
+        await engine.delete_session(session_id)
+
+    async def test_run_session_unaffected_by_prior_buffer_trim(self) -> None:
+        """修剪后绝对游标不乱：长跑会话缓冲被截过，后续 run 仍能正确收事件。"""
+        engine = self._engine()
+        process = FakePiProcess({"prompt": _prompt_handler(_text_run_events("修剪后正常"))})
+        session_id = await self._create(engine, process)
+        session = engine._sessions[session_id]
+        for index in range(PI_SESSION_EVENT_BUFFER_MAX * 2 + 10):
+            engine._dispatch_record(session, {"type": "message_update", "seq": index})
+        self.assertGreater(session.events_trimmed, 0)
+
+        result = await engine.run_session(session_id, "run")
+
+        self.assertEqual(result.reply_text, "修剪后正常")
+        await engine.delete_session(session_id)
 
     # ------------------------------------------------------------------
     # 进程回收 / 消息查询

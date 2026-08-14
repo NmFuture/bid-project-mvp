@@ -361,6 +361,7 @@ def run_business_template_extractor(
     try:
         _raise_if_cancelled(cancel_check)
         prompt = build_business_template_navigation_prompt(project_id=project_id, manifest_path=manifest_path)
+        # 保留直建：显式传 opencode 专有 timeout_ms（模板提取自定义超时），非「只要默认引擎」。
         agent_result = run_awaitable_sync(OpencodeEngine(timeout_ms=TEMPLATE_EXTRACTION_AGENT_TIMEOUT_MS).extract_business_templates_with_trace(
             prompt,
             session_ready_callback=emit_session_ready,

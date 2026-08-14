@@ -39,13 +39,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from app.core.config import settings
+from app.core.config import resolve_opencode_idle_timeout_sec
 from app.services.agent_engine import errors as engine_errors
 from app.services.agent_engine.base import (
     EngineRunResult,
     ToolCompletedEvent,
 )
 from app.services.agent_engine.concurrency import AGENT_CONCURRENCY_BUDGET
+from app.services.agent_engine.monitor import SessionMonitor
 from app.services.bid_parse_cancel import ParseCancelledError
 
 
@@ -131,9 +132,9 @@ class CodexEngine:
         ).strip() or "workspace-write"
         self.codex_home = str(codex_home if codex_home is not None else os.getenv("BID_CODEX_HOME", "")).strip()
         # idle 监管口径与 opencode 轮询一致（无新输出即判停滞）。
-        self.idle_timeout = max(
-            120.0,
-            min(float(timeout_sec or settings.opencode_timeout_sec), 900.0),
+        # harness-07：钳制公式走统一推导点（clamp(配置值, 120, 900)，见 app/core/config.py）。
+        self.idle_timeout = resolve_opencode_idle_timeout_sec(
+            float(timeout_sec) if timeout_sec else None
         )
         self._sessions: dict[str, _CodexSessionState] = {}
         self._request_slots = (
@@ -306,9 +307,12 @@ class CodexEngine:
         tool_outputs: list[ToolCompletedEvent] = []
         stream_error: dict[str, Any] | None = None  # turn.failed = 终态失败
         last_error_event: dict[str, Any] | None = None  # error 事件可能只是可重试的流式错误
-        started_at = time.monotonic()
-        last_activity = started_at
-        last_heartbeat = started_at
+        # 监管时钟（idle/心跳/elapsed）复用 SessionMonitor（方案 §5）；codex 心跳
+        # 只按自身间隔走、不被事件活动复位（只调 note_event，不调 note_progress）。
+        monitor = SessionMonitor(
+            idle_timeout=self.idle_timeout,
+            heartbeat_interval=CODEX_PROGRESS_HEARTBEAT_SECONDS,
+        )
         # stderr 伴随排干（review F2）：运行期间无人读 stderr，子进程写满管道缓冲
         # （POSIX 通常 64KB）会阻塞在 write 上，stdout 断流被误判 idle。攒尾部供报错详情。
         stderr_sink: list[str] = []
@@ -319,7 +323,7 @@ class CodexEngine:
 
         try:
             while True:
-                if cancel_check is not None and cancel_check():
+                if SessionMonitor.should_cancel(cancel_check):
                     await self._terminate_process(process)
                     state.process = None
                     raise ParseCancelledError("解析已取消。")
@@ -331,22 +335,21 @@ class CodexEngine:
                 except TimeoutError:
                     if process.returncode is not None and process.stdout.at_eof():  # type: ignore[union-attr]
                         break
-                    now = time.monotonic()
-                    if now - last_activity > self.idle_timeout:
+                    if monitor.is_idle_timeout():
                         await self._terminate_process(process)
                         state.process = None
                         raise RuntimeError(
                             f"codex idle timeout after {int(self.idle_timeout)} seconds without new output; "
                             f"check session {state.session_id} tool calls."
                         )
-                    if stream_callback is not None and now - last_heartbeat >= CODEX_PROGRESS_HEARTBEAT_SECONDS:
+                    if stream_callback is not None and monitor.heartbeat_due():
                         self._emit_progress(
                             stream_callback,
                             state,
                             heartbeat=True,
-                            elapsed_seconds=now - started_at,
+                            elapsed_seconds=monitor.elapsed_seconds(),
                         )
-                        last_heartbeat = now
+                        monitor.take_heartbeat()
                     continue
                 if not raw_line:  # EOF：进程退出且 stdout 读尽
                     break
@@ -360,7 +363,7 @@ class CodexEngine:
                     continue
                 if not isinstance(event, dict):
                     continue
-                last_activity = time.monotonic()
+                monitor.note_event()
                 result = self._handle_event(
                     state,
                     event,
@@ -368,7 +371,7 @@ class CodexEngine:
                     tool_outputs=tool_outputs,
                     stream_callback=stream_callback,
                     on_tool_completed=on_tool_completed,
-                    started_at=started_at,
+                    started_at=monitor.started_at,
                 )
                 if isinstance(result, EngineRunResult):  # 提前收割：立即停进程，不等宽限
                     await self._terminate_process(process)

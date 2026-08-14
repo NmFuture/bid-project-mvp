@@ -5,6 +5,8 @@ description: Use when extracting fillable commercial-bid template DOCX artifacts
 
 # 商务标模板提取器
 
+阶段命名、命令别名与历史工作目录的对应关系统一引用 `../STAGES.md`。
+
 ## 核心定位
 
 你是招投标专家、模板提取者和边界裁决者。AI 负责判断哪里是商务标格式章节、哪些内容能成为独立模板、是否需要继续细拆、边界从哪里到哪里。

@@ -43,18 +43,15 @@ from app.services.material_wiki_attachment_operations import (
 from app.services.material_wiki_import_operations import import_generated_wiki_blueprint_operation
 from app.services.material_wiki_list_operations import wiki_list_operation
 from app.services.material_wiki_node_operations import (
-    create_wiki_node,
-    delete_wiki_node,
     move_wiki_node,
     refresh_wiki_summary,
-    update_wiki_node,
 )
 
 
 class MaterialStore:
     """Real material store backed by PostgreSQL + MinIO.
 
-    Drop-in replacement for ``PeripheralStore`` raw/wiki methods.
+    Replaces the removed in-memory ``PeripheralStore`` raw/wiki methods.
     """
 
     def __init__(self) -> None:
@@ -316,33 +313,6 @@ class MaterialStore:
             node_id=node_id,
             bid_type=bid_type,
             ensure_runtime_tables=ensure_material_runtime_tables,
-        )
-
-    async def wiki_create(self, parent_id: str, title: str, is_folder: bool, bid_type: str) -> dict[str, Any]:
-        return await create_wiki_node(
-            parent_id=parent_id,
-            title=title,
-            is_folder=is_folder,
-            bid_type=bid_type,
-            ensure_runtime_tables=ensure_material_runtime_tables,
-            wiki_list=self.wiki_list,
-        )
-
-    async def wiki_update(self, node_id: str, data: dict[str, Any], bid_type: str) -> dict[str, Any]:
-        return await update_wiki_node(
-            node_id=node_id,
-            data=data,
-            bid_type=bid_type,
-            ensure_runtime_tables=ensure_material_runtime_tables,
-            wiki_list=self.wiki_list,
-        )
-
-    async def wiki_delete(self, node_id: str, bid_type: str) -> dict[str, Any]:
-        return await delete_wiki_node(
-            node_id=node_id,
-            bid_type=bid_type,
-            ensure_runtime_tables=ensure_material_runtime_tables,
-            wiki_list=self.wiki_list,
         )
 
     async def wiki_refresh_summary(self, node_id: str, bid_type: str) -> dict[str, Any]:
