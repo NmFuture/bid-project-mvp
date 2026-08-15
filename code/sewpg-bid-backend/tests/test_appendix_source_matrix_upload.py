@@ -542,6 +542,28 @@ class ContainerSegmentMatchTests(unittest.TestCase):
         self.assertGreater(score, 0)
         self.assertTrue(any("去括号注" in reason for reason in reasons))
 
+    def test_doc_type_suffix_term_matches(self) -> None:
+        # 「低电压穿越报告」vs 文件名「低电压穿越评估证书」：类型后缀剥离后按核心词命中
+        cert = {
+            "id": "RAW-LVRT",
+            "name": "EW10.0-220-CEPRI26WT1010R01上海电气低电压穿越评估证书.pdf",
+            "path": "技术标/标准文件/EW10.0-220上置/认证证书/EW10.0-220-CEPRI26WT1010R01上海电气低电压穿越评估证书.pdf",
+            "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书",
+            "materialTier": "standard",
+        }
+        score, reasons = matrix_material_score(
+            cert,
+            {"projectSources": [], "standardSources": ["低电压穿越报告"]},
+        )
+        self.assertGreater(score, 0)
+        self.assertTrue(any("去类型后缀" in reason for reason in reasons))
+        # 核心词过短（<3）不走该兜底：「评估证书」→「评估」只有 2 字符，不得经由此分支命中
+        score_short, reasons_short = matrix_material_score(
+            cert,
+            {"projectSources": [], "standardSources": ["评估证书"]},
+        )
+        self.assertFalse(any("去类型后缀" in r for r in reasons_short))
+
     def test_composite_term_matches_workbook_by_folder(self) -> None:
         score, reasons = matrix_material_score(
             self.QUOTE_BOOK,

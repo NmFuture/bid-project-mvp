@@ -586,6 +586,20 @@ def strip_term_annotation(term: Any) -> str:
     return re.sub(r"[（(][^）)]*[）)]", "", clean_text(term)).strip()
 
 
+# 文档类型后缀词：规则写「低电压穿越报告」、素材实际叫「低电压穿越评估证书」
+_DOC_TYPE_SUFFIXES = ("报告", "证书", "文件", "复印件", "扫描件")
+
+
+def strip_doc_type_suffix(term: Any) -> str:
+    """剥掉规则来源词（去括号注后）尾部的文档类型后缀，与后端同名函数同语义。"""
+    text = strip_term_annotation(term)
+    for suffix in _DOC_TYPE_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return text.strip()
+
+
 def material_container_segment_hit(material: dict[str, Any], term: Any) -> str:
     """容器段命中判定，与后端同名函数同语义：folderPath 必查，文件名前缀仅对表格类放开。"""
     key = container_segment_key(term)
@@ -2126,6 +2140,9 @@ def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tup
             elif (main_key := normalize_key(strip_term_annotation(term))) and main_key != term_key and main_key in text:
                 score += 400 if scope_hit else 240
                 reasons.append(f"{scope} 来源规定命中（去括号注）：{term}")
+            elif (core_key := normalize_key(strip_doc_type_suffix(term))) and core_key != term_key and len(core_key) >= 3 and core_key in text:
+                score += 380 if scope_hit else 220
+                reasons.append(f"{scope} 来源规定命中（去类型后缀）：{term}")
             elif any(part and part in text for part in source_terms(term) if len(normalize_key(part)) >= 2):
                 score += 180 if scope_hit else 120
                 reasons.append(f"{scope} 来源规定部分命中：{term}")
