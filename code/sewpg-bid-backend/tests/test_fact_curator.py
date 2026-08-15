@@ -888,6 +888,9 @@ class FactCurateApiTests(unittest.TestCase):
 
         def fake_skill(manifest_path: Path) -> dict:
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            # 故意每批都全量回传，模拟 agent 越界——本用例要测的正是那道硬门禁：
+            # 「项目名称」人工改过、不在任何一批的 targets 里，agent 仍回传时必须被挡下。
+            # 并行后同一条越界建议会被每批各记一次，靠报告合并时的去重保证计数不虚高。
             Path(manifest["outputFile"]).write_text(
                 json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": suggestions}, ensure_ascii=False),
                 encoding="utf-8",
@@ -1572,3 +1575,131 @@ def test_platform_authored_flag_survives_save_round_trip() -> None:
     )
     assert saved["platformAuthored"] is True
     assert curator._is_platform_authored_field(saved)
+
+
+# ---------------------------------------------------------------- 并行分批
+
+
+def test_split_targets_balances_instead_of_following_material_class() -> None:
+    """只按 materialClass 切会被最大那批卡死，批大小要按并发算出来。
+
+    实测 59 个目标字段的类别分布是 tender 25 / wind_resource 20 / none 7 / cert 3 /
+    未指定 2 / production_base 2，前两类占 76%。整轮耗时 = 最慢那批，所以大类必须再拆。
+    """
+    dist = {"tender": 25, "wind_resource": 20, "none": 7, "cert": 3, "": 2, "production_base": 2}
+    fields, keys = [], []
+    for index, (cls, count) in enumerate(dist.items()):
+        for seq in range(count):
+            key = f"{index}-{seq}"
+            fields.append({"key": key, "materialClass": cls})
+            keys.append(key)
+
+    batches = curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=8)
+    sizes = [len(b["fill"]) + len(b["fix"]) for b in batches]
+
+    assert sum(sizes) == len(keys), "切分丢字段了"
+    assert len(batches) <= 8
+    # 最大批不超过总量的两成——纯按类别切时它是 42%
+    assert max(sizes) / sum(sizes) < 0.2, f"批次不均衡：{sizes}"
+
+
+def test_split_targets_batch_count_does_not_track_field_count() -> None:
+    """清单换大版时批数不能跟着线性涨，否则波次翻倍反而更慢。"""
+    def batches_for(total: int) -> int:
+        fields = [{"key": f"k{i}", "materialClass": "tender"} for i in range(total)]
+        keys = [f["key"] for f in fields]
+        return len(curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=8))
+
+    assert batches_for(59) <= 8
+    assert batches_for(150) <= 8
+    assert batches_for(400) <= 8
+    # 字段少于批数上限时不切碎批——每个会话的固定开销是实打实的
+    assert batches_for(5) <= 2
+    assert batches_for(1) == 1
+
+
+def test_batch_manifest_keeps_full_field_roster_but_trims_non_targets(workspace_dirs, monkeypatch) -> None:
+    """切分只切 targets，可见字段仍是全表——交叉印证靠的就是同时看到别的字段。
+
+    实测 agent 分得清「招标场址要求安全等级」和「机型认证安全等级」、分得清「功率曲线
+    取值的湍流度」和「认证 Iref」，前提是这些字段在同一份 manifest 里。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+    batch = {"fill": ["招标单机容量出口端mw"], "fix": []}
+
+    manifest, _ = curator.build_fact_curator_manifest(
+        _project(), gap_state, {}, targets_override=batch
+    )
+
+    fields = manifest["projectFactTable"]["fields"]
+    assert len(fields) == 4, "全表字段都要在，只有 targets 被切"
+    assert manifest["targets"] == batch
+
+    by_key = {f["key"]: f for f in fields}
+    target = by_key["招标单机容量出口端mw"]
+    # 目标字段给全键位，空值也留成空串（SKILL 输入契约声明「value：当前值，可空」）
+    for contract_key in ("label", "value", "unit", "status", "sourceKind", "specKey", "materialClass"):
+        assert contract_key in target, f"目标字段缺契约键 {contract_key}"
+    # 非目标只留「叫什么、什么值」，不带 sourceRefs/notes 那些 agent 用不上的
+    context = by_key["投标机型"]
+    assert set(context) <= {"key", "label", "value", "unit"}, f"上下文字段没精简：{sorted(context)}"
+
+
+def test_one_batch_failure_keeps_the_other_batches_results(workspace_dirs, monkeypatch) -> None:
+    """一批挂了不能带走别批已经拿到的结果——这正是增量落表的意义。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    monkeypatch.setattr(settings, "fact_curate_concurrency", 2)
+    gap_state = {"projectFactTable": _table()}
+    import threading
+
+    # 并发下 append 与 len 之间有竞态，两个线程会同时读到 2，谁都不失败——用锁取号
+    lock = threading.Lock()
+    seen: list[Path] = []
+
+    def flaky_skill(manifest_path: Path) -> dict:
+        with lock:
+            seen.append(manifest_path)
+            call_no = len(seen)
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        if call_no == 1:
+            raise RuntimeError("第一批 mock 失败")
+        keys = set(manifest["targets"]["fill"]) | set(manifest["targets"]["fix"])
+        mine = [
+            {
+                "fieldKey": key,
+                "suggestedValue": "并行填的值",
+                "unit": "",
+                "evidence": "mock 证据",
+                "confidence": 0.8,
+                "action": "fill" if key in set(manifest["targets"]["fill"]) else "fix",
+            }
+            for key in keys
+        ]
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": mine}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=flaky_skill):
+        table, report = curator.run_fact_curator_for_project(_project(), gap_state, {})
+
+    assert len(report["batchErrors"]) == 1
+    assert "第一批 mock 失败" in report["batchErrors"][0]["message"]
+    assert report["batchDone"] == report["batchTotal"]
+    # 没失败那几批的结果照样落了表
+    assert report["counts"]["filled"] + report["counts"]["fixed"] > 0
+    assert any(str(f.get("value") or "") == "并行填的值" for f in table["fields"])
+
+
+def test_all_batches_failing_raises_instead_of_reporting_empty(workspace_dirs, monkeypatch) -> None:
+    """全批失败要如实报错：报「跑完了但一条建议都没有」跟「查了没找到」分不开。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+
+    with patch.object(
+        curator, "run_technical_fact_curator_skill", side_effect=RuntimeError("opencode 全挂")
+    ):
+        with pytest.raises(RuntimeError, match="均失败"):
+            curator.run_fact_curator_for_project(_project(), gap_state, {})
