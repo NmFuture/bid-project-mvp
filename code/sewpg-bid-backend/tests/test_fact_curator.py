@@ -3,6 +3,7 @@ from __future__ import annotations
 """技术标事实表维护 Skill（方案 B，T5/T6）测试：manifest 组装、回收状态流转、脚本简报、API 链路。"""
 
 import copy
+import importlib.util
 import json
 import re
 import subprocess
@@ -1865,3 +1866,28 @@ def test_material_list_omits_empty_values_and_wrong_model(workspace_dirs, monkey
     assert full["materialTier"] == "project"
     # 本项目素材不标 crossProject（false 不输出）
     assert "crossProject" not in full
+
+
+def test_brief_search_strips_stance_prefixes(tmp_path) -> None:
+    """字段名的立场前缀要剥掉再搜，否则整串字面匹配必然落空。
+
+    清单按「谁的口径」给字段起名（招标单机容量），原文只写事物本身（「单机容量不小于
+    10MW」）。实测 59 个字段只搜出 73 条候选、24 个一条没有，抽查发现多数纯粹卡在前缀上
+    ——去掉「招标」后「单机容量」在招标全文命中 10 处、「轮毂高度」39 处。
+    """
+    spec = importlib.util.spec_from_file_location("factcurate_script", SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    terms = module._search_terms({"label": "招标单机容量（出口端，MW）"})
+    assert "招标单机容量（出口端，MW）" in terms, "原始字段名要排在最前，保证精确命中优先占坑"
+    assert "招标单机容量" in terms
+    assert "单机容量" in terms, f"没剥掉「招标」前缀：{terms}"
+    assert terms.index("招标单机容量") < terms.index("单机容量"), "必须具体词在前、宽泛词在后"
+
+    # 可叠加剥：机型认证湍流强度 → 湍流强度
+    assert "湍流强度" in module._search_terms({"label": "机型认证湍流强度"})
+    # 剥完只剩一个字就没有检索价值，不能加进去（会命中整篇文档）
+    assert "度" not in module._search_terms({"label": "招标轮毂高度"})
+    # reviewLabel 同样参与扩展
+    assert "年平均风速" in module._search_terms({"label": "spec-071", "reviewLabel": "场址年平均风速"})

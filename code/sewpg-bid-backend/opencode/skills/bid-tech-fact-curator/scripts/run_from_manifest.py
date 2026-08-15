@@ -143,17 +143,50 @@ def _corpus(manifest: dict[str, Any]) -> list[dict[str, str]]:
     return corpus
 
 
+# 字段名里的立场/范围修饰前缀。清单按「谁的口径」给字段起名（招标单机容量 vs 投标单机
+# 容量），但原文只写事物本身（「单机容量不小于10MW」），整串字面匹配必然落空。
+# 实测：59 个字段只搜出 73 条候选、24 个一条没有，抽查 8 个搜不到的里有 5 个纯粹卡在
+# 这些前缀上——去掉「招标」后「单机容量」在招标全文命中 10 处、「轮毂高度」命中 39 处。
+_MODIFIER_PREFIXES = (
+    "招标", "投标", "本项目", "项目", "场址", "全场", "机型认证", "认证", "单台机组", "单台", "拟",
+)
+
+
 def _search_terms(field: dict[str, Any]) -> list[str]:
+    """字段名 → 检索词，由具体到宽泛排序。
+
+    顺序有意义：`_snippets` 攒够 MAX_SNIPPETS_PER_FIELD 就返回，具体词在前能保证
+    精确命中优先占坑，宽泛词只填剩下的位置——否则「轮毂高度」那 39 处命中会把
+    「招标轮毂高度」的精确命中挤掉。
+    """
     terms: list[str] = []
+
+    def add(value: str) -> None:
+        text = value.strip()
+        # 剥完只剩一个字就没有检索价值了，会把整篇文档都命中
+        if len(text) >= 2 and text not in terms:
+            terms.append(text)
+
     for raw in (field.get("label"), field.get("reviewLabel")):
         text = str(raw or "").strip()
         if not text:
             continue
+        add(text)
         # 去掉括号内单位标注（如 招标单机容量（出口端，MW））
         stripped = re.sub(r"[（(][^）)]*[）)]", "", text).strip()
-        for term in (text, stripped):
-            if term and term not in terms:
-                terms.append(term)
+        add(stripped)
+        # 再去掉立场/范围前缀，可叠加剥（「机型认证湍流强度」→「湍流强度」）
+        for base in (stripped, text):
+            trimmed = base
+            for _ in range(2):
+                for prefix in _MODIFIER_PREFIXES:
+                    if trimmed.startswith(prefix) and len(trimmed) - len(prefix) >= 2:
+                        trimmed = trimmed[len(prefix) :].strip()
+                        break
+                else:
+                    break
+            if trimmed != base:
+                add(trimmed)
     return terms
 
 
