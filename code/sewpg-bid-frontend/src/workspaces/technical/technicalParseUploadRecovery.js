@@ -231,9 +231,10 @@ export const summarizeParseProgress = (progress = {}) => {
 export const shouldPollParseProgress = ({ uploading = false, stopped = false, progress = null, result = null } = {}) => {
   if (stopped) return false
   if (uploading) return true
-  if (isParseResultCompleted(result)) return false
   const status = normalizeStatus(progress)
-  return runningStatuses.has(status) || isParseProgressCompleted(progress)
+  if (runningStatuses.has(status)) return true
+  if (isParseResultCompleted(result)) return false
+  return isParseProgressCompleted(progress)
 }
 
 export const pollParseProgressOnce = async ({
