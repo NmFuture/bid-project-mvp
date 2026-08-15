@@ -551,8 +551,14 @@ class TechnicalGapService:
             raise ValueError("投标目录为空，请先在目录审核页补充至少一个目录节点。")
 
     def start_detection(self, project_id: str) -> JSONResponse:
-        snapshot = require_technical_gap_project_for_update(project_id)
-        self._require_confirmed_outline(snapshot)
+        # 前置闸门的 ValueError 必须照旧映射成 400，否则「目录还没确认就点素材匹配」
+        # 会变成一个 500，用户看不到「请先生成并确认投标目录」这句可操作的提示。
+        try:
+            snapshot = require_technical_gap_project_for_update(project_id)
+            self._require_confirmed_outline(snapshot)
+        except Exception as exc:  # noqa: BLE001 - 交给统一映射决定状态码
+            _raise_gap_error(exc, "Gap detection not found")
+            raise
         current = ensure_technical_gap_state(snapshot)
         if current.get("recognitionStatus") in {"queued", "running", "cancel_requested"}:
             return JSONResponse(
