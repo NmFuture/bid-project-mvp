@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.services import technical_fill_materials as fill_materials
 from app.services import technical_gap_ai_fill as ai_fill
 
 
@@ -53,7 +54,7 @@ class PrepareMaterialIndexOriginalExcelTests(unittest.TestCase):
 
         with (
             patch.object(
-                ai_fill,
+                fill_materials,
                 "_downloadable_technical_fill_source_payload",
                 side_effect=fake_cleaned,
             ),
@@ -127,7 +128,7 @@ class PrepareMaterialIndexOriginalExcelTests(unittest.TestCase):
 
         with (
             patch.object(
-                ai_fill,
+                fill_materials,
                 "_downloadable_technical_fill_source_payload",
                 side_effect=fake_raw_source,
             ),

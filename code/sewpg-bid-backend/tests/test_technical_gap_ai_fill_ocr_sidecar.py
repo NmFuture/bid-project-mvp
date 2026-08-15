@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.services import technical_fill_materials as fill_materials
 from app.services import technical_gap_ai_fill as ai_fill
 from app.services.bid_parse_state import complete_parse_state
 from app.services.peripheral import PeripheralError
@@ -165,7 +166,7 @@ class PrepareFillMaterialsWithOcrTests(unittest.TestCase):
 
     def test_loops_until_no_quota_skipped(self) -> None:
         fake, calls = self._fake_prepare(per_call_budget=2)
-        with patch.object(ai_fill, "_prepare_material_index_files", side_effect=fake):
+        with patch.object(fill_materials, "_prepare_material_index_files", side_effect=fake):
             material_index, _refs, _recs = ai_fill._prepare_fill_materials_with_ocr(
                 self._items(3), [], [], self.work_dir, cache_dir=self.work_dir
             )
@@ -175,7 +176,7 @@ class PrepareFillMaterialsWithOcrTests(unittest.TestCase):
 
     def test_stops_when_no_progress(self) -> None:
         fake, calls = self._fake_prepare(per_call_budget=0)
-        with patch.object(ai_fill, "_prepare_material_index_files", side_effect=fake):
+        with patch.object(fill_materials, "_prepare_material_index_files", side_effect=fake):
             material_index, _refs, _recs = ai_fill._prepare_fill_materials_with_ocr(
                 self._items(3), [], [], self.work_dir, cache_dir=self.work_dir
             )
@@ -185,7 +186,7 @@ class PrepareFillMaterialsWithOcrTests(unittest.TestCase):
 
     def test_respects_max_rounds(self) -> None:
         fake, calls = self._fake_prepare(per_call_budget=1)
-        with patch.object(ai_fill, "_prepare_material_index_files", side_effect=fake):
+        with patch.object(fill_materials, "_prepare_material_index_files", side_effect=fake):
             ai_fill._prepare_fill_materials_with_ocr(
                 self._items(ai_fill._AI_FILL_OCR_PREP_MAX_ROUNDS + 5),
                 [],
@@ -226,7 +227,7 @@ class PrepareMaterialIndexFilesBatchOcrTests(unittest.TestCase):
             Path(target_path).write_bytes(b"%PDF-1.4 fake")
 
         with (
-            patch.object(ai_fill, "_downloadable_technical_fill_source_payload", side_effect=fake_download),
+            patch.object(fill_materials, "_downloadable_technical_fill_source_payload", side_effect=fake_download),
             patch.object(ai_fill.minio_client, "download_file", side_effect=fake_download_file),
             patch.object(
                 ai_fill.ocr_service,

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.services import technical_fill_materials as fill_materials
 from app.services import technical_gap_ai_fill as ai_fill
 
 
@@ -86,9 +87,9 @@ class EmbedSourcesTests(unittest.TestCase):
         blank = tmp / "待填写-方案.docx"
         _write_docx(blank, paragraphs)
         with (
-            patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-            patch.object(ai_fill, "project_turbine_model", return_value={}),
-            patch.object(ai_fill, "_allowed_technical_material_index", return_value=materials),
+            patch.object(fill_materials, "build_project_material_scope", return_value={"readableScopes": []}),
+            patch.object(fill_materials, "project_turbine_model", return_value={}),
+            patch.object(fill_materials, "_allowed_technical_material_index", return_value=materials),
         ):
             return ai_fill._embed_sources_for_fill(self.project, blank, tmp)
 
@@ -134,14 +135,14 @@ class EmbedSourcesTests(unittest.TestCase):
             blank = Path(raw) / "待填写-方案.docx"
             _write_docx(blank, ["[设备清单，待插入]"])
             with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
+                patch.object(fill_materials, "build_project_material_scope", return_value={"readableScopes": []}),
+                patch.object(fill_materials, "project_turbine_model", return_value={}),
                 patch.object(
-                    ai_fill,
+                    fill_materials,
                     "_allowed_technical_material_index",
                     return_value=[{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
                 ),
-                patch.object(ai_fill, "_run_async", side_effect=RuntimeError("minio down")),
+                patch.object(fill_materials, "_run_async", side_effect=RuntimeError("minio down")),
             ):
                 sources = ai_fill._embed_sources_for_fill(self.project, blank, Path(raw))
 
@@ -163,14 +164,14 @@ class EmbedSourcesTests(unittest.TestCase):
                 return payload, "cleaned"
 
             with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
+                patch.object(fill_materials, "build_project_material_scope", return_value={"readableScopes": []}),
+                patch.object(fill_materials, "project_turbine_model", return_value={}),
                 patch.object(
-                    ai_fill,
+                    fill_materials,
                     "_allowed_technical_material_index",
                     return_value=[{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
                 ),
-                patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),
+                patch.object(fill_materials, "_run_async", side_effect=_run_async_stub),
                 patch.object(ai_fill.minio_client, "download_file") as download,
             ):
                 sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
@@ -186,7 +187,7 @@ class EmbedSourcesTests(unittest.TestCase):
             tmp = Path(raw)
             blank = tmp / "待填写-方案.docx"
             _write_docx(blank, ["本项目安全等级为[安全等级，待填写]。"])
-            with patch.object(ai_fill, "_allowed_technical_material_index") as lookup:
+            with patch.object(fill_materials, "_allowed_technical_material_index") as lookup:
                 sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
 
         self.assertEqual(sources, [])
