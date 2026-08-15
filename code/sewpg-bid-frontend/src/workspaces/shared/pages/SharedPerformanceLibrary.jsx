@@ -622,19 +622,18 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const visibleFields = currentFields.length ? currentFields : (preview?.fieldSchema || [])
 
   return (
-    <section aria-label="平台共用业绩库" className="h-full min-h-0 overflow-hidden bg-surface text-on-surface">
+    <section aria-label="平台共用业绩库" className="flex min-h-0 flex-col gap-3 text-on-surface">
       <input ref={summaryInputRef} type="file" accept=".docx" onChange={previewSummary} className="hidden" />
       <input ref={contractInputRef} type="file" accept=".docx" multiple onChange={addContractFiles} className="hidden" />
       <input ref={attachmentInputRef} type="file" accept=".docx" onChange={uploadAttachment} className="hidden" />
-      <div className="flex h-full min-h-0 flex-col gap-3">
-        <MaterialsViewSwitch
-          active="performance"
-          title="平台共用业绩库"
-          groups={materialsGroups}
-        />
+      <MaterialsViewSwitch
+        active="performance"
+        title="业绩库"
+        groups={materialsGroups}
+      />
 
-        <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
-          <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_7.5rem_auto]">
+      <section className="rounded-lg border border-surface-container-high bg-surface-container-lowest p-3">
+        <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_minmax(0,0.6fr)_7.5rem_auto]">
             <input value={filters.keyword} onChange={(event) => updateFilter('keyword', event.target.value)} placeholder="搜索项目/买方/型号/类别" aria-label="搜索项目、买方、型号或类别" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.turbineModel} onChange={(event) => updateFilter('turbineModel', event.target.value)} placeholder="型号，如 EW8.5-230" aria-label="按机型筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
             <input value={filters.contractYear} onChange={(event) => updateFilter('contractYear', event.target.value)} placeholder="合同年" aria-label="按合同年筛选" className="h-9 rounded-md border-none bg-surface-container-highest px-3 text-sm" />
@@ -653,10 +652,10 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
             >
               {previewing ? '解析中...' : '导入汇总表'}
             </Button>
-          </div>
-        </section>
+        </div>
+      </section>
 
-        <section aria-label="业绩明细表" className="relative min-h-0 flex-1 overflow-auto overscroll-contain rounded-lg border border-surface-container-high bg-white [scrollbar-gutter:stable]">
+      <section aria-label="业绩明细表" className="relative min-h-0 overflow-auto overscroll-contain rounded-lg border border-surface-container-high bg-white [scrollbar-gutter:stable]">
           {loading && !items.length ? (
             <div className="p-6 text-sm text-on-surface-variant">加载中...</div>
           ) : !items.length ? (
@@ -800,12 +799,11 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
               <span className="rounded-full border border-outline-variant/60 bg-white px-3 py-1 text-xs font-medium text-on-surface-variant">正在刷新...</span>
             </div>
           ) : null}
-        </section>
+      </section>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-on-surface-variant">
-          <span>共 {total} 条业绩明细</span>
-          <Pagination current={page} total={totalPages} onPageChange={setPage} />
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-on-surface-variant">
+        <span>共 {total} 条业绩明细</span>
+        <Pagination current={page} total={totalPages} onPageChange={setPage} />
       </div>
 
       {preview && (

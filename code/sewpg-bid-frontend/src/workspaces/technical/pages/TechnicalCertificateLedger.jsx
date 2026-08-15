@@ -786,7 +786,7 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
       <div className="flex min-h-0 flex-col gap-3">
         <MaterialsViewSwitch
           active="certificates"
-          title="证书台账"
+          title="技术标证书台账"
           actions={(
             <div className="flex flex-wrap items-center justify-end gap-2">
               <button
