@@ -4,8 +4,6 @@ import asyncio
 import json
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -28,7 +26,7 @@ from app.services.minio_client import minio_client
 from app.services.agent_engine.factory import AgentEngineFactory
 # 模块符号保留：既有测试经它 patch 类方法（默认引擎实际经 AgentEngineFactory 创建）。
 from app.services.agent_engine.opencode_engine import OpencodeEngine
-from app.services.file_utils import run_awaitable_sync
+from app.services.file_utils import run_awaitable_sync, run_local_skill_runner
 from app.services.parse_profiles import BUSINESS_PARSE_PROFILE
 from app.services.business_bidder_profile import load_business_bidder_facts
 from app.services.business_gap_fact_table import PROJECT_FACT_TABLE_SCHEMA_VERSION, build_project_fact_table
@@ -1422,21 +1420,17 @@ def _validate_business_gap_plan_toc_coverage(plan: dict[str, Any], toc_json_path
 
 
 def _run_local_skill_runner(runner: Path, manifest_path: Path, schema_version: str) -> dict[str, Any]:
-    if not runner.exists():
-        raise RuntimeError(f"商务标缺口 Skill runner 不存在：{runner}")
-    result = subprocess.run(
-        [sys.executable, str(runner), "--manifest", str(manifest_path), "--response", "summary"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+    # 商务标变体：中文错误标签、camelCase schemaVersion、modelId 固定写 skill 名；
+    # 共享实现在 file_utils.run_local_skill_runner。模块名保留：既有测试经它 patch。
+    return run_local_skill_runner(
+        runner,
+        manifest_path,
+        schema_version,
+        error_label="商务标缺口 Skill runner",
+        schema_key="schemaVersion",
+        model_id=BUSINESS_GAP_PLANNER_SKILL_NAME,
+        payload_text_fallback=True,
     )
-    if result.returncode != 0:
-        detail = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
-        raise RuntimeError(f"商务标缺口 Skill runner 执行失败（{result.returncode}）：{detail}")
-    payload = json.loads(result.stdout or "{}")
-    payload.setdefault("schemaVersion", schema_version)
-    payload.setdefault("opencodeOutput", _local_opencode_output(manifest_path, payload, stdout=result.stdout.strip()))
-    return payload
 
 
 def _local_opencode_output(manifest_path: Path, payload: dict[str, Any], stdout: str = "") -> dict[str, Any]:

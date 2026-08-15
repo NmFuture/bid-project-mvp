@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
-import re
 import shutil
 from uuid import uuid4
 from pathlib import Path
@@ -27,12 +26,7 @@ from app.services.technical_gap_fact_table import FILL_TEMPLATE_NAME_PREFIX
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.workspace_artifacts import technical_workspace_dir
-
-def _safe_filename(value: str, fallback: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or fallback
-
+from app.services.file_utils import safe_filename
 
 def _supersede_technical_gap_resolved_artifacts(
     item: dict[str, Any],
@@ -205,7 +199,7 @@ def register_technical_manual_gap_upload(
     created_at = now_iso()
     artifacts: list[dict[str, Any]] = []
     for index, file in enumerate(files, start=1):
-        name = _safe_filename(str(file.get("name") or f"{gap_id}-{index}.docx"), f"{gap_id}-{index}.docx")
+        name = safe_filename(str(file.get("name") or f"{gap_id}-{index}.docx"), f"{gap_id}-{index}.docx")
         if not name.lower().endswith(".docx"):
             name = f"{Path(name).stem}.docx"
         output_file = work_dir / name
@@ -279,7 +273,7 @@ async def prepare_technical_existing_gap_material_files(
             if not material_id:
                 continue
             payload, source_kind = await _downloadable_technical_material_payload(material_id)
-            file_name = _safe_filename(
+            file_name = safe_filename(
                 str(
                     material.get("cleanedFileName")
                     or payload.get("fileName")

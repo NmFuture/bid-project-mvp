@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Run conservative technical-bid Word format cleaning from a manifest."""
 
+# 注意：本文件是 app/document_processing/technical_document/formatting/cleaner.py 的 vendored
+# 拷贝。opencode 容器内没有 app 包，差异只在 SCHEMA_VERSION 之前的导入适配段；清洗逻辑一律先改
+# cleaner.py 再同步回本文件，tests/test_technical_format_cleaner.py 的 TestSkillRunnerDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse
@@ -77,6 +81,8 @@ def run_manifest(manifest_path: str | Path, response: str = "summary") -> dict[s
         output_file=output_path,
         project_name=str(manifest["projectName"]),
         style_spec_path=style_path,
+        force_canonical_toc=bool(manifest.get("forceCanonicalToc")),
+        preserve_heading_tree=bool(manifest.get("preserveAssembledHeadingTree")),
     )
     report = verify_cleaned_docx(
         output_file=output_path,
@@ -124,6 +130,8 @@ def clean_docx(
     output_file: str | Path,
     project_name: str,
     style_spec_path: str | Path,
+    force_canonical_toc: bool = False,
+    preserve_heading_tree: bool = False,
 ) -> dict[str, Any]:
     input_path = Path(input_file)
     outline_path = Path(outline_file)
@@ -149,6 +157,9 @@ def clean_docx(
     toc_present_before = document_has_toc(doc)
     toc_inserted = False
     toc_cfg = style_spec.get("toc") if isinstance(style_spec.get("toc"), dict) else {}
+    if force_canonical_toc:
+        _remove_existing_toc(doc)
+        toc_present_before = False
     if not toc_present_before and toc_cfg.get("insert_when_missing", True) is True:
         insert_toc_field(doc)
         toc_inserted = True
@@ -158,8 +169,12 @@ def clean_docx(
         adopt_unmarked=toc_inserted,
     )
 
+    blank_heading_count = _demote_blank_headings(doc)
     heading_style_result = _configure_heading_styles(doc, style_spec)
-    heading_result = _promote_existing_headings(doc, outline_items, style_spec)
+    if preserve_heading_tree:
+        heading_result = {"matched_headings": [], "unmatched_headings": []}
+    else:
+        heading_result = _promote_existing_headings(doc, outline_items, style_spec)
     # 标题只来自现有 Heading/outline；Cleaner 不再根据加粗或文本形态猜标题。
     internal_heading_result = {"promoted_headings": []}
     _apply_document_page_format(doc, style_spec.get("page"))
@@ -197,6 +212,8 @@ def clean_docx(
         "orientation": orientation_result,
         "tocInserted": toc_inserted,
         "tocPresent": toc_present_before or toc_inserted,
+        "preservedHeadingTree": preserve_heading_tree,
+        "blankHeadingsDemoted": blank_heading_count,
         "fontFamilies": _style_font_families(style_spec),
     }
 
@@ -364,6 +381,87 @@ def _toc_instruction_nodes(element) -> list[Any]:
             and _is_toc_field_instruction(node.get(qn("w:instr")))
         )
     ]
+
+
+def _remove_existing_toc(doc: Document) -> None:
+    """移除素材自带的 TOC 域，由整标 formatter 重新创建唯一主目录。"""
+    body = doc.element.body
+    toc_style_ids = _toc_result_style_ids(doc)
+    instructions = _toc_instruction_nodes(body)
+    for instruction in instructions:
+        current = instruction.getparent()
+        paragraph = None
+        outer_sdt = None
+        while current is not None and current is not body:
+            if current.tag == qn("w:p") and paragraph is None:
+                paragraph = current
+            if current.tag == qn("w:sdt"):
+                outer_sdt = current
+            current = current.getparent()
+        field_start, field_end = _toc_field_paragraph_range(body, instruction, paragraph)
+        target = outer_sdt if outer_sdt is not None else field_start
+        if target is None or target.getparent() is None:
+            continue
+        previous = target.getprevious()
+        range_end = outer_sdt if outer_sdt is not None else field_end
+        sibling = range_end.getnext()
+        current = target
+        while current is not None:
+            next_sibling = current.getnext()
+            current.getparent().remove(current)
+            if current is range_end:
+                break
+            current = next_sibling
+        while _is_toc_result_paragraph(sibling, toc_style_ids):
+            next_sibling = sibling.getnext()
+            sibling.getparent().remove(sibling)
+            sibling = next_sibling
+        if _is_dedicated_page_break(sibling):
+            sibling.getparent().remove(sibling)
+        _remove_toc_lead_in(previous)
+
+
+def _toc_field_paragraph_range(body, instruction, paragraph):
+    if paragraph is None:
+        return None, None
+
+    active_fields: list[dict[str, Any]] = []
+    target_start = None
+    for current in body.iterchildren(tag=qn("w:p")):
+        for node in current.iter():
+            if node.tag == qn("w:fldChar"):
+                field_type = str(node.get(qn("w:fldCharType")) or "").lower()
+                if field_type == "begin":
+                    active_fields.append({"start": current, "contains_target": False})
+                elif field_type == "end" and active_fields:
+                    field = active_fields.pop()
+                    if field["contains_target"]:
+                        return field["start"], current
+                continue
+            if node is not instruction:
+                continue
+            if not active_fields:
+                return paragraph, paragraph
+            active_fields[-1]["contains_target"] = True
+            target_start = active_fields[-1]["start"]
+
+    return (target_start or paragraph), paragraph
+
+
+def _remove_toc_lead_in(element) -> None:
+    if not _is_toc_title_paragraph(element):
+        return
+    previous = element.getprevious()
+    element.getparent().remove(element)
+    if _is_dedicated_page_break(previous):
+        previous.getparent().remove(previous)
+
+
+def _is_toc_title_paragraph(element) -> bool:
+    if element is None or element.tag != qn("w:p"):
+        return False
+    text = "".join(node.text or "" for node in element.iter(qn("w:t"))).strip().casefold()
+    return text in {"目录", "table of contents"}
 
 
 def _configure_heading_styles(doc: Document, style_spec: dict[str, Any], max_level: int = 6) -> dict[str, Any]:
@@ -646,19 +744,40 @@ def _toc_result_anchor(doc: Document):
         anchor = current
         current = current.getnext()
     current = anchor.getnext()
-    while _is_toc_result_paragraph(current):
+    toc_style_ids = _toc_result_style_ids(doc)
+    while _is_toc_result_paragraph(current, toc_style_ids):
         anchor = current
         current = current.getnext()
     return anchor
 
 
-def _is_toc_result_paragraph(element) -> bool:
+def _is_toc_result_paragraph(element, toc_style_ids: set[str] | None = None) -> bool:
     if element is None or element.tag != qn("w:p"):
         return False
     p_pr = element.find(qn("w:pPr"))
     p_style = p_pr.find(qn("w:pStyle")) if p_pr is not None else None
     style_id = str(p_style.get(qn("w:val")) or "") if p_style is not None else ""
-    return _is_toc_style_identifier(style_id)
+    if _is_toc_style_identifier(style_id) or style_id.casefold() in (toc_style_ids or set()):
+        return True
+    if any(
+        str(node.get(qn("w:anchor")) or "").casefold().startswith("_toc")
+        for node in element.iter(qn("w:hyperlink"))
+    ):
+        return True
+    return any(
+        re.search(r"\bPAGEREF\s+_Toc", node.text or "", flags=re.IGNORECASE)
+        for node in element.iter(qn("w:instrText"))
+    )
+
+
+def _toc_result_style_ids(doc: Document) -> set[str]:
+    return {
+        str(getattr(style, "style_id", "") or "").casefold()
+        for style in doc.styles
+        if getattr(style, "type", None) == WD_STYLE_TYPE.PARAGRAPH
+        and _style_uses_toc_style(style)
+        and getattr(style, "style_id", None)
+    }
 
 
 def _is_toc_style_identifier(value: Any) -> bool:
@@ -714,6 +833,33 @@ def _ensure_style_outline_level(style, level: int) -> None:
         outline = OxmlElement("w:outlineLvl")
         p_pr.append(outline)
     outline.set(qn("w:val"), str(max(0, min(level - 1, 8))))
+
+
+def _demote_blank_headings(doc: Document) -> int:
+    count = 0
+    for paragraph in doc.paragraphs:
+        if _clean_paragraph_text(paragraph.text):
+            continue
+        if not _paragraph_heading_level(paragraph):
+            continue
+
+        for style_name in ("Normal", "正文"):
+            try:
+                paragraph.style = doc.styles[style_name]
+                break
+            except KeyError:
+                continue
+        else:
+            p_pr = paragraph._p.find(qn("w:pPr"))
+            if p_pr is not None:
+                p_style = p_pr.find(qn("w:pStyle"))
+                if p_style is not None:
+                    p_pr.remove(p_style)
+
+        _strip_paragraph_numpr(paragraph)
+        _clear_direct_outline_level(paragraph)
+        count += 1
+    return count
 
 
 def _promote_existing_headings(
@@ -923,12 +1069,15 @@ def _is_preserved_layout_paragraph(paragraph) -> bool:
 
 
 def _paragraph_uses_toc_style(paragraph) -> bool:
-    style = getattr(paragraph, "style", None)
-    visited: set[str] = set()
+    return _style_uses_toc_style(getattr(paragraph, "style", None))
+
+
+def _style_uses_toc_style(style) -> bool:
+    visited: set[tuple[str, str]] = set()
     while style is not None:
         style_id = str(getattr(style, "style_id", "") or "")
         style_name = str(getattr(style, "name", "") or "")
-        marker = style_id or style_name
+        marker = (style_id, style_name)
         if marker in visited:
             break
         visited.add(marker)

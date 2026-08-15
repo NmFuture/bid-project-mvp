@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import copy
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import settings
@@ -23,6 +22,7 @@ from app.services.technical_gap_repository import (
     require_technical_gap_project_for_update,
 )
 from app.services.technical_gap_state import ensure_technical_gap_state
+from app.services.bid_runtime_state import now_iso
 
 BODY_FILL_JOB_TYPE = "technical_body_fill"
 
@@ -35,10 +35,6 @@ BODY_FILL_JOB_TYPE = "technical_body_fill"
 # CAS 冲突只重放廉价的 apply，不重跑填写，也不碰其他目录项。
 # 并发度上限 8：附表填写走 opencode agent，再往上对本地模型服务只是排队。
 _BODY_FILL_MAX_CONCURRENCY = 8
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def empty_body_fill_state() -> dict[str, Any]:
@@ -170,14 +166,14 @@ def apply_filled_gap_item(
                 skill_name=str(new_artifacts[0].get("skill") or ""),
             )
         items[target_index] = merged
-    plan["updatedAt"] = _now_iso()
+    plan["updatedAt"] = now_iso()
     plan["summary"] = summarize_technical_gap_plan(plan)
     gap_state["plan"] = plan
     gap_state["items"] = legacy_technical_gap_items_from_plan(plan)
     gap_state["submittedForReview"] = False
     gap_state["reviewConfirmed"] = False
     gap_state["reviewedAt"] = ""
-    project["updatedAt"] = _now_iso()
+    project["updatedAt"] = now_iso()
 
 
 def _write_state(project_id: str, **fields: Any) -> dict[str, Any]:
@@ -211,7 +207,7 @@ def schedule_body_fill_job(project_id: str, data: dict[str, Any] | None = None) 
         message="已提交，等待执行。",
         errors=[],
         skipped=[],
-        startedAt=_now_iso(),
+        startedAt=now_iso(),
         finishedAt="",
     )
     queue_result = enqueue_generation_job(BODY_FILL_JOB_TYPE, project_id, payload)
@@ -270,7 +266,7 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
                 done=0,
                 message=message,
                 skipped=skips,
-                finishedAt=_now_iso(),
+                finishedAt=now_iso(),
             )
         # 事实表是项目级单张表，缺清单列时整批都填不了。在这里先判一次，整批一条原因结束，
         # 不进循环——否则 20 多条各报一次同一个错、各标一次红，用户得逐条点开才看得出同因。
@@ -289,7 +285,7 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
             skipped=skips,
         )
     except Exception as exc:  # noqa: BLE001 - 失败原因如实回写，不静默吞掉
-        _write_state(project_id, status="failed", message=str(exc) or "一键填写启动失败。", finishedAt=_now_iso())
+        _write_state(project_id, status="failed", message=str(exc) or "一键填写启动失败。", finishedAt=now_iso())
         raise
 
     counters = {"done": 0, "succeeded": 0, "failed": 0}
@@ -364,9 +360,9 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
             "current": "",
             "message": message,
             "errors": errors[:20],
-            "finishedAt": _now_iso(),
+            "finishedAt": now_iso(),
         }
-        project["updatedAt"] = _now_iso()
+        project["updatedAt"] = now_iso()
 
     mutate_technical_gap_project(project_id, finalize)
     return {"status": "succeeded", "message": message}
@@ -462,7 +458,7 @@ def _record_item_failure(project_id: str, gap_id: str, fill_task_id: str, messag
                 item["fillError"] = {
                     "fillTaskId": fill_task_id,
                     "message": message[:500],
-                    "failedAt": _now_iso(),
+                    "failedAt": now_iso(),
                 }
                 return
 

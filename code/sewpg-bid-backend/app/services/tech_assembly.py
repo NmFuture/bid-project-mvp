@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 import re
@@ -41,6 +40,7 @@ from app.services.workspace_project_access import (
 )
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_stage_dir
 from app.services.wiki_export import export_wiki
+from app.services.file_utils import run_awaitable_sync, safe_filename
 
 
 TECH_DOCUMENT_RESOURCES_DIR = Path(__file__).resolve().parents[1] / "document_processing" / "technical_document" / "resources"
@@ -96,7 +96,7 @@ def assemble_tech_bid_for_project_with_progress(
                 },
             )
 
-        output_file = work_dir / f"{_safe_filename(str(project.get('name') or project_id), project_id)}_正文.docx"
+        output_file = work_dir / f"{safe_filename(str(project.get('name') or project_id), project_id)}_正文.docx"
         manifest_path = work_dir / "s7_assembly_input.json"
         bid_type = require_bid_type(
             project.get("bidType"),
@@ -607,7 +607,7 @@ def _augment_wiki_with_material_cards(toc_json_path: Path, wiki_dir: Path, proje
     if not toc_entries:
         return 0
 
-    raw_payload = _run_async(
+    raw_payload = run_awaitable_sync(
         technical_material_store.raw_files(
             page=1,
             page_size=1000,
@@ -625,7 +625,7 @@ def _augment_wiki_with_material_cards(toc_json_path: Path, wiki_dir: Path, proje
         section, score = _best_toc_section_for_material(item, toc_entries)
         if not section or score < 8:
             continue
-        card_path = cards_dir / f"RAW-{str(item.get('id') or '').replace('/', '-')}-{_safe_filename(str(item.get('name') or 'material'), 'material')}.md"
+        card_path = cards_dir / f"RAW-{str(item.get('id') or '').replace('/', '-')}-{safe_filename(str(item.get('name') or 'material'), 'material')}.md"
         card_path.write_text(_render_runtime_material_card(item, section), encoding="utf-8")
         written += 1
     return written
@@ -654,8 +654,8 @@ def _augment_wiki_with_gap_plan_cards(gap_plan_path: Path | None, wiki_dir: Path
             path = str(source.get("path") or source.get("docx") or "").strip()
             if not material_id and not path:
                 continue
-            card_name = _safe_filename(str(source.get("title") or source.get("fileName") or title), f"{title}-{index}")
-            card_path = cards_dir / f"gap-plan-{_safe_filename(section, 'section')}-{index}-{card_name}.md"
+            card_name = safe_filename(str(source.get("title") or source.get("fileName") or title), f"{title}-{index}")
+            card_path = cards_dir / f"gap-plan-{safe_filename(section, 'section')}-{index}-{card_name}.md"
             card_path.write_text(
                 _render_gap_plan_material_card(
                     item=item,
@@ -1036,8 +1036,8 @@ def _stage_selected_gap_plan_materials(
                     or Path(original_path).name
                     or f"material-{index}.docx"
                 )
-                gap_id = _safe_filename(str(item.get("id") or item.get("number") or "gap"), "gap")
-                file_name = _safe_filename(source_name, f"material-{index}.docx")
+                gap_id = safe_filename(str(item.get("id") or item.get("number") or "gap"), "gap")
+                file_name = safe_filename(source_name, f"material-{index}.docx")
                 relative_path = Path(gap_id) / f"{index:02d}-{file_name}"
                 target_path = staging_dir / relative_path
                 try:
@@ -1099,7 +1099,7 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
         # Heading），S7 只认原始 docx 真实的 Heading/outlineLvl/TOC，不猜层级。
         raw_error: Exception | None = None
         try:
-            candidate = _run_async(technical_material_store.raw_download_content(material_id))
+            candidate = run_awaitable_sync(technical_material_store.raw_download_content(material_id))
         except Exception as exc:
             raw_error = exc
         else:
@@ -1118,7 +1118,7 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
         # 原始文件缺失、实际下载失败或不是 docx（如 .doc）时回退清洗稿。
         cleaned_error: Exception | None = None
         try:
-            payload = _run_async(technical_material_store.raw_download_cleaned_content(material_id))
+            payload = run_awaitable_sync(technical_material_store.raw_download_cleaned_content(material_id))
         except Exception as exc:
             cleaned_error = exc
         else:
@@ -1141,13 +1141,6 @@ def _copy_material_to_library(material_id: str, original_path: str, target_path:
             )
     raise RuntimeError("卡片缺少 material_id，且 path 不是可读 docx。")
 
-
-def _run_async(awaitable):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(awaitable)
-    raise RuntimeError("素材导出不能在已运行的 asyncio event loop 中同步执行。")
 
 
 def _parse_card_fields(text: str) -> dict[str, str]:
@@ -1228,12 +1221,12 @@ def _material_file_name(fields: dict[str, str], original_path: str, title: str) 
         name = Path(original_path).name if original_path else f"{title}.docx"
     if not name.lower().endswith(".docx"):
         name = f"{Path(name).stem}.docx"
-    return _safe_filename(name, "material.docx")
+    return safe_filename(name, "material.docx")
 
 
 def _material_relative_path(scope: str, category: str, file_name: str) -> str:
     root = "投标资料库-通用" if scope == "通用" else "投标资料库-定制"
-    return str(Path(root) / _safe_filename(category, "素材") / _safe_filename(file_name, "material.docx"))
+    return str(Path(root) / safe_filename(category, "素材") / safe_filename(file_name, "material.docx"))
 
 
 def _run_assembler_manifest(
@@ -1596,7 +1589,6 @@ Use the {TECHNICAL_SCORE_INDEX_XREF_SKILL_NAME} skill.
 def run_technical_score_index_xref_skill(brief_path: Path, mapping_path: Path) -> dict[str, Any]:
     """opencode 调用隔离点：测试 patch 本函数即可 mock 章节判断。"""
     from app.services.agent_engine.factory import AgentEngineFactory
-    from app.services.file_utils import run_awaitable_sync
 
     # 默认引擎经 AgentEngineFactory 取（默认恒为 opencode，行为不变）。
     return run_awaitable_sync(AgentEngineFactory.create().run_bid_tech_score_index_xref_with_trace(
@@ -1916,9 +1908,3 @@ def _build_fallback_content(
     else:
         lines.append("- 无结构化告警。")
     return "\n".join(lines).strip()
-
-
-def _safe_filename(value: str, fallback: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or fallback

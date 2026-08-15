@@ -18,18 +18,14 @@ import json
 import os
 import re
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.services.bid_runtime_state import now_iso
 
 # factSpecsRef.source：清单只有全局一层，保留字段名供已固化的产物与前端兼容读取
 FACT_SPECS_SOURCE_GLOBAL = "global"
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _safe_project_id(project_id: str) -> str:
@@ -65,7 +61,7 @@ def save_fact_spec_version(
     """
     version = int(previous_version or 0) + 1
     rule_id = f"fsr-{uuid.uuid4().hex[:12]}"
-    uploaded_at = _now_iso()
+    uploaded_at = now_iso()
     digest = hashlib.sha256(content).hexdigest()
     record = {
         "ruleId": rule_id,

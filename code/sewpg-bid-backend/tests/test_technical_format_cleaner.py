@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 import tempfile
 import unittest
@@ -19,6 +20,14 @@ from app.document_processing.technical_document.formatting import cleaner
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 TECH_ASSEMBLY_PATH = BACKEND_ROOT / "app" / "services" / "tech_assembly.py"
+SKILL_RUNNER_PATH = (
+    BACKEND_ROOT
+    / "opencode"
+    / "skills"
+    / "bid-tech-format-cleaner"
+    / "scripts"
+    / "run_from_manifest.py"
+)
 
 
 def _run_application_cleaner(manifest_path: Path):
@@ -623,6 +632,45 @@ class TechnicalFormatCleanerTests(unittest.TestCase):
                 and node.func.id == "run_format_manifest"
                 for node in ast.walk(function)
             )
+        )
+
+
+class TestSkillRunnerDrift(unittest.TestCase):
+    """bid-tech-format-cleaner skill 脚本是 cleaner.py 的 vendored 拷贝。
+
+    opencode 容器内没有 app 包，两边只允许存在环境适配段差异（SCHEMA_VERSION
+    之前的导入/目录定位，以及样式基线路径常量名）。清洗逻辑主体必须逐字节一致，
+    漂移即红。改动 cleaner.py 的清洗逻辑后，把同一改动同步进 skill 拷贝。
+    """
+
+    @staticmethod
+    def _normalized_logic_body(path: Path) -> str:
+        source = path.read_text(encoding="utf-8")
+        marker = 'SCHEMA_VERSION = "bid-tech-format-clean-v1"'
+        body = source[source.index(marker) :]
+        return body.replace("ASSEMBLER_REFERENCES_DIR", "STYLE_BASELINE_DIR").replace(
+            "RESOURCES_DIR", "STYLE_BASELINE_DIR"
+        )
+
+    def test_skill_runner_logic_matches_application_cleaner(self) -> None:
+        cleaner_path = Path(cleaner.__file__).resolve()
+        app_body = self._normalized_logic_body(cleaner_path)
+        skill_body = self._normalized_logic_body(SKILL_RUNNER_PATH)
+        if app_body == skill_body:
+            return
+        diff = "\n".join(
+            difflib.unified_diff(
+                app_body.splitlines(),
+                skill_body.splitlines(),
+                fromfile=str(cleaner_path),
+                tofile=str(SKILL_RUNNER_PATH),
+                lineterm="",
+            )
+        )
+        self.fail(
+            "bid-tech-format-cleaner/scripts/run_from_manifest.py 与 "
+            "app/document_processing/technical_document/formatting/cleaner.py 的清洗逻辑已漂移，"
+            "请以 cleaner.py 为源同步 skill 拷贝：\n" + diff
         )
 
 

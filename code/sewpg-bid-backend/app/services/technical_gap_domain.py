@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import quote
 
 from app.services.bid_document_flow import _add_callback_token, _add_query_param
+from app.services.bid_runtime_state import now_iso
 
 
 def technical_outline_number_and_title(
@@ -165,17 +166,11 @@ def check_technical_gap_integrity(plan: dict[str, Any]) -> dict[str, Any]:
     ]
     return {
         "status": "passed" if not blocking_items else "blocked",
-        "checkedAt": _now_iso(),
+        "checkedAt": now_iso(),
         "blockingCount": len(blocking_items),
         "blockingItems": blocking_items,
         "summary": summary,
     }
-
-
-def _now_iso() -> str:
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def technical_gap_artifact_onlyoffice_payload(

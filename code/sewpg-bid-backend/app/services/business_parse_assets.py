@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ from app.services.workspace_project_access import (
     require_workspace_project_for_update,
 )
 from app.services.workspace_artifacts import workspace_parse_dir
+from app.services.bid_runtime_state import now_iso
 
 
 BUSINESS_APPENDIX_MATERIAL_FOLDER = "资格审查与商务响应成册"
@@ -40,10 +40,6 @@ class BusinessParseAssetError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _safe_docx_material_name(title: str, fallback: str) -> str:
@@ -277,7 +273,7 @@ def approve_business_appendix_asset(project_id: str, appendix_id: str, *, approv
     _project, parse_result, structured = _business_payload(project_id)
     appendices = structured.get("appendices") if isinstance(structured.get("appendices"), list) else []
     target: dict[str, Any] | None = None
-    at = _now_iso()
+    at = now_iso()
     for appendix in appendices:
         if not isinstance(appendix, dict):
             continue
@@ -301,7 +297,7 @@ def approve_business_appendix_asset(project_id: str, appendix_id: str, *, approv
 def approve_all_business_appendix_assets(project_id: str, *, approved: bool = True) -> dict[str, Any]:
     _project, parse_result, structured = _business_payload(project_id)
     appendices = structured.get("appendices") if isinstance(structured.get("appendices"), list) else []
-    at = _now_iso()
+    at = now_iso()
     count = 0
     for appendix in appendices:
         if not isinstance(appendix, dict):
@@ -329,7 +325,7 @@ def approve_business_scoring_asset(project_id: str, *, approved: bool = True) ->
     row_count = _business_scoring_row_count(scoring)
     if row_count <= 0:
         raise BusinessParseAssetError(400, "未识别到可审核的商务评分标准。")
-    at = _now_iso()
+    at = now_iso()
     asset = structured.get("businessScoringAsset") if isinstance(structured.get("businessScoringAsset"), dict) else {}
     asset.update(
         {
@@ -356,7 +352,7 @@ def approve_business_commitment_letter_asset(project_id: str, letter_id: str, *,
     _project, parse_result, structured = _business_payload(project_id)
     letters = structured.get("commitmentLetters") if isinstance(structured.get("commitmentLetters"), list) else []
     target: dict[str, Any] | None = None
-    at = _now_iso()
+    at = now_iso()
     for letter in letters:
         if not isinstance(letter, dict):
             continue
@@ -380,7 +376,7 @@ def approve_business_commitment_letter_asset(project_id: str, letter_id: str, *,
 def approve_all_business_commitment_letter_assets(project_id: str, *, approved: bool = True) -> dict[str, Any]:
     _project, parse_result, structured = _business_payload(project_id)
     letters = structured.get("commitmentLetters") if isinstance(structured.get("commitmentLetters"), list) else []
-    at = _now_iso()
+    at = now_iso()
     count = 0
     for letter in letters:
         if not isinstance(letter, dict):
@@ -405,12 +401,12 @@ def approve_all_business_commitment_letter_assets(project_id: str, *, approved: 
 def _mark_appendix_sync_failed(appendix: dict[str, Any], error: str) -> None:
     appendix["assetSyncStatus"] = "failed"
     appendix["assetSyncError"] = error
-    appendix["assetSyncUpdatedAt"] = _now_iso()
+    appendix["assetSyncUpdatedAt"] = now_iso()
 
 
 def _mark_appendix_synced(appendix: dict[str, Any], uploaded_item: dict[str, Any]) -> None:
     appendix["assetSyncStatus"] = "synced"
-    appendix["assetSyncedAt"] = _now_iso()
+    appendix["assetSyncedAt"] = now_iso()
     appendix["assetSyncError"] = ""
     appendix["assetMaterialId"] = uploaded_item.get("id") or ""
     appendix["assetMaterialPath"] = "/".join(
@@ -422,12 +418,12 @@ def _mark_appendix_synced(appendix: dict[str, Any], uploaded_item: dict[str, Any
 def _mark_letter_sync_failed(letter: dict[str, Any], error: str) -> None:
     letter["assetSyncStatus"] = "failed"
     letter["assetSyncError"] = error
-    letter["assetSyncUpdatedAt"] = _now_iso()
+    letter["assetSyncUpdatedAt"] = now_iso()
 
 
 def _mark_letter_synced(letter: dict[str, Any], uploaded_item: dict[str, Any]) -> None:
     letter["assetSyncStatus"] = "synced"
-    letter["assetSyncedAt"] = _now_iso()
+    letter["assetSyncedAt"] = now_iso()
     letter["assetSyncError"] = ""
     letter["assetMaterialId"] = uploaded_item.get("id") or ""
     letter["assetMaterialPath"] = "/".join(
@@ -439,12 +435,12 @@ def _mark_letter_synced(letter: dict[str, Any], uploaded_item: dict[str, Any]) -
 def _mark_scoring_sync_failed(asset: dict[str, Any], error: str) -> None:
     asset["syncStatus"] = "failed"
     asset["syncError"] = error
-    asset["syncUpdatedAt"] = _now_iso()
+    asset["syncUpdatedAt"] = now_iso()
 
 
 def _mark_scoring_synced(asset: dict[str, Any], uploaded_item: dict[str, Any], *, output_path: Path) -> None:
     asset["syncStatus"] = "synced"
-    asset["syncedAt"] = _now_iso()
+    asset["syncedAt"] = now_iso()
     asset["syncError"] = ""
     asset["docxPath"] = str(output_path)
     asset["materialId"] = uploaded_item.get("id") or ""

@@ -17,10 +17,8 @@ from app.services.document_nav import nav_to_text
 from app.services.document_parse_engine import create_document_parse_engine
 from app.services.document_parse_quality import evaluate_document_nav_quality
 from app.services.ocr_service import ocr_service
-from app.services.parse_common import _normalize_text, _run_coroutine_blocking
+from app.services.parse_common import WORD_NAMESPACE, _normalize_text, _run_coroutine_blocking
 from app.services.peripheral import PeripheralError
-
-WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
 def extract_docx_text(path: Path, progress_callback: Callable[[int, int], None] | None = None) -> str:

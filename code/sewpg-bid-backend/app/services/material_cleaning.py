@@ -7,7 +7,6 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -27,6 +26,7 @@ from app.services.material_raw_file_filter import raw_file_bid_type
 from app.services.material_raw_object_operations import enqueue_cleaning_job
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.bid_runtime_state import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,6 @@ CLEANABLE_SUFFIXES = {".doc", ".docx"}
 # 可由后台任务转换为 Word 的非 Word 素材（driver 的 pdf/excel 分支，技术标深度解析链使用）
 DEEP_CONVERTIBLE_SUFFIXES = {".pdf", ".xlsx", ".xls", ".xlsm"}
 _sync_cleaning_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _numeric_raw_file_id(file_id: str) -> int:
@@ -224,7 +220,7 @@ async def set_material_clean_status(
             {
                 "cleanStatus": status,
                 "cleanMessage": message,
-                "cleanUpdatedAt": _now_iso(),
+                "cleanUpdatedAt": now_iso(),
             }
         )
         if extra:
@@ -492,7 +488,7 @@ async def clean_material_file(
                     "cleanedMinioKey": key,
                     "cleanedFileName": f"{PurePosixPath(source_name).stem}.docx",
                     "cleanedSize": size,
-                    "cleanedAt": _now_iso(),
+                    "cleanedAt": now_iso(),
                     "cleanedSourceVersion": source_version,
                     "cleanedSourceKey": source_key,
                     "cleanLogTail": report_tail,

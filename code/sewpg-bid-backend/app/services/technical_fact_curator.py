@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -49,6 +48,7 @@ from app.services.technical_gap_fact_table import (
 from app.services.project_fact_materials import project_fact_material_cached_path
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import technical_workspace_dir, technical_workspace_parse_dir
+from app.services.bid_runtime_state import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +76,6 @@ _CURATOR_MATERIAL_LIMIT = 200
 
 # 缺失类别注入的跨项目候选每类上限（占用 _CURATOR_MATERIAL_LIMIT 额度，本项目素材优先）
 _CURATOR_CROSS_PROJECT_LIMIT = 3
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _curator_work_dir(project: dict[str, Any]) -> Path:
@@ -598,7 +594,7 @@ def run_fact_curator_for_project(
     result = run_technical_fact_curator_skill(manifest_path)
     notify("回收建议落表", "正在回收 AI 建议并写入事实表。")
     suggestions = load_fact_curator_suggestions(result, manifest)
-    saved_at = _now_iso()
+    saved_at = now_iso()
     operator = str(data.get("operator") or "当前用户")
     cross_materials = [
         material

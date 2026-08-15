@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from app.services.agent_engine.factory import AgentEngineFactory
-from app.services.parse_common import _run_coroutine_blocking
+from app.services.parse_common import (
+    _detect_business_format_regions,
+    _iter_docx_blocks,
+    _run_coroutine_blocking,
+)
 from app.services.parse_profiles import ParseProfile
-
-# 附表/docx 区段符号 `_iter_docx_blocks`、`_detect_business_format_regions` 已迁至
-# parse_appendix（parsing-01 第 3 步）；本模块 3 处函数体经模块全局引用它们，
-# 由 parse_appendix 在装配完成后注入（见其文件末尾），避免环 import，函数体保持逐字不变。
 
 
 BID_DEADLINE_DATE_PATTERN = re.compile(

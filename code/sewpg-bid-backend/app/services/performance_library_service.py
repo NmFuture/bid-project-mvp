@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from sqlalchemy import text
@@ -12,6 +11,7 @@ from app.services.material_runtime_tables import ensure_material_runtime_tables
 from app.services.material_tags import normalize_material_tags
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
+from app.services.file_utils import safe_filename
 
 
 PERFORMANCE_SCOPES = {"standard", "customer", "project"}
@@ -214,7 +214,7 @@ class PerformanceLibraryService:
 
     async def upload_word(self, record_id: str, upload: Any) -> dict[str, Any]:
         numeric_id = self._numeric_id(record_id)
-        file_name = _safe_file_name(str(getattr(upload, "filename", "") or "performance.docx"))
+        file_name = safe_filename(str(getattr(upload, "filename", "") or "performance.docx"), "performance.docx")
         if not file_name.lower().endswith((".doc", ".docx")):
             raise PeripheralError(400, "业绩库仅支持上传 Word 文件。", "PERFORMANCE_WORD_REQUIRED")
         stream = upload.file
@@ -422,12 +422,6 @@ def _json_list(values: list[str]) -> str:
     import json
 
     return json.dumps(values, ensure_ascii=False)
-
-
-def _safe_file_name(value: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or "performance.docx"
 
 
 def _scope_values(scope: dict[str, Any], key: str, *fallbacks: Any) -> list[str]:

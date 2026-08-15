@@ -962,6 +962,9 @@ def _extract_fragment_ordinal(fragment_id: str) -> int:
 
 
 def _iter_docx_blocks(document: DocxDocument) -> list[dict[str, Any]]:
+    # 注意：parse_common._iter_docx_blocks 是另一份变体（按路径遍历、带 body_index/元数据，
+    # 服务附表识别与源文件切片）；本版按 Document 对象遍历、字段为 kind/style/element，
+    # 服务素材切分。两者 block schema 不同，不合并，改动时互相看一眼。
     items: list[dict[str, Any]] = []
     for child in document.element.body.iterchildren():
         if child.tag == qn("w:p"):

@@ -9,7 +9,6 @@ curate 单轮要跑几分钟（组素材清单 → opencode 分析 → 回收落
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime
 from typing import Any
 
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
@@ -19,6 +18,7 @@ from app.services.technical_gap_repository import (
     require_technical_gap_project_for_update,
 )
 from app.services.technical_gap_state import ensure_technical_gap_state
+from app.services.bid_runtime_state import now_iso
 
 FACT_CURATE_JOB_TYPE = "fact_curate"
 
@@ -28,10 +28,6 @@ FACT_CURATE_PHASES = (
     "AI 分析素材",
     "回收建议落表",
 )
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def empty_fact_curate_state() -> dict[str, Any]:
@@ -74,7 +70,7 @@ def schedule_fact_curate_job(project_id: str, data: dict[str, Any] | None = None
         jobId="",
         phase=FACT_CURATE_PHASES[0],
         message="已提交，等待执行。",
-        startedAt=_now_iso(),
+        startedAt=now_iso(),
         finishedAt="",
         report=None,
     )
@@ -145,10 +141,10 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
                 "status": "succeeded",
                 "phase": "",
                 "message": message,
-                "finishedAt": _now_iso(),
+                "finishedAt": now_iso(),
                 "report": copy.deepcopy(report),
             }
-            latest_project["updatedAt"] = _now_iso()
+            latest_project["updatedAt"] = now_iso()
 
         mutate_technical_gap_project(project_id, apply)
         return {"status": "succeeded", "message": message}
@@ -158,6 +154,6 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
             status="failed",
             phase="",
             message=str(exc) or "AI 匹配填充失败。",
-            finishedAt=_now_iso(),
+            finishedAt=now_iso(),
         )
         raise

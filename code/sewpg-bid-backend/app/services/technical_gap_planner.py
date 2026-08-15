@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 import shutil
-import subprocess
-import sys
-import threading
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +24,8 @@ from app.services.turbine_models import (
     project_turbine_models,
 )
 from app.services.workspace_artifacts import legacy_workspace_roots, technical_workspace_dir, technical_workspace_stage_dir
+from app.services.bid_runtime_state import now_iso
+from app.services.file_utils import run_awaitable_sync, run_local_skill_runner
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +35,6 @@ TECHNICAL_GAP_PLANNER_SKILL_NAME = "bid-tech-gap-planner"
 TECHNICAL_TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
 TECHNICAL_WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
 GAP_PLANNER_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_GAP_PLANNER_SKILL_NAME / "scripts" / "run_from_manifest.py"
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _object_items(value: Any) -> list[dict[str, Any]]:
@@ -432,47 +425,11 @@ def _stamp_missing_match_scores(plan: dict[str, Any]) -> int:
     return scored
 
 
-def _safe_filename(value: str, fallback: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or fallback
-
-
 def _project_dir(project: dict[str, Any]) -> Path:
     project_id = str(project.get("id") or "")
     project_dir = technical_workspace_dir(project_id)
     project_dir.mkdir(parents=True, exist_ok=True)
     return project_dir
-
-
-def _run_async(awaitable: Any) -> Any:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(awaitable)
-
-    loop_thread_id = getattr(loop, "_thread_id", None)
-    if loop_thread_id is not None and threading.get_ident() == loop_thread_id:
-        raise RuntimeError(
-            "_run_async was called from the running event loop's own thread. "
-            "Wrap the calling sync code with asyncio.to_thread or run it in a worker thread."
-        )
-
-    result: dict[str, Any] = {}
-    error: dict[str, BaseException] = {}
-
-    def runner() -> None:
-        try:
-            result["value"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover - re-raised in caller
-            error["value"] = exc
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    thread.join()
-    if error:
-        raise error["value"]
-    return result.get("value")
 
 
 def _evidence_segments_by_material_id() -> dict[str, dict[str, Any]]:
@@ -570,7 +527,7 @@ def _technical_wiki_cards_by_path_tail() -> dict[str, dict[str, Any]]:
         return mapping
 
     try:
-        return _run_async(_load())
+        return run_awaitable_sync(_load())
     except Exception:  # noqa: BLE001 - 素材 wiki 读不到不应阻断缺口识别
         logger.warning("技术标缺口识别：素材 wiki 卡片加载失败，降级为无 wiki 文本匹配", exc_info=True)
         return {}
@@ -720,7 +677,7 @@ def _allowed_technical_material_index(
 
     for scope, query_folder_path, query_model in scope_queries:
         material_tier = str(scope.get("materialTier") or "").strip().lower()
-        payload = _run_async(
+        payload = run_awaitable_sync(
             technical_material_store.raw_files(
                 folder_path=query_folder_path,
                 project_id=str(scope.get("projectId") or "") if material_tier == "project" else "",
@@ -931,39 +888,11 @@ def _resolve_wiki_dir(project: dict[str, Any], project_dir: Path, work_dir: Path
     return None
 
 
-def _run_local_skill_runner(runner: Path, manifest_path: Path, schema_version: str) -> dict[str, Any]:
-    if not runner.exists():
-        raise RuntimeError(f"Skill runner 不存在：{runner}")
-    result = subprocess.run(
-        [sys.executable, str(runner), "--manifest", str(manifest_path), "--response", "summary"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if result.returncode != 0:
-        detail = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
-        raise RuntimeError(f"Skill runner 执行失败（{result.returncode}）：{detail}")
-    payload = json.loads(result.stdout or "{}")
-    payload.setdefault("schema_version", schema_version)
-    payload.setdefault(
-        "opencodeOutput",
-        {
-            "status": "received",
-            "sessionId": str(manifest_path),
-            "providerId": "local-skill",
-            "modelId": runner.parent.parent.name,
-            "receivedAt": _now_iso(),
-            "parts": [{"type": "text", "text": result.stdout.strip()}],
-        },
-    )
-    return payload
-
-
 def run_technical_gap_planner_skill(manifest_path: Path) -> dict[str, Any]:
     # 缺口识别是纯脚本计算（不调 LLM），直接子进程执行（产品裁决 2026-08-04）：
     # 原先经 OpenCode 会话让模型代跑一条 s4gap 命令，平添一次模型往返、轮询开销和
     # 模型乱执行的失败模式；产物与审计字段不变（providerId=local-skill）。
-    return _run_local_skill_runner(GAP_PLANNER_RUNNER, manifest_path, TECHNICAL_GAP_PLAN_SCHEMA_VERSION)
+    return run_local_skill_runner(GAP_PLANNER_RUNNER, manifest_path, TECHNICAL_GAP_PLAN_SCHEMA_VERSION)
 
 
 def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, Any]:
@@ -1061,7 +990,7 @@ def build_technical_gap_plan_for_project(project: dict[str, Any]) -> dict[str, A
         "sessionId": str(manifest_path),
         "providerId": "local-skill",
         "modelId": TECHNICAL_GAP_PLANNER_SKILL_NAME,
-        "receivedAt": _now_iso(),
+        "receivedAt": now_iso(),
         "parts": [{"type": "text", "text": json.dumps({"outputFile": str(plan_path)}, ensure_ascii=False)}],
     }
     return plan

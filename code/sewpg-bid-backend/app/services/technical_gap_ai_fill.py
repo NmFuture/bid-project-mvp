@@ -5,8 +5,6 @@ import copy
 import json
 import os
 import re
-import subprocess
-import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +16,7 @@ from app.services.identity import build_project_material_scope
 from app.services.minio_client import minio_client
 from app.services.ocr_service import ocr_service
 from app.services.agent_engine.opencode_engine import OpencodeEngine
-from app.services.file_utils import run_awaitable_sync
+from app.services.file_utils import run_awaitable_sync, safe_filename, run_local_skill_runner
 from app.services.peripheral import PeripheralError
 from app.services.technical_gap_domain import (
     FILL_QUALITY_ACCEPTED_STATUSES,
@@ -30,6 +28,7 @@ from app.services.technical_gap_state import legacy_technical_gap_items_from_pla
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import technical_workspace_dir
+from app.services.bid_runtime_state import now_iso
 
 
 TABLE_FILL_SCHEMA_VERSION = "bid-tech-table-fill-v1"
@@ -37,16 +36,6 @@ WORD_FILL_SCHEMA_VERSION = "bid-tech-word-placeholder-fill-v1"
 TECHNICAL_TABLE_FILL_SKILL_NAME = "bid-tech-table-filler"
 TECHNICAL_WORD_FILL_SKILL_NAME = "bid-tech-word-placeholder-filler"
 WORD_FILL_RUNNER = BASE_DIR / "opencode" / "skills" / TECHNICAL_WORD_FILL_SKILL_NAME / "scripts" / "run_from_manifest.py"
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _safe_filename(value: str, fallback: str) -> str:
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or fallback
 
 
 def _project_dir(project: dict[str, Any]) -> Path:
@@ -586,7 +575,7 @@ def _resolve_original_material_file(
         return None
     if not payload:
         return None
-    file_name = _safe_filename(str(payload.get("fileName") or ""), f"{material_id}原件")
+    file_name = safe_filename(str(payload.get("fileName") or ""), f"{material_id}原件")
     target_path = cache_dir / f"{material_id}-{file_name}"
     if not target_path.exists():
         try:
@@ -736,7 +725,7 @@ def _prepare_material_index_files(
                 awaitable.close()
             prepared.append(item)
             continue
-        file_name = _safe_filename(
+        file_name = safe_filename(
             str(item.get("cleanedFileName") or payload.get("fileName") or item.get("name") or f"{material_id}.docx"),
             f"{material_id}.docx",
         )
@@ -843,7 +832,7 @@ def _prepare_word_blank_source(blank_source: dict[str, Any], work_dir: Path) -> 
     if not material_id:
         raise ValueError("待填写 Word 缺少 materialId/docxPath，无法准备模板。")
     payload, source_kind = _run_async(_downloadable_technical_word_payload(material_id))
-    file_name = _safe_filename(
+    file_name = safe_filename(
         str(source.get("cleanedFileName") or payload.get("fileName") or source.get("title") or f"{material_id}.docx"),
         f"{material_id}.docx",
     )
@@ -982,7 +971,7 @@ def _embed_sources_for_fill(
         awaitable = _downloadable_technical_word_payload(material_id)
         try:
             payload, source_kind = _run_async(awaitable)
-            file_name = _safe_filename(
+            file_name = safe_filename(
                 str(picked.get("cleanedFileName") or payload.get("fileName") or name or f"{material_id}.docx"),
                 f"{material_id}.docx",
             )
@@ -1039,34 +1028,6 @@ def _parse_fields_for_fill(appendix_task: dict[str, Any], task: dict[str, Any], 
     for field_id in requested_field_ids:
         result.append(_field_summary(by_key.get(field_id) or {"id": field_id, "label": field_id}))
     return result
-
-
-def _run_local_skill_runner(runner: Path, manifest_path: Path, schema_version: str) -> dict[str, Any]:
-    if not runner.exists():
-        raise RuntimeError(f"Skill runner 不存在：{runner}")
-    result = subprocess.run(
-        [sys.executable, str(runner), "--manifest", str(manifest_path), "--response", "summary"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if result.returncode != 0:
-        detail = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
-        raise RuntimeError(f"Skill runner 执行失败（{result.returncode}）：{detail}")
-    payload = json.loads(result.stdout or "{}")
-    payload.setdefault("schema_version", schema_version)
-    payload.setdefault(
-        "opencodeOutput",
-        {
-            "status": "received",
-            "sessionId": str(manifest_path),
-            "providerId": "local-skill",
-            "modelId": runner.parent.parent.name,
-            "receivedAt": _now_iso(),
-            "parts": [{"type": "text", "text": result.stdout.strip()}],
-        },
-    )
-    return payload
 
 
 def _build_table_filler_llm_prompt(manifest_path: Path) -> str:
@@ -1142,7 +1103,7 @@ def run_technical_word_placeholder_filler_skill(manifest_path: Path) -> dict[str
     脚本是纯确定性查表（占位符原文 → 事实表字段），agent 在这条链路上只做一件事——
     转发一条 shell 命令，起会话的开销远大于执行本身。
     """
-    return _run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
+    return run_local_skill_runner(WORD_FILL_RUNNER, manifest_path, WORD_FILL_SCHEMA_VERSION)
 
 
 def _numeric_report_value(report: dict[str, Any], *keys: str) -> int:
@@ -1325,7 +1286,7 @@ def _target_result_for_output(result: dict[str, Any], output_file: Path, index: 
         "unfilledFields": list(result.get("unfilledFields") or []),
         "evidenceRefs": list(result.get("evidenceRefs") or []),
         "fillReport": dict(result.get("fillReport") or {}),
-        "filledAt": result.get("filledAt") or _now_iso(),
+        "filledAt": result.get("filledAt") or now_iso(),
     }
 
 
@@ -1590,11 +1551,11 @@ def compute_technical_ai_fill(
             work_dir,
             cache_dir=shared_material_cache_dir,
         )
-    artifact_task_id = _safe_filename(str(task.get("id") or "task"), "task")
+    artifact_task_id = safe_filename(str(task.get("id") or "task"), "task")
     artifact_id = f"ART-{gap_id}-{artifact_task_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
-    output_stem = _safe_filename(str(item.get("title") or gap_id), gap_id)
+    output_stem = safe_filename(str(item.get("title") or gap_id), gap_id)
     if len(fill_tasks) > 1:
-        output_suffix = _safe_filename(str(task.get("id") or blank_source_id or "task"), "task")
+        output_suffix = safe_filename(str(task.get("id") or blank_source_id or "task"), "task")
         output_file = work_dir / f"{output_stem}_{output_suffix}_AI填写.docx"
     else:
         output_file = work_dir / f"{output_stem}_AI填写.docx"
@@ -1675,7 +1636,7 @@ def compute_technical_ai_fill(
         output_exists=bool(output_files) and all(path.exists() for path in output_files),
         routing=source_routing,
     )
-    created_at = _now_iso()
+    created_at = now_iso()
     operator = str(data.get("operator") or "当前用户")
     artifacts = _build_ai_fill_artifacts(
         project_id=str(project.get("id") or ""),

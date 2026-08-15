@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Run conservative technical-bid Word format cleaning from a manifest."""
 
+# 单一事实源：本文件是技术标成稿格式清洗逻辑的唯一事实源。
+# opencode/skills/bid-tech-format-cleaner/scripts/run_from_manifest.py 是它在 opencode
+# 容器环境的 vendored 拷贝（仅 SCHEMA_VERSION 之前的导入适配段不同）。修改本文件的清洗逻辑后
+# 必须同步该拷贝；tests/test_technical_format_cleaner.py 的 TestSkillRunnerDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse

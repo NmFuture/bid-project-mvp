@@ -17,6 +17,8 @@ manifest 必须包含：
 - `outputFile`：清洗后 `.docx` 输出路径，不能与 `inputFile` 相同。
 - `projectName`：项目名称，用于页眉。
 - `styleSpecPath`：可选。默认配置和自定义配置都以 `bid-tech-assembler/references/heading_style.json` 为基线；自定义模式只覆盖后端校验通过的 `styleOverrides`。本 skill 无此参数时回退到同一路径，并复用 assembler 的编号修复模块。
+- `forceCanonicalToc`：可选。为 `true` 时先移除素材自带的旧目录域，再按配置重建唯一主目录。
+- `preserveAssembledHeadingTree`：可选。为 `true` 时保留已组装好的标题层级，不再按目录 JSON 重新匹配提升标题。
 
 ## 执行命令
 

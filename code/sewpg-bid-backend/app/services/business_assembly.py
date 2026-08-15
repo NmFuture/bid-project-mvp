@@ -23,7 +23,7 @@ from app.services.onlyoffice_documents import document_path
 from app.services.agent_engine.factory import AgentEngineFactory
 # 模块符号保留：既有测试经它 patch 类方法（默认引擎实际经 AgentEngineFactory 创建）。
 from app.services.agent_engine.opencode_engine import OpencodeEngine
-from app.services.file_utils import run_awaitable_sync
+from app.services.file_utils import run_awaitable_sync, safe_filename
 from app.services.bid_runtime_state import now_iso
 from app.services.workspace_project_access import (
     get_workspace_project_runtime_state,
@@ -105,7 +105,7 @@ def assemble_business_bid_for_project_with_progress(
             },
         )
 
-    output_file = work_dir / f"{_safe_filename(str(project.get('name') or project_id), project_id)}_商务投标文件.docx"
+    output_file = work_dir / f"{safe_filename(str(project.get('name') or project_id), project_id)}_商务投标文件.docx"
     manifest_path = work_dir / "business_assembly_input.json"
     manifest = {
         "schemaVersion": "bid-business-assembly-manifest-v1",
@@ -391,8 +391,8 @@ def _copy_business_material(item: dict[str, Any], library_dir: Path) -> bool:
             payload = _run_async(business_material_store.raw_download_cleaned_content(material_id))
         except Exception:
             payload = _run_async(business_material_store.raw_download_content(material_id))
-        file_name = _safe_filename(str(payload.get("fileName") or item.get("name") or f"{material_id}.bin"), f"{material_id}.bin")
-        folder = _safe_filename(str(item.get("folderPath") or "素材"), "素材")
+        file_name = safe_filename(str(payload.get("fileName") or item.get("name") or f"{material_id}.bin"), f"{material_id}.bin")
+        folder = safe_filename(str(item.get("folderPath") or "素材"), "素材")
         target_path = library_dir / folder / file_name
         minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
         return target_path.exists()
@@ -847,11 +847,3 @@ def _count_files(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for child in path.rglob("*") if child.is_file())
-
-
-def _safe_filename(value: str, fallback: str) -> str:
-    import re
-
-    text = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
-    text = re.sub(r"\s+", " ", text).strip(" .")
-    return text or fallback

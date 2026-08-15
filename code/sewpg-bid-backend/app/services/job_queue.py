@@ -11,6 +11,7 @@ from uuid import uuid4
 from app.core.config import settings
 from app.core.redis import RedisError, get_redis_client
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE
+from app.services.bid_runtime_state import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -115,10 +116,6 @@ class EnqueueResult:
 
 class JobStatusUnavailable(RuntimeError):
     pass
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _job_key(job_id: str) -> str:
@@ -262,7 +259,7 @@ def enqueue_generation_job(
 
     job_id = uuid4().hex
     lock_key = generation_lock_key(job_type, project_id)
-    created_at = _now_iso()
+    created_at = now_iso()
     payload_data = dict(data or {})
     job_user = payload_data.pop("__auditUser", None)
     job = {
@@ -349,7 +346,7 @@ def enqueue_internal_job(
     if client is None:
         return EnqueueResult(queued=False, unavailable=True)
 
-    created_at = _now_iso()
+    created_at = now_iso()
     payload_data = dict(data or {})
     job_user = payload_data.pop("__auditUser", None)
     job = {
@@ -461,7 +458,7 @@ def requeue_processing_job(job: dict[str, Any], message: str = "") -> bool | Non
                 processing_payload,
                 job_id,
                 payload,
-                _now_iso(),
+                now_iso(),
                 settings.redis_job_result_ttl_sec,
                 str(message or ""),
             )
@@ -480,7 +477,7 @@ def mark_job_status(job: dict[str, Any], status: str, message: str = "") -> None
     if not job_id:
         return
 
-    updated_at = _now_iso()
+    updated_at = now_iso()
     mapping = {
         "status": status,
         "updatedAt": updated_at,
@@ -621,7 +618,7 @@ def mark_job_progress(job: dict[str, Any], progress: dict[str, Any]) -> None:
             _job_key(job_id),
             mapping={
                 "progress": json.dumps(progress or {}, ensure_ascii=False, separators=(",", ":")),
-                "updatedAt": _now_iso(),
+                "updatedAt": now_iso(),
             },
         )
         pipe.expire(_job_key(job_id), settings.redis_job_result_ttl_sec)
@@ -750,7 +747,7 @@ def mark_job_inflight(job: dict[str, Any]) -> None:
         "projectId": str(job.get("projectId") or ""),
         "parentJobId": str(job.get("parentJobId") or ""),
         "createdAt": str(job.get("createdAt") or ""),
-        "startedAt": _now_iso(),
+        "startedAt": now_iso(),
         # data 一并登记：全局互斥提示需要展示正在处理的任务信息（如解析文件名）。
         "data": job.get("data") if isinstance(job.get("data"), dict) else {},
     }
@@ -807,7 +804,7 @@ def recover_processing_jobs(queue_key: str) -> int:
                 queue_key,
                 INFLIGHT_KEY,
                 JOB_KEY_PREFIX,
-                _now_iso(),
+                now_iso(),
                 settings.redis_job_result_ttl_sec,
             )
         except RedisError as exc:
@@ -845,7 +842,7 @@ def recover_inflight_jobs(job_type: str, queue_key: str) -> int:
             continue
 
         resolved_job_id = str(entry.get("id") or job_id)
-        created_at = str(entry.get("createdAt") or _now_iso())
+        created_at = str(entry.get("createdAt") or now_iso())
         job = {
             "id": resolved_job_id,
             "type": job_type,
@@ -859,7 +856,7 @@ def recover_inflight_jobs(job_type: str, queue_key: str) -> int:
         if isinstance(entry.get("user"), dict):
             job["user"] = entry["user"]
 
-        updated_at = _now_iso()
+        updated_at = now_iso()
         try:
             pipe = client.pipeline()
             pipe.rpush(queue_key, json.dumps(job, ensure_ascii=False, separators=(",", ":")))

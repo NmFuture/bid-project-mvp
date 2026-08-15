@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime
 from typing import Any
 
 from app.services.background_job_registry import start_job
+from app.services.bid_runtime_state import now_iso
 from app.services.technical_material_store import technical_material_store
 from app.services.workspace_project_access import (
     persist_workspace_project_fields,
@@ -22,10 +22,6 @@ MATERIAL_COPY_JOB_PREFIX = "technical-material-copy"
 # 来源项目的「附表」是它自己那次招标的产物，抄给新项目是错的
 TECHNICAL_APPENDIX_FOLDER_NAME = "附表"
 PROGRESS_WRITE_EVERY = 5
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def empty_material_copy_state() -> dict[str, Any]:
@@ -71,7 +67,7 @@ def schedule_technical_material_copy(
         total=0,
         failed=[],
         message="正在归集来源项目素材。",
-        startedAt=_now_iso(),
+        startedAt=now_iso(),
         finishedAt="",
     )
 
@@ -100,7 +96,7 @@ def schedule_technical_material_copy(
                 project_id,
                 status="failed",
                 message=str(exc) or "来源项目素材复制失败。",
-                finishedAt=_now_iso(),
+                finishedAt=now_iso(),
             )
             raise
         failed = result.get("failed") or []
@@ -117,7 +113,7 @@ def schedule_technical_material_copy(
             total=int(result.get("total") or 0),
             failed=failed,
             message=f"{message}。",
-            finishedAt=_now_iso(),
+            finishedAt=now_iso(),
         )
         return result
 

@@ -50,6 +50,7 @@ from app.services.material_folder_scope import require_material_bid_type
 from app.services.minio_client import minio_client
 from app.services.peripheral import PeripheralError
 from app.services.wiki_blueprint_common import MAX_SYNC_DOCX_BYTES, extract_docx_profile
+from app.services.bid_runtime_state import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +96,6 @@ _HEADING_NUMBER_PATTERN = re.compile(
 _local_inflight: set[str] = set()
 _local_inflight_lock = threading.Lock()
 _sync_deep_parse_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _numeric_raw_file_id(file_id: str) -> int:
@@ -229,14 +226,14 @@ async def _write_deep_parse_status(
         ext = dict(item.ext_fields or {})
         ext[DEEP_PARSE_STATUS_FIELD] = status
         ext[DEEP_PARSE_MESSAGE_FIELD] = message
-        ext[DEEP_PARSE_UPDATED_AT_FIELD] = _now_iso()
+        ext[DEEP_PARSE_UPDATED_AT_FIELD] = now_iso()
         if profile is not None:
             ext[DEEP_PARSE_FAIL_COUNT_FIELD] = 0
             ext[DEEP_PARSE_PROFILE_FIELD] = {
                 "schemaVersion": DEEP_PARSE_PROFILE_SCHEMA,
                 "sourceKey": source_key,
                 "sourceSize": source_size,
-                "parsedAt": _now_iso(),
+                "parsedAt": now_iso(),
                 "profile": profile,
             }
         elif status == "failed":
