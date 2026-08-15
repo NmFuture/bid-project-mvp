@@ -20,7 +20,7 @@ export const isParseProgressFailed = (progress) => failedStatuses.has(normalizeS
 export const isParseResultCompleted = (result) => completedStatuses.has(normalizeStatus(result))
 
 const clampPercentage = (value) => Math.max(0, Math.min(100, Number(value || 0)))
-const runningStatuses = new Set(['running', 'processing', 'queued'])
+const runningStatuses = new Set(['running', 'processing', 'queued', 'cancel_requested'])
 const internalAiParseTextPattern = /opencode|S1|Skill|manifest|输出片段|AI/i
 
 const finiteNumber = (value) => {
@@ -191,6 +191,7 @@ const statusTextByStatus = {
   running: '解析中',
   processing: '解析中',
   queued: '等待解析',
+  cancel_requested: '停止中',
   idle: '等待上传',
 }
 
@@ -230,9 +231,10 @@ export const summarizeParseProgress = (progress = {}) => {
 export const shouldPollParseProgress = ({ uploading = false, stopped = false, progress = null, result = null } = {}) => {
   if (stopped) return false
   if (uploading) return true
-  if (isParseResultCompleted(result)) return false
   const status = normalizeStatus(progress)
-  return status === 'running' || status === 'processing' || status === 'queued' || isParseProgressCompleted(progress)
+  if (runningStatuses.has(status)) return true
+  if (isParseResultCompleted(result)) return false
+  return isParseProgressCompleted(progress)
 }
 
 export const pollParseProgressOnce = async ({

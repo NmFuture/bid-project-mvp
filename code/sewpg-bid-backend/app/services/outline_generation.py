@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections import Counter
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -647,12 +648,18 @@ def _run_parallel_outline_chapters(
     try:
         aggregator.emit_initial()
         with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+            # 取消探针放在 ContextVar 里，线程池不会自动继承调用方的上下文。
+            # 每个任务带一份自己的上下文副本过去（同一个 Context 不能被两个线程同时进入），
+            # 否则章节级会话读不到探针，点了停止只能等它自己跑完。
+            def submit_with_context(fn: Any, *args: Any) -> Any:
+                return executor.submit(contextvars.copy_context().run, fn, *args)
+
             futures: dict[Any, tuple[str, Any]] = {
-                executor.submit(run_chapter, chapter): ("chapter", chapter)
+                submit_with_context(run_chapter, chapter): ("chapter", chapter)
                 for chapter in chapters
             }
             if appendix_items:
-                futures[executor.submit(run_appendix)] = ("appendix", None)
+                futures[submit_with_context(run_appendix)] = ("appendix", None)
             chapter_failures: list[tuple[str, BaseException]] = []
             for future in as_completed(futures):
                 kind, target = futures[future]
@@ -853,6 +860,12 @@ def generate_outline_for_project_with_progress(
     if progress_callback:
         progress_callback(
             "normalizing_result",
+            {
+                "chapterCount": len(nodes),
+            },
+        )
+        progress_callback(
+            "ready_to_publish",
             {
                 "chapterCount": len(nodes),
             },

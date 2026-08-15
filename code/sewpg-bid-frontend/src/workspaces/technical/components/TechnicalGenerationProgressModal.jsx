@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import Button from '../../../components/ui/Button'
-import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
 import BidProgressPanel from '../../../components/shared/BidProgressPanel'
+import TechnicalTaskProgressDialog from './TechnicalTaskProgressDialog'
 import { progressElapsedLine } from '../../../utils/progressDuration'
 import {
   generationDisplayPercentage,
@@ -18,6 +17,9 @@ export default function TechnicalGenerationProgressModal({
   open,
   status,
   onClose,
+  onStop,
+  stopping = false,
+  taskTitle = '生成正文',
   completedMessage = '技术标正文已生成。可进入共创导出；后续如需重新生成，可在共创导出页操作。',
 }) {
   const running = isGenerationProgressRunning(status)
@@ -37,14 +39,15 @@ export default function TechnicalGenerationProgressModal({
   if (!open) return null
 
   const completed = status?.status === 'completed'
+  const cancelled = status?.status === 'cancelled'
   const failed = isGenerationProgressFailed(status)
   const title = running
-    ? '正在生成技术标正文'
-    : completed ? '技术标正文已生成' : failed ? '技术标正文生成失败' : '技术标正文生成'
+    ? `正在${taskTitle}`
+    : completed ? `${taskTitle}完成` : cancelled ? `${taskTitle}已停止` : failed ? `${taskTitle}失败` : taskTitle
   const summary = summarizeGenerationProgress(status || {})
   const elapsedText = progressElapsedLine(
     generationElapsedSeconds(status || {}, nowMs),
-    { finished: completed || failed },
+    { finished: completed || cancelled || failed },
   )
   const {
     warningCount,
@@ -55,17 +58,21 @@ export default function TechnicalGenerationProgressModal({
   } = technicalGenerationPresentation(status)
 
   return (
-    <Dialog open={open} onClose={onClose} size="sm">
-      <DialogHeader onClose={onClose}>
-        <h3 className="text-lg font-headline font-semibold text-on-surface">{title}</h3>
-      </DialogHeader>
-      <DialogBody className="space-y-4 p-5">
+    <TechnicalTaskProgressDialog
+      open={open}
+      title={title}
+      active={running}
+      stopping={stopping}
+      onClose={onClose}
+      onStop={onStop}
+    >
         <BidProgressPanel
           tone={summary.tone}
           detail={summary.detail}
           elapsedText={elapsedText}
           percentage={generationDisplayPercentage(status || {}, nowMs)}
           running={running}
+          icon={cancelled ? 'stop_circle' : ''}
         />
         {running ? (
           <p className="text-xs text-outline">任务在后台运行，可以关闭弹窗或离开页面。</p>
@@ -100,10 +107,6 @@ export default function TechnicalGenerationProgressModal({
             {status?.error || summary.detail}
           </div>
         ) : null}
-      </DialogBody>
-      <DialogFooter>
-        <Button type="button" onClick={onClose} variant={completed ? 'primary' : 'quiet'}>关闭</Button>
-      </DialogFooter>
-    </Dialog>
+    </TechnicalTaskProgressDialog>
   )
 }

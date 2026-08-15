@@ -213,6 +213,11 @@ def assemble_tech_bid_for_project_with_progress(
     finally:
         _clear_selected_materials(material_library_dir)
 
+    if progress_callback:
+        progress_callback(
+            "ready_to_publish",
+            {"outputFile": str(final_output_path)},
+        )
     target_path = document_path(project_id)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(final_output_path, target_path)
@@ -1511,6 +1516,11 @@ def regenerate_score_index_xref_for_project(
     produced = Path(str(xref.get("outputFile") or ""))
     applied = xref.get("status") == "completed" and produced.exists()
     if applied:
+        if progress_callback:
+            progress_callback(
+                "ready_to_publish",
+                {"outputFile": str(produced), "documentPath": str(source_path)},
+            )
         shutil.copy2(produced, source_path)
 
     if progress_callback:

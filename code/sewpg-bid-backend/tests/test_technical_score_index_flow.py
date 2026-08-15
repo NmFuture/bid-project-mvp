@@ -297,6 +297,81 @@ class TechnicalScoreIndexFlowTests(unittest.TestCase):
 
         self.assertEqual(_state_for_tests(self.project_id)["percentage"], 90)
 
+    def test_cancel_score_index_is_idempotent(self) -> None:
+        with patch("app.services.technical_score_index_flow._schedule_score_index_job"):
+            started = self.client.post(
+                f"/api/technical/projects/{self.project_id}/score-index/run",
+                headers=self.headers,
+            )
+        self.assertEqual(started.status_code, 202)
+
+        first = self.client.post(
+            f"/api/technical/projects/{self.project_id}/score-index/cancel",
+            headers=self.headers,
+        )
+        second = self.client.post(
+            f"/api/technical/projects/{self.project_id}/score-index/cancel",
+            headers=self.headers,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["status"], "cancel_requested")
+        self.assertTrue(first.json()["cancelRequested"])
+        self.assertEqual(first.json()["cancelRequestedAt"], second.json()["cancelRequestedAt"])
+
+    def test_cancelled_score_index_job_does_not_call_generator(self) -> None:
+        from app.services import technical_score_index_flow as flow
+
+        with patch("app.services.technical_score_index_flow._schedule_score_index_job"):
+            self.client.post(
+                f"/api/technical/projects/{self.project_id}/score-index/run",
+                headers=self.headers,
+            )
+        self.client.post(
+            f"/api/technical/projects/{self.project_id}/score-index/cancel",
+            headers=self.headers,
+        )
+
+        with patch.object(flow, "regenerate_score_index_xref_for_project") as regenerate:
+            flow.run_score_index_job(self.project_id, {}, None)
+
+        regenerate.assert_not_called()
+        self.assertEqual(_state_for_tests(self.project_id)["status"], "cancelled")
+
+    def test_score_index_checks_cancel_before_replacing_draft(self) -> None:
+        from app.services import tech_assembly
+
+        draft = document_path(self.project_id)
+        _write_draft_with_index_table(draft)
+        before = draft.read_bytes()
+
+        def fake_skill(brief_path: Path, mapping_path: Path):
+            payload = json.loads(brief_path.read_text(encoding="utf-8"))
+            factor = payload["rows"][0]["factor"]
+            mapping_path.write_text(
+                json.dumps({factor: ["5.3.3"]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return {"mappingFile": str(mapping_path), "factorCount": 1}
+
+        def cancel_before_publish(stage, _details=None):
+            if stage == "ready_to_publish":
+                raise RuntimeError("cancel before publish")
+
+        with patch.object(
+            tech_assembly,
+            "run_technical_score_index_xref_skill",
+            side_effect=fake_skill,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cancel before publish"):
+                tech_assembly.regenerate_score_index_xref_for_project(
+                    self.project_id,
+                    progress_callback=cancel_before_publish,
+                )
+
+        self.assertEqual(draft.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

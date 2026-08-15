@@ -8,12 +8,14 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.redis import redis_is_available
+from app.services.background_task_cancel import BackgroundTaskCancelled
 from app.services.job_queue import (
     KNOWN_JOB_TYPES,
     MATERIAL_QUEUE_KEY,
     QUEUE_KEY,
     claim_s1_workflow_lock,
     clear_job_inflight,
+    is_job_cancel_requested,
     dequeue_generation_job,
     mark_job_inflight,
     mark_job_progress,
@@ -163,6 +165,14 @@ def _run_job(job: dict[str, Any]) -> bool:
     workflow_terminal = False
     post_release_wiki_bid_type = ""
 
+    # 排队期间被停止的任务不要再开跑：取消标记在入队后、真正执行前随时可能被打上
+    if is_job_cancel_requested(str(job.get("id") or "")):
+        logger.info("Skipping job cancelled while queued: %s", job.get("id"))
+        mark_job_status(job, "cancelled", "任务在排队中被停止。")
+        clear_job_inflight(job)
+        release_generation_lock(lock_job)
+        return True
+
     mark_job_status(job, "running")
     mark_job_inflight(job)
     lock_renewed = renew_generation_lock(lock_job)
@@ -242,6 +252,20 @@ def _run_job(job: dict[str, Any]) -> bool:
                 if isinstance(project_state.get("score_index_state"), dict)
                 else {}
             )
+        elif job_type == "technical_gap_detection":
+            from app.services.technical_gap_service import run_technical_gap_detection_job
+
+            run_technical_gap_detection_job(project_id)
+            project_state = _runtime_state(project_id)
+            gap_state = (
+                project_state.get("gap_state")
+                if isinstance(project_state.get("gap_state"), dict)
+                else {}
+            )
+            final_state = {
+                "status": str(gap_state.get("recognitionStatus") or ""),
+                "summary": str(gap_state.get("taskSummary") or ""),
+            }
         elif job_type == "material_cleaning":
             from app.services.material_cleaning import clean_material_file_sync
             from app.services.material_wiki_auto import on_material_cleaning_job_finished
@@ -385,6 +409,13 @@ def _run_job(job: dict[str, Any]) -> bool:
                 }
         else:
             raise RuntimeError(f"Unknown job type: {job_type}")
+    except BackgroundTaskCancelled:
+        # 用户主动停止不是失败：记成 cancelled，任务状态已由各流程自己写回
+        logger.info("Background job cancelled by user: %s", job)
+        mark_job_status(job, "cancelled", "任务已停止。")
+        if workflow_parent:
+            mark_job_status(workflow_parent, "cancelled", "任务已停止。")
+        return True
     except Exception as exc:  # pragma: no cover - route job functions handle expected failures
         logger.exception("Background job failed: %s", job)
         mark_job_status(job, "failed", str(exc))
@@ -493,7 +524,7 @@ def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> Non
                 completed_or_deferred = _run_job(job)
                 if not completed_or_deferred:
                     time.sleep(1)
-            except Exception:
+            except (Exception, BackgroundTaskCancelled):
                 recovery_done = False
                 continue
     finally:

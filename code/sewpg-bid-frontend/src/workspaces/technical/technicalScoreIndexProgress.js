@@ -4,7 +4,7 @@
 // 量化计数取自后端 indexProgress：total 是评分索引表的评审因素行数，
 // done 是已经写进章节索引列的行数。章节判断那一步是一次整体调用、拿不到逐行回执，
 // 所以计数会停在体检值直到判断结果落盘——宁可停住也不编造中间数。
-const runningStatuses = new Set(['running', 'processing', 'queued'])
+const runningStatuses = new Set(['running', 'processing', 'queued', 'cancel_requested'])
 const failedStatuses = new Set(['failed', 'error'])
 const internalTextPattern = /opencode|manifest|skill|session|provider|model|xref/i
 
@@ -49,6 +49,8 @@ const startMs = (state = {}) => {
 }
 
 const terminalMs = (state = {}) => {
+  const cancelledAt = parseTime(state?.cancelledAt)
+  if (cancelledAt !== null) return cancelledAt
   const finishedAt = parseTime(state?.finishedAt)
   if (finishedAt !== null) return finishedAt
   const times = eventList(state).map((event) => parseTime(event?.at)).filter((value) => value !== null)
@@ -57,7 +59,7 @@ const terminalMs = (state = {}) => {
 
 const isTerminal = (state) => {
   const status = normalizeStatus(state?.status)
-  return status === 'completed' || failedStatuses.has(status)
+  return status === 'completed' || status === 'cancelled' || failedStatuses.has(status)
 }
 
 export const scoreIndexElapsedSeconds = (state = {}, nowMs = Date.now()) => {
@@ -113,6 +115,10 @@ export const summarizeScoreIndexProgress = (state = {}) => {
 
   if (failedStatuses.has(status)) {
     return { status, tone: 'danger', detail: visibleFailureSummary(state?.summary) }
+  }
+
+  if (status === 'cancelled') {
+    return { status, tone: 'neutral', detail: '章节索引重新生成已停止。' }
   }
 
   if (runningStatuses.has(status)) {

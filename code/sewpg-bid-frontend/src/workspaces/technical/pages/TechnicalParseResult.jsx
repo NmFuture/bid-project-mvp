@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { technicalDirectoryAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import DataCard from '../../../components/shared/DataCard'
@@ -9,12 +9,15 @@ import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
+  directoryDisplayPercentage,
   isDirectoryProgressFailed,
   isDirectoryProgressRunning,
   mergeMonotonicDirectoryProgress,
   shouldShowTemplateDirectoryGenerationButton,
 } from '../technicalDirectoryProgress'
 import { subscribeDirectoryProgress } from '../technicalDirectoryProgressStream'
+import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
+import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -66,6 +69,9 @@ const validatePickedFiles = (picked = []) => {
 export default function TechnicalParseResult({ showToast, workspaceKind = 'tech' }) {
   const navigate = useNavigate()
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
+  const progressTask = String(searchParams.get('progressTask') || '').trim()
+  const restoringDirectoryTask = progressTask === 'directory-generate'
   const routeWorkspaceSlug = useWorkspaceSlug()
   const workspaceSlug = workspaceKind || routeWorkspaceSlug
   const workspaceBidType = bidTypeFromWorkspace(workspaceSlug)
@@ -81,8 +87,11 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const [templateFallback, setTemplateFallback] = useState(null)
   const [directoryState, setDirectoryState] = useState(null)
   const [generatingDirectory, setGeneratingDirectory] = useState(false)
+  const [directoryStopRequested, setDirectoryStopRequested] = useState(false)
   const [autoAdvanceAfterDirectory, setAutoAdvanceAfterDirectory] = useState(false)
   const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
+  const directoryProgressRef = useRef(null)
+  const directoryProgressScrolledRef = useRef('')
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -98,12 +107,13 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       setData(parseResponse)
       setTemplateFallback(fallbackResponse)
       setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, directoryResponse))
+      if (restoringDirectoryTask && directoryResponse) setDirectoryProgressClock(Date.now())
     } catch (e) {
       setError(e?.message || 'S1 模板上传信息加载失败')
     } finally {
       setLoading(false)
     }
-  }, [id])
+  }, [id, restoringDirectoryTask])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -140,6 +150,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const canGoNextStage = isReviewApproved && isParseCompleted && isProjectInfoComplete
   const directoryStatus = directoryState?.status || 'idle'
   const isDirectoryRunning = isDirectoryProgressRunning(directoryState)
+  const isDirectoryStopRequested = directoryStopRequested || directoryStatus === 'cancel_requested'
   const isDirectoryCompleted = directoryStatus === 'completed'
   const isDirectoryFailed = isDirectoryProgressFailed(directoryState)
   const showDirectoryGenerationButton = shouldShowTemplateDirectoryGenerationButton(directoryState || {})
@@ -148,6 +159,23 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
     if (!isDirectoryRunning) return undefined
     const timer = window.setInterval(() => setDirectoryProgressClock(Date.now()), 1000)
     return () => window.clearInterval(timer)
+  }, [isDirectoryRunning])
+
+  // 目录生成进度就长在本页上，停留期间右下角不重复挂卡片。
+  useTechnicalTaskPresence('directory-generate', id, true)
+
+  // 从右下角任务卡回到本页：目录生成没有弹窗，进度只在页面里，先把它滚进视野。同一次恢复只滚一次。
+  useEffect(() => {
+    if (!restoringDirectoryTask || !directoryState) return
+    if (directoryProgressScrolledRef.current === id) return
+    directoryProgressScrolledRef.current = id
+    directoryProgressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [directoryState, id, restoringDirectoryTask])
+
+  useEffect(() => {
+    if (isDirectoryRunning) return undefined
+    const timer = window.setTimeout(() => setDirectoryStopRequested(false), 0)
+    return () => window.clearTimeout(timer)
   }, [isDirectoryRunning])
 
   useEffect(() => {
@@ -160,6 +188,16 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       },
     })
   }, [id, isDirectoryRunning])
+
+  useEffect(() => {
+    if (!id || !directoryState) return
+    updateTechnicalTask('directory-generate', id, {
+      status: String(directoryState.status || 'running').toLowerCase(),
+      // 与页面内进度条同一算法，否则卡片和页面会显示两个百分比
+      percentage: Math.round(directoryDisplayPercentage(directoryState, directoryProgressClock)),
+      summary: directoryState.summary || directoryState.message || '',
+    })
+  }, [directoryProgressClock, directoryState, id])
 
   useEffect(() => {
     if (!autoAdvanceAfterDirectory || !isDirectoryCompleted) return undefined
@@ -284,6 +322,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       return
     }
     if (generatingDirectory || isDirectoryRunning) return
+    setDirectoryStopRequested(false)
     setGeneratingDirectory(true)
     try {
       if (templateFiles.length) {
@@ -293,6 +332,15 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
         showToast?.(`请先上传${bidLabel}模板文件。`, 'error')
         return
       }
+      markTechnicalTask({
+        taskType: 'directory-generate',
+        taskName: '生成目录',
+        projectId: id,
+        projectName: project?.name || id,
+        status: 'queued',
+        percentage: 0,
+        summary: '正在准备生成目录。',
+      })
       // 目录 run 成功后再由完成轮询触发阶段推进（见 autoAdvanceAfterDirectory effect），
       // 不在 run 之前提前置阶段 completed，避免 run 失败时阶段已被错误推进
       const payload = await technicalDirectoryAPI.run(id)
@@ -301,9 +349,33 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
       showToast?.(payload?.message || '已开始生成目录。')
     } catch (e) {
       setAutoAdvanceAfterDirectory(false)
-      showToast?.(e?.message || '目录生成失败', 'error')
+      const message = e?.message || '目录生成失败'
+      updateTechnicalTask('directory-generate', id, {
+        status: 'failed',
+        summary: message,
+      })
+      showToast?.(message, 'error')
     } finally {
       setGeneratingDirectory(false)
+    }
+  }
+
+  const handleStopDirectory = async () => {
+    if (!isDirectoryRunning || isDirectoryStopRequested) return
+    setDirectoryStopRequested(true)
+    try {
+      const cancelled = await technicalDirectoryAPI.cancel(id)
+      setAutoAdvanceAfterDirectory(false)
+      setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, cancelled))
+      updateTechnicalTask('directory-generate', id, {
+        status: String(cancelled?.status || 'cancel_requested').toLowerCase(),
+        percentage: Number(cancelled?.percentage ?? directoryState?.percentage) || 0,
+        summary: cancelled?.summary || cancelled?.message || '已请求停止目录生成任务。',
+      })
+      showToast?.(cancelled?.summary || cancelled?.message || '已请求停止目录生成任务。')
+    } catch (e) {
+      setDirectoryStopRequested(false)
+      showToast?.(`停止请求失败：${e?.message || '请稍后重试。'}`, 'error')
     }
   }
 
@@ -461,7 +533,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           <div className="flex flex-col gap-4 p-4 sm:p-6 lg:min-h-[388px]">
             <h3 className="text-base font-headline font-semibold text-on-surface">目录生成</h3>
 
-          <div className="flex min-h-24 items-center sm:min-h-[132px]">
+          <div ref={directoryProgressRef} className="flex min-h-24 items-center sm:min-h-[132px]">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
               <TechnicalDirectoryProgressPanel
                 state={directoryState}
@@ -470,8 +542,18 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
             ) : null}
           </div>
 
-          <div className="flex min-h-10 justify-center">
-            {showDirectoryGenerationButton ? (
+          <div className={`flex min-h-10 ${isDirectoryRunning ? 'justify-end' : 'justify-center'}`}>
+            {isDirectoryRunning ? (
+              <Button
+                onClick={handleStopDirectory}
+                disabled={isDirectoryStopRequested}
+                size="stage"
+                variant="dangerQuiet"
+                className="!h-10 w-full sm:w-auto"
+              >
+                {isDirectoryStopRequested ? '停止中...' : '停止'}
+              </Button>
+            ) : showDirectoryGenerationButton ? (
               <Button
                 onClick={handleGenerateDirectory}
                 disabled={!canGoNextStage || generatingDirectory || isDirectoryRunning}

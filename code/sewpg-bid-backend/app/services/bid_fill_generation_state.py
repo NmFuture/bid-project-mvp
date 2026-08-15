@@ -19,6 +19,9 @@ def start_fill_generation_state(project: dict[str, Any]) -> dict[str, Any]:
         # events 是 20 条环形缓冲，长任务会把首条挤掉；耗时基线单独记一份。
         "startedAt": now_iso(),
         "filledAt": "",
+        "cancelRequested": False,
+        "cancelRequestedAt": "",
+        "cancelledAt": "",
         "runDurationSec": 0,
         "runDuration": "",
         "summary": preparing_summary,

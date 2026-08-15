@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.services import technical_gap_ai_fill
 from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
 from app.services.bid_runtime_state import count_outline_nodes, now_iso, outline_nodes_from_toc_items
+from app.services.local_job_executor import wait_for_local_jobs
 from app.services.store import store
 from app.services.technical_fact_field_specs import fillable_specs
 from app.services.workspace_artifacts import technical_workspace_dir
@@ -110,6 +111,19 @@ def _replace_confirmed_outline_from_toc(project_id: str, toc: dict) -> None:
 
 
 class GapReviewFlowTests(unittest.TestCase):
+    def _run_gap_detection(self, project_id: str):
+        """启动素材匹配并等它跑完，返回最终的检测载荷。
+
+        素材匹配已改成后台任务：接口只负责受理并返回 202，结果由 worker 落盘。
+        用例关心的是最终结果，所以这里等本地兜底执行器把任务跑完，再读一次状态。
+        校验失败（400）等同步返回的情况原样返回，交给调用方断言。
+        """
+        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        if response.status_code not in {200, 202}:
+            return response
+        self.assertTrue(wait_for_local_jobs(), "素材匹配后台任务超时未完成")
+        return self.client.get(f"/api/technical/projects/{project_id}/gaps-detection")
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         base = Path(self.temp_dir.name)
@@ -340,7 +354,7 @@ class GapReviewFlowTests(unittest.TestCase):
             return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
 
         with patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
-            response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+            response = self._run_gap_detection(project_id)
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["summary"]["totalTocItems"], 2)
@@ -418,7 +432,7 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_gap_detection_creates_real_gap_plan_from_directory_material_refs_and_parse_appendices(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
 
-        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        response = self._run_gap_detection(project_id)
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -477,13 +491,19 @@ class GapReviewFlowTests(unittest.TestCase):
 
         with patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
             response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+            self.assertIn(response.status_code, {200, 202}, response.text)
+            # 完整性校验跑在后台任务里，失败不再是 400，而是写回任务状态供轮询读取
+            self.assertTrue(wait_for_local_jobs(), "素材匹配后台任务超时未完成")
 
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn("缺口识别结果不完整", response.json()["detail"])
+        detection = self.client.get(f"/api/technical/projects/{project_id}/gaps-detection")
+        self.assertEqual(detection.status_code, 200, detection.text)
+        payload = detection.json()
+        self.assertEqual(payload["status"], "failed", detection.text)
+        self.assertIn("缺口识别结果不完整", f"{payload.get('error') or ''}{payload.get('message') or ''}")
 
     def test_gap_detection_rerun_returns_clean_first_step_plan(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -506,7 +526,7 @@ class GapReviewFlowTests(unittest.TestCase):
         project["gap_state"]["submissions"] = [{"id": "SUB-OLD"}]
         store._persist_project(project)
 
-        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        response = self._run_gap_detection(project_id)
 
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
@@ -521,7 +541,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_calls_opencode_skill_and_registers_resolved_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -737,7 +757,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_confirm_rejects_superseded_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -812,7 +832,7 @@ class GapReviewFlowTests(unittest.TestCase):
         ]
         project["parse_storage"] = parse_storage
         store._persist_project(project)
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -896,7 +916,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_registers_each_batch_table_output_as_previewable_artifact(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -1009,7 +1029,7 @@ class GapReviewFlowTests(unittest.TestCase):
             "hubHeightM": 125,
         }
         store._persist_project(project)
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -1058,7 +1078,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_project_fact_table_preserves_manual_fields_when_rebuilt(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         _seed_fact_specs(project_id)
 
@@ -1094,7 +1114,7 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_fact_field_patch_unknown_id_returns_404_without_creating(self) -> None:
         """R06-B07-08：普通 PATCH 不应隐式创建字段，未持久化的临时 id 必须 404 且不落库。"""
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         _seed_fact_specs(project_id)
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
@@ -1114,7 +1134,7 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_manual_fact_field_saved_then_patch_confirm_succeeds(self) -> None:
         """R06-B07-08：人工新增字段整表持久化后保留 id，逐字段确认幂等且不产生重复字段。"""
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         _seed_fact_specs(project_id)
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
@@ -1533,7 +1553,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_ai_fill_requires_confirmed_fact_table_and_manifest_carries_it(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200, detection_response.text)
         gap_plan = detection_response.json()["gapPlan"]
         fill_item = next(item for item in gap_plan["items"] if item["fillTasks"])
@@ -1764,7 +1784,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_upload_registers_real_project_artifact_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
@@ -1798,7 +1818,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_upload_preserves_browser_docx_data_url_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
@@ -1837,7 +1857,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_select_existing_material_registers_real_artifact_for_s7(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
@@ -1900,7 +1920,7 @@ class GapReviewFlowTests(unittest.TestCase):
         from app.document_processing.technical_document.assembly import build_assembly
 
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         gap_id = next(item for item in gap_plan["items"] if item["status"] == "needs_input")["id"]
@@ -2025,7 +2045,7 @@ class GapReviewFlowTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        response = self._run_gap_detection(project_id)
 
         self.assertEqual(response.status_code, 200)
         plan = response.json()["gapPlan"]
@@ -2128,7 +2148,7 @@ class GapReviewFlowTests(unittest.TestCase):
         }
         store._persist_project(project)
 
-        response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        response = self._run_gap_detection(project_id)
 
         self.assertEqual(response.status_code, 200, response.text)
         plan = response.json()["gapPlan"]
@@ -2201,7 +2221,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
         with patch("app.services.technical_gap_planner.technical_material_store.raw_files", side_effect=fake_raw_files), \
             patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
-            response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+            response = self._run_gap_detection(project_id)
 
         self.assertEqual(response.status_code, 200, response.text)
         manifest = manifests[0]
@@ -2225,7 +2245,7 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_gap_review_mock_flow_runs_from_s4_to_s6(self) -> None:
         project_id = self._create_project_with_confirmed_outline()
 
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         detection_payload = detection_response.json()
         self.assertEqual(detection_payload["status"], "completed")
@@ -2260,7 +2280,7 @@ class GapReviewFlowTests(unittest.TestCase):
     def test_submit_review_blocks_until_gap_plan_is_resolved(self) -> None:
         project_id = self._create_project_with_confirmed_outline()
 
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
 
         submit_review_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/submit-review")
@@ -2292,7 +2312,7 @@ class GapReviewFlowTests(unittest.TestCase):
 
     def test_gap_recheck_passes_when_all_items_are_resolved_or_ignored_with_s4_ready_artifacts(self) -> None:
         project_id = self._create_project_with_confirmed_directory_json()
-        detection_response = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+        detection_response = self._run_gap_detection(project_id)
         self.assertEqual(detection_response.status_code, 200)
         gap_plan = detection_response.json()["gapPlan"]
         for item in gap_plan["items"]:

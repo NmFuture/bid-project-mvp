@@ -454,3 +454,25 @@ def test_local_job_executor_survives_job_failure() -> None:
     local_job_executor.submit_local_job(done.set)
 
     assert done.wait(timeout=5)
+
+
+def test_local_job_executor_survives_a_cancelled_job() -> None:
+    """取消不继承 Exception，本地执行器必须单独接住它。
+
+    这条工作线程是单例：漏出去一次就退出，之后所有本地兜底任务都不再执行——
+    表现是后续任务永远排队不跑，界面上的任务停在运行中。
+    """
+    from app.services.background_task_cancel import BackgroundTaskCancelled
+
+    done = threading.Event()
+
+    def cancelled_job() -> None:
+        raise BackgroundTaskCancelled("stop")
+
+    def follow_up_job() -> None:
+        done.set()
+
+    local_job_executor.submit_local_job(cancelled_job)
+    local_job_executor.submit_local_job(follow_up_job)
+
+    assert done.wait(timeout=5), "取消一个任务后，后面的任务仍须照常执行"

@@ -9,6 +9,15 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.services.audit_service import audit_service
+from app.services.background_task_cancel import (
+    BackgroundTaskCancelled,
+    cancel_task_state,
+    raise_if_task_cancel_requested,
+    request_task_cancel,
+    task_cancel_requested,
+    task_cancel_scope,
+    throttled_cancel_probe,
+)
 from app.services.bid_fill_generation_state import (
     fail_fill_generation_state,
     start_fill_generation_state,
@@ -17,7 +26,14 @@ from app.services.bid_fill_generation_state import (
 from app.services.bid_project_service import BidProjectService
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 from app.services.business_draft_generation import generate_business_draft_for_project_with_progress
-from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked
+from app.services.job_queue import (
+    cancel_generation_job,
+    enqueue_generation_job,
+    force_release_generation_lock,
+    is_generation_locked,
+    request_job_cancel,
+)
+from app.services.job_timing import current_locked_job_id
 from app.services.local_job_executor import submit_local_job
 from app.services.technical_draft_generation import generate_technical_draft_for_project_with_progress
 from app.services.workspace_project_access import (
@@ -121,6 +137,14 @@ def _update_fill_generation(project_id: str, **kwargs: Any) -> dict[str, Any]:
 def _fail_fill_generation(project_id: str, message: str, tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     project = _any_project_for_update(project_id)
     state = fail_fill_generation_state(project, message=message, tasks=tasks)
+    persist_workspace_project_fields(project, "fill_state")
+    return state
+
+
+def _cancel_fill_generation(project_id: str) -> dict[str, Any]:
+    project = _any_project_for_update(project_id)
+    state = cancel_task_state(project.get("fill_state"), "正文生成已停止。")
+    project["fill_state"] = state
     persist_workspace_project_fields(project, "fill_state")
     return state
 
@@ -255,6 +279,7 @@ def _handle_fill_progress(
     *,
     bid_type: str,
 ) -> None:
+    raise_if_task_cancel_requested(_fill_state(project_id))
     meta = details or {}
     ctx = _generation_context(bid_type)
     if stage == "inputs_ready":
@@ -678,17 +703,20 @@ def _run_fill_generation_job(
     request_data = dict(data or {})
     job_bid_type = _generation_job_bid_type(project_id, request_data, bid_type)
     try:
+        raise_if_task_cancel_requested(_fill_state(project_id))
         draft_generator = _draft_generator_for_bid_type(job_bid_type)
-        draft_generator(
-            project_id,
-            request_data,
-            progress_callback=lambda stage, details=None: _handle_fill_progress(
+        # 挂上取消探针：耗时的 futurecode 会话中途也能中止，不必等到下一个阶段边界
+        with task_cancel_scope(throttled_cancel_probe(lambda: task_cancel_requested(_fill_state(project_id)))):
+            draft_generator(
                 project_id,
-                stage,
-                details,
-                bid_type=job_bid_type,
-            ),
-        )
+                request_data,
+                progress_callback=lambda stage, details=None: _handle_fill_progress(
+                    project_id,
+                    stage,
+                    details,
+                    bid_type=job_bid_type,
+                ),
+            )
         state = _fill_state(project_id)
         _record_generation_audit_sync(
             project_id=project_id,
@@ -708,6 +736,18 @@ def _run_fill_generation_job(
                     "modelId": (state.get("opencodeOutput") or {}).get("modelId"),
                 },
             },
+        )
+    except BackgroundTaskCancelled:
+        _cancel_fill_generation(project_id)
+        _record_generation_audit_sync(
+            project_id=project_id,
+            action="停止生成标书",
+            status="已停止",
+            user=user,
+            bid_type=job_bid_type,
+            data=request_data,
+            diff={"before": {}, "after": {"status": "cancelled"}},
+            metadata={},
         )
     except ValueError as exc:
         _fail_fill_generation(
@@ -820,6 +860,19 @@ class BidGenerationService:
         if _is_fill_generation_stale(current):
             current = _recover_stale_fill_generation(project_id, current, self.project_service.bid_type)
         return self._with_generation_urls(project_id, current)
+
+    async def cancel(self, project_id: str) -> dict[str, Any]:
+        project = self.require_project_for_update(project_id)
+        current = copy.deepcopy(project.get("fill_state") or {})
+        # 排队中的任务直接摘掉并收成终态，别让用户对着「停止中」干等
+        stage = cancel_generation_job("fill_generation", project_id)
+        if stage in {"queued", "none"}:
+            payload = cancel_task_state(current, "标书生成已停止。")
+        else:
+            payload = request_task_cancel(current, "已请求停止正文生成，正在等待安全停止点。")
+        project["fill_state"] = payload
+        persist_workspace_project_fields(project, "fill_state")
+        return self._with_generation_urls(project_id, payload)
 
     async def run(
         self,

@@ -14,6 +14,7 @@ import {
 } from '../../utils/permissions'
 import RoleChip from '../shared/RoleChip'
 import ParseRunningBanner from './ParseRunningBanner'
+import TechnicalBackgroundTaskStack from '../../workspaces/technical/components/TechnicalBackgroundTaskStack'
 
 // 一级导航：7 项，对所有角色一致；2-5 项的链接随当前 workspace 变化。
 const NAV_DEFINITIONS = [
@@ -374,6 +375,7 @@ export default function AppShell({ children, currentUser = null, onLogout = () =
         />
       )}
 
+      <TechnicalBackgroundTaskStack />
       <ParseRunningBanner />
     </div>
   )

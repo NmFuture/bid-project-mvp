@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   isScoreIndexProgressFailed,
@@ -100,4 +101,26 @@ test('失败摘要不泄露内部实现，并说明成稿未被改动', () => {
     summarizeScoreIndexProgress({ status: 'failed', summary: '请求超时' }).detail,
     '章节索引服务暂时不可用，成稿未被改动，请稍后重试。',
   )
+})
+
+test('请求停止仍轮询，已停止冻结耗时并使用中性文案', () => {
+  assert.equal(isScoreIndexProgressRunning({ status: 'cancel_requested' }), true)
+  const cancelled = {
+    status: 'cancelled',
+    startedAt: '2026-08-13T10:00:00Z',
+    cancelledAt: '2026-08-13T10:01:10Z',
+    percentage: 47,
+  }
+  assert.equal(scoreIndexElapsedSeconds(cancelled, Date.parse('2026-08-13T10:30:00Z')), 70)
+  assert.deepEqual(summarizeScoreIndexProgress(cancelled), {
+    status: 'cancelled',
+    tone: 'neutral',
+    detail: '章节索引重新生成已停止。',
+  })
+})
+
+test('索引弹窗把已停止展示为中性停止态', () => {
+  const source = readFileSync(new URL('./components/TechnicalScoreIndexProgressModal.jsx', import.meta.url), 'utf8')
+  assert.match(source, /stop_circle/)
+  assert.match(source, /已停止/)
 })

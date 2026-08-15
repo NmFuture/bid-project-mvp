@@ -18,6 +18,7 @@ from app.main import app
 from app.core.config import settings
 from app.services.bid_outline_state import confirm_outline_state, save_generated_outline_state
 from app.services.bid_runtime_state import now_iso
+from app.services.local_job_executor import wait_for_local_jobs
 from app.services.store import store
 from app.services.technical_gap_repository import persist_technical_gap_project, require_technical_gap_project_for_update
 from app.services.technical_gap_review import confirm_technical_review, prepare_technical_review_document
@@ -280,7 +281,11 @@ class TurbineModelSelectionTests(unittest.TestCase):
             return {"schema_version": "bid-tech-gap-plan-v1", "outputFile": str(output_file)}
 
         with patch("app.services.technical_gap_planner.run_technical_gap_planner_skill", side_effect=fake_gap_planner):
-            detection = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+            started = self.client.post(f"/api/technical/projects/{project_id}/gaps-detection/run")
+            self.assertIn(started.status_code, {200, 202}, started.text)
+            # 素材匹配已改成后台任务：接口只受理，结果要等 worker 跑完再读
+            self.assertTrue(wait_for_local_jobs(), "素材匹配后台任务超时未完成")
+        detection = self.client.get(f"/api/technical/projects/{project_id}/gaps-detection")
         self.assertEqual(detection.status_code, 200, detection.text)
         self.assertEqual(gap_manifests[0]["projectTurbineModel"]["model"], "EW10.0-220下置")
         self.assertEqual(detection.json()["gapPlan"]["projectTurbineModel"]["platform"], "X2E-2")

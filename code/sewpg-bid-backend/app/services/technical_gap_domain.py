@@ -232,6 +232,14 @@ def build_technical_gap_detection_payload(project: dict[str, Any], gap_state: di
     low_priority_count = max(0, len(items) - high_priority_count - medium_priority_count)
     return {
         "status": gap_state["recognitionStatus"],
+        "percentage": int(gap_state.get("percentage") or 0),
+        "message": str(gap_state.get("taskSummary") or ""),
+        "startedAt": str(gap_state.get("startedAt") or ""),
+        "completedAt": str(gap_state.get("completedAt") or ""),
+        "error": str(gap_state.get("error") or ""),
+        "cancelRequested": bool(gap_state.get("cancelRequested")),
+        "cancelRequestedAt": str(gap_state.get("cancelRequestedAt") or ""),
+        "cancelledAt": str(gap_state.get("cancelledAt") or ""),
         "recognizedAt": gap_state["recognizedAt"],
         "summary": {
             "totalMissing": len(items),

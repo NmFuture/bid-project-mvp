@@ -139,6 +139,7 @@ test('stops technical timeout recovery polling when abort signal is raised', asy
 
 test('continues polling after technical upload request ends while backend is running', () => {
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'running', percentage: 40 } }), true)
+  assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'cancel_requested', percentage: 40 } }), true)
   assert.equal(shouldPollParseProgress({
     uploading: true,
     stopped: true,
@@ -152,6 +153,26 @@ test('continues polling after technical upload request ends while backend is run
   }), false)
   assert.equal(shouldPollParseProgress({ uploading: false, progress: { status: 'idle' } }), false)
   assert.equal(shouldPollParseProgress({ uploading: true, progress: null }), true)
+})
+
+test('new re-parse progress takes precedence over a completed result from the previous run', () => {
+  const completedResult = { status: 'completed' }
+
+  assert.equal(shouldPollParseProgress({
+    uploading: false,
+    progress: { status: 'queued', percentage: 0 },
+    result: completedResult,
+  }), true)
+  assert.equal(shouldPollParseProgress({
+    uploading: false,
+    progress: { status: 'running', percentage: 30 },
+    result: completedResult,
+  }), true)
+  assert.equal(shouldPollParseProgress({
+    uploading: false,
+    progress: { status: 'idle', percentage: 0 },
+    result: completedResult,
+  }), false)
 })
 
 test('keeps displayed technical progress from moving backwards', () => {

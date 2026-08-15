@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from typing import Any, Callable
 
+from app.services.background_task_cancel import BackgroundTaskCancelled
 from app.services.job_timing import submit_job_timing_write
 from app.services.job_timing_events import timing_now_iso
 
@@ -68,6 +70,10 @@ def _run_jobs() -> None:
         error_message = ""
         try:
             function(*args, **kwargs)
+        except BackgroundTaskCancelled:
+            # 用户主动停止不是失败。这里必须单独接住：取消异常不继承 Exception，
+            # 漏出去会让这条单例工作线程直接退出，之后所有本地兜底任务都不再执行。
+            logger.info("Local background job cancelled by user")
         except Exception as exc:
             error_message = str(exc)
             logger.exception("Local background job failed")
@@ -84,3 +90,17 @@ def submit_local_job(function: Callable[..., Any], *args: Any, **kwargs: Any) ->
     """Serialize background jobs when Redis is unavailable."""
 
     _JOBS.put((function, args, kwargs))
+
+
+def wait_for_local_jobs(timeout_sec: float = 60.0) -> bool:
+    """等本地兜底执行器把队列里的任务跑完，超时返回 False。
+
+    没有 Redis 时后台任务落在这条单线程队列上。用例要断言任务结果，就得先等它跑完，
+    否则拿到的是刚受理的中间态。Queue.join() 没有超时参数，这里自己盯着未完成计数。
+    """
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    while _JOBS.unfinished_tasks:
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    return True

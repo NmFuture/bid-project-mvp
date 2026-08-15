@@ -1,4 +1,4 @@
-const terminalStatuses = new Set(['completed', 'failed', 'error'])
+const terminalStatuses = new Set(['completed', 'failed', 'error', 'cancelled'])
 
 const isTerminalStatus = (payload) =>
   terminalStatuses.has(String(payload?.status || '').toLowerCase())

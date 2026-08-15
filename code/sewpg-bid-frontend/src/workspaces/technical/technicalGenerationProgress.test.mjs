@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import {
   generationDisplayPercentage,
   generationElapsedSeconds,
+  isGenerationProgressRunning,
   normalizeAssemblyProgress,
   summarizeGenerationProgress,
 } from './technicalGenerationProgress.js'
@@ -130,6 +131,24 @@ test('耗时以本次启动为起点，终态冻结在完成时刻', () => {
   assert.equal(generationElapsedSeconds(legacy, at(RUN.inputsReady)), 64)
 })
 
+test('请求停止仍是活动态，已停止是冻结耗时的中性终态', () => {
+  assert.equal(isGenerationProgressRunning({ status: 'cancel_requested' }), true)
+
+  const cancelled = {
+    status: 'cancelled',
+    startedAt: RUN.startedAt,
+    cancelledAt: RUN.assemblingResult,
+    percentage: 54,
+    summary: 'cancelled by user',
+  }
+  assert.equal(generationElapsedSeconds(cancelled, at(RUN.done) + 600_000), 233)
+  assert.deepEqual(summarizeGenerationProgress(cancelled), {
+    status: 'cancelled',
+    tone: 'neutral',
+    detail: '正文生成已停止。',
+  })
+})
+
 test('对外文案不泄露内部实现名词', () => {
   const failed = summarizeGenerationProgress({
     status: 'failed',
@@ -156,4 +175,6 @@ test('正文弹窗只渲染百分比徽标，并复用共享进度卡片', () =>
   // 旧版把后端 percentage 直接当进度用，且标题下重复写了一遍 summary
   assert.doesNotMatch(source, /progress=\{progress\}/)
   assert.doesNotMatch(source, /status\?\.percentage/)
+  assert.match(source, /stop_circle/)
+  assert.match(source, /已停止/)
 })

@@ -3226,6 +3226,55 @@ class DirectoryGenerationTests(unittest.TestCase):
         self.assertIn('"status": "completed"', first_chunk)
         self.assertIn('"summary": "目录生成完成。"', first_chunk)
 
+    def test_cancel_directory_generation_is_idempotent(self) -> None:
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+
+        first = self.client.post(f"/api/technical/projects/{project_id}/directory-generation/cancel")
+        second = self.client.post(f"/api/technical/projects/{project_id}/directory-generation/cancel")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["status"], "cancel_requested")
+        self.assertTrue(first.json()["cancelRequested"])
+        self.assertEqual(first.json()["cancelRequestedAt"], second.json()["cancelRequestedAt"])
+
+    def test_cancelled_directory_job_does_not_call_generator(self) -> None:
+        from app.services.bid_directory_flow import _run_directory_generation_job
+
+        project_id = self._prepare_project_with_parse_result()
+        self._start_directory_generation_for_tests(project_id)
+        self.client.post(f"/api/technical/projects/{project_id}/directory-generation/cancel")
+
+        with patch("app.services.bid_directory_flow.generate_outline_for_project_with_progress") as generate:
+            _run_directory_generation_job(project_id, {})
+
+        generate.assert_not_called()
+        self.assertEqual(self._directory_state_for_tests(project_id)["status"], "cancelled")
+
+    def test_directory_generation_checks_cancel_before_publishing_outline(self) -> None:
+        from app.services.outline_generation import generate_outline_for_project_with_progress
+
+        project_id = self._prepare_project_with_parse_result()
+        before = copy.deepcopy(store.get_project_runtime_state(project_id)["outline_state"])
+
+        def cancel_before_publish(stage, _details=None):
+            if stage == "ready_to_publish":
+                raise RuntimeError("cancel before publish")
+
+        with patch(
+            "app.services.opencode_client.OpencodeClient.generate_outline_with_trace",
+            side_effect=self._mock_futurecode_outline,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cancel before publish"):
+                generate_outline_for_project_with_progress(
+                    project_id,
+                    {"outlineStrategy": "strict"},
+                    progress_callback=cancel_before_publish,
+                )
+
+        self.assertEqual(store.get_project_runtime_state(project_id)["outline_state"], before)
+
 
 if __name__ == "__main__":
     unittest.main()
