@@ -451,18 +451,8 @@ def test_platform_field_agreeing_with_ai_is_not_a_conflict() -> None:
 def test_platform_field_stays_out_of_fill_bucket() -> None:
     """平台字段没值是人还没填，AI 不替人做主——只进 fix，不进 fill。"""
     fields = [
-        {
-            "key": "空的平台字段",
-            "status": "unextracted",
-            "value": "",
-            "sourceRefs": [{"type": "projectTurbineModel", "field": "foundationType"}],
-        },
-        {
-            "key": "有值的平台字段",
-            "status": "confirmed",
-            "value": "钢塔",
-            "sourceRefs": [{"type": "projectTurbineModel", "field": "foundationType"}],
-        },
+        {"key": "空的平台字段", "status": "unextracted", "value": "", "platformAuthored": True},
+        {"key": "有值的平台字段", "status": "confirmed", "value": "钢塔", "platformAuthored": True},
     ]
 
     targets = curator._curate_targets(fields)
@@ -472,23 +462,24 @@ def test_platform_field_stays_out_of_fill_bucket() -> None:
 
 
 def test_platform_field_recognized_without_spec_source_kind() -> None:
-    """靠 projectTurbineModel 来源标记认平台字段，不依赖清单来源列。
+    """靠建表时打的 platformAuthored 标记认，不依赖清单来源列。
 
     实测 PRJ-0004 的 61 个字段里 sourceKind=platform 的一个都没有：投标机型的来源列
     写的是「项目定制…」被归成 material，机组台数、基础形式连 specKey 都是空的。
     只看 sourceKind 的话这道保护等于没有。
     """
-    assert curator._is_platform_authored_field(
-        {"sourceKind": "material", "sourceRefs": [{"type": "projectTurbineModel", "field": "model"}]}
-    )
-    assert curator._is_platform_authored_field(
-        {"sourceKind": "", "sourceRefs": [{"type": "projectTurbineModel", "field": "turbineCount"}]}
-    )
+    assert curator._is_platform_authored_field({"sourceKind": "material", "platformAuthored": True})
+    assert curator._is_platform_authored_field({"sourceKind": "", "platformAuthored": True})
     # 清单确实标了平台输入的也认
-    assert curator._is_platform_authored_field({"sourceKind": "platform", "sourceRefs": []})
+    assert curator._is_platform_authored_field({"sourceKind": "platform"})
     # 从素材抽出来的不是平台字段
     assert not curator._is_platform_authored_field(
         {"sourceKind": "material", "sourceRefs": [{"type": "materialFact", "materialId": "RAW-1"}]}
+    )
+    # 关键回归：挂着 projectTurbineModel 来源但平台没填值的，不算平台字段——
+    # 那圈字段不论平台值空不空都会挂这个标记，拿它当判据会把 AI 的正确修正锁死
+    assert not curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "projectTurbineModel", "field": "hubHeightM"}]}
     )
 
 
@@ -1533,3 +1524,51 @@ def test_no_targets_short_circuits_without_opening_a_session(workspace_dirs, mon
     assert report["suggestionCount"] == 0
     # 表原样返回，不因为空跑就把值动了
     assert [f["value"] for f in table["fields"]] == [f["value"] for f in filled]
+
+
+def test_platform_authored_only_when_the_person_actually_filled_it() -> None:
+    """平台没填值的字段不算平台输入，AI 该直接改。
+
+    实测 PRJ-0004：hubHeightM / ratedPowerKw / rotorDiameterM 平台侧全是空的，值其实
+    抽自素材。但这一圈字段不论平台值空不空都会挂 projectTurbineModel 来源标记，拿它
+    当判据就会把它们一起圈进保护区——结果 AI 把「轮毂高度」从跨列串行脏值「池建昌」
+    改成 125 的正确修正被降级成"建议"，脏值反倒被锁死在表里。
+    """
+    from app.services.technical_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-PARTIAL",
+        "name": "只填了一部分机型参数的项目",
+        # 人只选了机型和台数，轮毂高度/单机容量/叶轮直径都没填
+        "turbineModel": {"model": "EW10.0-220上置", "turbineCount": "60"},
+    }
+    table = build_project_fact_table(project, {})
+    by_label = {str(f.get("label") or ""): f for f in table.get("fields") or []}
+
+    for filled in ("投标机型", "机组台数"):
+        field = by_label.get(filled)
+        assert field is not None, f"缺字段 {filled}：{sorted(by_label)[:10]}"
+        assert curator._is_platform_authored_field(field), f"{filled} 人填过，应受保护"
+
+    for blank in ("轮毂高度", "单机容量", "叶轮直径"):
+        field = by_label.get(blank)
+        if field is None:
+            continue
+        assert not curator._is_platform_authored_field(field), (
+            f"{blank} 平台侧没填值，值抽自素材，AI 必须能直接改而不是只给建议"
+        )
+
+
+def test_platform_authored_flag_survives_save_round_trip() -> None:
+    """标记要扛过保存往返，否则保存一次保护就没了。"""
+    from app.services.technical_gap_fact_table import normalize_project_fact_field
+
+    saved = normalize_project_fact_field(
+        {"label": "机组台数", "value": "60", "platformAuthored": True},
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert saved["platformAuthored"] is True
+    assert curator._is_platform_authored_field(saved)
