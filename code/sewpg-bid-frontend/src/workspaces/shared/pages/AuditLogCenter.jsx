@@ -11,6 +11,7 @@ import { PageEmpty, PageError, PageLoading } from '../../../components/states/Pa
 import Button from '../../../components/ui/Button'
 import SharedPagination from '../../../components/shared/Pagination'
 import { bidTypeFromWorkspace, useWorkspaceSlug } from '../../../utils/workspace'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 
 const PAGE_SIZE = 20
 
@@ -188,10 +189,13 @@ function ModeTab({ active, onClick, children }) {
 // ===== 审计概览：平移原技术标审计日志页功能，并补充分页 =====
 // 注：审计 list 接口一次性返回筛选后的全部 items（total 为筛选后总数），分页在前端切片完成
 function AuditOverview({ auditAPI, lockedBidType, showToast }) {
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次日志（默认筛选），后台静默刷新
+  const auditCacheKey = `audit:logs:${lockedBidType || 'all'}`
+  const [cachedAudit] = useState(() => readPageCache(auditCacheKey))
+  const [loading, setLoading] = useState(!cachedAudit)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(cachedAudit || null)
   const [queryFilters, setQueryFilters] = useState(defaultAuditFilters)
   const [draftFilters, setDraftFilters] = useState(defaultAuditFilters)
   const [detailAuditId, setDetailAuditId] = useState('')
@@ -212,6 +216,9 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
           bidType: lockedBidType,
         })
         setData(response)
+        if (!Object.values(filters || {}).some((value) => String(value || '').trim())) {
+          writePageCache(auditCacheKey, response)
+        }
       } catch (e) {
         console.error(e)
         const message = safeMessage(e, '日志加载失败，请稍后重试。')
@@ -225,7 +232,7 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
         }
       }
     },
-    [auditAPI, lockedBidType, showToast],
+    [auditAPI, auditCacheKey, lockedBidType, showToast],
   )
 
   useEffect(() => {
@@ -523,9 +530,11 @@ function AuditOverview({ auditAPI, lockedBidType, showToast }) {
 
 // ===== 行为流 - 事件列表 =====
 function EventList({ eventsAPI, showToast }) {
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次事件列表（默认筛选第一页），后台静默刷新
+  const [cachedEvents] = useState(() => readPageCache('audit:events'))
+  const [loading, setLoading] = useState(!cachedEvents)
   const [error, setError] = useState('')
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(cachedEvents || null)
   const [queryFilters, setQueryFilters] = useState(defaultEventFilters)
   const [draftFilters, setDraftFilters] = useState(defaultEventFilters)
   const [page, setPage] = useState(1)
@@ -538,6 +547,9 @@ function EventList({ eventsAPI, showToast }) {
       try {
         const response = await eventsAPI.list({ ...filters, page: nextPage, pageSize: PAGE_SIZE })
         setData(response)
+        const isDefaultView = nextPage === 1
+          && !Object.values(filters || {}).some((value) => String(value || '').trim())
+        if (isDefaultView) writePageCache('audit:events', response)
       } catch (e) {
         console.error(e)
         setError(safeMessage(e, '事件加载失败，请稍后重试。'))
@@ -785,9 +797,11 @@ function EventList({ eventsAPI, showToast }) {
 
 // ===== 行为流 - 会话列表 =====
 function SessionList({ eventsAPI, showToast, onReplay }) {
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次会话列表（默认筛选第一页），后台静默刷新
+  const [cachedSessions] = useState(() => readPageCache('audit:sessions'))
+  const [loading, setLoading] = useState(!cachedSessions)
   const [error, setError] = useState('')
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(cachedSessions || null)
   const [queryFilters, setQueryFilters] = useState(defaultSessionFilters)
   const [draftFilters, setDraftFilters] = useState(defaultSessionFilters)
   const [page, setPage] = useState(1)
@@ -799,6 +813,9 @@ function SessionList({ eventsAPI, showToast, onReplay }) {
       try {
         const response = await eventsAPI.sessions({ ...filters, page: nextPage, pageSize: PAGE_SIZE })
         setData(response)
+        const isDefaultView = nextPage === 1
+          && !Object.values(filters || {}).some((value) => String(value || '').trim())
+        if (isDefaultView) writePageCache('audit:sessions', response)
       } catch (e) {
         console.error(e)
         setError(safeMessage(e, '会话加载失败，请稍后重试。'))

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { settingsAPI } from '../api'
+import { readPageCache, writePageCache } from '../utils/pageCache'
 import PageHeader from '../components/shared/PageHeader'
 import { PageEmpty, PageError, PageLoading } from '../components/states/PageState'
 import Button from '../components/ui/Button'
@@ -34,51 +35,59 @@ const todayVersionLabel = () => {
 
 export default function Settings({ showToast = () => {}, currentUser = null }) {
   const [activeSection, setActiveSection] = useState('defaultTemplates')
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次配置，后台静默刷新
+  const [cachedSettings] = useState(() => readPageCache('settings:center'))
+  const [loading, setLoading] = useState(!cachedSettings)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
-  const [users, setUsers] = useState([])
-  const [gateway, setGateway] = useState(null)
-  const [gatewayDraft, setGatewayDraft] = useState({
-    enabled: true,
-    providerId: '',
-    baseUrl: '',
-    model: '',
-    modelOptions: [],
-    opencodeBaseUrl: '',
-    timeoutMs: 30000,
-    maxTokens: 4096,
-    apiKey: '',
-    apiKeyMasked: '',
+  const [users, setUsers] = useState(cachedSettings?.users || [])
+  const [gateway, setGateway] = useState(cachedSettings?.gateway || null)
+  const [gatewayDraft, setGatewayDraft] = useState(() => {
+    const g = cachedSettings?.gateway
+    return {
+      enabled: Boolean(g?.enabled ?? true),
+      providerId: String(g?.providerId || ''),
+      baseUrl: String(g?.baseUrl || g?.endpoint || ''),
+      model: String(g?.model || ''),
+      modelOptions: Array.isArray(g?.modelOptions) ? g.modelOptions : [],
+      opencodeBaseUrl: String(g?.opencodeBaseUrl || ''),
+      timeoutMs: Number(g?.timeoutMs || 30000),
+      maxTokens: Number(g?.maxTokens || 4096),
+      apiKey: '',
+      apiKeyMasked: String(g?.apiKeyMasked || ''),
+    }
   })
   const [gatewaySaving, setGatewaySaving] = useState(false)
   const [gatewayTesting, setGatewayTesting] = useState(false)
   const [gatewayTestResult, setGatewayTestResult] = useState(null)
 
-  const [ocr, setOcr] = useState(null)
-  const [ocrDraft, setOcrDraft] = useState({
-    enabled: false,
-    baseUrl: '',
-    model: 'deepseek-ai/DeepSeek-OCR',
-    timeoutMs: 60000,
-    maxTokens: 2048,
-    apiKey: '',
-    apiKeyMasked: '',
+  const [ocr, setOcr] = useState(cachedSettings?.ocr || null)
+  const [ocrDraft, setOcrDraft] = useState(() => {
+    const o = cachedSettings?.ocr
+    return {
+      enabled: Boolean(o?.enabled),
+      baseUrl: String(o?.baseUrl || ''),
+      model: String(o?.model || 'deepseek-ai/DeepSeek-OCR'),
+      timeoutMs: Number(o?.timeoutMs || 60000),
+      maxTokens: Number(o?.maxTokens || 2048),
+      apiKey: '',
+      apiKeyMasked: String(o?.apiKeyMasked || ''),
+    }
   })
   const [ocrSaving, setOcrSaving] = useState(false)
   const [ocrTesting, setOcrTesting] = useState(false)
   const [ocrTestResult, setOcrTestResult] = useState(null)
 
-  const [defaultTemplates, setDefaultTemplates] = useState([])
-  const [defaultTemplateTypes, setDefaultTemplateTypes] = useState([])
+  const [defaultTemplates, setDefaultTemplates] = useState(cachedSettings?.defaultTemplates || [])
+  const [defaultTemplateTypes, setDefaultTemplateTypes] = useState(cachedSettings?.defaultTemplateTypes || [])
   const [defaultTemplateUploadType, setDefaultTemplateUploadType] = useState('technical')
   const [defaultTemplateUploadVersion, setDefaultTemplateUploadVersion] = useState(todayVersionLabel)
   const [defaultTemplateUploading, setDefaultTemplateUploading] = useState(false)
   const [defaultTemplateActivatingId, setDefaultTemplateActivatingId] = useState('')
   const [defaultTemplateDeletingId, setDefaultTemplateDeletingId] = useState('')
 
-  const [health, setHealth] = useState([])
+  const [health, setHealth] = useState(cachedSettings?.health || [])
 
   const defaultTemplateFileInputRef = useRef(null)
 
@@ -131,6 +140,14 @@ export default function Settings({ showToast = () => {}, currentUser = null }) {
         return templateTypeOptions[0]?.key || 'technical'
       })
       setHealth(Array.isArray(healthRes) ? healthRes : [])
+      writePageCache('settings:center', {
+        users: usersRes?.items || [],
+        gateway: gatewayRes || null,
+        ocr: ocrRes || null,
+        defaultTemplates: defaultTemplatesRes?.items || [],
+        defaultTemplateTypes: defaultTemplatesRes?.templateTypes || [],
+        health: Array.isArray(healthRes) ? healthRes : [],
+      })
     } catch (e) {
       console.error(e)
       const message = safeMessage(e, '设置中心加载失败，请稍后重试。')

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { businessParseAPI, businessProjectsAPI } from '../../../api'
-import { invalidatePageCache } from '../../../utils/pageCache'
+import { invalidatePageCache, readPageCache, writePageCache } from '../../../utils/pageCache'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
@@ -643,11 +643,14 @@ export default function BusinessTenderReview({ showToast }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryProjectId = String(searchParams.get('projectId') || '').trim()
-  const [, setProjects] = useState([])
+  // 会话缓存：二次进入解析页直接用上次列表与详情渲染，后台静默刷新
+  const parseCachePrefix = 'business:parse'
+  const [cachedParseProjects] = useState(() => readPageCache(`${parseCachePrefix}:projects`))
+  const [, setProjects] = useState(cachedParseProjects || [])
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [project, setProject] = useState(null)
   const [parseData, setParseData] = useState(null)
-  const [loadingProjects, setLoadingProjects] = useState(true)
+  const [loadingProjects, setLoadingProjects] = useState(!cachedParseProjects)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [error, setError] = useState('')
   const [uploadError, setUploadError] = useState('')
@@ -716,6 +719,7 @@ export default function BusinessTenderReview({ showToast }) {
         ? [forced, ...reviewItemsBase]
         : reviewItemsBase
       setProjects(items)
+      writePageCache(`${parseCachePrefix}:projects`, items)
       // 刷新/切页后组件状态会重建：若本地标记显示有后台解析任务，恢复选中该项目，
       // 保证回到解析页始终能看到进行中的进度变化（刷新、关浏览器再开同样生效）。
       let runningProjectId = ''
@@ -750,7 +754,15 @@ export default function BusinessTenderReview({ showToast }) {
       setParseData(null)
       return
     }
-    setLoadingDetail(true)
+    const detailCacheKey = `${parseCachePrefix}:detail:${selectedProjectId}`
+    const cachedDetail = readPageCache(detailCacheKey)
+    if (cachedDetail) {
+      setProject(cachedDetail.project || null)
+      setParseData(cachedDetail.parseData || null)
+      if (cachedDetail.parseProgress) setParseProgress(cachedDetail.parseProgress)
+    } else {
+      setLoadingDetail(true)
+    }
     setError('')
     try {
       const [projectData, parseResult, progressResult] = await Promise.all([
@@ -761,12 +773,13 @@ export default function BusinessTenderReview({ showToast }) {
       setProject(projectData)
       setParseData(parseResult)
       setParseProgress(progressResult)
+      writePageCache(detailCacheKey, { project: projectData, parseData: parseResult, parseProgress: progressResult })
     } catch (e) {
       setError(e?.message || '解析详情加载失败')
     } finally {
       setLoadingDetail(false)
     }
-  }, [parseClient, projectsClient, selectedProjectId])
+  }, [parseCachePrefix, parseClient, projectsClient, selectedProjectId])
 
   const createReviewProject = useCallback(async ({ toastMessage, silent = false } = {}) => {
     setCreatingReview(true)
@@ -783,6 +796,7 @@ export default function BusinessTenderReview({ showToast }) {
         reviewDecision: 'pending',
       })
       invalidatePageCache('business:projects')
+      invalidatePageCache('business:parse')
       invalidatePageCache('dashboard')
       await loadProjects()
       setSelectedProjectId(created?.id || '')
@@ -2140,6 +2154,7 @@ export default function BusinessTenderReview({ showToast }) {
             setProjectToComplete(null)
             setProject(updatedProject)
             invalidatePageCache('business:projects')
+            invalidatePageCache('business:parse')
             invalidatePageCache('dashboard')
             setProjects((prev) => prev.map((item) => (
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item

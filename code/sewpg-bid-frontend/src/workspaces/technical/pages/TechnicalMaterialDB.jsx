@@ -6,6 +6,7 @@ import MaterialPipelineProgress from '../components/MaterialPipelineProgress'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { projectRoute, workspaceRoute } from '../../../utils/workspace'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 import { sortFilesByName, sortNodesByName } from '../../../utils/materialSort'
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 * 1024
@@ -979,21 +980,25 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const locateFolderPath = normalizePath(searchParams.get('folder') || '')
   const linkedProjectId = String(searchParams.get('projectId') || '').trim()
   const uploadPickerRef = useRef(null)
-  const libraryLoadedRef = useRef(false)
-  const selectedFolderPathRef = useRef(locateFolderPath)
-  const [tree, setTree] = useState([])
-  const [collapsedMap, setCollapsedMap] = useState({})
+  // 会话缓存：二次进入直接用上次目录树与文件清单渲染，后台静默刷新（无筛选时缓存）
+  const materialCacheKey = `tech:materials:${activeBidType}`
+  const [cachedLibrary] = useState(() => (locateFolderPath ? null : readPageCache(materialCacheKey)))
+  const libraryLoadedRef = useRef(Boolean(cachedLibrary))
+  const collapsedMapRef = useRef(cachedLibrary?.collapsedMap || {})
+  const selectedFolderPathRef = useRef(cachedLibrary?.selectedFolderPath || locateFolderPath)
+  const [tree, setTree] = useState(cachedLibrary?.tree || [])
+  const [collapsedMap, setCollapsedMap] = useState(cachedLibrary?.collapsedMap || {})
   const [dragTargetPath, setDragTargetPath] = useState('')
-  const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
+  const [filesPayload, setFilesPayload] = useState(cachedLibrary?.filesPayload || { items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
-  const [selectedFolderPath, setSelectedFolderPath] = useState(locateFolderPath)
+  const [selectedFolderPath, setSelectedFolderPath] = useState(cachedLibrary?.selectedFolderPath || locateFolderPath)
   const [filters, setFilters] = useState({
     title: '',
     tags: [],
   })
   const [titleInput, setTitleInput] = useState('')
   const [tagFilterSearch, setTagFilterSearch] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedLibrary)
   const [error, setError] = useState('')
   const [materialCopyState, setMaterialCopyState] = useState(null)
 
@@ -1117,18 +1122,33 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
           : { items: [], total: 0, page: 1, pageSize: filePageSize }
       )
       setParseStatus(null)
+      if (!filters.title.trim() && selectedFilterTags.length === 0) {
+        writePageCache(materialCacheKey, {
+          tree: visibleTree,
+          filesPayload: payload
+            ? { ...payload, items: sortFilesByName(payload.items) }
+            : { items: [], total: 0, page: 1, pageSize: filePageSize },
+          selectedFolderPath: effectiveFolder,
+          collapsedMap: collapsedMapRef.current,
+        })
+      }
     } catch (e) {
       setError(safeMessage(e, '原始材料库加载失败，请稍后重试。'))
     } finally {
       libraryLoadedRef.current = true
       if (!silent) setLoading(false)
     }
-  }, [activeBidType, filters.title, selectedFilterTags])
+  }, [activeBidType, filters.title, materialCacheKey, selectedFilterTags])
 
   // 同步选中目录到 ref，供 loadLibrary 读取而不进入其依赖数组（避免选中触发整库重载）。
   useEffect(() => {
     selectedFolderPathRef.current = selectedFolderPath
   }, [selectedFolderPath])
+
+  // 同步展开/收起状态到 ref，供写会话缓存时读取（不进依赖数组）。
+  useEffect(() => {
+    collapsedMapRef.current = collapsedMap
+  }, [collapsedMap])
 
   useEffect(() => {
     const timer = setTimeout(() => {
