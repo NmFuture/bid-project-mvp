@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import importlib.util
 import json
 import subprocess
@@ -1283,6 +1284,91 @@ class TechnicalFinalAssemblyTests(unittest.TestCase):
         self.assertEqual(summary["assembledCount"], 0)
         self.assertEqual(summary["warningCount"], 2)
         self.assertEqual(warnings, [{"code": "VALID", "message": "合法告警", "count": 2}])
+
+
+APP_ASSEMBLY_DIR = (
+    BACKEND_ROOT / "app" / "document_processing" / "technical_document" / "assembly"
+)
+APP_RESOURCES_DIR = (
+    BACKEND_ROOT / "app" / "document_processing" / "technical_document" / "resources"
+)
+ASSEMBLER_REFERENCES_DIR = ASSEMBLER_SCRIPTS.parent / "references"
+
+
+class TestSkillVendoredDrift(unittest.TestCase):
+    """bid-tech-assembler skill 的 finalize.py / numbering_fixer.py 是 app 侧的 vendored 拷贝。
+
+    opencode 容器内没有 app 包，两边只允许存在环境适配段差异（marker 之前的文件头
+    互指注释与导入适配，finalize 为 numbering_fixer 的相对/扁平导入）。marker 起的
+    逻辑主体必须逐字节一致，漂移即红。改动 app 侧源文件后，把同一改动同步进 skill 拷贝。
+
+    heading_style.json 同为 vendored 关系（app/resources ↔ skill references），JSON
+    无法内嵌互指注释，两边必须逐字节一致，由本类直接比对。
+    """
+
+    @staticmethod
+    def _normalized_logic_body(path: Path, marker: str) -> str:
+        source = path.read_text(encoding="utf-8")
+        return source[source.index(marker) :]
+
+    def _assert_logic_body_in_sync(
+        self, app_path: Path, skill_path: Path, marker: str, label: str
+    ) -> None:
+        app_body = self._normalized_logic_body(app_path, marker)
+        skill_body = self._normalized_logic_body(skill_path, marker)
+        if app_body == skill_body:
+            return
+        diff = "\n".join(
+            difflib.unified_diff(
+                app_body.splitlines(),
+                skill_body.splitlines(),
+                fromfile=str(app_path),
+                tofile=str(skill_path),
+                lineterm="",
+            )
+        )
+        self.fail(
+            f"{label} 与 app 侧源文件的逻辑主体已漂移，"
+            f"请以 app 侧为源同步 skill 拷贝：\n" + diff
+        )
+
+    def test_finalize_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "finalize.py",
+            ASSEMBLER_SCRIPTS / "finalize.py",
+            "# ---------- Step 1: 插 TOC 域 ----------",
+            "bid-tech-assembler/scripts/finalize.py",
+        )
+
+    def test_numbering_fixer_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "numbering_fixer.py",
+            ASSEMBLER_SCRIPTS / "numbering_fixer.py",
+            "_PREFIX_PATTERNS = [",
+            "bid-tech-assembler/scripts/numbering_fixer.py",
+        )
+
+    def test_heading_style_json_matches_application_source(self) -> None:
+        app_path = APP_RESOURCES_DIR / "heading_style.json"
+        skill_path = ASSEMBLER_REFERENCES_DIR / "heading_style.json"
+        app_bytes = app_path.read_bytes()
+        skill_bytes = skill_path.read_bytes()
+        if app_bytes == skill_bytes:
+            return
+        diff = "\n".join(
+            difflib.unified_diff(
+                app_bytes.decode("utf-8").splitlines(),
+                skill_bytes.decode("utf-8").splitlines(),
+                fromfile=str(app_path),
+                tofile=str(skill_path),
+                lineterm="",
+            )
+        )
+        self.fail(
+            "bid-tech-assembler/references/heading_style.json 与 "
+            "app/document_processing/technical_document/resources/heading_style.json "
+            "已漂移，请以 app 侧为源同步 skill 拷贝：\n" + diff
+        )
 
 
 if __name__ == "__main__":

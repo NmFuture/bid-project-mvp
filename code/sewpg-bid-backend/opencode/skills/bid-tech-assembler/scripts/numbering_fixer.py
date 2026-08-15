@@ -9,6 +9,11 @@ Heading 编号处理器（方案 B）
 方案 B 下 Heading text 直接带章节号字符串，禁用 Word 多级列表。
 """
 
+# 注意：本文件是 app/document_processing/technical_document/assembly/numbering_fixer.py
+# 的 vendored 拷贝。opencode 容器内没有 app 包，拷贝与源文件应保持逐字节一致；编号处理逻辑
+# 一律先改源文件再同步回本文件，tests/test_technical_final_assembly.py 的
+# TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import re
@@ -292,7 +297,13 @@ def inject_prefix_to_headings(
     Returns:
         {"injected": int, "skipped_first": bool, "removed": int, "min_level": int}
     """
-    stats = {"injected": 0, "skipped_first": False, "removed": 0, "min_level": 0}
+    stats = {
+        "injected": 0,
+        "skipped_first": False,
+        "removed": 0,
+        "min_level": 0,
+        "blank_headings_demoted": 0,
+    }
 
     # 第一遍：收集所有 Heading 段落（带 level）、识别首个需要 skip 的
     heading_entries: list[tuple] = []  # (para, lvl, pure)
@@ -304,6 +315,9 @@ def inject_prefix_to_headings(
             continue
         pure = strip_prefix(para.text)
         if not pure:
+            _set_body_style_or_clear(para, doc)
+            _clear_direct_outline_and_numbering(para)
+            stats["blank_headings_demoted"] += 1
             continue
         heading_entries.append((para, lvl, pure))
 

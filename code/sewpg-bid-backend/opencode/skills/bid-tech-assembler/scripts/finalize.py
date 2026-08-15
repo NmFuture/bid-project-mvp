@@ -16,6 +16,11 @@
         --out 投标文件-正文_<简称>_<时间戳>.docx
 """
 
+# 注意：本文件是 app/document_processing/technical_document/assembly/finalize.py 的
+# vendored 拷贝。opencode 容器内没有 app 包，差异只在 numbering_fixer 的扁平导入适配段；
+# 终检逻辑一律先改源文件再同步回本文件，tests/test_technical_final_assembly.py 的
+# TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse

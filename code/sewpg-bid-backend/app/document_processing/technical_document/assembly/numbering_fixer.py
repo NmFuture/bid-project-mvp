@@ -9,6 +9,11 @@ Heading 编号处理器（方案 B）
 方案 B 下 Heading text 直接带章节号字符串，禁用 Word 多级列表。
 """
 
+# 单一事实源：本文件是技术标 Heading 编号处理逻辑的唯一事实源。
+# opencode/skills/bid-tech-assembler/scripts/numbering_fixer.py 是它在 opencode
+# 容器环境的 vendored 拷贝（应与 _PREFIX_PATTERNS 起的逻辑主体逐字节一致）。修改本文件后
+# 必须同步该拷贝；tests/test_technical_final_assembly.py 的 TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import re
