@@ -3,6 +3,7 @@ import { performanceAPI } from '../../../api'
 import Button from '../../../components/ui/Button'
 import Pagination from '../../../components/shared/Pagination'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 import MaterialsViewSwitch from '../components/MaterialsViewSwitch'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
@@ -158,10 +159,14 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const summaryInputRef = useRef(null)
   const contractInputRef = useRef(null)
   const attachmentInputRef = useRef(null)
-  const [items, setItems] = useState([])
-  const [total, setTotal] = useState(0)
+  // 会话缓存：二次进入直接渲染上次业绩清单（默认筛选视图），后台静默刷新
+  const perfCacheKey = 'shared:performance:default'
+  const [cachedPerf] = useState(() => readPageCache(perfCacheKey))
+  const hasLoadedItemsRef = useRef(Boolean(cachedPerf))
+  const [items, setItems] = useState(cachedPerf?.items || [])
+  const [total, setTotal] = useState(cachedPerf?.total || 0)
   const [page, setPage] = useState(1)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedPerf)
   const [refreshing, setRefreshing] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -196,7 +201,6 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
   const sourceWorkspace = sourceWorkspaceFor(currentUser)
   const sourceMaterialsBasePath = workspaceRoute(sourceWorkspace, '/materials')
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const hasLoadedItemsRef = useRef(false)
   // 与技术标/商务标素材页一致的分组页头：本线工作组 + 共享组常驻并列
   const materialsGroups = useMemo(() => {
     const base = sourceMaterialsBasePath
@@ -236,6 +240,11 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
 
   const query = useMemo(() => ({ ...filters, ...sort, page, pageSize }), [filters, sort, page])
 
+  const isDefaultQuery = page === 1
+    && !filters.keyword && !filters.turbineModel && !filters.contractYear
+    && !filters.deliveryYear && !filters.operationYear && filters.status === 'enabled'
+    && sort.sortBy === 'updatedAt' && sort.sortOrder === 'desc'
+
   const loadItems = useCallback(async () => {
     const initialLoad = !hasLoadedItemsRef.current
     if (initialLoad) {
@@ -247,6 +256,9 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
       const payload = await performanceAPI.items(query)
       setItems(payload?.items || [])
       setTotal(Number(payload?.total || 0))
+      if (isDefaultQuery) {
+        writePageCache(perfCacheKey, { items: payload?.items || [], total: Number(payload?.total || 0) })
+      }
     } catch (error) {
       showToast(error?.message || '业绩库加载失败', 'error')
     } finally {
@@ -254,7 +266,7 @@ export default function SharedPerformanceLibrary({ showToast = () => {}, current
       setLoading(false)
       setRefreshing(false)
     }
-  }, [query, showToast])
+  }, [query, isDefaultQuery, showToast])
 
   useEffect(() => {
     const timer = setTimeout(() => {

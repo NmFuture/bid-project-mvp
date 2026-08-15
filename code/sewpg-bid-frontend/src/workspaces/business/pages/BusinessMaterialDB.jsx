@@ -4,6 +4,7 @@ import MaterialsViewSwitch from '../components/BusinessMaterialsViewSwitch'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 * 1024
 const FILE_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff'
@@ -1071,19 +1072,23 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
   const uploadBidType = BUSINESS_BID_TYPE
   const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
   const uploadPickerRef = useRef(null)
-  const libraryLoadedRef = useRef(false)
-  const [tree, setTree] = useState([])
-  const [collapsedMap, setCollapsedMap] = useState({})
+  // 会话缓存：二次进入直接用上次目录树与文件清单渲染，后台静默刷新（无筛选时缓存）
+  const materialCacheKey = `business:materials:${activeBidType}`
+  const [cachedLibrary] = useState(() => readPageCache(materialCacheKey))
+  const libraryLoadedRef = useRef(Boolean(cachedLibrary))
+  const collapsedMapRef = useRef(cachedLibrary?.collapsedMap || {})
+  const [tree, setTree] = useState(cachedLibrary?.tree || [])
+  const [collapsedMap, setCollapsedMap] = useState(cachedLibrary?.collapsedMap || {})
   const [dragTargetPath, setDragTargetPath] = useState('')
-  const [filesPayload, setFilesPayload] = useState({ items: [], total: 0, page: 1, pageSize: 20 })
+  const [filesPayload, setFilesPayload] = useState(cachedLibrary?.filesPayload || { items: [], total: 0, page: 1, pageSize: 20 })
   const [parseStatus, setParseStatus] = useState(null)
-  const [selectedFolderPath, setSelectedFolderPath] = useState('')
+  const [selectedFolderPath, setSelectedFolderPath] = useState(cachedLibrary?.selectedFolderPath || '')
   const [filters, setFilters] = useState({
     title: '',
     tags: [],
   })
   const [tagFilterSearch, setTagFilterSearch] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedLibrary)
   const [error, setError] = useState('')
 
   const [showUploadModal, setShowUploadModal] = useState(false)
@@ -1197,13 +1202,26 @@ export default function BusinessMaterialDB({ showToast = () => {} }) {
       })
       setFilesPayload(payload || { items: [], total: 0, page: 1, pageSize: filePageSize })
       setParseStatus(null)
+      if (!filters.title.trim() && selectedFilterTags.length === 0) {
+        writePageCache(materialCacheKey, {
+          tree: visibleTree,
+          filesPayload: payload || { items: [], total: 0, page: 1, pageSize: filePageSize },
+          selectedFolderPath: effectiveFolder,
+          collapsedMap: collapsedMapRef.current,
+        })
+      }
     } catch (e) {
       setError(safeMessage(e, '原始材料库加载失败，请稍后重试。'))
     } finally {
       libraryLoadedRef.current = true
       if (!silent) setLoading(false)
     }
-  }, [activeBidType, filters.title, selectedFilterTags, selectedFolderPath])
+  }, [activeBidType, filters.title, materialCacheKey, selectedFilterTags, selectedFolderPath])
+
+  // 同步展开/收起状态到 ref，供写会话缓存时读取（不进依赖数组）。
+  useEffect(() => {
+    collapsedMapRef.current = collapsedMap
+  }, [collapsedMap])
 
   const loadUploadIdentityOptions = useCallback(async () => {
     setLoadingIdentityOptions(true)
