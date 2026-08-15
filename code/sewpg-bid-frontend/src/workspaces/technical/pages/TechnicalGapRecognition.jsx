@@ -1,12 +1,19 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalOutlineAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
+import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
+import {
+  generationDisplayPercentage,
+  isGenerationProgressRunning,
+  summarizeGenerationProgress,
+} from '../technicalGenerationProgress.js'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
+import { technicalTaskResponseMatchesProject } from '../technicalOutlineTaskLifecycle.js'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
 import IconButton from '../../../components/ui/IconButton'
@@ -56,6 +63,12 @@ const compactList = (items, limit = 4) => {
     total: list.length,
   }
 }
+
+const generationTaskPatch = (status) => ({
+  status: String(status?.status || 'queued').toLowerCase(),
+  percentage: Math.round(generationDisplayPercentage(status || {})),
+  summary: summarizeGenerationProgress(status || {}).detail,
+})
 
 const sourceRoutingForAppendixTasks = (tasks, item = null) => {
   const routing = asObjectArray(tasks)
@@ -1358,7 +1371,10 @@ function TechnicalPreviewModal({
 export default function TechnicalGapRecognition({ showToast }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const progressTask = searchParams.get('progressTask')
   const workspaceSlug = useWorkspaceSlug()
+  const [projectName, setProjectName] = useState(id)
   const [data, setData] = useState(null)
   const [selectedId, setSelectedId] = useState('')
   // 目录标签筛选（产品意见 2026-07-17）：点顶部统计标签只看对应目录项，再点一次取消。
@@ -1394,7 +1410,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factFields, setFactFields] = useState([])
   const [factCurateReport, setFactCurateReport] = useState(null)
   const [generationStatus, setGenerationStatus] = useState(null)
+  const [generationOwnerId, setGenerationOwnerId] = useState('')
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  const [generationStopping, setGenerationStopping] = useState(false)
   // 生成在后台跑，弹窗允许关掉；关掉后不因为「还在运行」被重新弹出来。
   const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [aiFillReferenceSelections, setAiFillReferenceSelections] = useState({})
@@ -1420,22 +1438,41 @@ export default function TechnicalGapRecognition({ showToast }) {
   // 一键填写（正文+附表）任务状态：同样跑在后台 worker，进度靠轮询恢复，关页面不影响
   const [bodyFillState, setBodyFillState] = useState(null)
   const bodyFillNotifiedRef = useRef('')
+  const currentProjectIdRef = useRef(String(id))
+  // eslint-disable-next-line react-hooks/refs
+  currentProjectIdRef.current = String(id)
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
   const bodyFillDone = Number(bodyFillState?.done || 0)
   const bodyFillTotal = Number(bodyFillState?.total || 0)
 
+  useEffect(() => {
+    // 路由切换后先清空上一项目任务 UI；首帧再由 owner gate 隔离旧状态。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setGenerationStatus(null)
+    setGenerationOwnerId('')
+    setGenerationModalOpen(false)
+    setGenerationStopping(false)
+    setGenerationModalDismissed(false)
+    setBusyAction('')
+    setProjectName(id)
+  }, [id])
+
   const loadData = useCallback(async ({ silent = false } = {}) => {
+    const requestProjectId = id
     if (!silent) {
       setLoading(true)
       setError('')
     }
     try {
-      const [payload, scopePayload, factsPayload] = await Promise.all([
-        technicalGapsAPI.detectionStatus(id),
-        technicalProjectsAPI.materialsPath(id),
-        technicalGapsAPI.facts(id),
+      const [payload, scopePayload, factsPayload, projectPayload] = await Promise.all([
+        technicalGapsAPI.detectionStatus(requestProjectId),
+        technicalProjectsAPI.materialsPath(requestProjectId),
+        technicalGapsAPI.facts(requestProjectId),
+        technicalProjectsAPI.get(requestProjectId).catch(() => null),
       ])
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       const items = normalizeItems(payload)
+      setProjectName(projectPayload?.name || requestProjectId)
       setData(payload)
       setMaterialScope(scopePayload)
       const nextFacts = factsPayload?.schemaVersion ? factsPayload : payload?.projectFactTable
@@ -1450,19 +1487,19 @@ export default function TechnicalGapRecognition({ showToast }) {
       // 页面刷新/重新进入时恢复任务状态：后台还在跑就继续轮询，跑完了直接看到结果
       // 目录前置守卫：拉目录状态用于阻断未确认目录的项目；拉取失败不阻断，由后端 run 接口兜底拦截
       try {
-        const outlinePayload = await technicalOutlineAPI.get(id)
+        const outlinePayload = await technicalOutlineAPI.get(requestProjectId)
         setOutlineGuard(outlinePayload || null)
       } catch {
         setOutlineGuard(null)
       }
       try {
-        const curateStatus = await technicalGapsAPI.curateFactsStatus(id)
+        const curateStatus = await technicalGapsAPI.curateFactsStatus(requestProjectId)
         setFactCurateState(curateStatus?.factCurateState || null)
       } catch {
         setFactCurateState(null)
       }
       try {
-        const bodyStatus = await technicalGapsAPI.bodyFillStatus(id)
+        const bodyStatus = await technicalGapsAPI.bodyFillStatus(requestProjectId)
         setBodyFillState(bodyStatus?.bodyFillState || null)
       } catch {
         setBodyFillState(null)
@@ -1476,21 +1513,50 @@ export default function TechnicalGapRecognition({ showToast }) {
       })
       setSelectedId((prev) => (items.some((item) => item.id === prev) ? prev : items[0]?.id || ''))
     } catch (e) {
-      if (!silent) setError(e?.message || '缺口识别与处理加载失败')
+      if (
+        !silent
+        && technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)
+      ) setError(e?.message || '缺口识别与处理加载失败')
     } finally {
-      if (!silent) setLoading(false)
+      if (
+        !silent
+        && technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)
+      ) setLoading(false)
     }
   }, [id])
 
   const loadGenerationStatus = useCallback(async () => {
+    const requestProjectId = id
     try {
-      const payload = await technicalGenerateAPI.status(id)
+      const [payload, projectPayload] = await Promise.all([
+        technicalGenerateAPI.status(requestProjectId),
+        technicalProjectsAPI.get(requestProjectId).catch(() => null),
+      ])
+      const resolvedProjectName = projectPayload?.name || requestProjectId
+      const active = isGenerationProgressRunning(payload)
+      if (active) {
+        markTechnicalTask({
+          taskType: 'body-generate',
+          taskName: '生成正文',
+          projectId: requestProjectId,
+          projectName: resolvedProjectName,
+          ...generationTaskPatch(payload),
+        })
+      }
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return null
+      setProjectName(resolvedProjectName)
+      setGenerationOwnerId(requestProjectId)
       setGenerationStatus(payload)
+      setGenerationStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
+      if (active || progressTask === 'body-generate') {
+        setGenerationModalDismissed(false)
+        setGenerationModalOpen(true)
+      }
       return payload
     } catch {
       return null
     }
-  }, [id])
+  }, [id, progressTask])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1825,8 +1891,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   )
   const factConfirmed = factTable?.status === 'confirmed'
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
-  const generationRunning = generationStatus?.status === 'running'
-  const generationCompleted = generationStatus?.status === 'completed'
+  const generationBelongsToProject = generationOwnerId === id
+  const generationRunning = generationBelongsToProject && isGenerationProgressRunning(generationStatus)
+  const generationCompleted = generationBelongsToProject && generationStatus?.status === 'completed'
 
   useEffect(() => {
     let cancelled = false
@@ -2503,10 +2570,23 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
 
   useEffect(() => {
+    if (!generationBelongsToProject || !generationStatus?.status) return
+    updateTechnicalTask('body-generate', id, generationTaskPatch(generationStatus))
+  }, [generationBelongsToProject, generationStatus, id])
+
+  useEffect(() => {
     if (!generationRunning) return undefined
     return subscribeTechnicalGenerationStatus({
       fetchStatus: () => technicalGenerateAPI.status(id),
-      onStatus: setGenerationStatus,
+      onStatus: (payload) => {
+        setGenerationOwnerId(id)
+        setGenerationStatus(payload)
+        setGenerationStopping((current) => (
+          isGenerationProgressRunning(payload)
+            ? current || String(payload?.status || '').toLowerCase() === 'cancel_requested'
+            : false
+        ))
+      },
     })
   }, [generationRunning, id])
 
@@ -2593,18 +2673,72 @@ export default function TechnicalGapRecognition({ showToast }) {
       showToast?.('素材匹配完成后可生成技术标正文。', 'error')
       return
     }
+    const requestProjectId = id
+    const queuedStatus = {
+      status: 'queued',
+      percentage: 0,
+      summary: '正在准备生成技术标正文。',
+      startedAt: new Date().toISOString(),
+    }
+    markTechnicalTask({
+      taskType: 'body-generate',
+      taskName: '生成正文',
+      projectId: requestProjectId,
+      projectName: projectName || requestProjectId,
+      ...generationTaskPatch(queuedStatus),
+      status: 'queued',
+    })
     setBusyAction('technical-generate')
+    setGenerationOwnerId(requestProjectId)
+    setGenerationStatus(queuedStatus)
+    setGenerationStopping(false)
     setGenerationModalDismissed(false)
     setGenerationModalOpen(true)
     try {
-      const payload = await technicalGenerateAPI.run(id)
+      const payload = await technicalGenerateAPI.run(requestProjectId)
+      updateTechnicalTask('body-generate', requestProjectId, generationTaskPatch(payload))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setGenerationOwnerId(requestProjectId)
       setGenerationStatus(payload)
+      setGenerationStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
       showToast?.(payload?.message || '已开始生成技术标正文。')
     } catch (e) {
+      updateTechnicalTask('body-generate', requestProjectId, {
+        status: 'failed',
+        summary: e?.message || '生成技术标正文失败',
+      })
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setGenerationStatus({
+        ...queuedStatus,
+        status: 'failed',
+        error: e?.message || '生成技术标正文失败',
+      })
       setGenerationModalOpen(false)
       showToast?.(e?.message || '生成技术标正文失败', 'error')
     } finally {
-      setBusyAction('')
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setBusyAction('')
+      }
+    }
+  }
+
+  const handleStopGeneration = async () => {
+    if (!generationRunning || generationStopping) return
+    const requestProjectId = id
+    setGenerationStopping(true)
+    try {
+      const payload = await technicalGenerateAPI.cancel(requestProjectId)
+      if (payload?.error) throw new Error(payload.error)
+      updateTechnicalTask('body-generate', requestProjectId, generationTaskPatch(payload))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setGenerationOwnerId(requestProjectId)
+      setGenerationStatus(payload)
+      setGenerationStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
+      showToast?.(payload?.message || '已请求停止正文生成。')
+    } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setGenerationStopping(false)
+      showToast?.(e?.message || '停止正文生成失败，请稍后重试', 'error')
     }
   }
 
@@ -3468,8 +3602,10 @@ export default function TechnicalGapRecognition({ showToast }) {
         />
       ) : null}
       <TechnicalGenerationProgressModal
-        open={(generationModalOpen || generationRunning) && !generationModalDismissed}
+        open={generationBelongsToProject && (generationModalOpen || generationRunning) && !generationModalDismissed}
         status={generationStatus}
+        onStop={handleStopGeneration}
+        stopping={generationStopping}
         onClose={() => {
           setGenerationModalDismissed(true)
           setGenerationModalOpen(false)

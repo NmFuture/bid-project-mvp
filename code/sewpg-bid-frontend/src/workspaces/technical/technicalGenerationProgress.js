@@ -6,7 +6,7 @@ import { formatProgressDuration } from '../../utils/progressDuration.js'
 // 区间划分依据 PRJ-0004 实测（总 280 秒）：准备输入 64 秒、正文组装 168 秒、格式规范化 44 秒。
 // 后端 percentage 的原始锚点（30 → 60 只花 1 秒，60 → 85 却要 168 秒）无法直接当进度用，
 // 这里按阶段重新折算，并在阶段内按已用时间平滑爬升，保证「不会前 60% 一分钟、后 40% 好几分钟」。
-const runningStatuses = new Set(['running', 'processing', 'queued'])
+const runningStatuses = new Set(['running', 'processing', 'queued', 'cancel_requested'])
 const failedStatuses = new Set(['failed', 'error'])
 const internalTextPattern = /futurecode|opencode|S2|S4|Skill|session|manifest|provider|model/i
 
@@ -69,6 +69,8 @@ const generationStartMs = (state = {}) => {
 }
 
 const generationTerminalMs = (state = {}) => {
+  const cancelledAt = parseTime(state?.cancelledAt)
+  if (cancelledAt !== null) return cancelledAt
   const filledAt = parseTime(state?.filledAt)
   if (filledAt !== null) return filledAt
   const times = eventList(state).map((event) => parseTime(event?.at)).filter((value) => value !== null)
@@ -77,7 +79,7 @@ const generationTerminalMs = (state = {}) => {
 
 const isTerminal = (state) => {
   const status = normalizeStatus(state?.status)
-  return status === 'completed' || failedStatuses.has(status)
+  return status === 'completed' || status === 'cancelled' || failedStatuses.has(status)
 }
 
 // 总运行时长：起点是本次生成启动时间，终态冻结在完成/失败时刻。
@@ -189,6 +191,14 @@ export const summarizeGenerationProgress = (state = {}) => {
       status,
       tone: 'danger',
       detail: visibleFailureSummary(state?.summary),
+    }
+  }
+
+  if (status === 'cancelled') {
+    return {
+      status,
+      tone: 'neutral',
+      detail: '正文生成已停止。',
     }
   }
 

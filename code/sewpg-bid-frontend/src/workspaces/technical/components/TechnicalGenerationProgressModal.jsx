@@ -39,14 +39,15 @@ export default function TechnicalGenerationProgressModal({
   if (!open) return null
 
   const completed = status?.status === 'completed'
+  const cancelled = status?.status === 'cancelled'
   const failed = isGenerationProgressFailed(status)
   const title = running
     ? `正在${taskTitle}`
-    : completed ? `${taskTitle}完成` : failed ? `${taskTitle}失败` : taskTitle
+    : completed ? `${taskTitle}完成` : cancelled ? `${taskTitle}已停止` : failed ? `${taskTitle}失败` : taskTitle
   const summary = summarizeGenerationProgress(status || {})
   const elapsedText = progressElapsedLine(
     generationElapsedSeconds(status || {}, nowMs),
-    { finished: completed || failed },
+    { finished: completed || cancelled || failed },
   )
   const {
     warningCount,
@@ -71,6 +72,7 @@ export default function TechnicalGenerationProgressModal({
           elapsedText={elapsedText}
           percentage={generationDisplayPercentage(status || {}, nowMs)}
           running={running}
+          icon={cancelled ? 'stop_circle' : ''}
         />
         {running ? (
           <p className="text-xs text-outline">任务在后台运行，可以关闭弹窗或离开页面。</p>

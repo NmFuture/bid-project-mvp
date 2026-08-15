@@ -14,6 +14,10 @@ const backgroundStackSource = readFileSync(
   new URL('./components/TechnicalBackgroundTaskStack.jsx', import.meta.url),
   'utf8',
 )
+const gapRecognitionSource = readFileSync(
+  new URL('./pages/TechnicalGapRecognition.jsx', import.meta.url),
+  'utf8',
+)
 
 test('技术标解析启动后登记后台任务并持续同步进度', () => {
   assert.match(tenderReviewSource, /markTechnicalTask/)
@@ -120,4 +124,113 @@ test('旧解析标记轮询不会用项目 id 覆盖已登记的项目名', () =
     backgroundStackSource,
     /marker\.projectName\s*\|\|\s*currentTask\?\.projectName\s*\|\|\s*marker\.projectId/,
   )
+})
+
+test('首次正文页面恢复后台任务但只由用户操作启动生成', () => {
+  assert.match(gapRecognitionSource, /useSearchParams/)
+  assert.match(gapRecognitionSource, /searchParams\.get\(\s*['"]progressTask['"]\s*\)/)
+  assert.match(gapRecognitionSource, /progressTask\s*===\s*['"]body-generate['"]/)
+  assert.match(gapRecognitionSource, /technicalProjectsAPI\.get\(requestProjectId\)/)
+  assert.match(gapRecognitionSource, /markTechnicalTask\([\s\S]*?taskType:\s*['"]body-generate['"]/)
+  assert.match(gapRecognitionSource, /taskName:\s*['"]生成正文['"]/)
+  assert.match(gapRecognitionSource, /projectName:/)
+  assert.match(gapRecognitionSource, /updateTechnicalTask\(\s*['"]body-generate['"]\s*,/)
+
+  const runCalls = [...gapRecognitionSource.matchAll(/technicalGenerateAPI\.run\(/g)]
+  assert.equal(runCalls.length, 1, '正文生成只能由 runTechnicalAssembly 主动发起')
+  assert.ok(runCalls[0].index > gapRecognitionSource.indexOf('const runTechnicalAssembly'))
+})
+
+test('首次正文提供真实停止，并把停止控件交给统一弹窗', () => {
+  const handlerStart = gapRecognitionSource.indexOf('const handleStopGeneration')
+  const handlerEnd = gapRecognitionSource.indexOf('const advanceToTechnicalEditor', handlerStart)
+  const handlerSource = gapRecognitionSource.slice(handlerStart, handlerEnd)
+
+  assert.ok(handlerStart >= 0)
+  assert.match(handlerSource, /technicalGenerateAPI\.cancel\(requestProjectId\)/)
+  assert.match(handlerSource, /setGenerationStopping\(true\)/)
+  assert.match(handlerSource, /setGenerationStopping\(false\)/)
+  assert.match(handlerSource, /setGenerationStatus\(/)
+  assert.match(gapRecognitionSource, /onStop=\{handleStopGeneration\}/)
+  assert.match(gapRecognitionSource, /stopping=\{generationStopping\}/)
+
+  const closeStart = gapRecognitionSource.indexOf('onClose={() => {', gapRecognitionSource.indexOf('<TechnicalGenerationProgressModal'))
+  const closeEnd = gapRecognitionSource.indexOf('}}', closeStart)
+  assert.doesNotMatch(gapRecognitionSource.slice(closeStart, closeEnd), /technicalGenerateAPI\.cancel/)
+})
+
+test('首次正文把请求失败同步成后台失败态', () => {
+  const handlerStart = gapRecognitionSource.indexOf('const runTechnicalAssembly')
+  const handlerEnd = gapRecognitionSource.indexOf('const handleStopGeneration', handlerStart)
+  const handlerSource = gapRecognitionSource.slice(handlerStart, handlerEnd)
+
+  assert.match(handlerSource, /markTechnicalTask\([\s\S]*?status:\s*['"]queued['"]/)
+  assert.match(handlerSource, /catch \(e\) \{[\s\S]*?updateTechnicalTask\([\s\S]*?status:\s*['"]failed['"]/)
+})
+
+test('首次正文异步响应按当前项目隔离且项目切换立即重置任务 UI', () => {
+  assert.match(gapRecognitionSource, /const currentProjectIdRef = useRef\(String\(id\)\)/)
+  assert.match(gapRecognitionSource, /currentProjectIdRef\.current\s*=\s*String\(id\)/)
+  assert.match(
+    gapRecognitionSource,
+    /useEffect\(\(\) => \{[\s\S]*?setGenerationStatus\(null\)[\s\S]*?setGenerationOwnerId\(['"]['"]\)[\s\S]*?setGenerationModalOpen\(false\)[\s\S]*?setGenerationStopping\(false\)[\s\S]*?setGenerationModalDismissed\(false\)[\s\S]*?setBusyAction\(['"]['"]\)[\s\S]*?setProjectName\(id\)[\s\S]*?\}, \[id\]\)/,
+  )
+  assert.match(
+    gapRecognitionSource,
+    /open=\{generationBelongsToProject\s*&&\s*\(generationModalOpen\s*\|\|\s*generationRunning\)\s*&&\s*!generationModalDismissed\}/,
+  )
+
+  for (const [startMarker, endMarker] of [
+    ['const loadGenerationStatus', 'useEffect(() => {'],
+    ['const runTechnicalAssembly', 'const handleStopGeneration'],
+    ['const handleStopGeneration', 'const advanceToTechnicalEditor'],
+  ]) {
+    const start = gapRecognitionSource.indexOf(startMarker)
+    const end = gapRecognitionSource.indexOf(endMarker, start + startMarker.length)
+    const handlerSource = gapRecognitionSource.slice(start, end)
+    assert.match(handlerSource, /const requestProjectId = id/)
+    assert.match(handlerSource, /technicalTaskResponseMatchesProject\(requestProjectId, currentProjectIdRef\.current\)/)
+  }
+})
+
+test('首次正文在主加载结束前取得真实项目名且晚到响应不能覆盖', () => {
+  const loadStart = gapRecognitionSource.indexOf('const loadData')
+  const loadEnd = gapRecognitionSource.indexOf('const loadGenerationStatus', loadStart)
+  const loadSource = gapRecognitionSource.slice(loadStart, loadEnd)
+
+  assert.match(loadSource, /Promise\.all\(\[[\s\S]*?technicalProjectsAPI\.get\(requestProjectId\)\.catch\(\(\) => null\)/)
+  assert.match(loadSource, /technicalTaskResponseMatchesProject\(requestProjectId, currentProjectIdRef\.current\)/)
+  assert.match(loadSource, /setProjectName\(projectPayload\?\.name \|\| requestProjectId\)/)
+})
+
+test('首次正文晚到的活动响应先保留原项目后台追踪再阻断页面回写', () => {
+  const loadStart = gapRecognitionSource.indexOf('const loadGenerationStatus')
+  const loadEnd = gapRecognitionSource.indexOf('useEffect(() => {', loadStart)
+  const loadSource = gapRecognitionSource.slice(loadStart, loadEnd)
+  const markIndex = loadSource.indexOf('markTechnicalTask({')
+  const guardIndex = loadSource.indexOf(
+    'technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)',
+  )
+  const projectNameIndex = loadSource.indexOf('setProjectName(resolvedProjectName)')
+
+  assert.ok(markIndex >= 0 && markIndex < guardIndex, '旧项目 active 响应必须先登记后台任务')
+  assert.ok(guardIndex >= 0 && guardIndex < projectNameIndex, '当前项目 guard 必须挡在 UI 回写之前')
+  assert.match(
+    loadSource.slice(markIndex, guardIndex),
+    /projectId:\s*requestProjectId[\s\S]*?projectName:\s*resolvedProjectName/,
+  )
+})
+
+test('首次正文停止接口返回业务错误时不覆盖后台任务并恢复停止按钮', () => {
+  const handlerStart = gapRecognitionSource.indexOf('const handleStopGeneration')
+  const handlerEnd = gapRecognitionSource.indexOf('const advanceToTechnicalEditor', handlerStart)
+  const handlerSource = gapRecognitionSource.slice(handlerStart, handlerEnd)
+  const responseIndex = handlerSource.indexOf('await technicalGenerateAPI.cancel(requestProjectId)')
+  const errorCheckIndex = handlerSource.indexOf('if (payload?.error)')
+  const taskPatchIndex = handlerSource.indexOf('generationTaskPatch(payload)')
+
+  assert.ok(responseIndex >= 0 && responseIndex < errorCheckIndex)
+  assert.ok(errorCheckIndex >= 0 && errorCheckIndex < taskPatchIndex)
+  assert.match(handlerSource, /if \(payload\?\.error\) throw new Error\(payload\.error\)/)
+  assert.match(handlerSource, /catch \(e\) \{[\s\S]*?setGenerationStopping\(false\)/)
 })

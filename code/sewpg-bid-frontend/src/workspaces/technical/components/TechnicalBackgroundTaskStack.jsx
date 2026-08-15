@@ -14,7 +14,6 @@ import {
 } from '../technicalBackgroundTaskDefinitions.js'
 
 const POLL_INTERVAL_MS = 4000
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'stale'])
 
 const clampPercentage = (value) => {
   const number = Number(value)
@@ -59,7 +58,7 @@ export default function TechnicalBackgroundTaskStack() {
         updateTechnicalTask(task.taskType, task.projectId, {
           taskName: task.taskName || definition.taskName,
           status,
-          percentage: TERMINAL_STATUSES.has(status) ? 100 : clampPercentage(progress?.percentage),
+          percentage: status === 'completed' ? 100 : clampPercentage(progress?.percentage ?? task.percentage),
           summary: progress?.message || progress?.summary || '',
         })
       }))
@@ -89,6 +88,7 @@ export default function TechnicalBackgroundTaskStack() {
       {tasks.slice(0, 3).map((task) => {
         const active = technicalTaskIsActive(task)
         const failed = task.status === 'failed' || task.status === 'stale'
+        const cancelled = task.status === 'cancelled'
         return (
           <button
             key={task.key}
@@ -98,14 +98,14 @@ export default function TechnicalBackgroundTaskStack() {
           >
             <span
               aria-hidden="true"
-              className={`material-symbols-outlined row-span-3 text-[22px] ${failed ? 'text-error' : active ? 'animate-spin text-primary' : 'text-success'}`}
+              className={`material-symbols-outlined row-span-3 text-[22px] ${failed ? 'text-error' : active ? 'animate-spin text-primary' : cancelled ? 'text-outline' : 'text-success'}`}
             >
-              {failed ? 'error' : active ? 'progress_activity' : 'check_circle'}
+              {failed ? 'error' : active ? 'progress_activity' : cancelled ? 'stop_circle' : 'check_circle'}
             </span>
             <span className="truncate text-sm font-semibold text-on-surface">{task.taskName}</span>
-            <span className="row-span-3 text-sm font-bold tabular-nums text-primary">{clampPercentage(task.percentage)}%</span>
+            <span className={`row-span-3 text-sm font-bold tabular-nums ${cancelled ? 'text-outline' : 'text-primary'}`}>{clampPercentage(task.percentage)}%</span>
             <span className="truncate text-xs text-on-surface-variant">{task.projectName}</span>
-            <span className="truncate text-xs text-outline">{active ? '后台运行中' : failed ? '任务未完成' : '任务已完成'}</span>
+            <span className="truncate text-xs text-outline">{active ? '后台运行中' : failed ? '任务未完成' : cancelled ? '任务已停止' : '任务已完成'}</span>
           </button>
         )
       })}

@@ -78,6 +78,34 @@ test('stops polling after a terminal status', async () => {
   assert.equal(timers.length, 0)
 })
 
+test('keeps polling while cancellation is requested and stops after cancellation completes', async () => {
+  const timers = []
+  const statuses = [
+    { status: 'cancel_requested', percentage: 46 },
+    { status: 'cancelled', percentage: 46 },
+  ]
+  const received = []
+
+  subscribeTechnicalGenerationStatus({
+    fetchStatus: async () => statuses.shift(),
+    onStatus: (status) => received.push(status),
+    setTimer: (callback) => {
+      timers.push(callback)
+      return timers.length
+    },
+    clearTimer: () => {},
+  })
+
+  timers.shift()()
+  await flushPromises()
+  assert.equal(timers.length, 1, 'cancel_requested 仍需轮询后端安全停止点')
+
+  timers.shift()()
+  await flushPromises()
+  assert.deepEqual(received.map((item) => item.status), ['cancel_requested', 'cancelled'])
+  assert.equal(timers.length, 0, 'cancelled 是终态')
+})
+
 test('ignores an in-flight response after cancellation', async () => {
   const timers = []
   const request = deferred()

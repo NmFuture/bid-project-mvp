@@ -24,3 +24,18 @@ test('AppShell 挂载技术标任务栈且旧提示条只处理商务标', () =>
   assert.match(shellSource, /<TechnicalBackgroundTaskStack\s*\/>/)
   assert.match(parseBannerSource, /bidType\s*===\s*['"]business['"]/)
 })
+
+test('只有完成任务强制显示百分之百，停止和失败保留真实进度', () => {
+  assert.match(
+    stackSource,
+    /status\s*===\s*['"]completed['"]\s*\?\s*100\s*:\s*clampPercentage\(progress\?\.percentage\s*\?\?\s*task\.percentage\)/,
+  )
+  assert.doesNotMatch(stackSource, /TERMINAL_STATUSES\.has\(status\)\s*\?\s*100/)
+})
+
+test('已停止任务使用中性停止图标和文案', () => {
+  assert.match(stackSource, /const cancelled = task\.status === ['"]cancelled['"]/)
+  assert.match(stackSource, /cancelled\s*\?\s*['"]text-outline['"]/)
+  assert.match(stackSource, /cancelled\s*\?\s*['"]stop_circle['"]/)
+  assert.match(stackSource, /cancelled\s*\?\s*['"]任务已停止['"]/)
+})
