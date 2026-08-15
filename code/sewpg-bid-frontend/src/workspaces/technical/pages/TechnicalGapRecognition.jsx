@@ -451,6 +451,9 @@ const FactMaintenanceModal = ({
   curating,
   curatePhase,
   curateMessage,
+  batchTotal,
+  batchDone,
+  batchRunning,
   updatingScope,
   onClose,
   onConfirm,
@@ -845,11 +848,33 @@ const FactMaintenanceModal = ({
         </div>
 
         {curating ? (
-          <div className="flex items-center gap-2 border-b border-surface-container-high bg-tertiary-fixed/40 px-5 py-2.5 text-xs text-on-surface">
-            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-tertiary" />
-            <span className="font-semibold">{curatePhase || '处理中'}</span>
-            <span className="min-w-0 truncate text-on-surface-variant">{curateMessage || ''}</span>
-            <span className="ml-auto shrink-0 text-on-surface-variant">任务在后台执行，可关闭本窗口</span>
+          <div className="flex flex-col gap-1.5 border-b border-surface-container-high bg-tertiary-fixed/40 px-5 py-2.5 text-xs text-on-surface">
+            <div className="flex items-center gap-2">
+              <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-tertiary" />
+              <span className="font-semibold">{curatePhase || '处理中'}</span>
+              <span className="min-w-0 truncate text-on-surface-variant">{curateMessage || ''}</span>
+              <span className="ml-auto shrink-0 text-on-surface-variant">任务在后台执行，可关闭本窗口</span>
+            </div>
+            {batchTotal ? (
+              // 分批并发的进度条。只有文字的话，第一批跑完之前（实测 4 分半）看着像卡死；
+              // 已完成的实心 + 进行中的脉冲，一眼能看出还有几批在跑
+              <div className="flex items-center gap-2">
+                <div className="flex h-1.5 flex-1 overflow-hidden rounded-full bg-surface-container-high">
+                  <div
+                    className="bg-tertiary transition-[width] duration-500"
+                    style={{ width: `${Math.round((batchDone / batchTotal) * 100)}%` }}
+                  />
+                  <div
+                    className="animate-pulse bg-tertiary/45 transition-[width] duration-500"
+                    style={{ width: `${Math.round((batchRunning / batchTotal) * 100)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 tabular-nums text-on-surface-variant">
+                  {batchDone}/{batchTotal} 批完成
+                  {batchRunning ? ` · ${batchRunning} 批进行中` : ''}
+                </span>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -3527,6 +3552,9 @@ export default function TechnicalGapRecognition({ showToast }) {
           curating={busyAction === 'facts-curate' || factCurateRunning}
           curatePhase={factCurateRunning ? String(factCurateState?.phase || '') : ''}
           curateMessage={factCurateRunning ? String(factCurateState?.message || '') : ''}
+          batchTotal={factCurateRunning ? Number(factCurateState?.batchTotal || 0) : 0}
+          batchDone={factCurateRunning ? Number(factCurateState?.batchDone || 0) : 0}
+          batchRunning={factCurateRunning ? Number(factCurateState?.batchRunning || 0) : 0}
           updatingScope={busyAction === 'facts-material-sources'}
           onClose={() => setFactModalOpen(false)}
           onConfirm={handleConfirmFactTable}

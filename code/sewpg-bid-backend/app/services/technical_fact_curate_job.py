@@ -81,6 +81,10 @@ def schedule_fact_curate_job(project_id: str, data: dict[str, Any] | None = None
         startedAt=_now_iso(),
         finishedAt="",
         report=None,
+        # 清零，免得沿用上一轮的批次数把进度条画歪
+        batchTotal=0,
+        batchDone=0,
+        batchRunning=0,
     )
     queue_result = enqueue_generation_job(FACT_CURATE_JOB_TYPE, project_id, payload)
     if queue_result.queued or queue_result.locked:
@@ -157,6 +161,10 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
     def on_phase(phase: str, message: str = "") -> None:
         _write_state(project_id, status="running", phase=phase, message=message or phase)
 
+    def on_progress(payload: dict[str, Any]) -> None:
+        """分批进度写进状态，供前端画进度条——只有文字消息的话前端画不出条。"""
+        _write_state(project_id, **payload)
+
     try:
         project = require_technical_gap_project_for_update(project_id)
         gap_state = ensure_technical_gap_state(project)
@@ -210,7 +218,11 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
         project = require_technical_gap_project_for_update(project_id)
         gap_state = ensure_technical_gap_state(project)
         updated_table, report = run_fact_curator_for_project(
-            copy.deepcopy(project), copy.deepcopy(gap_state), payload, on_phase=on_phase
+            copy.deepcopy(project),
+            copy.deepcopy(gap_state),
+            payload,
+            on_phase=on_phase,
+            on_progress=on_progress,
         )
         touched_keys = report.get("touchedKeys") if isinstance(report.get("touchedKeys"), list) else []
 

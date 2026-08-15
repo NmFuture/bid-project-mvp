@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
@@ -840,10 +841,13 @@ def run_fact_curator_for_project(
     data: dict[str, Any],
     *,
     on_phase: Callable[[str, str], None] | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """同步重活入口（由后台任务调用）：组 manifest → 调 skill → 回收落表。
 
     on_phase(phase, message) 在阶段切换时回调，供任务层写进度；不传则静默执行。
+    on_progress({batchTotal, batchDone, batchRunning}) 报结构化分批进度，供前端画进度条——
+    只有文字的话前端画不出条，而按批完成才更新的话头几分钟看着像卡死。
     """
 
     def notify(phase: str, message: str = "") -> None:
@@ -898,8 +902,34 @@ def run_fact_curator_for_project(
     )
     operator = str(data.get("operator") or "当前用户")
 
+    # 进度用的计数器。线程池里加减，必须上锁——单看 running 少一个多一个不影响正确性，
+    # 但进度条会跳。
+    progress_lock = threading.Lock()
+    progress = {"done": 0, "running": 0}
+
+    def report_progress() -> None:
+        if on_progress is None:
+            return
+        try:
+            with progress_lock:
+                snapshot = dict(progress)
+            on_progress(
+                {
+                    "batchTotal": len(batches),
+                    "batchDone": snapshot["done"],
+                    "batchRunning": snapshot["running"],
+                }
+            )
+        except Exception:  # noqa: BLE001 - 进度上报失败不该中断主流程
+            logger.warning("事实表维护分批进度上报失败")
+
     def run_batch(index: int, batch_targets: dict[str, list[str]]) -> dict[str, Any]:
         """一批 = 一个 opencode 会话。慢活在这里跑，落表由调用方按完成顺序收口。"""
+        with progress_lock:
+            progress["running"] += 1
+        # 开跑就报一次：只在完成时报的话，第一批跑完之前（实测 4 分半）进度纹丝不动，
+        # 看着像卡死了
+        report_progress()
         batch_manifest, batch_path = build_fact_curator_manifest(
             project, gap_state, data, targets_override=batch_targets
         )
@@ -929,6 +959,12 @@ def run_fact_curator_for_project(
         batch_report["opencodeOutput"] = batch_result.get("opencodeOutput") or {}
         return {"index": index, "table": batch_table, "report": batch_report}
 
+    def finish_batch() -> None:
+        with progress_lock:
+            progress["running"] = max(0, progress["running"] - 1)
+            progress["done"] += 1
+        report_progress()
+
     notify(
         "AI 分析素材",
         f"AI 正在按 {target_total} 个目标字段查证素材，分 {len(batches)} 批并发（耗时较长）。",
@@ -949,6 +985,7 @@ def run_fact_curator_for_project(
             except Exception as exc:  # noqa: BLE001 - 单批失败不该带走整轮已有成果
                 logger.exception("事实表维护第 %s 批失败", index)
                 merged_report["batchErrors"].append({"batch": index, "message": str(exc) or "批次执行失败"})
+                finish_batch()
                 done += 1
                 notify("AI 分析素材", f"已完成 {done}/{len(batches)} 批（第 {index} 批失败）。")
                 continue
@@ -957,6 +994,7 @@ def run_fact_curator_for_project(
                 updated_table, outcome["table"], outcome["report"].get("touchedKeys") or []
             )
             _accumulate_curate_report(merged_report, outcome["report"])
+            finish_batch()
             done += 1
             # 还有批在跑时阶段仍是「AI 分析素材」，别让按钮显示成已经在收尾
             notify(
