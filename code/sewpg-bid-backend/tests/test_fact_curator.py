@@ -942,7 +942,7 @@ class FactCurateApiTests(unittest.TestCase):
         ai_field["sourceRefs"] = [{"type": "factCurator", "action": "fill", "evidence": "上一轮证据"}]
         store._persist_project(project)
 
-        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None, on_progress=None):
             self.assertTrue(data.get("fillOnly"), "补空模式必须把 fillOnly 传到 curator")
             return copy.deepcopy(gap_state_snapshot["projectFactTable"]), {
                 "counts": {"filled": 0},
@@ -1137,7 +1137,7 @@ class FactCurateApiTests(unittest.TestCase):
             if field["key"] != edited["key"] and field.get("sourceKind") not in {"template", "platform", "derived"}
         )
 
-        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None, on_progress=None):
             # AI 跑的这段时间里，人在页面上改了第一个字段（真实路径会带 manualEdit 标记）
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
@@ -1188,7 +1188,7 @@ class FactCurateApiTests(unittest.TestCase):
         self.assertEqual(build_response.status_code, 200, build_response.text)
         gone = build_response.json()["fields"][0]
 
-        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None, on_progress=None):
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
             latest_table["fields"] = [
@@ -1703,3 +1703,62 @@ def test_all_batches_failing_raises_instead_of_reporting_empty(workspace_dirs, m
     ):
         with pytest.raises(RuntimeError, match="均失败"):
             curator.run_fact_curator_for_project(_project(), gap_state, {})
+
+
+def test_progress_reports_running_batches_not_just_completed(workspace_dirs, monkeypatch) -> None:
+    """开跑就要报进度，不能只在批完成时报。
+
+    实测单批要 4 分半，只在完成时报的话头几分钟进度纹丝不动，用户看着像卡死。
+    进行中的批数也要报——前端靠它画「N 批进行中」那段脉冲。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    monkeypatch.setattr(settings, "fact_curate_concurrency", 2)
+    gap_state = {"projectFactTable": _table()}
+    seen: list[dict] = []
+
+    def fake_skill(manifest_path: Path) -> dict:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
+        _, report = curator.run_fact_curator_for_project(
+            _project(), gap_state, {}, on_progress=seen.append
+        )
+
+    assert seen, "一次进度都没报"
+    total = report["batchTotal"]
+    assert all(item["batchTotal"] == total for item in seen)
+    # 有过「还没完成任何一批但已经有批在跑」的时刻——这正是进度条能立刻动起来的依据
+    assert any(item["batchDone"] == 0 and item["batchRunning"] > 0 for item in seen), seen
+    # 收尾时全部完成、没有残留的进行中
+    assert seen[-1]["batchDone"] == total
+    assert seen[-1]["batchRunning"] == 0
+
+
+def test_progress_failure_does_not_break_the_run(workspace_dirs, monkeypatch) -> None:
+    """进度上报炸了不该带走整轮结果——它只是给人看的。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+
+    def fake_skill(manifest_path: Path) -> dict:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    def boom(_payload: dict) -> None:
+        raise RuntimeError("进度写库炸了")
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
+        table, report = curator.run_fact_curator_for_project(
+            _project(), gap_state, {}, on_progress=boom
+        )
+
+    assert report["batchDone"] == report["batchTotal"]
+    assert table["fields"]

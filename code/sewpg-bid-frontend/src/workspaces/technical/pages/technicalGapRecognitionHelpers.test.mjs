@@ -1015,3 +1015,18 @@ test('两个 AI 按钮分工明确：AI重填从头算，AI补空只补空白', 
   assert.match(source, /const blankCount = statusCounts\.unextracted \|\| 0/)
   assert.match(source, /disabled=\{busy \|\| !blankCount\}/)
 })
+
+test('分批并发要画进度条，且开跑就动', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  // 只有文字的话，第一批跑完之前（实测 4 分半）进度纹丝不动，看着像卡死
+  assert.match(source, /batchTotal=\{factCurateRunning \? Number\(factCurateState\?\.batchTotal \|\| 0\) : 0\}/)
+  assert.match(source, /batchDone=\{factCurateRunning/)
+  assert.match(source, /batchRunning=\{factCurateRunning/)
+  // 已完成实心 + 进行中脉冲，一眼看出还有几批在跑
+  assert.match(source, /\$\{Math\.round\(\(batchDone \/ batchTotal\) \* 100\)\}%/)
+  assert.match(source, /\$\{Math\.round\(\(batchRunning \/ batchTotal\) \* 100\)\}%/)
+  assert.match(source, /\{batchDone\}\/\{batchTotal\} 批完成/)
+  // 没分批信息时不画条（建表阶段、旧任务状态）
+  assert.match(source, /\{batchTotal \? \(/)
+})
