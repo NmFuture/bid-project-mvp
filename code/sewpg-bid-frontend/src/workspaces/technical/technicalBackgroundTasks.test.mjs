@@ -5,6 +5,7 @@ import {
   clearTechnicalTask,
   markTechnicalTask,
   restoreTechnicalTask,
+  TECHNICAL_TASK_STORAGE_KEY,
   readTechnicalTasks,
   sortTechnicalTasks,
   technicalTaskKey,
@@ -131,4 +132,36 @@ test('恢复登记只补进度，不改写发起页写下的任务名和回跳�
   const [rebuilt] = readTechnicalTasks(storage)
   assert.equal(rebuilt.taskName, '重新生成正文')
   assert.equal(rebuilt.page, 'editor')
+})
+
+test('idle 或状态缺失的登记在读取时被剔除，不会渲染成已完成通知', () => {
+  const storage = memoryStorage()
+  markTechnicalTask({
+    taskType: 'body-generate', projectId: 'P-10', projectName: '甲项目',
+    taskName: '生成正文', status: 'idle', percentage: 0,
+  }, storage)
+  markTechnicalTask({
+    taskType: 'index-regenerate', projectId: 'P-10', projectName: '甲项目',
+    taskName: '重新生成索引', status: '', percentage: 0,
+  }, storage)
+  markTechnicalTask({
+    taskType: 'parse', projectId: 'P-10', projectName: '甲项目',
+    taskName: '技术标解析', status: 'completed', percentage: 100,
+  }, storage)
+
+  const tasks = readTechnicalTasks(storage)
+  assert.deepEqual(tasks.map((task) => task.taskName), ['技术标解析'])
+  // 剔除后要落盘，避免每次读取都重算
+  assert.equal(JSON.parse(storage.getItem(TECHNICAL_TASK_STORAGE_KEY)).length, 1)
+})
+
+test('运行中和各类终态都保留在登记表里', () => {
+  const storage = memoryStorage()
+  for (const [index, status] of ['queued', 'running', 'processing', 'cancel_requested', 'completed', 'failed', 'cancelled', 'stale'].entries()) {
+    markTechnicalTask({
+      taskType: 'parse', projectId: `P-${index}`, projectName: `项目${index}`,
+      taskName: '技术标解析', status, percentage: 10,
+    }, storage)
+  }
+  assert.equal(readTechnicalTasks(storage).length, 8)
 })

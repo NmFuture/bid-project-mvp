@@ -37,6 +37,7 @@ import {
   technicalTaskBelongsToProject,
   technicalTaskResponseMatchesProject,
 } from '../technicalOutlineTaskLifecycle.js'
+import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
 const MATERIAL_MATCH_ACTIVE_STATUSES = new Set(['queued', 'running', 'processing', 'cancel_requested'])
@@ -287,6 +288,10 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [materialMatchFinalizing, setMaterialMatchFinalizing] = useState(false)
   const [materialMatchFinalizeAttempt, setMaterialMatchFinalizeAttempt] = useState(0)
   const [dirty, setDirty] = useState(false)
+
+  // 弹窗开着就别在右下角再挂一张同样的卡片；关掉弹窗或离开本页后才交给任务栈。
+  useTechnicalTaskPresence('outline-regenerate', id, regenerationModalOpen)
+  useTechnicalTaskPresence('material-match', id, materialMatchModalOpen)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
   const [onlyofficeError, setOnlyofficeError] = useState('')

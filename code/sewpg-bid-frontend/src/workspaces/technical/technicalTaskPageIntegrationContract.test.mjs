@@ -22,6 +22,18 @@ const coCreationEditorSource = readFileSync(
   new URL('./pages/TechnicalCoCreationEditor.jsx', import.meta.url),
   'utf8',
 )
+const outlineReviewSource = readFileSync(
+  new URL('./pages/TechnicalOutlineReview.jsx', import.meta.url),
+  'utf8',
+)
+const definitionsSource = readFileSync(
+  new URL('./technicalBackgroundTaskDefinitions.js', import.meta.url),
+  'utf8',
+)
+const parseMarkerSource = readFileSync(
+  new URL('../shared/parseRunningMarker.js', import.meta.url),
+  'utf8',
+)
 
 test('技术标解析启动后登记后台任务并持续同步进度', () => {
   assert.match(tenderReviewSource, /markTechnicalTask/)
@@ -122,12 +134,51 @@ test('首次目录新任务和终态都会复位停止请求状态', () => {
   )
 })
 
-test('旧解析标记轮询不会用项目 id 覆盖已登记的项目名', () => {
-  assert.match(backgroundStackSource, /currentTask\?\.projectName/)
+test('解析运行标记只用于补建丢失的登记，不覆盖已登记的进度和项目名', () => {
+  // 已有登记就整条跳过：解析页每秒写真实进度，这里再盖一次会让卡片来回跳、也会让关掉的卡片复活
+  assert.match(backgroundStackSource, /if \(currentTask\) return/)
+  assert.match(backgroundStackSource, /const resolvedName = marker\.projectName/)
+  // 旧标记没存项目名，补查一次，别让卡片只显示项目编号
+  assert.match(backgroundStackSource, /technicalProjectsAPI\.get\(marker\.projectId\)[\s\S]*?\|\|\s*marker\.projectId/)
+  // 标记里带上项目名，补建出来的卡片才不会只显示项目编号
+  assert.match(parseMarkerSource, /projectName: String\(projectName \|\| ''\)\.trim\(\)/)
+  assert.match(tenderReviewSource, /markParseRunning\(targetProjectId, 'tech', targetProjectName/)
+  assert.match(tenderReviewSource, /markParseRunning\(targetProjectId, 'tech', project\?\.name/)
+})
+
+test('解析停止和终态都撤掉运行标记，卡片不会被标记补回来', () => {
+  const stopStart = tenderReviewSource.indexOf('const handleStopParse')
+  const stopEnd = tenderReviewSource.indexOf('const handleUploadAndParse', stopStart)
+  assert.match(tenderReviewSource.slice(stopStart, stopEnd), /clearParseRunning\(targetProjectId, 'tech'\)/)
+  assert.match(backgroundStackSource, /if \(task\.taskType === 'parse'\) clearParseRunning\(task\.projectId, 'tech'\)/)
   assert.match(
     backgroundStackSource,
-    /marker\.projectName\s*\|\|\s*currentTask\?\.projectName\s*\|\|\s*marker\.projectId/,
+    /if \(task\.taskType === 'parse' && !technicalTaskIsActive\(\{ status \}\)\) \{[\s\S]*?clearParseRunning/,
   )
+})
+
+test('页面在跟踪或正显示的任务不由任务栈重复轮询和挂卡片', () => {
+  assert.match(backgroundStackSource, /if \(isTechnicalTaskTracked\(task\)\) return/)
+  assert.match(backgroundStackSource, /!foregroundKeys\.has\(technicalTaskPresenceKey\(task\.taskType, task\.projectId\)\)/)
+  // 解析和首次目录没有弹窗：停留在页面上就算前台
+  assert.match(tenderReviewSource, /useTechnicalTaskPresence\('parse', selectedProjectId, true\)/)
+  assert.match(parseResultSource, /useTechnicalTaskPresence\('directory-generate', id, true\)/)
+  // 其余四处按弹窗是否打开决定
+  assert.match(outlineReviewSource, /useTechnicalTaskPresence\('outline-regenerate', id, regenerationModalOpen\)/)
+  assert.match(outlineReviewSource, /useTechnicalTaskPresence\('material-match', id, materialMatchModalOpen\)/)
+  assert.match(gapRecognitionSource, /useTechnicalTaskPresence\('body-generate', id, generationModalVisible\)/)
+  assert.match(coCreationEditorSource, /useTechnicalTaskPresence\('body-generate', id, generationModalVisible\)/)
+  assert.match(coCreationEditorSource, /useTechnicalTaskPresence\('index-regenerate', id, scoreIndexModalVisible\)/)
+})
+
+test('卡片百分比与页面内进度条同一算法', () => {
+  assert.match(tenderReviewSource, /percentage: Math\.round\(parseDisplayPercentage\(parseProgress\)\)/)
+  assert.match(parseResultSource, /percentage: Math\.round\(directoryDisplayPercentage\(directoryState, directoryProgressClock\)\)/)
+  assert.match(definitionsSource, /displayPercentage: \(progress\) => parseDisplayPercentage/)
+  assert.match(definitionsSource, /displayPercentage: \(progress\) => directoryDisplayPercentage/)
+  assert.match(definitionsSource, /displayPercentage: \(progress\) => generationDisplayPercentage/)
+  assert.match(definitionsSource, /displayPercentage: \(progress\) => scoreIndexDisplayPercentage/)
+  assert.match(backgroundStackSource, /definition\.displayPercentage[\s\S]*?\?\s*definition\.displayPercentage\(progress\)/)
 })
 
 test('首次正文页面恢复后台任务但只由用户操作启动生成', () => {
@@ -179,10 +230,12 @@ test('首次正文异步响应按当前项目隔离且项目切换立即重置�
     gapRecognitionSource,
     /useEffect\(\(\) => \{[\s\S]*?setGenerationStatus\(null\)[\s\S]*?setGenerationOwnerId\(['"]['"]\)[\s\S]*?setGenerationModalOpen\(false\)[\s\S]*?setGenerationStopping\(false\)[\s\S]*?setGenerationModalDismissed\(false\)[\s\S]*?setBusyAction\(['"]['"]\)[\s\S]*?setProjectName\(id\)[\s\S]*?\}, \[id\]\)/,
   )
+  // 弹窗可见条件收敛成一个常量，弹窗开关和「是否算前台」必须用同一个判断
   assert.match(
     gapRecognitionSource,
-    /open=\{generationBelongsToProject\s*&&\s*\(generationModalOpen\s*\|\|\s*generationRunning\)\s*&&\s*!generationModalDismissed\}/,
+    /const generationModalVisible = generationBelongsToProject[\s\S]*?&& \(generationModalOpen \|\| generationRunning\)[\s\S]*?&& !generationModalDismissed/,
   )
+  assert.match(gapRecognitionSource, /open=\{generationModalVisible\}/)
 
   for (const [startMarker, endMarker] of [
     ['const loadGenerationStatus', 'useEffect(() => {'],
@@ -266,8 +319,9 @@ test('共创页主加载取得真实项目名并隔离跨项目任务 UI', () =>
   )
   assert.match(
     coCreationEditorSource,
-    /open=\{generationBelongsToProject\s*&&[\s\S]*?open=\{scoreIndexBelongsToProject\s*&&/,
+    /const generationModalVisible = generationBelongsToProject[\s\S]*?const scoreIndexModalVisible = scoreIndexBelongsToProject/,
   )
+  assert.match(coCreationEditorSource, /open=\{generationModalVisible\}[\s\S]*?open=\{scoreIndexModalVisible\}/)
   assert.match(coCreationEditorSource, /technicalTaskResponseMatchesProject\(requestProjectId, currentProjectIdRef\.current\)/)
 })
 

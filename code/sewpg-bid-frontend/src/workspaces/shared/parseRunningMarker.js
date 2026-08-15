@@ -14,7 +14,7 @@ const resolveStorage = () => {
   return null
 }
 
-export const markParseRunning = (projectId, bidType) => {
+export const markParseRunning = (projectId, bidType, projectName = '') => {
   const storage = resolveStorage()
   const id = String(projectId || '').trim()
   const type = String(bidType || '').trim()
@@ -23,6 +23,8 @@ export const markParseRunning = (projectId, bidType) => {
     storage.setItem(storageKeyFor(id, type), JSON.stringify({
       projectId: id,
       bidType: type,
+      // 标记补建后台卡片时要用真实项目名，缺了就只能显示项目编号
+      projectName: String(projectName || '').trim(),
       startedAt: Date.now(),
     }))
     return true
@@ -71,7 +73,7 @@ export const readRunningParses = (now = Date.now()) => {
       staleKeys.push(key)
       continue
     }
-    running.push({ projectId, bidType, startedAt })
+    running.push({ projectId, bidType, projectName: String(parsed?.projectName || '').trim(), startedAt })
   }
   staleKeys.forEach((key) => {
     try {

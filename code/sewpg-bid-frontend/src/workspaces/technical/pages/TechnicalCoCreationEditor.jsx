@@ -14,6 +14,7 @@ import {
 } from '../technicalGenerationProgress.js'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import { technicalTaskResponseMatchesProject } from '../technicalOutlineTaskLifecycle.js'
+import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
 import {
   isScoreIndexProgressRunning,
   scoreIndexDisplayPercentage,
@@ -360,6 +361,16 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const scoreIndexBelongsToProject = scoreIndexOwnerId === id
   const generationRunning = generationBelongsToProject && isGenerationProgressRunning(generationStatus)
   const scoreIndexRunning = scoreIndexBelongsToProject && isScoreIndexProgressRunning(scoreIndexStatus)
+  const generationModalVisible = generationBelongsToProject
+    && (generationModalOpen || generationRunning)
+    && !generationModalDismissed
+  const scoreIndexModalVisible = scoreIndexBelongsToProject
+    && (scoreIndexModalOpen || scoreIndexRunning)
+    && !scoreIndexModalDismissed
+
+  // 弹窗开着就别在右下角再挂一张同样的卡片；关掉弹窗或离开本页后才交给任务栈。
+  useTechnicalTaskPresence('body-generate', id, generationModalVisible)
+  useTechnicalTaskPresence('index-regenerate', id, scoreIndexModalVisible)
 
   useEffect(() => {
     if (!generationBelongsToProject || !generationStatus?.status) return
@@ -1147,7 +1158,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </DialogFooter>
       </Dialog>
       <TechnicalGenerationProgressModal
-        open={generationBelongsToProject && (generationModalOpen || generationRunning) && !generationModalDismissed}
+        open={generationModalVisible}
         status={generationStatus}
         taskTitle="重新生成正文"
         completedMessage="技术标正文已重新生成，共创文档已刷新为最新版本。"
@@ -1159,7 +1170,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         }}
       />
       <TechnicalScoreIndexProgressModal
-        open={scoreIndexBelongsToProject && (scoreIndexModalOpen || scoreIndexRunning) && !scoreIndexModalDismissed}
+        open={scoreIndexModalVisible}
         status={scoreIndexStatus}
         onStop={handleStopScoreIndex}
         stopping={scoreIndexStopping}

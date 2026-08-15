@@ -54,3 +54,27 @@ def test_cancel_task_state_records_terminal_fields_without_forcing_percentage() 
     assert result["cancelledAt"]
     assert result["completedAt"] == result["cancelledAt"]
     assert result["summary"] == "任务已停止。"
+
+
+@pytest.mark.parametrize("state", [
+    {"status": "idle", "summary": "尚未运行。"},
+    {"status": "", "summary": "从未跑过。"},
+    {},
+    None,
+])
+def test_request_task_cancel_ignores_tasks_that_are_not_running(state) -> None:
+    """没有在跑的任务被停止时必须原样返回。
+
+    把 idle 标成 cancel_requested 会让前端一直显示一个并不存在的任务，
+    停止按钮永远停在「停止中」，而且 stale 检测只看 running，救不回来。
+    """
+    expected = dict(state) if isinstance(state, dict) else {}
+
+    assert request_task_cancel(state, "停止中") == expected
+
+
+def test_request_task_cancel_still_applies_to_queued_tasks() -> None:
+    result = request_task_cancel({"status": "queued", "percentage": 0}, "已请求停止。")
+
+    assert result["status"] == "cancel_requested"
+    assert result["cancelRequested"] is True

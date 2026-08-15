@@ -26,6 +26,7 @@ import ParseValidationNotice from '../components/ParseValidationNotice'
 import { parseValidationSummary } from '../components/parseValidationSummary'
 import { progressElapsedLine } from '../../../utils/progressDuration'
 import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
+import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
 import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
 import {
   selectTechnicalParseProjectId,
@@ -755,6 +756,9 @@ export default function TechnicalTenderReview({ showToast }) {
     return () => window.clearInterval(timer)
   }, [isParseRunning])
 
+  // 解析进度就长在本页上，停留期间右下角不重复挂卡片；离开本页后才交给任务栈接管。
+  useTechnicalTaskPresence('parse', selectedProjectId, true)
+
   // 从右下角任务卡回到解析页：解析没有弹窗，进度只在页面里，先把它滚进视野。同一次恢复只滚一次。
   useEffect(() => {
     if (!restoringParseTask || !selectedProjectId || !parseProgress) return
@@ -768,7 +772,8 @@ export default function TechnicalTenderReview({ showToast }) {
     const summary = summarizeParseProgress(parseProgress)
     updateTechnicalTask('parse', selectedProjectId, {
       status: String(parseProgress.status || 'running').toLowerCase(),
-      percentage: Number(parseProgress.percentage) || 0,
+      // 与页面内进度条同一算法，否则卡片和页面会显示两个百分比
+      percentage: Math.round(parseDisplayPercentage(parseProgress)),
       summary: summary.summary || parseProgress.summary || '',
     })
   }, [parseProgress, selectedProjectId])
@@ -812,6 +817,8 @@ export default function TechnicalTenderReview({ showToast }) {
     }
     if (cancelled) {
       const summary = cancelled.summary || cancelled.message || TECHNICAL_STOP_PARSE_MESSAGE
+      // 停止已被后端受理：运行标记必须撤掉，否则右下角会照着它把「解析进行中」的卡片一直补回来
+      clearParseRunning(targetProjectId, 'tech')
       setUploadError(summary)
       setParseProgress((previous) => mergeMonotonicParseProgress(previous, { ...cancelled, summary }))
       updateTechnicalTask('parse', targetProjectId, {
@@ -1104,7 +1111,7 @@ export default function TechnicalTenderReview({ showToast }) {
         if (response.progress) {
           setParseProgress((previous) => mergeMonotonicParseProgress(previous, response.progress))
         }
-        markParseRunning(targetProjectId, 'tech')
+        markParseRunning(targetProjectId, 'tech', targetProjectName || '')
         showToast?.(response?.message || '解析任务已提交，后台运行中，可随时离开本页。')
         return
       }
@@ -1212,7 +1219,7 @@ export default function TechnicalTenderReview({ showToast }) {
         if (response.progress) {
           setParseProgress((previous) => mergeMonotonicParseProgress(previous, response.progress))
         }
-        markParseRunning(targetProjectId, 'tech')
+        markParseRunning(targetProjectId, 'tech', project?.name || '')
         showToast?.(response?.message || '重新解析任务已提交，后台运行中，可随时离开本页。')
         return
       }

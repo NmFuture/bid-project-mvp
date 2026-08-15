@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 
 const stackSource = readFileSync(new URL('./components/TechnicalBackgroundTaskStack.jsx', import.meta.url), 'utf8')
 const definitionsSource = readFileSync(new URL('./technicalBackgroundTaskDefinitions.js', import.meta.url), 'utf8')
+const tasksSource = readFileSync(new URL('./technicalBackgroundTasks.js', import.meta.url), 'utf8')
 const shellSource = readFileSync(new URL('../../components/layout/AppShell.jsx', import.meta.url), 'utf8')
 const parseBannerSource = readFileSync(new URL('../../components/layout/ParseRunningBanner.jsx', import.meta.url), 'utf8')
 
@@ -28,7 +29,7 @@ test('AppShell 挂载技术标任务栈且旧提示条只处理商务标', () =>
 test('只有完成任务强制显示百分之百，停止和失败保留真实进度', () => {
   assert.match(
     stackSource,
-    /status\s*===\s*['"]completed['"]\s*\?\s*100\s*:\s*clampPercentage\(progress\?\.percentage\s*\?\?\s*task\.percentage\)/,
+    /status\s*===\s*['"]completed['"]\s*\?\s*100\s*:\s*clampPercentage\(displayed\)/,
   )
   assert.doesNotMatch(stackSource, /TERMINAL_STATUSES\.has\(status\)\s*\?\s*100/)
 })
@@ -41,8 +42,8 @@ test('首次正文和重新生成正文合并为一条任务，按发起页回�
 })
 
 test('超过三条时提示另有 N 个任务', () => {
-  assert.match(stackSource, /const visibleTasks = tasks\.slice\(0,\s*3\)/)
-  assert.match(stackSource, /const overflowCount = tasks\.length - visibleTasks\.length/)
+  assert.match(stackSource, /const visibleTasks = backgroundTasks\.slice\(0,\s*3\)/)
+  assert.match(stackSource, /const overflowCount = backgroundTasks\.length - visibleTasks\.length/)
   assert.match(stackSource, /另有 \{overflowCount\} 个任务/)
 })
 
@@ -63,10 +64,20 @@ test('终态通知点击查看或主动关闭后消失，运行中任务不提�
 })
 
 test('后端查无任务时清理登记，其余查询失败保留上一次进度', () => {
-  assert.match(stackSource, /if \(error\?\.status === 404\) clearTechnicalTask\(task\.taskType, task\.projectId\)/)
+  assert.match(stackSource, /if \(error\?\.status === 404\) \{[\s\S]*?clearTechnicalTask\(task\.taskType, task\.projectId\)/)
   const catchStart = stackSource.indexOf('} catch (error) {')
   const catchEnd = stackSource.indexOf('const status =', catchStart)
   assert.match(stackSource.slice(catchStart, catchEnd), /\n\s+return\n/)
+})
+
+test('后端说任务是 idle 或没状态时清掉登记，不冒充成已完成通知', () => {
+  assert.match(
+    stackSource,
+    /if \(!technicalTaskIsActive\(\{ status \}\) && !TECHNICAL_TASK_NOTIFIABLE_STATUSES\.has\(status\)\) \{[\s\S]*?clearTechnicalTask\(task\.taskType, task\.projectId\)/,
+  )
+  // 已经写进登记表的 idle 记录也要在读取时被剔掉，否则永远轮不到上面那段
+  assert.match(tasksSource, /export const TECHNICAL_TASK_NOTIFIABLE_STATUSES = new Set\(\['completed', 'failed', 'error', 'cancelled', 'stale'\]\)/)
+  assert.match(tasksSource, /if \(!technicalTaskIsTrackable\(task\)\) return false/)
 })
 
 test('已停止任务使用中性停止图标和文案', () => {

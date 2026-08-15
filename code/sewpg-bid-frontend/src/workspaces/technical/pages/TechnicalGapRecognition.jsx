@@ -7,6 +7,7 @@ import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import { markTechnicalTask, restoreTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
+import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
 import {
   generationDisplayPercentage,
   isGenerationProgressRunning,
@@ -1924,6 +1925,12 @@ export default function TechnicalGapRecognition({ showToast }) {
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationBelongsToProject = generationOwnerId === id
   const generationRunning = generationBelongsToProject && isGenerationProgressRunning(generationStatus)
+  const generationModalVisible = generationBelongsToProject
+    && (generationModalOpen || generationRunning)
+    && !generationModalDismissed
+
+  // 弹窗开着就别在右下角再挂一张同样的卡片；关掉弹窗或离开本页后才交给任务栈。
+  useTechnicalTaskPresence('body-generate', id, generationModalVisible)
   const generationCompleted = generationBelongsToProject && generationStatus?.status === 'completed'
 
   useEffect(() => {
@@ -3637,7 +3644,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         />
       ) : null}
       <TechnicalGenerationProgressModal
-        open={generationBelongsToProject && (generationModalOpen || generationRunning) && !generationModalDismissed}
+        open={generationModalVisible}
         status={generationStatus}
         onStop={handleStopGeneration}
         stopping={generationStopping}

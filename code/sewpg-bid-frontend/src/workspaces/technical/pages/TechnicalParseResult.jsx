@@ -9,6 +9,7 @@ import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { bidTypeFromWorkspace, projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
+  directoryDisplayPercentage,
   isDirectoryProgressFailed,
   isDirectoryProgressRunning,
   mergeMonotonicDirectoryProgress,
@@ -16,6 +17,7 @@ import {
 } from '../technicalDirectoryProgress'
 import { subscribeDirectoryProgress } from '../technicalDirectoryProgressStream'
 import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
+import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024
 const MAX_BATCH_FILES = 5
@@ -159,6 +161,9 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
     return () => window.clearInterval(timer)
   }, [isDirectoryRunning])
 
+  // 目录生成进度就长在本页上，停留期间右下角不重复挂卡片。
+  useTechnicalTaskPresence('directory-generate', id, true)
+
   // 从右下角任务卡回到本页：目录生成没有弹窗，进度只在页面里，先把它滚进视野。同一次恢复只滚一次。
   useEffect(() => {
     if (!restoringDirectoryTask || !directoryState) return
@@ -188,10 +193,11 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
     if (!id || !directoryState) return
     updateTechnicalTask('directory-generate', id, {
       status: String(directoryState.status || 'running').toLowerCase(),
-      percentage: Number(directoryState.percentage) || 0,
+      // 与页面内进度条同一算法，否则卡片和页面会显示两个百分比
+      percentage: Math.round(directoryDisplayPercentage(directoryState, directoryProgressClock)),
       summary: directoryState.summary || directoryState.message || '',
     })
-  }, [directoryState, id])
+  }, [directoryProgressClock, directoryState, id])
 
   useEffect(() => {
     if (!autoAdvanceAfterDirectory || !isDirectoryCompleted) return undefined

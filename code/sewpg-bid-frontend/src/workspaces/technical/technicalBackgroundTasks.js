@@ -3,6 +3,15 @@ export const TECHNICAL_TASKS_CHANGED_EVENT = 'sewpg:technical-background-tasks-c
 
 const TASK_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'processing', 'cancel_requested'])
+// 值得作为终态通知留在角落的状态。idle 或状态缺失都算「没有这个任务」：
+// 留着会按「任务已完成」渲染，等于凭空多出一条从没发生过的通知。
+export const TECHNICAL_TASK_NOTIFIABLE_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled', 'stale'])
+
+const taskStatusName = (task) => String(task?.status || '').toLowerCase()
+
+export const technicalTaskIsTrackable = (task) => (
+  ACTIVE_STATUSES.has(taskStatusName(task)) || TECHNICAL_TASK_NOTIFIABLE_STATUSES.has(taskStatusName(task))
+)
 
 const defaultStorage = () => (typeof window !== 'undefined' ? window.localStorage : null)
 
@@ -42,6 +51,7 @@ export function readTechnicalTasks(storage = defaultStorage(), now = Date.now())
   const tasks = parseStoredTasks(storage)
   const fresh = tasks.filter((task) => {
     if (!task.key || !task.taskType || !task.projectId) return false
+    if (!technicalTaskIsTrackable(task)) return false
     const updatedAt = Date.parse(task.updatedAt || task.startedAt || '')
     return Number.isFinite(updatedAt) && now - updatedAt <= TASK_TTL_MS
   })
@@ -98,4 +108,4 @@ export function clearTechnicalTask(taskType, projectId, storage = defaultStorage
   return true
 }
 
-export const technicalTaskIsActive = (task) => ACTIVE_STATUSES.has(String(task?.status || '').toLowerCase())
+export const technicalTaskIsActive = (task) => ACTIVE_STATUSES.has(taskStatusName(task))
