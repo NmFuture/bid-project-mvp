@@ -24,7 +24,9 @@ from app.services.store import store
 from app.services.technical_appendix_source_matrix import (
     appendix_rule_code_score,
     apply_appendix_source_matrix_to_plan,
+    container_segment_key,
     load_appendix_source_matrix_for_project,
+    matrix_material_score,
 )
 from app.services.technical_rules_store import ensure_technical_rules_tables
 
@@ -502,6 +504,119 @@ class ApplyMatrixToPlanTests(unittest.TestCase):
         self.assertEqual(stats["routedItems"], 0)
         self.assertEqual(task["sourceRouting"]["source"], "client_appendix_input")
         self.assertEqual(task["recommendedMaterials"], [{"id": "RAW-CLIENT"}])
+
+
+class ContainerSegmentMatchTests(unittest.TestCase):
+    """复合来源词（文件夹-sheet 名）的容器段匹配：首段只对 folderPath 判定。
+
+    真实案例：规则「商务报价册-E 推荐备品备件（如果有）的分项报价」，素材库里
+    报价文件 xlsx 的文件名/路径都不含整词，但 folderPath 含「商务报价册」。
+    """
+
+    QUOTE_BOOK = {
+        "id": "RAW-QUOTE",
+        "name": "无价格-标段一：某项目报价文件.xlsx",
+        "path": "技术标/项目定制/华能/商务报价册/无价格-标段一：某项目报价文件.xlsx",
+        "folderPath": "技术标/项目定制/华能/商务报价册",
+        "materialTier": "project",
+    }
+
+    def test_container_key_only_for_composite_terms(self) -> None:
+        self.assertEqual(container_segment_key("商务报价册-E 推荐备品备件（如果有）的分项报价"), "商务报价册")
+        self.assertEqual(container_segment_key("机型参数表"), "")
+        self.assertEqual(container_segment_key("E-"), "")
+
+    def test_parenthetical_annotation_term_matches(self) -> None:
+        # 「设计认证（附完整的认证证书图片）」：括号注是要求说明，去掉后应命中证书文件
+        cert = {
+            "id": "RAW-CERT",
+            "name": "EW10.0-220-125上置-CQC250304413824310上海电气设计认证D(带变压器开关柜）-20250918.pdf",
+            "path": "技术标/标准文件/EW10.0-220上置/认证证书/EW10.0-220-125上置-CQC250304413824310上海电气设计认证D(带变压器开关柜）-20250918.pdf",
+            "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书",
+            "materialTier": "standard",
+        }
+        score, reasons = matrix_material_score(
+            cert,
+            {"projectSources": [], "standardSources": ["设计认证（附完整的认证证书图片）"]},
+        )
+        self.assertGreater(score, 0)
+        self.assertTrue(any("去括号注" in reason for reason in reasons))
+
+    def test_composite_term_matches_workbook_by_folder(self) -> None:
+        score, reasons = matrix_material_score(
+            self.QUOTE_BOOK,
+            {"projectSources": ["商务报价册-E 推荐备品备件（如果有）的分项报价"], "standardSources": []},
+        )
+        self.assertGreater(score, 0)
+        self.assertTrue(any("容器命中" in reason for reason in reasons))
+
+    def test_container_word_in_file_name_does_not_match(self) -> None:
+        # 容器词只出现在文件名（图片素材）而非 folderPath：不命中，保持 missing_source
+        image = {
+            "id": "RAW-IMG",
+            "name": "风电场空气密度图片.png",
+            "path": "技术标/项目定制/华能/功率曲线/风电场空气密度图片.png",
+            "folderPath": "技术标/项目定制/华能/功率曲线",
+            "materialTier": "project",
+        }
+        score, _ = matrix_material_score(
+            image,
+            {"projectSources": ["风电场空气密度-功率曲线与发电量-Ct"], "standardSources": []},
+        )
+        self.assertEqual(score, 0)
+
+    def test_filename_prefix_composite_matches_spreadsheet(self) -> None:
+        # 「文件名前缀-sheet-列」复合词：容器段在表格文件名里（风电场空气密度W10.0-220_….xlsx）
+        workbook = {
+            "id": "RAW-WIND",
+            "name": "风电场空气密度W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+            "path": "技术标/项目定制/华能/功率曲线/风电场空气密度W10.0-220_空气密度1.16_湍流强度0.1_风剪切0.1_2026-01-21 16-10-56.xlsx",
+            "folderPath": "技术标/项目定制/华能/功率曲线",
+            "materialTier": "project",
+        }
+        score, reasons = matrix_material_score(
+            workbook,
+            {"projectSources": ["风电场空气密度-功率曲线与发电量-修正功率"], "standardSources": []},
+        )
+        self.assertGreater(score, 0)
+        self.assertTrue(any("容器命中" in reason for reason in reasons))
+        # 同目录同名前缀的图片（无 sheet 结构）仍不命中
+        image = {
+            "id": "RAW-IMG2",
+            "name": "风电场空气密度图片.png",
+            "path": "技术标/项目定制/华能/功率曲线/风电场空气密度图片.png",
+            "folderPath": "技术标/项目定制/华能/功率曲线",
+            "materialTier": "project",
+        }
+        score_img, _ = matrix_material_score(
+            image,
+            {"projectSources": ["风电场空气密度-功率曲线与发电量-修正功率"], "standardSources": []},
+        )
+        self.assertEqual(score_img, 0)
+
+    def test_apply_marks_composite_rule_as_matched(self) -> None:
+        plan = {
+            "items": [
+                {"id": "toc-1", "appendixTasks": [{"id": "A1", "title": "附表B.2 质量保证期备品备件、消耗品清单"}]}
+            ]
+        }
+        matrix = {
+            "rows": [
+                {
+                    "id": "Sheet1!R6",
+                    "customer": "华能",
+                    "tableTitle": "附表B.2 质量保证期备品备件、消耗品清单",
+                    "projectSources": ["商务报价册-E 推荐备品备件（如果有）的分项报价"],
+                    "standardSources": [],
+                    "otherSources": [],
+                }
+            ]
+        }
+        stats = apply_appendix_source_matrix_to_plan(plan, matrix, customer_name="华能", materials=[self.QUOTE_BOOK])
+        task = plan["items"][0]["appendixTasks"][0]
+        self.assertEqual(stats["matchedTasks"], 1)
+        self.assertEqual(task["sourceRouting"]["status"], "matched")
+        self.assertEqual(task["sourceRouting"]["matchedMaterials"][0]["id"], "RAW-QUOTE")
 
 
 class AppendixRuleCodeScoreTests(unittest.TestCase):

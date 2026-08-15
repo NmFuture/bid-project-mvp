@@ -563,6 +563,42 @@ def material_text(material: dict[str, Any]) -> str:
     )
 
 
+def container_segment_key(term: Any) -> str:
+    """复合来源词（文件夹-文件-sheet 逐级细化）的容器段（首段）归一键。
+
+    与后端 app/services/technical_appendix_source_matrix.py 同名函数保持一致：
+    首段命中素材 folderPath 即定位到工作簿，sheet 级由填写链路读原件导航；
+    只对 folderPath 判定，避免误命中文件名里含容器词的图片类素材。
+    """
+    segments = re.split(r"[-—–]", clean_text(term), maxsplit=1)
+    if len(segments) < 2:
+        return ""
+    key = normalize_key(segments[0])
+    return key if len(key) >= 2 else ""
+
+
+# 容器段为文件名前缀时只认表格类文件：有 sheet/列 结构才可能承载复合词的后续段
+_SPREADSHEET_EXTS = (".xlsx", ".xls", ".csv")
+
+
+def strip_term_annotation(term: Any) -> str:
+    """去掉规则来源词里的括号注，与后端同名函数同语义：括号内容是对来源的要求说明。"""
+    return re.sub(r"[（(][^）)]*[）)]", "", clean_text(term)).strip()
+
+
+def material_container_segment_hit(material: dict[str, Any], term: Any) -> str:
+    """容器段命中判定，与后端同名函数同语义：folderPath 必查，文件名前缀仅对表格类放开。"""
+    key = container_segment_key(term)
+    if not key:
+        return ""
+    if key in normalize_key(material.get("folderPath")):
+        return key
+    raw_name = str(material.get("name") or material.get("cleanedFileName") or "")
+    if raw_name.lower().endswith(_SPREADSHEET_EXTS) and key in normalize_key(raw_name):
+        return key
+    return ""
+
+
 def material_file_text(material: dict[str, Any]) -> str:
     path = str(material.get("path") or material.get("docx") or "").strip()
     return " ".join(
@@ -2087,9 +2123,15 @@ def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tup
             if term_key in text:
                 score += 420 if scope_hit else 260
                 reasons.append(f"{scope} 来源规定命中：{term}")
+            elif (main_key := normalize_key(strip_term_annotation(term))) and main_key != term_key and main_key in text:
+                score += 400 if scope_hit else 240
+                reasons.append(f"{scope} 来源规定命中（去括号注）：{term}")
             elif any(part and part in text for part in source_terms(term) if len(normalize_key(part)) >= 2):
                 score += 180 if scope_hit else 120
                 reasons.append(f"{scope} 来源规定部分命中：{term}")
+            elif material_container_segment_hit(material, term):
+                score += 160 if scope_hit else 100
+                reasons.append(f"{scope} 来源容器命中：{term}")
     if score and "project" in tier:
         score += 30
     elif score and ("standard" in tier or "标准" in tier or "通用" in tier):
