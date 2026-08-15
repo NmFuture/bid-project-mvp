@@ -2,6 +2,7 @@ import { formatProgressDuration } from '../../utils/progressDuration.js'
 
 const runningStatuses = new Set(['running', 'processing', 'queued', 'cancel_requested'])
 const failedStatuses = new Set(['failed', 'error'])
+const terminalStatuses = new Set(['completed', 'failed', 'error', 'cancelled'])
 const internalDirectoryTextPattern = /futurecode|opencode|S2|Skill|session|流式片段|provider|model/i
 
 // 批次间平滑：真实锚点之间按时间缓慢爬升，等待下一次真实计数
@@ -84,6 +85,8 @@ const directoryTerminalMs = (progress = {}) => {
       .filter((value) => value !== null)
     if (errorTimes.length) return Math.max(...errorTimes)
   }
+  const cancelledAt = parseTime(progress?.cancelledAt)
+  if (cancelledAt !== null) return cancelledAt
   const generatedAt = parseTime(progress?.generatedAt)
   if (generatedAt !== null) return generatedAt
   const eventTimes = events.map((event) => parseTime(event?.at)).filter((value) => value !== null)
@@ -95,7 +98,7 @@ export const directoryElapsedSeconds = (progress = {}, nowMs = Date.now()) => {
   const startMs = directoryStartMs(progress)
   if (startMs === null) return 0
   const status = normalizeStatus(progress?.status)
-  const endMs = status === 'completed' || failedStatuses.has(status)
+  const endMs = terminalStatuses.has(status)
     ? (directoryTerminalMs(progress) ?? finiteNumber(nowMs))
     : finiteNumber(nowMs)
   return Math.max(0, (endMs - startMs) / 1000)
@@ -251,9 +254,17 @@ export const mergeMonotonicDirectoryProgress = (previous = null, incoming = null
   if (!previous) return { ...incoming, percentageUpdatedAt: finiteNumber(nowMs) }
   const previousStatus = normalizeStatus(previous?.status)
   const incomingStatus = normalizeStatus(incoming?.status)
+  if (previousStatus === 'cancelled' && !terminalStatuses.has(incomingStatus)) return previous
   if (previousStatus === 'completed' && incomingStatus !== 'completed') return previous
   if (failedStatuses.has(previousStatus) && !failedStatuses.has(incomingStatus) && incomingStatus !== 'completed') {
     return previous
+  }
+  if (previousStatus === 'cancel_requested' && runningStatuses.has(incomingStatus) && incomingStatus !== 'cancel_requested') {
+    incoming = {
+      ...incoming,
+      status: 'cancel_requested',
+      summary: previous.summary || incoming.summary,
+    }
   }
   if (!runningStatuses.has(previousStatus) || !runningStatuses.has(incomingStatus)) return incoming
 
@@ -309,6 +320,17 @@ export const summarizeDirectoryProgress = (progress = {}) => {
       summary: visibleFailureSummary(progress?.summary),
       percentage,
       tone: 'danger',
+      steps,
+    }
+  }
+
+  if (status === 'cancelled') {
+    return {
+      status,
+      statusText: '已停止',
+      summary: '目录重新生成已停止，当前目录未被修改。',
+      percentage,
+      tone: 'neutral',
       steps,
     }
   }

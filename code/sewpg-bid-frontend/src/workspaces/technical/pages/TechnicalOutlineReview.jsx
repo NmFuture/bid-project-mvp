@@ -1,16 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { technicalDirectoryAPI, technicalGapsAPI, technicalOutlineAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import TechnicalDirectoryProgressPanel from '../components/TechnicalDirectoryProgressPanel'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import TechnicalMaterialMatchProgressModal from '../components/TechnicalMaterialMatchProgressModal'
-import {
-  finishedMaterialMatchProgress,
-  idleMaterialMatchProgress,
-  startedMaterialMatchProgress,
-} from '../../../components/shared/materialMatchProgressState'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import OnlyOfficeWorkspace from '../../../components/shared/OnlyOfficeWorkspace'
 import Button from '../../../components/ui/Button'
@@ -34,9 +29,18 @@ import {
   shouldPreserveOutlineNumber,
   tenderBasisSearchText,
 } from '../utils/outlineEvidence'
+import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const MATERIAL_MATCH_ACTIVE_STATUSES = new Set(['queued', 'running', 'processing', 'cancel_requested'])
+const MATERIAL_MATCH_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+
+const materialMatchStatusName = (payload) => String(payload?.status || '').toLowerCase()
+const materialMatchTaskPatch = (payload) => ({
+  status: materialMatchStatusName(payload),
+  percentage: Number(payload?.percentage) || 0,
+  summary: payload?.message || '',
+})
 
 const createNode = (title = '新章节') => ({
   id: `OL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -213,11 +217,12 @@ function DirectoryGenerationProgressModal({ open, state, nowMs, onClose, onStop,
   const running = isDirectoryProgressRunning(state)
   const completed = state?.status === 'completed'
   const failed = isDirectoryProgressFailed(state)
+  const cancelled = state?.status === 'cancelled'
 
   return (
     <TechnicalTaskProgressDialog
       open={open}
-      title={running ? '正在重新生成目录' : completed ? '目录重新生成完成' : failed ? '目录重新生成失败' : '重新生成目录'}
+      title={running ? '正在重新生成目录' : completed ? '目录重新生成完成' : failed ? '目录重新生成失败' : cancelled ? '目录重新生成已停止' : '重新生成目录'}
       active={running}
       stopping={stopping}
       onClose={onClose}
@@ -237,6 +242,11 @@ function DirectoryGenerationProgressModal({ open, state, nowMs, onClose, onStop,
             当前目录及原有下游结果未被修改，可关闭后重试。
           </div>
         ) : null}
+        {cancelled ? (
+          <div className="border border-outline-variant bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">
+            目录重新生成已停止，当前目录未被修改。
+          </div>
+        ) : null}
     </TechnicalTaskProgressDialog>
   )
 }
@@ -244,6 +254,8 @@ function DirectoryGenerationProgressModal({ open, state, nowMs, onClose, onStop,
 export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tech' }) {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const progressTask = searchParams.get('progressTask')
   const routeWorkspaceSlug = useWorkspaceSlug()
   const workspaceSlug = workspaceKind || routeWorkspaceSlug
   const [nodes, setNodes] = useState([])
@@ -255,10 +267,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [regenerationModalOpen, setRegenerationModalOpen] = useState(false)
   const [regenerationPendingState, setRegenerationPendingState] = useState(null)
   const [directoryState, setDirectoryState] = useState(null)
+  const [directoryStopping, setDirectoryStopping] = useState(false)
   const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
   const [reviewStatus, setReviewStatus] = useState('draft')
   const [currentStage, setCurrentStage] = useState(2)
-  const [materialMatchProgress, setMaterialMatchProgress] = useState(idleMaterialMatchProgress)
+  const [projectName, setProjectName] = useState(id)
+  const [materialMatchStatus, setMaterialMatchStatus] = useState(null)
+  const [materialMatchModalOpen, setMaterialMatchModalOpen] = useState(false)
+  const [materialMatchStopping, setMaterialMatchStopping] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
@@ -270,6 +286,11 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [dragPlacement, setDragPlacement] = useState('before')
   const onlyofficeEmbedRef = useRef(null)
   const pendingSearchNonceRef = useRef('')
+  const directoryStopRequestedRef = useRef(false)
+  const materialMatchStopRequestedRef = useRef(false)
+  const materialMatchEpochRef = useRef(0)
+  const materialMatchTerminalHandledRef = useRef(0)
+  const materialMatchShouldFinalizeRef = useRef(false)
 
   const markPendingSearch = useCallback((nonce) => {
     pendingSearchNonceRef.current = nonce || ''
@@ -290,25 +311,87 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     setOnlyofficeError('')
   }, [])
 
+  const applyMaterialMatchPayload = useCallback((payload) => {
+    if (!payload?.status) return
+    const incomingStatus = materialMatchStatusName(payload)
+    const active = MATERIAL_MATCH_ACTIVE_STATUSES.has(incomingStatus)
+    if (incomingStatus === 'cancel_requested') {
+      materialMatchStopRequestedRef.current = true
+      setMaterialMatchStopping(true)
+    }
+    const nextPayload = materialMatchStopRequestedRef.current && active && incomingStatus !== 'cancel_requested'
+      ? { ...payload, status: 'cancel_requested', message: '已请求停止素材匹配，正在等待安全停止点。' }
+      : payload
+
+    if (MATERIAL_MATCH_TERMINAL_STATUSES.has(materialMatchStatusName(nextPayload))) {
+      materialMatchStopRequestedRef.current = false
+      setMaterialMatchStopping(false)
+    }
+    setMaterialMatchStatus((previous) => {
+      const previousStatus = materialMatchStatusName(previous)
+      if (
+        MATERIAL_MATCH_TERMINAL_STATUSES.has(previousStatus)
+        && MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(nextPayload))
+      ) {
+        return previous
+      }
+      return nextPayload
+    })
+  }, [])
+
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const { outlinePayload, generationPayload, projectPayload } = await loadConsistentOutlineReviewSnapshot({
-        loadDirectoryState: () => technicalDirectoryAPI.status(id).catch(() => null),
-        loadOutline: () => technicalOutlineAPI.get(id),
-        loadProject: () => technicalProjectsAPI.get(id).catch(() => null),
-      })
+      const [{ outlinePayload, generationPayload, projectPayload }, detectionPayload] = await Promise.all([
+        loadConsistentOutlineReviewSnapshot({
+          loadDirectoryState: () => technicalDirectoryAPI.status(id).catch(() => null),
+          loadOutline: () => technicalOutlineAPI.get(id),
+          loadProject: () => technicalProjectsAPI.get(id).catch(() => null),
+        }),
+        technicalGapsAPI.detectionStatus(id).catch(() => null),
+      ])
+      const resolvedProjectName = projectPayload?.name || id
       applyOutlinePayload(outlinePayload)
       setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, generationPayload))
-      if (isDirectoryProgressRunning(generationPayload)) setRegenerationModalOpen(true)
+      if (generationPayload?.status === 'cancel_requested') {
+        directoryStopRequestedRef.current = true
+        setDirectoryStopping(true)
+      }
+      if (isDirectoryProgressRunning(generationPayload) || progressTask === 'outline-regenerate') {
+        setRegenerationModalOpen(true)
+      }
       setCurrentStage(Number(projectPayload?.currentStage) || 2)
+      setProjectName(resolvedProjectName)
+
+      if (detectionPayload?.status) {
+        const detectionStatus = materialMatchStatusName(detectionPayload)
+        const detectionActive = MATERIAL_MATCH_ACTIVE_STATUSES.has(detectionStatus)
+        applyMaterialMatchPayload(detectionPayload)
+        if (detectionActive) {
+          materialMatchEpochRef.current += 1
+          materialMatchShouldFinalizeRef.current = true
+          markTechnicalTask({
+            taskType: 'material-match',
+            taskName: '素材匹配',
+            projectId: id,
+            projectName: resolvedProjectName,
+            ...materialMatchTaskPatch(detectionPayload),
+          })
+          setMaterialMatchModalOpen(true)
+        } else if (
+          progressTask === 'material-match'
+          && MATERIAL_MATCH_TERMINAL_STATUSES.has(detectionStatus)
+        ) {
+          setMaterialMatchModalOpen(true)
+        }
+      }
     } catch (e) {
       setError(e?.message || '目录数据加载失败')
     } finally {
       setLoading(false)
     }
-  }, [applyOutlinePayload, id])
+  }, [applyMaterialMatchPayload, applyOutlinePayload, id, progressTask])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -319,6 +402,16 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
 
   const directoryRunning = isDirectoryProgressRunning(directoryState)
   const directoryLocked = regenerating || directoryRunning
+  const materialMatchRunning = MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(materialMatchStatus))
+
+  useEffect(() => {
+    if (!directoryState?.status) return
+    updateTechnicalTask('outline-regenerate', id, {
+      status: String(directoryState.status).toLowerCase(),
+      percentage: Number(directoryState.percentage) || 0,
+      summary: directoryState.summary || directoryState.message || '',
+    })
+  }, [directoryState, id])
 
   useEffect(() => {
     if (!directoryRunning && !regenerating) return undefined
@@ -333,8 +426,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
 
     const pollDirectoryStatus = async () => {
       try {
-        const payload = await technicalDirectoryAPI.status(id)
+        const response = await technicalDirectoryAPI.status(id)
         if (cancelled) return
+        const responseStatus = String(response?.status || '').toLowerCase()
+        const payload = directoryStopRequestedRef.current
+          && isDirectoryProgressRunning(response)
+          && responseStatus !== 'cancel_requested'
+          ? { ...response, status: 'cancel_requested', summary: '已请求停止目录重新生成，正在等待安全停止点。' }
+          : response
         if (payload?.status === 'completed') {
           const [outlinePayload, projectPayload] = await Promise.all([
             technicalOutlineAPI.get(id),
@@ -344,13 +443,28 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
           applyOutlinePayload(outlinePayload)
           setCurrentStage(Number(projectPayload?.currentStage) || 2)
+          directoryStopRequestedRef.current = false
           setRegenerating(false)
+          setDirectoryStopping(false)
           showToast?.('目录重新生成完成，请重新审核。')
           return
         }
         setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
-        if (isDirectoryProgressFailed(payload)) {
+        if (payload?.status === 'cancel_requested') {
+          directoryStopRequestedRef.current = true
+          setDirectoryStopping(true)
+        }
+        if (payload?.status === 'cancelled') {
+          directoryStopRequestedRef.current = false
           setRegenerating(false)
+          setDirectoryStopping(false)
+          showToast?.('目录重新生成已停止。')
+          return
+        }
+        if (isDirectoryProgressFailed(payload)) {
+          directoryStopRequestedRef.current = false
+          setRegenerating(false)
+          setDirectoryStopping(false)
           showToast?.('目录重新生成失败，当前目录未被修改。', 'error')
           return
         }
@@ -366,6 +480,73 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       window.clearTimeout(timer)
     }
   }, [applyOutlinePayload, directoryRunning, id, showToast])
+
+  useEffect(() => {
+    if (!materialMatchStatus?.status) return
+    updateTechnicalTask('material-match', id, materialMatchTaskPatch(materialMatchStatus))
+  }, [id, materialMatchStatus])
+
+  useEffect(() => {
+    if (!materialMatchRunning) return undefined
+    let disposed = false
+    let timer = null
+
+    const pollMaterialMatchStatus = async () => {
+      try {
+        const payload = await technicalGapsAPI.detectionStatus(id)
+        if (disposed) return
+        applyMaterialMatchPayload(payload)
+      } catch {
+        // 后台任务不中断，保留当前进度并继续轮询。
+      }
+      if (!disposed) timer = window.setTimeout(pollMaterialMatchStatus, 1000)
+    }
+
+    timer = window.setTimeout(pollMaterialMatchStatus, 1000)
+    return () => {
+      disposed = true
+      window.clearTimeout(timer)
+    }
+  }, [applyMaterialMatchPayload, id, materialMatchRunning])
+
+  useEffect(() => {
+    const status = materialMatchStatusName(materialMatchStatus)
+    if (!MATERIAL_MATCH_TERMINAL_STATUSES.has(status)) return undefined
+
+    if (!materialMatchShouldFinalizeRef.current) return undefined
+    const epoch = materialMatchEpochRef.current
+    if (materialMatchTerminalHandledRef.current === epoch) return undefined
+    materialMatchTerminalHandledRef.current = epoch
+    materialMatchShouldFinalizeRef.current = false
+
+    if (status === 'cancelled') {
+      showToast?.('素材匹配已停止。')
+      return undefined
+    }
+    if (status === 'failed') {
+      showToast?.(materialMatchStatus?.error || materialMatchStatus?.message || '素材匹配失败，请稍后重试。', 'error')
+      return undefined
+    }
+
+    let disposed = false
+    const finishStage = async () => {
+      try {
+        const stageResult = await technicalStagesAPI.update(id, 2, { status: 'completed' })
+        if (disposed || materialMatchEpochRef.current !== epoch) return
+        const nextStageId = Number(stageResult?.currentStage) || 3
+        const nextRoute = getTechnicalStageRoute(id, nextStageId, workspaceSlug)
+          || projectRoute(id, '/gaps', workspaceSlug)
+        showToast?.('素材匹配已完成，已进入素材匹配')
+        navigate(nextRoute)
+      } catch (error) {
+        if (!disposed) showToast?.(error?.message || '素材匹配完成，但阶段状态更新失败。', 'error')
+      }
+    }
+    finishStage()
+    return () => {
+      disposed = true
+    }
+  }, [id, materialMatchStatus, navigate, showToast, workspaceSlug])
 
   useEffect(() => {
     if (!pendingSearchText) return undefined
@@ -432,7 +613,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     if (!confirmed) return
 
     const queuedAt = new Date().toISOString()
-    setRegenerationPendingState(beginDirectoryProgressEpoch({
+    const queuedState = beginDirectoryProgressEpoch({
       incoming: {
         status: 'queued',
         percentage: 0,
@@ -440,19 +621,61 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         startedAt: queuedAt,
         updatedAt: queuedAt,
       },
-    }))
+    })
+    setRegenerationPendingState(queuedState)
+    directoryStopRequestedRef.current = false
+    setDirectoryStopping(false)
     setRegenerating(true)
     setRegenerationModalOpen(true)
+    markTechnicalTask({
+      taskType: 'outline-regenerate',
+      taskName: '重新生成目录',
+      projectId: id,
+      projectName,
+      status: 'queued',
+      percentage: 0,
+      summary: queuedState.summary,
+      startedAt: queuedAt,
+    })
     try {
       const payload = await technicalOutlineAPI.regenerate(id)
       setDirectoryState((previous) => beginDirectoryProgressEpoch({ previous, incoming: payload }))
       showToast?.(payload?.message || '已开始重新生成目录。')
     } catch (e) {
       setRegenerationModalOpen(false)
+      updateTechnicalTask('outline-regenerate', id, {
+        status: 'failed',
+        percentage: 0,
+        summary: e?.message || '启动目录重新生成失败',
+      })
       showToast?.(e?.message || '启动目录重新生成失败', 'error')
     } finally {
       setRegenerationPendingState(null)
       setRegenerating(false)
+    }
+  }
+
+  const handleStopDirectory = async () => {
+    if (!directoryRunning || directoryStopping) return
+    directoryStopRequestedRef.current = true
+    setDirectoryStopping(true)
+    try {
+      const payload = await technicalDirectoryAPI.cancel(id)
+      if (payload?.error) throw new Error(payload.error)
+      setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+      updateTechnicalTask('outline-regenerate', id, {
+        status: String(payload?.status || 'cancel_requested').toLowerCase(),
+        percentage: Number(payload?.percentage) || Number(directoryState?.percentage) || 0,
+        summary: payload?.summary || payload?.message || '已请求停止目录重新生成。',
+      })
+      if (!isDirectoryProgressRunning(payload)) {
+        directoryStopRequestedRef.current = false
+        setDirectoryStopping(false)
+      }
+    } catch (e) {
+      directoryStopRequestedRef.current = false
+      setDirectoryStopping(false)
+      showToast?.(e?.message || '停止目录重新生成失败，请稍后重试。', 'error')
     }
   }
 
@@ -490,7 +713,6 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }
 
     setConfirming(true)
-    setMaterialMatchProgress(startedMaterialMatchProgress())
     try {
       if (dirty) {
         const nodesToSave = renumberOutlineNodes(nodes)
@@ -502,20 +724,47 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       await technicalOutlineAPI.confirm(id)
       setReviewStatus('confirmed')
       showToast?.('目录确认已完成，正在执行素材匹配...')
-      await technicalGapsAPI.runDetection(id)
-      setMaterialMatchProgress((previous) => finishedMaterialMatchProgress(previous))
-      const stageResult = await technicalStagesAPI.update(id, 2, { status: 'completed' })
-      const nextStageId = Number(stageResult?.currentStage) || 3
-      const nextRoute = getTechnicalStageRoute(id, nextStageId, workspaceSlug) || projectRoute(id, '/gaps', workspaceSlug)
-      showToast?.('素材匹配已完成，已进入素材匹配')
-      await delay(350)
-      navigate(nextRoute)
+      const payload = await technicalGapsAPI.runDetection(id)
+      const epoch = materialMatchEpochRef.current + 1
+      materialMatchEpochRef.current = epoch
+      materialMatchTerminalHandledRef.current = 0
+      materialMatchShouldFinalizeRef.current = true
+      materialMatchStopRequestedRef.current = false
+      setMaterialMatchStopping(false)
+      applyMaterialMatchPayload(payload)
+      markTechnicalTask({
+        taskType: 'material-match',
+        taskName: '素材匹配',
+        projectId: id,
+        projectName,
+        ...materialMatchTaskPatch(payload),
+      })
+      setMaterialMatchModalOpen(true)
     } catch (e) {
       const message = e?.message || '目录确认或素材匹配失败，请稍后重试'
-      setMaterialMatchProgress((previous) => finishedMaterialMatchProgress(previous, message))
       showToast?.(message, 'error')
     } finally {
       setConfirming(false)
+    }
+  }
+
+  const handleStopMaterialMatch = async () => {
+    if (!materialMatchRunning || materialMatchStopping) return
+    materialMatchStopRequestedRef.current = true
+    setMaterialMatchStopping(true)
+    try {
+      const payload = await technicalGapsAPI.cancelDetection(id)
+      if (payload?.error) throw new Error(payload.error)
+      applyMaterialMatchPayload(payload)
+      updateTechnicalTask('material-match', id, materialMatchTaskPatch(payload))
+      if (!MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(payload))) {
+        materialMatchStopRequestedRef.current = false
+        setMaterialMatchStopping(false)
+      }
+    } catch (e) {
+      materialMatchStopRequestedRef.current = false
+      setMaterialMatchStopping(false)
+      showToast?.(e?.message || '停止素材匹配失败，请稍后重试。', 'error')
     }
   }
 
@@ -904,19 +1153,20 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         )}
       </OnlyOfficeWorkspace>
       <TechnicalMaterialMatchProgressModal
-        open={materialMatchProgress.open}
-        running={materialMatchProgress.running}
-        error={materialMatchProgress.error}
+        open={materialMatchModalOpen}
+        status={materialMatchStatus}
         itemCount={countNodes(nodes)}
-        startedAtMs={materialMatchProgress.startedAtMs}
-        finishedAtMs={materialMatchProgress.finishedAtMs}
-        onClose={() => setMaterialMatchProgress(idleMaterialMatchProgress())}
+        onClose={() => setMaterialMatchModalOpen(false)}
+        onStop={handleStopMaterialMatch}
+        stopping={materialMatchStopping}
       />
       <DirectoryGenerationProgressModal
         open={regenerationModalOpen}
         state={regenerating && regenerationPendingState ? regenerationPendingState : directoryState}
         nowMs={directoryProgressClock}
         onClose={() => setRegenerationModalOpen(false)}
+        onStop={handleStopDirectory}
+        stopping={directoryStopping}
       />
     </div>
   )

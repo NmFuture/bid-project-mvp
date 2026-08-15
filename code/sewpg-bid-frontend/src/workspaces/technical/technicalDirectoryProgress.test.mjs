@@ -325,9 +325,21 @@ test('clears decision counts when generation advances to merging and saving', ()
 test('keeps terminal directory state when a delayed running response arrives', () => {
   const completed = { status: 'completed', percentage: 100, summary: '目录生成完成。' }
   const failed = { status: 'failed', percentage: 42, summary: '目录生成失败。' }
+  const cancelled = { status: 'cancelled', percentage: 37, summary: '目录生成已停止。' }
 
   assert.equal(mergeMonotonicDirectoryProgress(completed, { status: 'running', percentage: 70 }), completed)
   assert.equal(mergeMonotonicDirectoryProgress(failed, { status: 'processing', percentage: 65 }), failed)
+  assert.equal(mergeMonotonicDirectoryProgress(cancelled, { status: 'running', percentage: 38 }), cancelled)
+})
+
+test('keeps cancel requested while an earlier running response arrives late', () => {
+  const merged = mergeMonotonicDirectoryProgress(
+    { status: 'cancel_requested', percentage: 37, summary: '正在等待安全停止点。' },
+    { status: 'running', percentage: 38, summary: '仍在生成。' },
+  )
+
+  assert.equal(merged.status, 'cancel_requested')
+  assert.equal(merged.summary, '正在等待安全停止点。')
 })
 
 test('shares running and failed directory status predicates across page behavior', () => {
@@ -362,7 +374,7 @@ test('falls back to the first event when startedAt is missing', () => {
   assert.equal(directoryElapsedSeconds(progress, startMs + 10 * 60 * 1000), 600)
 })
 
-test('freezes terminal runtime at completion or failure across refreshes', () => {
+test('freezes terminal runtime at completion, failure, or cancellation across refreshes', () => {
   const completed = {
     status: 'completed',
     startedAt: '2026-07-17T10:00:00Z',
@@ -376,10 +388,16 @@ test('freezes terminal runtime at completion or failure across refreshes', () =>
       { at: '2026-07-17T10:10:00Z', step: 'failed', level: 'error', message: '生成失败。' },
     ],
   }
+  const cancelled = {
+    status: 'cancelled',
+    startedAt: '2026-07-17T10:00:00Z',
+    cancelledAt: '2026-07-17T10:04:00Z',
+  }
 
   assert.equal(directoryElapsedSeconds(completed, Date.parse('2026-07-17T11:00:00Z')), 450)
   assert.equal(directoryElapsedSeconds(failed, Date.parse('2026-07-17T10:10:00Z')), 600)
   assert.equal(directoryElapsedSeconds(failed, Date.parse('2026-07-17T11:10:00Z')), 600)
+  assert.equal(directoryElapsedSeconds(cancelled, Date.parse('2026-07-17T11:10:00Z')), 240)
 })
 
 test('formats durations for people, hiding zero and negative values', () => {
@@ -413,6 +431,18 @@ test('summarizes completed and failed directory generation without internal term
   assert.equal(failed.statusText, '生成失败')
   assert.equal(failed.tone, 'danger')
   assert.doesNotMatch(failed.summary, /futurecode|opencode|S2|Skill/i)
+})
+
+test('summarizes cancelled directory generation as stopped', () => {
+  const cancelled = summarizeDirectoryProgress({
+    status: 'cancelled',
+    percentage: 37,
+    summary: 'cancel requested',
+  })
+
+  assert.equal(cancelled.statusText, '已停止')
+  assert.equal(cancelled.summary, '目录重新生成已停止，当前目录未被修改。')
+  assert.equal(cancelled.tone, 'neutral')
 })
 
 test('maps internal directory failures to actionable user-facing reasons', () => {
@@ -483,7 +513,7 @@ test('五处进度条共用同一张进度卡片', () => {
   const consumers = [
     './components/TechnicalDirectoryProgressPanel.jsx',
     './components/TechnicalGenerationProgressModal.jsx',
-    '../../components/shared/MaterialMatchProgressModal.jsx',
+    './components/TechnicalMaterialMatchProgressModal.jsx',
   ]
 
   assert.equal(existsSync(shared), true, '应抽取共用的进度展示卡片')
@@ -492,9 +522,18 @@ test('五处进度条共用同一张进度卡片', () => {
     assert.match(source, /BidProgressPanel/, `${consumer} 应复用共享进度卡片`)
     assert.match(source, /progressElapsedLine/, `${consumer} 应展示耗时`)
   }
-  // 素材匹配曾经写死 68%，改成按真实运行时间估算，绝不假装已完成
-  const materialSource = readFileSync(new URL('../../components/shared/MaterialMatchProgressModal.jsx', import.meta.url), 'utf8')
-  assert.doesNotMatch(materialSource, /running \? 68/)
+  // 商务标继续使用共享弹窗，技术标则由专用弹窗直接消费后端状态。
+  const sharedMaterialSource = readFileSync(
+    new URL('../../components/shared/MaterialMatchProgressModal.jsx', import.meta.url),
+    'utf8',
+  )
+  const technicalMaterialSource = readFileSync(
+    new URL('./components/TechnicalMaterialMatchProgressModal.jsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(sharedMaterialSource, /BidProgressPanel/)
+  assert.doesNotMatch(sharedMaterialSource, /running \? 68/)
+  assert.match(technicalMaterialSource, /status\?\.status/)
 })
 
 test('regeneration resets stale terminal progress before opening the modal', () => {

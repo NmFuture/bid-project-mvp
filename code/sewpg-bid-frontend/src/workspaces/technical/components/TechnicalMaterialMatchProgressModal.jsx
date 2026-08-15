@@ -35,18 +35,24 @@ export default function TechnicalMaterialMatchProgressModal({
 
   if (!open) return null
 
-  const failed = Boolean(error)
-  const completed = rawStatus === 'completed' || (!running && !failed)
-  const title = running ? '正在进行素材匹配' : failed ? '素材匹配失败' : '素材匹配完成'
+  const cancelled = rawStatus === 'cancelled'
+  const failed = !cancelled && Boolean(error)
+  const completed = rawStatus === 'completed'
+  const title = running
+    ? '正在进行素材匹配'
+    : cancelled ? '素材匹配已停止' : failed ? '素材匹配失败' : '素材匹配完成'
   const resolvedStart = Date.parse(status?.startedAt || '') || startedAtMs
-  const endMs = finishedAtMs > 0 ? finishedAtMs : nowMs
+  const terminalAtMs = Date.parse(status?.completedAt || status?.cancelledAt || '')
+  const endMs = terminalAtMs || (finishedAtMs > 0 ? finishedAtMs : nowMs)
   const elapsedSeconds = resolvedStart > 0 ? Math.max(0, (endMs - resolvedStart) / 1000) : 0
   const statusPercentage = Number(status?.percentage)
   const percentage = Number.isFinite(statusPercentage)
     ? statusPercentage
     : running ? estimatePercentage(elapsedSeconds) : 100
   const scopeText = itemCount > 0 ? `，共 ${itemCount} 个目录项` : ''
-  const detail = status?.message || (failed
+  const detail = status?.message || (cancelled
+    ? '素材匹配已停止，目录确认结果已保留。'
+    : failed
     ? '素材匹配未完成，目录确认结果已保留。'
     : running ? `正在按已确认目录匹配素材${scopeText}` : `素材匹配已完成${scopeText}`)
 
@@ -60,14 +66,20 @@ export default function TechnicalMaterialMatchProgressModal({
       onStop={onStop}
     >
       <BidProgressPanel
-        tone={failed ? 'danger' : running ? 'running' : 'success'}
+        tone={cancelled ? 'neutral' : failed ? 'danger' : running ? 'running' : 'success'}
         detail={detail}
-        elapsedText={progressElapsedLine(elapsedSeconds, { finished: completed || failed })}
+        elapsedText={progressElapsedLine(elapsedSeconds, { finished: completed || failed || cancelled })}
         percentage={percentage}
         running={running}
+        icon={cancelled ? 'stop_circle' : ''}
       />
       {running ? <p className="text-xs text-outline">任务在后台运行，可以关闭弹窗或离开页面。</p> : null}
       {failed ? <div className="border border-error/25 bg-error/10 px-3 py-2 text-sm text-error">{error}</div> : null}
+      {cancelled ? (
+        <div className="border border-outline-variant bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">
+          素材匹配已停止，目录确认结果已保留。
+        </div>
+      ) : null}
     </TechnicalTaskProgressDialog>
   )
 }
