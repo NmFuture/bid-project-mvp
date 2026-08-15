@@ -67,6 +67,42 @@ test('素材匹配提交后不直接完成阶段或跳转，终态由 effect 处
   )
 })
 
+test('再次发起素材匹配会在请求前建立新的 queued epoch', () => {
+  const handlerSource = sourceBetween('const handleConfirm = async () => {', 'const handleStopMaterialMatch')
+  const queuedIndex = handlerSource.indexOf("status: 'queued'")
+  const resetStateIndex = handlerSource.indexOf('setMaterialMatchStatus(queuedState)')
+  const epochIndex = handlerSource.indexOf('materialMatchEpochRef.current = epoch')
+  const markIndex = handlerSource.indexOf('markTechnicalTask({')
+  const runIndex = handlerSource.indexOf('technicalGapsAPI.runDetection(id)')
+  const applyIndex = handlerSource.indexOf('applyMaterialMatchPayload(payload)', runIndex)
+
+  assert.ok(queuedIndex >= 0, '新一轮请求前应创建 queued 状态')
+  assert.ok(resetStateIndex > queuedIndex && resetStateIndex < runIndex, 'queued 状态必须在请求前覆盖历史终态')
+  assert.ok(epochIndex >= 0 && epochIndex < runIndex, 'epoch 必须在请求前建立')
+  assert.ok(markIndex >= 0 && markIndex < runIndex, 'queued 后台任务必须在请求前登记')
+  assert.ok(applyIndex > runIndex, '启动响应只应用到已经建立的新 epoch')
+  assert.match(handlerSource.slice(0, runIndex), /materialMatchTerminalHandledRef\.current\s*=\s*0/)
+  assert.match(handlerSource.slice(0, runIndex), /materialMatchStopRequestedRef\.current\s*=\s*false/)
+})
+
+test('素材匹配启动失败会收口新 epoch 和后台任务为 failed', () => {
+  const handlerSource = sourceBetween('const handleConfirm = async () => {', 'const handleStopMaterialMatch')
+  const catchSource = handlerSource.slice(handlerSource.indexOf('} catch (e) {'))
+
+  assert.match(catchSource, /submittedEpoch\s*>\s*0/)
+  assert.match(catchSource, /status:\s*['"]failed['"]/)
+  assert.match(catchSource, /setMaterialMatchStatus\(failedState\)/)
+  assert.match(catchSource, /updateTechnicalTask\(\s*['"]material-match['"]\s*,/)
+})
+
+test('素材匹配仍拒绝历史终态之后的晚到 active 响应', () => {
+  const applySource = sourceBetween('const applyMaterialMatchPayload', 'const loadData')
+
+  assert.match(applySource, /MATERIAL_MATCH_TERMINAL_STATUSES\.has\(previousStatus\)/)
+  assert.match(applySource, /MATERIAL_MATCH_ACTIVE_STATUSES\.has\(materialMatchStatusName\(nextPayload\)\)/)
+  assert.match(applySource, /return previous/)
+})
+
 test('恢复参数只读取后台状态，不会自动启动目录或素材匹配', () => {
   assert.match(outlineSource, /useSearchParams/)
   assert.match(outlineSource, /searchParams\.get\(\s*['"]progressTask['"]\s*\)/)

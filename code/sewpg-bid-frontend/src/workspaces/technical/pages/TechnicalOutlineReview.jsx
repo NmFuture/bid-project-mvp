@@ -275,6 +275,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [materialMatchStatus, setMaterialMatchStatus] = useState(null)
   const [materialMatchModalOpen, setMaterialMatchModalOpen] = useState(false)
   const [materialMatchStopping, setMaterialMatchStopping] = useState(false)
+  const [materialMatchSubmitting, setMaterialMatchSubmitting] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
   const [tenderPreview, setTenderPreview] = useState(null)
@@ -487,7 +488,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   }, [id, materialMatchStatus])
 
   useEffect(() => {
-    if (!materialMatchRunning) return undefined
+    if (!materialMatchRunning || materialMatchSubmitting) return undefined
     let disposed = false
     let timer = null
 
@@ -507,7 +508,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       disposed = true
       window.clearTimeout(timer)
     }
-  }, [applyMaterialMatchPayload, id, materialMatchRunning])
+  }, [applyMaterialMatchPayload, id, materialMatchRunning, materialMatchSubmitting])
 
   useEffect(() => {
     const status = materialMatchStatusName(materialMatchStatus)
@@ -713,6 +714,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     }
 
     setConfirming(true)
+    let submittedEpoch = 0
     try {
       if (dirty) {
         const nodesToSave = renumberOutlineNodes(nodes)
@@ -724,24 +726,53 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       await technicalOutlineAPI.confirm(id)
       setReviewStatus('confirmed')
       showToast?.('目录确认已完成，正在执行素材匹配...')
-      const payload = await technicalGapsAPI.runDetection(id)
+
       const epoch = materialMatchEpochRef.current + 1
+      submittedEpoch = epoch
+      const queuedAt = new Date().toISOString()
+      const queuedState = {
+        status: 'queued',
+        percentage: 0,
+        message: '正在提交素材匹配任务，请稍候。',
+        startedAt: queuedAt,
+      }
       materialMatchEpochRef.current = epoch
       materialMatchTerminalHandledRef.current = 0
       materialMatchShouldFinalizeRef.current = true
       materialMatchStopRequestedRef.current = false
       setMaterialMatchStopping(false)
-      applyMaterialMatchPayload(payload)
+      setMaterialMatchSubmitting(true)
+      setMaterialMatchStatus(queuedState)
       markTechnicalTask({
         taskType: 'material-match',
         taskName: '素材匹配',
         projectId: id,
         projectName,
-        ...materialMatchTaskPatch(payload),
+        ...materialMatchTaskPatch(queuedState),
+        startedAt: queuedAt,
       })
+
+      const payload = await technicalGapsAPI.runDetection(id)
+      setMaterialMatchSubmitting(false)
+      if (materialMatchEpochRef.current !== epoch) return
+      applyMaterialMatchPayload(payload)
+      updateTechnicalTask('material-match', id, materialMatchTaskPatch(payload))
       setMaterialMatchModalOpen(true)
     } catch (e) {
       const message = e?.message || '目录确认或素材匹配失败，请稍后重试'
+      if (submittedEpoch > 0 && materialMatchEpochRef.current === submittedEpoch) {
+        const failedState = {
+          status: 'failed',
+          percentage: 0,
+          message,
+          completedAt: new Date().toISOString(),
+        }
+        materialMatchShouldFinalizeRef.current = false
+        setMaterialMatchStatus(failedState)
+        updateTechnicalTask('material-match', id, materialMatchTaskPatch(failedState))
+        setMaterialMatchModalOpen(true)
+      }
+      setMaterialMatchSubmitting(false)
       showToast?.(message, 'error')
     } finally {
       setConfirming(false)
