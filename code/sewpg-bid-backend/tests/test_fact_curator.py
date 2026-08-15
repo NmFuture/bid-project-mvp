@@ -928,6 +928,55 @@ class FactCurateApiTests(unittest.TestCase):
         self.assertEqual(confirmed["status"], "confirmed")
         self.assertEqual(confirmed["value"], confirmed_target["value"])
 
+    def test_fill_only_skips_rebuild_and_keeps_previous_ai_values(self) -> None:
+        """「AI补空」跳过重建，上一轮 AI 填的值必须还在。
+
+        重建时只有人工写过的值跨轮存活，AI 填的一律重算——这正是「整轮重来」丢结论的
+        原因。实测同样输入两轮抓到的东西并不相同（一轮 4 条修正、一轮 6 条，只有 4 条
+        重叠），重建抹掉的就是真发现。补空模式必须绕开它。
+        """
+        project_id = self._create_project()
+        self.assertEqual(
+            self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build").status_code, 200
+        )
+        # 造一个上一轮 AI 填出来的值（挂 factCurator 来源，不是人工值）
+        project = store._require(project_id)
+        table = project["gap_state"]["projectFactTable"]
+        ai_field = next(f for f in table["fields"] if not str(f.get("value") or "").strip())
+        ai_field["value"] = "上一轮 AI 填的值"
+        ai_field["status"] = "confirmed"
+        ai_field["sourceRefs"] = [{"type": "factCurator", "action": "fill", "evidence": "上一轮证据"}]
+        store._persist_project(project)
+
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+            self.assertTrue(data.get("fillOnly"), "补空模式必须把 fillOnly 传到 curator")
+            return copy.deepcopy(gap_state_snapshot["projectFactTable"]), {
+                "counts": {"filled": 0},
+                "ignored": [],
+                "touchedKeys": [],
+            }
+
+        with (
+            patch(
+                "app.services.technical_gap_fact_table.build_project_fact_table"
+            ) as rebuild,
+            patch(
+                "app.services.technical_fact_curator.run_fact_curator_for_project",
+                side_effect=fake_run,
+            ),
+        ):
+            run_fact_curate_job(project_id, {"operator": "测试用户", "fillOnly": True})
+            rebuild.assert_not_called()
+
+        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
+        kept = next(f for f in after["fields"] if f["id"] == ai_field["id"])
+        self.assertEqual(kept["value"], "上一轮 AI 填的值")
+        state = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts/curate").json()
+        self.assertEqual(state["factCurateState"]["status"], "succeeded")
+        # 补空不跑 fix 桶，文案不能报「修正 0 条」——那会让人以为查过没问题
+        self.assertIn("AI补空完成", state["factCurateState"]["message"])
+        self.assertNotIn("修正", state["factCurateState"]["message"])
+
     def test_curate_endpoint_submits_background_job(self) -> None:
         """接口只提交任务：立即返回 queued，执行体不在请求里跑；进行中重复提交被拒。"""
         project_id = self._create_project()
@@ -1449,3 +1498,38 @@ def test_conflict_flag_survives_save_round_trip() -> None:
         saved_at="2026-08-15T00:00:00Z",
     )
     assert resolved["hasConflict"] is False
+
+
+def test_fill_only_targets_leave_fix_bucket_empty() -> None:
+    """「AI补空」只补没值的字段，已有的值一律不碰。"""
+    fields = [
+        {"key": "空的", "status": "unextracted", "value": "", "sourceKind": "tender"},
+        {"key": "有值的", "status": "confirmed", "value": "7.20", "sourceKind": "material"},
+    ]
+
+    assert curator._curate_targets(fields) == {"fill": ["空的"], "fix": ["有值的"]}
+    assert curator._curate_targets(fields, fill_only=True) == {"fill": ["空的"], "fix": []}
+
+
+def test_no_targets_short_circuits_without_opening_a_session(workspace_dirs, monkeypatch) -> None:
+    """没有目标字段就别开会话——白等一轮是 8 分钟。
+
+    「AI补空」在表已经填满时最容易撞上这种情况。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    filled = [
+        {**field, "value": "已有值", "status": "confirmed"} if not field.get("value") else field
+        for field in _fields()
+    ]
+    gap_state = {"projectFactTable": _table(filled)}
+
+    with patch.object(curator, "run_technical_fact_curator_skill") as skill:
+        table, report = curator.run_fact_curator_for_project(
+            _project(), gap_state, {"fillOnly": True}
+        )
+
+    skill.assert_not_called()
+    assert report["counts"]["filled"] == 0
+    assert report["suggestionCount"] == 0
+    # 表原样返回，不因为空跑就把值动了
+    assert [f["value"] for f in table["fields"]] == [f["value"] for f in filled]
