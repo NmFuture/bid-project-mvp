@@ -370,6 +370,10 @@ def normalize_project_fact_field(
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
         normalized["outOfSpec"] = True
+    # 冲突标记要扛过保存往返：AI 查证与平台输入不一致时打上，页面据此标红并给出候选；
+    # 人改过值之后前端会置 False。漏掉这一句的话一保存标记就没了，冲突等于没报过。
+    if field.get("hasConflict") is not None:
+        normalized["hasConflict"] = bool(field.get("hasConflict"))
     if normalized["status"] == FACT_STATUS_CONFIRMED:
         normalized["confirmedAt"] = saved_at
         normalized["confirmedBy"] = operator

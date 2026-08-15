@@ -495,12 +495,16 @@ const FactMaintenanceModal = ({
     specSegments[factSpecSegment(field)] += 1
     return total + 1
   }, 0)
+  // 平台输入字段与 AI 查证结果对不上：值保持人选的，分歧挂在字段上等人裁决。
+  // 不显示的话这道保护就是负收益——AI 不再改错值，人也永远不知道有分歧。
+  const conflictCount = fields.filter((field) => field.hasConflict).length
 
   const toggleFactFilter = (filter) => {
     setFactFilter((current) => (current && current.type === filter.type && current.key === filter.key ? null : filter))
   }
   const matchesFactFilter = (field) => {
     if (!factFilter) return true
+    if (factFilter.type === 'conflict') return Boolean(field.hasConflict)
     if (factFilter.type === 'status') return normalizeFactFieldStatus(field.status) === factFilter.key
     return hasFactSpecSeq(field) && factSpecSegment(field) === factFilter.key
   }
@@ -548,6 +552,11 @@ const FactMaintenanceModal = ({
       .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
     const refPaths = allRefPaths.slice(0, 2)
     const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
+    // 平台输入字段与 AI 查证不一致：值仍是人选的，AI 的候选挂在 alternatives 上。
+    // 取最后一条——同一字段多轮跑下来只有最新那条是本轮结论。
+    const conflictCandidate = field.hasConflict
+      ? asObjectArray(field.alternatives).slice(-1)[0] || null
+      : null
     return (
       <div
         key={field.id || `${field.label}-${index}`}
@@ -566,6 +575,15 @@ const FactMaintenanceModal = ({
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
+              {field.hasConflict ? (
+                <span
+                  className="material-symbols-outlined shrink-0 text-[16px] text-error"
+                  title="AI 查证结果与建项目时填的不一致，值保持你选的，请核对下方建议"
+                  aria-label="与项目信息不一致"
+                >
+                  error
+                </span>
+              ) : null}
             </div>
           )}
         </div>
@@ -576,11 +594,26 @@ const FactMaintenanceModal = ({
             placeholder="待填写"
             aria-label={`${field.label || '字段'}的事实值`}
             className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
-              isEmptyStatus
-                ? 'border-tertiary bg-tertiary-fixed/35'
-                : 'border-surface-container-high bg-surface'
+              field.hasConflict
+                ? 'border-error bg-error-container/25'
+                : isEmptyStatus
+                  ? 'border-tertiary bg-tertiary-fixed/35'
+                  : 'border-surface-container-high bg-surface'
             }`}
           />
+          {conflictCandidate ? (
+            <div className="mt-1.5 flex items-start gap-1.5 text-xs" title={String(field.notes || '')}>
+              <span className="mt-px shrink-0 text-error">AI 建议</span>
+              <button
+                type="button"
+                onClick={() => onFieldChange(index, 'value', String(conflictCandidate.value || ''))}
+                className="min-w-0 truncate rounded border border-error/40 bg-surface px-1.5 py-px font-semibold text-error hover:bg-error-container/40"
+                title={`点击采用「${conflictCandidate.value}」；依据：${conflictCandidate?.source?.evidence || '未给出'}`}
+              >
+                {conflictCandidate.value}
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
           {refPaths.length ? (
@@ -755,6 +788,20 @@ const FactMaintenanceModal = ({
                 </button>
               )
             })}
+            {conflictCount ? (
+              <button
+                type="button"
+                onClick={() => toggleFactFilter({ type: 'conflict', key: 'conflict', label: '与项目信息不一致' })}
+                title={`筛选 AI 查证与项目信息不一致的字段${factFilter?.type === 'conflict' ? '（再次点击取消）' : ''}`}
+                className={factFilterChipClass(
+                  factFilter?.type === 'conflict',
+                  'bg-error-container text-on-error-container',
+                  conflictCount,
+                )}
+              >
+                与项目信息不一致：{conflictCount}
+              </button>
+            ) : null}
             {specTotal ? (
               <div
                 className="ml-1 flex items-center gap-2 border-l border-surface-container-high pl-3"
@@ -2000,6 +2047,9 @@ export default function TechnicalGapRecognition({ showToast }) {
         ...field,
         [key]: value,
         sourceRefs,
+        // 人一动这个格子，冲突就算裁决过了（不管是采纳 AI 建议还是自己另填），
+        // 标记留着只会让它一直标红
+        ...(key === 'value' && field.hasConflict ? { hasConflict: false } : {}),
         // 三态：有值即可用，清空即回落待填写（「不适用」只走上面的 status 分支）
         status: String(key === 'value' ? value : field.value || '').trim() ? 'confirmed' : 'unextracted',
       }
