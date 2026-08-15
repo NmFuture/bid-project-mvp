@@ -151,6 +151,8 @@ export default function TechnicalBackgroundTaskStack() {
         const active = technicalTaskIsActive(task)
         const failed = task.status === 'failed' || task.status === 'stale'
         const cancelled = task.status === 'cancelled'
+        // 已请求停止但后端还没走到安全停止点：卡片要跟弹窗一样显示「停止中」，不能还说在跑
+        const stopping = task.status === 'cancel_requested'
         return (
           <div
             key={task.key}
@@ -164,16 +166,20 @@ export default function TechnicalBackgroundTaskStack() {
               }}
               className="grid min-h-[76px] flex-1 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-l-md px-3 py-2.5 text-left transition-colors hover:bg-primary/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <span
-                aria-hidden="true"
-                className={`material-symbols-outlined row-span-3 text-[22px] ${failed ? 'text-error' : active ? 'animate-spin text-primary' : cancelled ? 'text-outline' : 'text-success'}`}
-              >
-                {failed ? 'error' : active ? 'progress_activity' : cancelled ? 'stop_circle' : 'check_circle'}
+              {/* 图标直接当 grid item 时会被拉满 36px 的列宽，而字形只有 24px：
+                  绕这个 36×24 的盒子中心转，字形就会左右画圈——看起来就是偏心发晃。
+                  外面套一个 24×24 的正方形盒子，转的才是字形自己的中心。 */}
+              <span aria-hidden="true" className="row-span-3 flex h-6 w-6 items-center justify-center">
+                <span
+                  className={`material-symbols-outlined block leading-none ${failed ? 'text-error' : active ? 'animate-spin-slow text-primary' : cancelled ? 'text-outline' : 'text-success'}`}
+                >
+                  {failed ? 'error' : active ? 'progress_activity' : cancelled ? 'stop_circle' : 'check_circle'}
+                </span>
               </span>
               <span className="truncate text-sm font-semibold text-on-surface">{task.taskName}</span>
               <span className={`row-span-3 text-sm font-bold tabular-nums ${cancelled ? 'text-outline' : 'text-primary'}`}>{clampPercentage(task.percentage)}%</span>
               <span className="truncate text-xs text-on-surface-variant">{task.projectName}</span>
-              <span className="truncate text-xs text-outline">{active ? '后台运行中' : failed ? '任务未完成' : cancelled ? '任务已停止' : '任务已完成'}</span>
+              <span className="truncate text-xs text-outline">{stopping ? '停止中...' : active ? '后台运行中' : failed ? '任务未完成' : cancelled ? '任务已停止' : '任务已完成'}</span>
             </button>
             {active ? null : (
               <button

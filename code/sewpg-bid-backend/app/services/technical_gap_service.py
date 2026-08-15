@@ -46,6 +46,9 @@ from app.services.background_task_cancel import (
     cancel_task_state,
     raise_if_task_cancel_requested,
     request_task_cancel,
+    task_cancel_requested,
+    task_cancel_scope,
+    throttled_cancel_probe,
 )
 from app.services.technical_gap_actions import (
     TECHNICAL_TABLE_FILL_SKILL_NAME,
@@ -337,7 +340,14 @@ def run_technical_gap_detection_job(project_id: str) -> None:
             percentage=10,
             taskSummary="正在分析目录并匹配技术标素材。",
         )
-        technical_gap_service.run_detection(project_id)
+
+        def _detection_cancel_requested() -> bool:
+            current = ensure_technical_gap_state(require_technical_gap_project_for_update(project_id))
+            return task_cancel_requested({**current, "status": current.get("recognitionStatus")})
+
+        # 挂上取消探针：耗时的 futurecode 会话中途也能中止，不必等到下一个阶段边界
+        with task_cancel_scope(throttled_cancel_probe(_detection_cancel_requested)):
+            technical_gap_service.run_detection(project_id)
     except BackgroundTaskCancelled:
         snapshot = require_technical_gap_project_for_update(project_id)
         current = ensure_technical_gap_state(snapshot)

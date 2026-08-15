@@ -12,6 +12,7 @@ from typing import Any, Callable
 import httpx
 
 from app.core.config import settings
+from app.services.background_task_cancel import BackgroundTaskCancelled, current_task_cancel_check
 from app.services.bid_parse_cancel import ParseCancelledError
 from app.services.system_settings import opencode_llm_config_active, system_settings_service
 
@@ -1081,7 +1082,14 @@ class OpencodeClient:
         assistant_stop_validator: Callable[[], dict[str, Any]] | None = None,
         early_tool_wait_file: str = "",
     ) -> dict[str, Any]:
-        if stream_callback is None and not early_tool_command:
+        # 没显式传探针时，用当前后台任务挂上的那个：技术标四类长任务由此获得
+        # 会话中途中止能力，不必等到下一个阶段边界才响应停止。
+        scoped_cancel = False
+        if cancel_check is None:
+            cancel_check = current_task_cancel_check()
+            scoped_cancel = cancel_check is not None
+        # 只要有探针就得走轮询路径，否则请求整段阻塞在 send_prompt 里，探针没机会跑
+        if stream_callback is None and not early_tool_command and cancel_check is None:
             return self.send_prompt(session_id, prompt_text)
 
         response_holder: dict[str, Any] = {}
@@ -1097,8 +1105,13 @@ class OpencodeClient:
             if not abort_sent:
                 abort_sent = True
                 self.abort_session(session_id)
+            # 取消来自后台任务作用域时抛任务级异常，好让各任务收口成「已停止」而不是失败
+            if scoped_cancel:
+                raise BackgroundTaskCancelled("任务已请求停止。")
             raise ParseCancelledError("解析已取消。")
 
+        # 只有拿得到活动信号（流式回调 / early tool 快照）时才谈得上「卡死」
+        supervise_idle = stream_callback is not None or bool(early_tool_command)
         idle_timeout = self._session_polling_idle_timeout(early_tool_command)
         # 轮询监管的长任务：阻塞 message 请求的读超时不得短于轮询 idle 监管时限。
         # 系统设置的 timeoutMs（默认 30s）若直接作用于这里，脚本/生成阶段 HTTP 层先超时，
@@ -1163,7 +1176,9 @@ class OpencodeClient:
                         early_tool_command=early_tool_command,
                     )
                     last_heartbeat = now
-                if now - last_activity > idle_timeout:
+                # 只为观察取消探针而轮询时没有活动信号可看，last_activity 永远不动，
+                # 这里若照常判定 idle 会把正常运行的会话误杀。有活动信号才做卡死监管。
+                if supervise_idle and now - last_activity > idle_timeout:
                     if not abort_sent:
                         abort_sent = True
                         aborted = self.abort_session(session_id)

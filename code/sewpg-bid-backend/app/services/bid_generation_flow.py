@@ -14,6 +14,9 @@ from app.services.background_task_cancel import (
     cancel_task_state,
     raise_if_task_cancel_requested,
     request_task_cancel,
+    task_cancel_requested,
+    task_cancel_scope,
+    throttled_cancel_probe,
 )
 from app.services.bid_fill_generation_state import (
     fail_fill_generation_state,
@@ -696,16 +699,18 @@ def _run_fill_generation_job(
     try:
         raise_if_task_cancel_requested(_fill_state(project_id))
         draft_generator = _draft_generator_for_bid_type(job_bid_type)
-        draft_generator(
-            project_id,
-            request_data,
-            progress_callback=lambda stage, details=None: _handle_fill_progress(
+        # 挂上取消探针：耗时的 futurecode 会话中途也能中止，不必等到下一个阶段边界
+        with task_cancel_scope(throttled_cancel_probe(lambda: task_cancel_requested(_fill_state(project_id)))):
+            draft_generator(
                 project_id,
-                stage,
-                details,
-                bid_type=job_bid_type,
-            ),
-        )
+                request_data,
+                progress_callback=lambda stage, details=None: _handle_fill_progress(
+                    project_id,
+                    stage,
+                    details,
+                    bid_type=job_bid_type,
+                ),
+            )
         state = _fill_state(project_id)
         _record_generation_audit_sync(
             project_id=project_id,

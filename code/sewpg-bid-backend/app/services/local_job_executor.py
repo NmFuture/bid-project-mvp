@@ -5,6 +5,7 @@ import queue
 import threading
 from typing import Any, Callable
 
+from app.services.background_task_cancel import BackgroundTaskCancelled
 from app.services.job_timing import submit_job_timing_write
 from app.services.job_timing_events import timing_now_iso
 
@@ -68,6 +69,10 @@ def _run_jobs() -> None:
         error_message = ""
         try:
             function(*args, **kwargs)
+        except BackgroundTaskCancelled:
+            # 用户主动停止不是失败。这里必须单独接住：取消异常不继承 Exception，
+            # 漏出去会让这条单例工作线程直接退出，之后所有本地兜底任务都不再执行。
+            logger.info("Local background job cancelled by user")
         except Exception as exc:
             error_message = str(exc)
             logger.exception("Local background job failed")

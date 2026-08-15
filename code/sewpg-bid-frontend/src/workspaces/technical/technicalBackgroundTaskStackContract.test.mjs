@@ -59,15 +59,17 @@ test('终态通知点击查看或主动关闭后消失，运行中任务不提�
 
   assert.match(stackSource, /consumeTerminalTask\(task\)\s*\n\s*navigate\(technicalTaskRoute\(task\)\)/)
   assert.match(stackSource, /active \? null : \([\s\S]*?onClick=\{\(\) => consumeTerminalTask\(task\)\}/)
-  // 后台卡片不提供停止，避免误触
-  assert.doesNotMatch(stackSource, /停止中|onStop/)
+  // 后台卡片不提供停止按钮，避免误触（「停止中」只是状态文案，不是控件）
+  assert.doesNotMatch(stackSource, /onStop|onClick=\{\(\) => handleStop/)
+  assert.doesNotMatch(stackSource, /dangerQuiet/)
 })
 
 test('后端查无任务时清理登记，其余查询失败保留上一次进度', () => {
   assert.match(stackSource, /if \(error\?\.status === 404\) \{[\s\S]*?clearTechnicalTask\(task\.taskType, task\.projectId\)/)
   const catchStart = stackSource.indexOf('} catch (error) {')
   const catchEnd = stackSource.indexOf('const status =', catchStart)
-  assert.match(stackSource.slice(catchStart, catchEnd), /\n\s+return\n/)
+  // 其余失败必须直接 return，保留上一次进度；断言对 CRLF/LF 都成立
+  assert.match(stackSource.slice(catchStart, catchEnd), /\n\s+return\r?\n/)
 })
 
 test('后端说任务是 idle 或没状态时清掉登记，不冒充成已完成通知', () => {
@@ -78,6 +80,23 @@ test('后端说任务是 idle 或没状态时清掉登记，不冒充成已完�
   // 已经写进登记表的 idle 记录也要在读取时被剔掉，否则永远轮不到上面那段
   assert.match(tasksSource, /export const TECHNICAL_TASK_NOTIFIABLE_STATUSES = new Set\(\['completed', 'failed', 'error', 'cancelled', 'stale'\]\)/)
   assert.match(tasksSource, /if \(!technicalTaskIsTrackable\(task\)\) return false/)
+})
+
+test('卡片与弹窗同步显示停止中，转圈图标不偏心', () => {
+  assert.match(stackSource, /const stopping = task\.status === 'cancel_requested'/)
+  assert.match(stackSource, /stopping \? '停止中\.\.\.' : active \? '后台运行中'/)
+  // 图标不能直接当 grid item：会被拉满 36px 列宽，而字形只有 24px，
+  // 绕 36x24 的盒子中心转就会左右画圈。外面必须套一个 24x24 的正方形盒子。
+  assert.match(stackSource, /flex h-6 w-6 items-center justify-center/)
+  assert.match(stackSource, /material-symbols-outlined block leading-none/)
+  assert.doesNotMatch(stackSource, /material-symbols-outlined row-span-3/)
+})
+
+test('任务顺序按先来后到，不随轮询刷新抖动', () => {
+  assert.match(tasksSource, /const startedMs = \(task\) =>/)
+  assert.match(tasksSource, /const startedDelta = startedMs\(left\) - startedMs\(right\)/)
+  // 不能再按 updatedAt 排：每一拍轮询都会刷新它
+  assert.doesNotMatch(tasksSource, /Date\.parse\(right\.updatedAt \|\| 0\) - Date\.parse\(left\.updatedAt \|\| 0\)/)
 })
 
 test('已停止任务使用中性停止图标和文案', () => {

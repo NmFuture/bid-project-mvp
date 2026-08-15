@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from app.services.background_task_cancel import raise_if_current_task_cancelled
+
 logger = logging.getLogger(__name__)
 
 # 单个阶段的墙钟上限：卡死时也要有个终点，不能无限等下去。
@@ -116,6 +118,8 @@ def run_stage(
     子进程被系统按内存杀掉时抛 DocxStageError(out_of_memory=True)，调用方据此把
     任务标成失败并给出可操作的提示，而不是让整个 worker 陪葬。
     """
+    # 阶段边界是本地子进程链路唯一的安全停止点：已请求停止就不要再起下一段。
+    raise_if_current_task_cancelled()
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(
         json.dumps(

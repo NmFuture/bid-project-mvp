@@ -48,13 +48,42 @@ test('同一项目同一任务类型按稳定键去重', () => {
   assert.equal(tasks[0].percentage, 48)
 })
 
-test('运行中任务优先并按最近更新时间排序', () => {
+test('运行中任务优先，同组内按先来后到排序', () => {
   const tasks = sortTechnicalTasks([
-    { key: 'done', status: 'completed', updatedAt: '2026-08-15T01:03:00Z' },
-    { key: 'older', status: 'running', updatedAt: '2026-08-15T01:01:00Z' },
-    { key: 'newer', status: 'running', updatedAt: '2026-08-15T01:02:00Z' },
+    { key: 'done', status: 'completed', startedAt: '2026-08-15T01:00:00Z' },
+    { key: 'second', status: 'running', startedAt: '2026-08-15T01:02:00Z' },
+    { key: 'first', status: 'running', startedAt: '2026-08-15T01:01:00Z' },
   ])
-  assert.deepEqual(tasks.map((task) => task.key), ['newer', 'older', 'done'])
+  assert.deepEqual(tasks.map((task) => task.key), ['first', 'second', 'done'])
+})
+
+test('轮询刷新 updatedAt 不会让两条同时在跑的任务互换位次', () => {
+  const running = [
+    { key: 'first', status: 'running', startedAt: '2026-08-15T01:01:00Z', updatedAt: '2026-08-15T01:05:00Z' },
+    { key: 'second', status: 'running', startedAt: '2026-08-15T01:02:00Z', updatedAt: '2026-08-15T01:04:00Z' },
+  ]
+  assert.deepEqual(sortTechnicalTasks(running).map((task) => task.key), ['first', 'second'])
+
+  // 第二条刚被轮询刷新，updatedAt 变成最新——顺序仍须不变
+  running[1].updatedAt = '2026-08-15T01:06:00Z'
+  assert.deepEqual(sortTechnicalTasks(running).map((task) => task.key), ['first', 'second'])
+})
+
+test('缺开始时间的任务排在最后且顺序稳定', () => {
+  const tasks = sortTechnicalTasks([
+    { key: 'b', status: 'running' },
+    { key: 'a', status: 'running' },
+    { key: 'timed', status: 'running', startedAt: '2026-08-15T01:01:00Z' },
+  ])
+  assert.deepEqual(tasks.map((task) => task.key), ['timed', 'a', 'b'])
+})
+
+test('已请求停止仍算运行中，排在终态通知之前', () => {
+  const tasks = sortTechnicalTasks([
+    { key: 'done', status: 'completed', startedAt: '2026-08-15T01:00:00Z' },
+    { key: 'stopping', status: 'cancel_requested', startedAt: '2026-08-15T01:03:00Z' },
+  ])
+  assert.deepEqual(tasks.map((task) => task.key), ['stopping', 'done'])
 })
 
 test('任务支持局部更新、清除和过期清理', () => {

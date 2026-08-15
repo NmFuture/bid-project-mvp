@@ -13,6 +13,9 @@ from app.services.background_task_cancel import (
     cancel_task_state,
     raise_if_task_cancel_requested,
     request_task_cancel,
+    task_cancel_requested,
+    task_cancel_scope,
+    throttled_cancel_probe,
 )
 from app.services.bid_type import TECHNICAL_BID_TYPE
 from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked, request_job_cancel
@@ -218,10 +221,12 @@ def run_score_index_job(project_id: str, data: dict[str, Any] | None = None, use
     request_data = dict(data or {})
     try:
         raise_if_task_cancel_requested(_current_state(project_id))
-        result = regenerate_score_index_xref_for_project(
-            project_id,
-            progress_callback=lambda stage, details=None: handle_score_index_progress(project_id, stage, details),
-        )
+        # 挂上取消探针：耗时的 futurecode 会话中途也能中止，不必等到下一个阶段边界
+        with task_cancel_scope(throttled_cancel_probe(lambda: task_cancel_requested(_current_state(project_id)))):
+            result = regenerate_score_index_xref_for_project(
+                project_id,
+                progress_callback=lambda stage, details=None: handle_score_index_progress(project_id, stage, details),
+            )
     except BackgroundTaskCancelled:
         _cancel_state(project_id)
         _record_generation_audit_sync(

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.redis import redis_is_available
+from app.services.background_task_cancel import BackgroundTaskCancelled
 from app.services.job_queue import (
     KNOWN_JOB_TYPES,
     MATERIAL_QUEUE_KEY,
@@ -399,6 +400,13 @@ def _run_job(job: dict[str, Any]) -> bool:
                 }
         else:
             raise RuntimeError(f"Unknown job type: {job_type}")
+    except BackgroundTaskCancelled:
+        # 用户主动停止不是失败：记成 cancelled，任务状态已由各流程自己写回
+        logger.info("Background job cancelled by user: %s", job)
+        mark_job_status(job, "cancelled", "任务已停止。")
+        if workflow_parent:
+            mark_job_status(workflow_parent, "cancelled", "任务已停止。")
+        return True
     except Exception as exc:  # pragma: no cover - route job functions handle expected failures
         logger.exception("Background job failed: %s", job)
         mark_job_status(job, "failed", str(exc))
@@ -507,7 +515,7 @@ def run_worker(queue_key: str = QUEUE_KEY, *, worker_name: str = "Redis") -> Non
                 completed_or_deferred = _run_job(job)
                 if not completed_or_deferred:
                     time.sleep(1)
-            except Exception:
+            except (Exception, BackgroundTaskCancelled):
                 recovery_done = False
                 continue
     finally:

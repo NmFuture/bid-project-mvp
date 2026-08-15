@@ -28,6 +28,9 @@ from app.services.background_task_cancel import (
     cancel_task_state,
     raise_if_task_cancel_requested,
     request_task_cancel,
+    task_cancel_requested,
+    task_cancel_scope,
+    throttled_cancel_probe,
 )
 from app.services.job_queue import EnqueueResult, enqueue_generation_job, is_generation_locked, request_job_cancel
 from app.services.job_timing import current_locked_job_id, record_phase
@@ -365,11 +368,15 @@ def _handle_directory_progress(project_id: str, stage: str, details: dict[str, A
 def _run_directory_generation_job(project_id: str, data: dict[str, Any]) -> None:
     try:
         raise_if_task_cancel_requested(_any_project(project_id).get("directory_state"))
-        generate_outline_for_project_with_progress(
-            project_id,
-            data,
-            progress_callback=lambda stage, details=None: _handle_directory_progress(project_id, stage, details),
-        )
+        # 挂上取消探针：耗时的 futurecode 会话中途也能中止，不必等到下一个阶段边界
+        with task_cancel_scope(throttled_cancel_probe(
+            lambda: task_cancel_requested(_any_project(project_id).get("directory_state"))
+        )):
+            generate_outline_for_project_with_progress(
+                project_id,
+                data,
+                progress_callback=lambda stage, details=None: _handle_directory_progress(project_id, stage, details),
+            )
     except BackgroundTaskCancelled:
         _cancel_directory_generation(project_id)
     except ValueError as exc:

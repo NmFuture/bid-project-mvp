@@ -38,12 +38,21 @@ const writeTasks = (storage, tasks) => {
   emitChanged()
 }
 
+// 运行中的排在终态通知之前；同一组内按先来后到（开始时间升序）。
+// 不能按最近更新时间排：每一拍轮询都会刷新 updatedAt，两条同时在跑的任务会一直互相换位。
 export function sortTechnicalTasks(tasks) {
+  const startedMs = (task) => {
+    const parsed = Date.parse(task?.startedAt || task?.updatedAt || '')
+    return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+  }
   return [...tasks].sort((left, right) => {
-    const activeDelta = Number(ACTIVE_STATUSES.has(String(right.status || '').toLowerCase()))
-      - Number(ACTIVE_STATUSES.has(String(left.status || '').toLowerCase()))
+    const activeDelta = Number(ACTIVE_STATUSES.has(taskStatusName(right)))
+      - Number(ACTIVE_STATUSES.has(taskStatusName(left)))
     if (activeDelta) return activeDelta
-    return Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0)
+    const startedDelta = startedMs(left) - startedMs(right)
+    if (startedDelta) return startedDelta
+    // 开始时间一样时用稳定键兜底，保证顺序不随刷新抖动
+    return String(left?.key || '').localeCompare(String(right?.key || ''))
   })
 }
 
