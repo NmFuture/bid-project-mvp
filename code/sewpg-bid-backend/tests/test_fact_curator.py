@@ -1762,3 +1762,57 @@ def test_progress_failure_does_not_break_the_run(workspace_dirs, monkeypatch) ->
 
     assert report["batchDone"] == report["batchTotal"]
     assert table["fields"]
+
+
+def test_batch_count_never_exceeds_the_cap() -> None:
+    """批数绝不能超过上限——多出来的一批就是多出来的一整波。
+
+    实测代价极大：上限 4 时早先的实现切出 5 批（零头合并那步会新开批次），第 5 批只有
+    4 个字段，却让整轮从预期约 5 分钟变成 10分43秒——4 并发跑 5 批，前 4 批并行完，
+    第 5 批只能等槽位，等于在后面串行接了一整批。
+    """
+    dist = {"tender": 25, "wind_resource": 20, "none": 7, "cert": 3, "": 2, "production_base": 2}
+    fields, keys = [], []
+    for index, (cls, count) in enumerate(dist.items()):
+        for seq in range(count):
+            key = f"{index}-{seq}"
+            fields.append({"key": key, "materialClass": cls})
+            keys.append(key)
+
+    for cap in (1, 2, 3, 4, 5, 8, 16, 32):
+        batches = curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=cap)
+        sizes = [len(b["fill"]) + len(b["fix"]) for b in batches]
+        assert len(batches) <= cap, f"上限 {cap} 却切出 {len(batches)} 批：{sizes}"
+        assert sum(sizes) == len(keys), f"上限 {cap} 时丢字段：{sum(sizes)} != {len(keys)}"
+
+    # 主场景：上限 4 要正好切 4 批，不能是 5
+    four = curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=4)
+    assert len(four) == 4, [len(b["fill"]) + len(b["fix"]) for b in four]
+
+
+def test_running_count_never_exceeds_concurrency(workspace_dirs, monkeypatch) -> None:
+    """进行中的批数不能超过并发度，否则进度条画出来是假的。
+
+    加法在 worker 线程、减法却在主线程收口时做的话，两者之间有个窗口：worker 算完、
+    槽位已腾出让下一批开跑，计数里前一批却还没减掉。实测显示过「4 并发却有 5 批进行中」。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    monkeypatch.setattr(settings, "fact_curate_concurrency", 2)
+    monkeypatch.setattr(settings, "fact_curate_batches_per_slot", 2)
+    gap_state = {"projectFactTable": _table()}
+    seen: list[dict] = []
+
+    def fake_skill(manifest_path: Path) -> dict:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
+        curator.run_fact_curator_for_project(_project(), gap_state, {}, on_progress=seen.append)
+
+    for item in seen:
+        assert item["batchRunning"] <= 2, f"进行中 {item['batchRunning']} 超过并发 2：{item}"
+        assert item["batchDone"] + item["batchRunning"] <= item["batchTotal"], item

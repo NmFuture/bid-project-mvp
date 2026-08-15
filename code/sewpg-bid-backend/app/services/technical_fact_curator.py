@@ -293,8 +293,12 @@ def split_curate_targets(
     要多跑一波，反而更慢。这里反过来：先由并发能力定批数上限，再按总量均分出批大小。
 
     只按类别切也不行：实测分布是 tender 25 / wind_resource 20 / none 7 / cert 3 /
-    未指定 2 / production_base 2，前两类占 76%，整轮耗时会被最大那批卡死。所以大类
-    按均分出来的目标大小继续拆，拆剩的零头再合并，避免出现一堆一两个字段的碎批。
+    未指定 2 / production_base 2，前两类占 76%，整轮耗时会被最大那批卡死。
+
+    **批数绝不能超过上限**，多出来的一批就是多出来的一整波。实测代价极大：上限 4 时
+    早先的实现切出了 5 批，第 5 批只有 4 个字段却让整轮从预期的约 5 分钟变成 10分43秒
+    ——4 并发跑 5 批，前 4 批并行完，第 5 批只能等槽位，等于在后面串行接了一整批。
+    所以这里对固定的 limit 个桶做装箱：零头塞进最空的桶，不新开批次。
 
     每批保留 fill / fix 两个桶的结构，落表侧的 action 校验不用改。
     """
@@ -316,30 +320,25 @@ def split_curate_targets(
     if not total:
         return []
 
-    # 批数上限决定批大小，而不是反过来。下限 3 是防退化不是调参旋钮：每个会话的固定
-    # 开销是实打实的（建会话、读 SKILL.md + rules.md 约 240 行、跑一次 factcurate 实测
-    # 6.2 秒、写回建议文件），字段总数少于批数上限时不加这条会切出一堆单字段批，
-    # 全在付开销。主场景（59 个字段、上限 8）算出来是 8，不受这条影响。
-    limit = max(1, int(max_batches))
-    target_size = max(3, -(-total // limit))  # ceil
+    # 桶数取「上限」与「每桶至少 3 个字段」的较小值。下限 3 是防退化不是调参旋钮：
+    # 每个会话的固定开销是实打实的（建会话、读 SKILL.md + rules.md 约 240 行、跑一次
+    # factcurate 实测 6.2 秒、写回建议文件），字段少时切碎全在付开销。
+    bin_count = max(1, min(int(max_batches), -(-total // 3)))
+    bins: list[list[tuple[str, str]]] = [[] for _ in range(bin_count)]
+    capacity = -(-total // bin_count)  # ceil，各桶目标容量
 
-    chunks: list[list[tuple[str, str]]] = []
-    leftovers: list[tuple[str, str]] = []
-    # 大类在前：重活先派出去，尾部小批用来填满空出来的槽位，整体收口更早
+    # 大类在前依次装箱：整类装得下就整类进同一个桶（同类字段读同一批素材，聚在一起
+    # 能省重复翻文件）；装不下的按容量拆开，碎片一律进当前最空的桶，不新开桶。
     for _, entries in sorted(grouped.items(), key=lambda item: -len(item[1])):
-        for start in range(0, len(entries), target_size):
-            chunk = entries[start : start + target_size]
-            # 不足半批的零头攒起来合并，免得切出一堆只有一两个字段的碎批——
-            # 每个会话的固定开销（建会话、读 SKILL、跑 factcurate）是实打实的
-            if len(chunk) * 2 <= target_size:
-                leftovers.extend(chunk)
-            else:
-                chunks.append(chunk)
-    for start in range(0, len(leftovers), target_size):
-        chunks.append(leftovers[start : start + target_size])
+        for start in range(0, len(entries), capacity):
+            piece = entries[start : start + capacity]
+            target = min(range(bin_count), key=lambda index: len(bins[index]))
+            bins[target].extend(piece)
 
     batches: list[dict[str, list[str]]] = []
-    for chunk in chunks:
+    for chunk in bins:
+        if not chunk:
+            continue
         batch: dict[str, list[str]] = {"fill": [], "fix": []}
         for bucket, key in chunk:
             batch[bucket].append(key)
@@ -930,6 +929,17 @@ def run_fact_curator_for_project(
         # 开跑就报一次：只在完成时报的话，第一批跑完之前（实测 4 分半）进度纹丝不动，
         # 看着像卡死了
         report_progress()
+        try:
+            return _run_one_batch(index, batch_targets)
+        finally:
+            # 减法必须跟加法在同一个线程：放到主线程收口时再减的话，worker 算完到主线程
+            # 收走之间有个窗口，槽位已经腾出来让下一批开跑、计数里前一批却还没减掉——
+            # 实测显示过「4 并发却有 5 批进行中」
+            with progress_lock:
+                progress["running"] = max(0, progress["running"] - 1)
+            report_progress()
+
+    def _run_one_batch(index: int, batch_targets: dict[str, list[str]]) -> dict[str, Any]:
         batch_manifest, batch_path = build_fact_curator_manifest(
             project, gap_state, data, targets_override=batch_targets
         )
@@ -959,9 +969,9 @@ def run_fact_curator_for_project(
         batch_report["opencodeOutput"] = batch_result.get("opencodeOutput") or {}
         return {"index": index, "table": batch_table, "report": batch_report}
 
-    def finish_batch() -> None:
+    def collect_batch() -> None:
+        """主线程收口时只加 done。running 已经在 worker 自己的 finally 里减过了。"""
         with progress_lock:
-            progress["running"] = max(0, progress["running"] - 1)
             progress["done"] += 1
         report_progress()
 
@@ -985,7 +995,7 @@ def run_fact_curator_for_project(
             except Exception as exc:  # noqa: BLE001 - 单批失败不该带走整轮已有成果
                 logger.exception("事实表维护第 %s 批失败", index)
                 merged_report["batchErrors"].append({"batch": index, "message": str(exc) or "批次执行失败"})
-                finish_batch()
+                collect_batch()
                 done += 1
                 notify("AI 分析素材", f"已完成 {done}/{len(batches)} 批（第 {index} 批失败）。")
                 continue
@@ -994,7 +1004,7 @@ def run_fact_curator_for_project(
                 updated_table, outcome["table"], outcome["report"].get("touchedKeys") or []
             )
             _accumulate_curate_report(merged_report, outcome["report"])
-            finish_batch()
+            collect_batch()
             done += 1
             # 还有批在跑时阶段仍是「AI 分析素材」，别让按钮显示成已经在收尾
             notify(
