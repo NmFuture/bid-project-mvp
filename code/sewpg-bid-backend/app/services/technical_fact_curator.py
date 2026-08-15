@@ -214,25 +214,23 @@ _NO_FILL_SOURCE_KINDS = {"template", "platform", "derived"}
 # 和「基础形式填成了塔筒型式」两个真实错误），只是不许静默覆盖，改走冲突通道。
 _READONLY_SOURCE_KINDS = {"template", "derived"}
 
-# 建表时给「人在项目创建/完善项目信息里选定」的字段打的来源标记
-_PLATFORM_SOURCE_REF_TYPES = {"projectTurbineModel"}
-
-
 def _is_platform_authored_field(field: dict[str, Any]) -> bool:
-    """人在建项目时选定的字段（投标机型、机组台数、基础形式、轮毂高度……）。
+    """人在建项目时**真的填了值**的字段（投标机型、机组台数、基础形式……）。
 
-    不能只看 sourceKind：它是从清单「来源文件」列的前缀推出来的，实测 61 个字段里
-    platform 类**一个都没有**——「投标机型」的来源列写的是「项目定制…」被归成
-    material，而「机组台数」「基础形式」连 specKey 都是空的（根本不在清单里，是建表
-    时从机型行派生的）。所以改用建表时打的 projectTurbineModel 来源标记来认，
-    不依赖清单怎么填。
+    判据是建表时打的 platformAuthored 标记，只在平台值非空时才打。
+
+    两条更省事的判据都不成立：
+    - 只看 sourceKind：它由清单「来源文件」列前缀推出，实测 61 个字段里 platform 类
+      一个都没有——「投标机型」的来源列写着「项目定制…」被归成 material，
+      「机组台数」「基础形式」连 specKey 都是空的（不在清单里，是建表时派生的）。
+    - 看有没有 projectTurbineModel 来源标记：那圈字段不论平台值空不空都会挂上它。
+      实测 hubHeightM / ratedPowerKw / rotorDiameterM 都是空的，值其实抽自素材，
+      误判成平台输入会把 AI 的正确修正降级成"建议"——让「轮毂高度」停在跨列串行
+      脏值「池建昌」上，反倒把错值锁死了。
     """
-    if str(field.get("sourceKind") or "") == "platform":
+    if field.get("platformAuthored"):
         return True
-    return any(
-        isinstance(ref, dict) and str(ref.get("type") or "") in _PLATFORM_SOURCE_REF_TYPES
-        for ref in (field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else [])
-    )
+    return str(field.get("sourceKind") or "") == "platform"
 
 
 def _is_curator_readonly_field(field: dict[str, Any]) -> bool:
