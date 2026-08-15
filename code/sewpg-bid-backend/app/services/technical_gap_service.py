@@ -92,6 +92,7 @@ from app.services.job_queue import (
     acquire_ai_fill_lock,
     enqueue_generation_job,
     release_ai_fill_lock,
+    cancel_generation_job,
     request_job_cancel,
 )
 from app.services.job_timing import current_locked_job_id
@@ -584,19 +585,22 @@ class TechnicalGapService:
         return JSONResponse(status_code=202, content=payload)
 
     def cancel_detection(self, project_id: str) -> dict[str, Any]:
+        # 排队中的任务直接摘掉并收成终态，别让用户对着「停止中」干等
+        stage = cancel_generation_job(GAP_DETECTION_JOB_TYPE, project_id)
+        terminal = stage in {"queued", "none"}
+
         def apply(project: dict[str, Any]) -> dict[str, Any]:
             current = ensure_technical_gap_state(project)
             updated = _gap_cancel_state(
                 current,
-                "已请求停止素材匹配，正在等待安全停止点。",
+                "素材匹配已停止。" if terminal else "已请求停止素材匹配，正在等待安全停止点。",
+                terminal=terminal,
             )
             project["gap_state"] = updated
             project["updatedAt"] = now_iso()
             return build_technical_gap_detection_payload(project, updated)
 
-        payload = mutate_technical_gap_project(project_id, apply)
-        request_job_cancel(current_locked_job_id(GAP_DETECTION_JOB_TYPE, project_id))
-        return payload
+        return mutate_technical_gap_project(project_id, apply)
 
     def run_detection(self, project_id: str) -> dict[str, Any]:
         try:

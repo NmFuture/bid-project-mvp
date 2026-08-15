@@ -32,7 +32,13 @@ from app.services.background_task_cancel import (
     task_cancel_scope,
     throttled_cancel_probe,
 )
-from app.services.job_queue import EnqueueResult, enqueue_generation_job, is_generation_locked, request_job_cancel
+from app.services.job_queue import (
+    cancel_generation_job,
+    EnqueueResult,
+    enqueue_generation_job,
+    is_generation_locked,
+    request_job_cancel,
+)
 from app.services.job_timing import current_locked_job_id, record_phase
 from app.services.local_job_executor import submit_local_job
 from app.services.onlyoffice_documents import build_editor_session_key
@@ -611,10 +617,14 @@ class BidDirectoryService:
     async def cancel_generation(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         current = directory_state_with_rule_evidence(project)
-        payload = request_task_cancel(current, "已请求停止目录生成，正在等待安全停止点。")
+        # 排队中的任务直接摘掉并收成终态，别让用户对着「停止中」干等
+        stage = cancel_generation_job("directory_generation", project_id)
+        if stage in {"queued", "none"}:
+            payload = cancel_task_state(current, "目录生成已停止。")
+        else:
+            payload = request_task_cancel(current, "已请求停止目录生成，正在等待安全停止点。")
         project["directory_state"] = payload
         persist_workspace_project_fields(project, "directory_state")
-        request_job_cancel(current_locked_job_id("directory_generation", project_id))
         return payload
 
     async def generation_stream(self, project_id: str, request: Request) -> StreamingResponse:

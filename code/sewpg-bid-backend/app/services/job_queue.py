@@ -678,6 +678,89 @@ def request_job_cancel(job_id: str) -> None:
         logger.warning("Failed to mark Redis job cancelled: %s", exc)
 
 
+def locked_generation_job_id(job_type: str, project_id: str) -> str:
+    """反查当前持有该项目任务锁的 job_id（即正在执行的那个）。"""
+    client = get_redis_client()
+    if client is None:
+        return ""
+    try:
+        return str(client.get(generation_lock_key(job_type, project_id)) or "")
+    except RedisError as exc:
+        logger.warning("Failed to inspect generation lock owner: %s", exc)
+        return ""
+
+
+def job_run_status(job_id: str) -> str:
+    """读任务记录里的执行状态：queued / running / succeeded / failed / cancelled。"""
+    client = get_redis_client()
+    resolved = str(job_id or "").strip()
+    if client is None or not resolved:
+        return ""
+    try:
+        return str(client.hget(_job_key(resolved), "status") or "")
+    except RedisError as exc:
+        logger.warning("Failed to read job status: %s", exc)
+        return ""
+
+
+def cancel_generation_job(job_type: str, project_id: str) -> str:
+    """停止一个后台任务，返回它当时处于什么阶段。
+
+    - "running"：worker 已经在跑，只能置取消标记，等它到安全停止点。
+    - "queued" ：还排在队列里没开跑，直接摘掉并释放项目锁。不摘的话，用户点了停止
+                 也只能干等 worker 把前面的活干完，界面会一直停在「停止中」——
+                 这正是实测里索引重新生成卡住的原因。
+    - "none"   ：Redis 里既没在跑也没排队。
+    - "unknown"：Redis 不可用，交给调用方按「请求停止」处理。
+
+    注意项目锁是**入队时**就拿的，不代表已经开跑，所以判断「在不在跑」必须看
+    任务记录里的 status，不能看锁。
+    """
+    client = get_redis_client()
+    if client is None:
+        return "unknown"
+
+    locked_job_id = locked_generation_job_id(job_type, project_id)
+    if locked_job_id:
+        # 无论在跑还是排队都先打标记：worker 取到这条任务时会直接跳过
+        request_job_cancel(locked_job_id)
+        if job_run_status(locked_job_id) == "running":
+            return "running"
+
+    queue_key = _queue_key_for_job_type(job_type)
+    dropped_job_id = ""
+    try:
+        for raw in client.lrange(queue_key, 0, -1):
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if str(payload.get("type") or "") != job_type:
+                continue
+            if str(payload.get("projectId") or "") != str(project_id):
+                continue
+            if not client.lrem(queue_key, 1, raw):
+                # 摘的瞬间被 worker 取走了：按正在执行处理，别谎报已停止。
+                # 标记仍要打上，worker 取到这条任务时会直接跳过。
+                request_job_cancel(str(payload.get("id") or ""))
+                return "running"
+            dropped_job_id = str(payload.get("id") or "")
+            mark_job_status(payload, "cancelled", "任务在排队中被停止。")
+            break
+    except RedisError as exc:
+        logger.warning("Failed to drop pending job from queue: %s", exc)
+        return "unknown"
+
+    if dropped_job_id:
+        request_job_cancel(dropped_job_id)
+
+    if dropped_job_id or locked_job_id:
+        # 排队中的任务被摘掉后必须放锁，否则这个项目要等锁自然过期才能再发起
+        force_release_generation_lock(job_type, project_id)
+        return "queued"
+    return "none"
+
+
 def is_job_cancel_requested(job_id: str) -> bool:
     client = get_redis_client()
     resolved_job_id = str(job_id or "").strip()

@@ -18,7 +18,13 @@ from app.services.background_task_cancel import (
     throttled_cancel_probe,
 )
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked, request_job_cancel
+from app.services.job_queue import (
+    cancel_generation_job,
+    enqueue_generation_job,
+    force_release_generation_lock,
+    is_generation_locked,
+    request_job_cancel,
+)
 from app.services.job_timing import current_locked_job_id
 from app.services.local_job_executor import submit_local_job
 from app.services.tech_assembly import regenerate_score_index_xref_for_project
@@ -369,10 +375,15 @@ class TechnicalScoreIndexService:
     async def cancel(self, project_id: str) -> dict[str, Any]:
         project = _project_for_update(project_id)
         current = score_index_state(project)
-        payload = request_task_cancel(current, "已请求停止索引生成，正在等待安全停止点。")
+        # 先看这个任务到底在跑还是在排队：排队中的直接从队列摘掉并收成终态，
+        # 否则用户点了停止只能干等 worker 把前面的活干完，界面一直停在「停止中」。
+        stage = cancel_generation_job(SCORE_INDEX_JOB_TYPE, project_id)
+        if stage in {"queued", "none"}:
+            payload = cancel_task_state(current, "章节索引重新生成已停止。")
+        else:
+            payload = request_task_cancel(current, "已请求停止索引生成，正在等待安全停止点。")
         project["score_index_state"] = payload
         persist_workspace_project_fields(project, "score_index_state")
-        request_job_cancel(current_locked_job_id(SCORE_INDEX_JOB_TYPE, project_id))
         return payload
 
     async def run(

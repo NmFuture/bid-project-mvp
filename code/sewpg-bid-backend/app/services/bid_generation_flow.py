@@ -26,7 +26,13 @@ from app.services.bid_fill_generation_state import (
 from app.services.bid_project_service import BidProjectService
 from app.services.bid_type import BUSINESS_BID_TYPE, TECHNICAL_BID_TYPE, require_bid_type
 from app.services.business_draft_generation import generate_business_draft_for_project_with_progress
-from app.services.job_queue import enqueue_generation_job, force_release_generation_lock, is_generation_locked, request_job_cancel
+from app.services.job_queue import (
+    cancel_generation_job,
+    enqueue_generation_job,
+    force_release_generation_lock,
+    is_generation_locked,
+    request_job_cancel,
+)
 from app.services.job_timing import current_locked_job_id
 from app.services.local_job_executor import submit_local_job
 from app.services.technical_draft_generation import generate_technical_draft_for_project_with_progress
@@ -858,10 +864,14 @@ class BidGenerationService:
     async def cancel(self, project_id: str) -> dict[str, Any]:
         project = self.require_project_for_update(project_id)
         current = copy.deepcopy(project.get("fill_state") or {})
-        payload = request_task_cancel(current, "已请求停止正文生成，正在等待安全停止点。")
+        # 排队中的任务直接摘掉并收成终态，别让用户对着「停止中」干等
+        stage = cancel_generation_job("fill_generation", project_id)
+        if stage in {"queued", "none"}:
+            payload = cancel_task_state(current, "标书生成已停止。")
+        else:
+            payload = request_task_cancel(current, "已请求停止正文生成，正在等待安全停止点。")
         project["fill_state"] = payload
         persist_workspace_project_fields(project, "fill_state")
-        request_job_cancel(current_locked_job_id("fill_generation", project_id))
         return self._with_generation_urls(project_id, payload)
 
     async def run(

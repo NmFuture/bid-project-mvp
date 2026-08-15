@@ -15,6 +15,7 @@ from app.services.job_queue import (
     QUEUE_KEY,
     claim_s1_workflow_lock,
     clear_job_inflight,
+    is_job_cancel_requested,
     dequeue_generation_job,
     mark_job_inflight,
     mark_job_progress,
@@ -163,6 +164,14 @@ def _run_job(job: dict[str, Any]) -> bool:
     deferred = False
     workflow_terminal = False
     post_release_wiki_bid_type = ""
+
+    # 排队期间被停止的任务不要再开跑：取消标记在入队后、真正执行前随时可能被打上
+    if is_job_cancel_requested(str(job.get("id") or "")):
+        logger.info("Skipping job cancelled while queued: %s", job.get("id"))
+        mark_job_status(job, "cancelled", "任务在排队中被停止。")
+        clear_job_inflight(job)
+        release_generation_lock(lock_job)
+        return True
 
     mark_job_status(job, "running")
     mark_job_inflight(job)
