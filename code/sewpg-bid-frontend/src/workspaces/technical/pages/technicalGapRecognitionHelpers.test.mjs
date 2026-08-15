@@ -979,3 +979,22 @@ test('没有匹配素材时已选区为空', () => {
   const item = { id: 'GAP-1', matchedMaterials: [] }
   assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
 })
+
+test('平台字段与 AI 查证不一致时，页面要标红并给出可一键采纳的候选', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  // 后端把分歧写进 hasConflict/alternatives/notes，前端不显示的话这道保护就是负收益：
+  // AI 不再改错值，人也永远不知道有分歧
+  assert.match(source, /const conflictCount = fields\.filter\(\(field\) => field\.hasConflict\)\.length/)
+  assert.match(source, /与项目信息不一致：\{conflictCount\}/)
+  // 冲突行要能筛出来单独看
+  assert.match(source, /factFilter\.type === 'conflict'/)
+  // 值框标红 + 字段名挂错误图标
+  assert.match(source, /field\.hasConflict\s*\n?\s*\?\s*'border-error/)
+  assert.match(source, /aria-label="与项目信息不一致"/)
+  // AI 的候选值点一下就能采纳，证据挂在 title 上可查
+  assert.match(source, /onFieldChange\(index, 'value', String\(conflictCandidate\.value \|\| ''\)\)/)
+  assert.match(source, /conflictCandidate\?\.source\?\.evidence/)
+  // 人一改值就算裁决过，标记要清掉，否则改完还一直标红
+  assert.match(source, /key === 'value' && field\.hasConflict \? \{ hasConflict: false \}/)
+})

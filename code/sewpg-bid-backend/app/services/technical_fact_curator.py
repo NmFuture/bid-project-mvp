@@ -209,19 +209,47 @@ def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> li
 # 不参与 AI 补抽的来源类别：模板占位（无需取值）、平台输入（人工录入）、自动生成（代码计算）
 _NO_FILL_SOURCE_KINDS = {"template", "platform", "derived"}
 
+# 硬门禁的来源类别：值由模板占位或代码推导确定，没有复核余地。
+# 平台输入**不在**其中——它有复核价值（实测 AI 从这里抓出「台数 6 台 vs 招标要求 60 台」
+# 和「基础形式填成了塔筒型式」两个真实错误），只是不许静默覆盖，改走冲突通道。
+_READONLY_SOURCE_KINDS = {"template", "derived"}
+
+# 建表时给「人在项目创建/完善项目信息里选定」的字段打的来源标记
+_PLATFORM_SOURCE_REF_TYPES = {"projectTurbineModel"}
+
+
+def _is_platform_authored_field(field: dict[str, Any]) -> bool:
+    """人在建项目时选定的字段（投标机型、机组台数、基础形式、轮毂高度……）。
+
+    不能只看 sourceKind：它是从清单「来源文件」列的前缀推出来的，实测 61 个字段里
+    platform 类**一个都没有**——「投标机型」的来源列写的是「项目定制…」被归成
+    material，而「机组台数」「基础形式」连 specKey 都是空的（根本不在清单里，是建表
+    时从机型行派生的）。所以改用建表时打的 projectTurbineModel 来源标记来认，
+    不依赖清单怎么填。
+    """
+    if str(field.get("sourceKind") or "") == "platform":
+        return True
+    return any(
+        isinstance(ref, dict) and str(ref.get("type") or "") in _PLATFORM_SOURCE_REF_TYPES
+        for ref in (field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else [])
+    )
+
 
 def _is_curator_readonly_field(field: dict[str, Any]) -> bool:
     """AI 复核员不许碰的字段。
 
-    两类：人工写过的（值和口径已由人定案）；平台输入 / 模板占位 / 自动生成的
-    （取值由项目创建信息或系统推导确定，不是从文档里"抽"出来的，没有复核余地）。
+    两类：人工写过的（值和口径已由人定案）；模板占位 / 自动生成的（取值由系统推导
+    确定，不是从文档里"抽"出来的，没有复核余地）。
 
     三态收敛前这两类都靠 status==confirmed 一并挡住；现在规则抽取的值也是
-    confirmed，必须按来源显式区分，否则投标机型这种平台字段会被交给 AI 改。
+    confirmed，必须按来源显式区分。
+
+    平台输入不走这条门禁：它要留在 fix 桶里接受核对，只是落表时不覆盖值，
+    见 _is_platform_authored_field 与 apply 侧的冲突分支。
     """
     if is_human_authored_fact_field(field):
         return True
-    return str(field.get("sourceKind") or "") in _NO_FILL_SOURCE_KINDS
+    return str(field.get("sourceKind") or "") in _READONLY_SOURCE_KINDS
 
 
 def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -235,10 +263,12 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
             continue
         # 归一后再分桶：旧项目的 gap_state 里还留着七态，重建前也要分对
         status = normalize_fact_status(field.get("status"), has_value=bool(str(field.get("value") or "").strip()))
-        # 补抽范围：招标类 + 素材/证书类未提取字段（模板/平台/自动生成类不交 AI 填）
-        if status == FACT_STATUS_UNEXTRACTED:
+        # 补抽范围：招标类 + 素材/证书类未提取字段（模板/平台/自动生成类不交 AI 填）。
+        # 平台字段没值是人还没填，AI 不替人做主。
+        if status == FACT_STATUS_UNEXTRACTED and not _is_platform_authored_field(field):
             targets["fill"].append(field_key)
-        # 脏数据校验只针对从招标文件/素材抽出来的值
+        # 脏数据校验只针对从招标文件/素材抽出来的值。平台字段也进这一桶——它要接受
+        # 核对，只是落表时走冲突通道不覆盖值。
         if status == FACT_STATUS_CONFIRMED:
             targets["fix"].append(field_key)
     return targets
@@ -452,6 +482,8 @@ def apply_fact_curator_suggestions(
         "notFound": [],
         "skippedConfirmed": [],
         "ignored": [],
+        # 平台输入字段与 AI 查证结果不一致：值保持人选的那个，分歧记在这里等人裁决
+        "conflicts": [],
     }
     # 本轮真正写过的字段的**表内规范 key**（不是 agent 回传的 fieldKey，后者可能是别名或
     # 大小写变体）。落表时按它逐字段合并进最新的表，见 merge_curator_fields_into_table。
@@ -496,6 +528,37 @@ def apply_fact_curator_suggestions(
                 touched_keys.add(str(field.get("key") or ""))
             else:
                 report["ignored"].append(field_key)
+            continue
+
+        old_value_now = str(field.get("value") or "").strip()
+        if _is_platform_authored_field(field):
+            # 平台输入是人在建项目时选的，AI 不许静默覆盖——但也不能不管：实测它从这里
+            # 抓出过「台数 6 台 vs 招标要求 60 台」，那个错会一路进标书。折中是把分歧
+            # 显出来：值保持人选的，AI 的候选进 alternatives，原因进 notes，打 hasConflict
+            # 供页面标红，由人在页面上裁决改不改。
+            if value == old_value_now:
+                report["skippedConfirmed"].append(field_key)
+                continue
+            alternatives = field.setdefault("alternatives", [])
+            existing_values = [str(item.get("value") or "") for item in alternatives if isinstance(item, dict)]
+            if value not in existing_values:
+                alternatives.append({"value": value, "source": copy.deepcopy(ref)})
+            note = f"AI 查证与项目信息不一致：建议「{value}」，{suggestion['evidence'] or '未给出理由'}"
+            notes = str(field.get("notes") or "")
+            if note not in notes:
+                field["notes"] = f"{notes}；{note}" if notes else note
+            field["hasConflict"] = True
+            report["conflicts"].append(
+                {
+                    "fieldKey": field_key,
+                    "label": str(field.get("label") or ""),
+                    "currentValue": old_value_now,
+                    "suggestedValue": value,
+                    "evidence": suggestion["evidence"],
+                    "confidence": suggestion["confidence"],
+                }
+            )
+            touched_keys.add(str(field.get("key") or ""))
             continue
 
         touched_keys.add(str(field.get("key") or ""))

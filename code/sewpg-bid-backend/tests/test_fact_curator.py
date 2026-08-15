@@ -152,10 +152,12 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     field = manifest["projectFactTable"]["fields"][0]
     for meta in ("specKey", "specSeq", "sourceKind", "status", "label", "value", "unit"):
         assert meta in field
-    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix
+    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix。
+    # 平台输入（投标机型）进 fix 不进 fill——它要接受核对（实测 AI 从这类字段抓出过
+    # 「台数 6 台 vs 招标要求 60 台」），只是落表时不覆盖值、走冲突通道。
     assert manifest["targets"] == {
         "fill": ["招标单机容量出口端mw"],
-        "fix": ["年平均风速", "电量承诺函版本"],
+        "fix": ["年平均风速", "电量承诺函版本", "投标机型"],
     }
     assert manifest["briefFile"].endswith("fact_curate_brief.json")
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
@@ -380,26 +382,114 @@ def test_confirm_advice_action_is_rejected() -> None:
     ]
 
 
-def test_confirmed_field_never_overwritten() -> None:
+def test_platform_field_not_overwritten_but_conflict_recorded() -> None:
+    """平台输入的值 AI 不许覆盖，但分歧要留痕、要能被看见。
+
+    以前是静默 skippedConfirmed：AI 发现不对也没人知道。实测 AI 在这类字段上抓出过
+    「机组台数 6 台 vs 招标要求 60 台」——那个错会一路抄进标书，不能不管；但也不能让
+    AI 直接改人选的东西。折中是值保持人选的，候选进 alternatives、原因进 notes、
+    打 hasConflict 供页面标红，由人裁决。
+    """
     table, report = _apply(
         [
             {
                 "fieldKey": "投标机型",
                 "suggestedValue": "EW5.0-200",
                 "unit": "",
-                "evidence": "试图覆盖已确认字段",
+                "evidence": "招标文件表14 要求 EW5.0-200",
                 "confidence": 0.99,
                 "action": "fix",
             }
         ]
     )
     field = table["fields"][3]
+    # 值一个字都不动
     assert field["value"] == "EW10.0-220"
     assert field["status"] == "confirmed"
+    # 不给平台字段挂 factCurator 来源——值不是它写的，挂了会让人以为这是 AI 填的
     assert all(ref.get("type") != "factCurator" for ref in field["sourceRefs"])
-    assert report["skippedConfirmed"] == ["投标机型"]
-    # 平台输入字段被硬门禁挡住，值没被 AI 改；表内原有 3 条有值字段计数不变
+    # 但分歧要留下来
+    assert field["hasConflict"] is True
+    assert [item["value"] for item in field["alternatives"]] == ["EW5.0-200"]
+    assert "EW5.0-200" in field["notes"] and "招标文件表14" in field["notes"]
+    assert report["conflicts"] == [
+        {
+            "fieldKey": "投标机型",
+            "label": "投标机型",
+            "currentValue": "EW10.0-220",
+            "suggestedValue": "EW5.0-200",
+            "evidence": "招标文件表14 要求 EW5.0-200",
+            "confidence": 0.99,
+        }
+    ]
+    assert report["counts"]["conflicts"] == 1
+    # 表内原有 3 条有值字段计数不变
     assert table["summary"]["confirmedCount"] == 3
+
+
+def test_platform_field_agreeing_with_ai_is_not_a_conflict() -> None:
+    """AI 查证结果与人选的一致：不标红、不留痕，免得满屏假冲突。"""
+    table, report = _apply(
+        [
+            {
+                "fieldKey": "投标机型",
+                "suggestedValue": "EW10.0-220",
+                "unit": "",
+                "evidence": "招标文件与素材一致",
+                "confidence": 0.95,
+                "action": "fix",
+            }
+        ]
+    )
+    field = table["fields"][3]
+    assert field["value"] == "EW10.0-220"
+    assert not field.get("hasConflict")
+    assert report["conflicts"] == []
+    assert report["skippedConfirmed"] == ["投标机型"]
+
+
+def test_platform_field_stays_out_of_fill_bucket() -> None:
+    """平台字段没值是人还没填，AI 不替人做主——只进 fix，不进 fill。"""
+    fields = [
+        {
+            "key": "空的平台字段",
+            "status": "unextracted",
+            "value": "",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "foundationType"}],
+        },
+        {
+            "key": "有值的平台字段",
+            "status": "confirmed",
+            "value": "钢塔",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "foundationType"}],
+        },
+    ]
+
+    targets = curator._curate_targets(fields)
+
+    assert targets["fill"] == []
+    assert targets["fix"] == ["有值的平台字段"]
+
+
+def test_platform_field_recognized_without_spec_source_kind() -> None:
+    """靠 projectTurbineModel 来源标记认平台字段，不依赖清单来源列。
+
+    实测 PRJ-0004 的 61 个字段里 sourceKind=platform 的一个都没有：投标机型的来源列
+    写的是「项目定制…」被归成 material，机组台数、基础形式连 specKey 都是空的。
+    只看 sourceKind 的话这道保护等于没有。
+    """
+    assert curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "projectTurbineModel", "field": "model"}]}
+    )
+    assert curator._is_platform_authored_field(
+        {"sourceKind": "", "sourceRefs": [{"type": "projectTurbineModel", "field": "turbineCount"}]}
+    )
+    # 清单确实标了平台输入的也认
+    assert curator._is_platform_authored_field({"sourceKind": "platform", "sourceRefs": []})
+    # 从素材抽出来的不是平台字段
+    assert not curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "materialFact", "materialId": "RAW-1"}]}
+    )
 
 
 def test_not_found_keeps_unextracted_and_writes_notes() -> None:
@@ -1322,3 +1412,40 @@ def test_cross_project_evidence_appends_source_note() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_conflict_flag_survives_save_round_trip() -> None:
+    """冲突标记要扛过保存往返，否则一保存就没了、冲突等于没报过。
+
+    alternatives 和 notes 本来就在 normalize 的保留名单里，hasConflict 原先不在——
+    页面标红一保存就消失，人再也看不到 AI 报过什么。
+    """
+    from app.services.technical_gap_fact_table import normalize_project_fact_field
+
+    conflicted = normalize_project_fact_field(
+        {
+            "label": "机组台数",
+            "value": "6",
+            "hasConflict": True,
+            "alternatives": [{"value": "60", "source": {"type": "factCurator", "evidence": "招标表14"}}],
+            "notes": "AI 查证与项目信息不一致：建议「60」",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "turbineCount"}],
+        },
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert conflicted["hasConflict"] is True
+    assert [item["value"] for item in conflicted["alternatives"]] == ["60"]
+    assert "60" in conflicted["notes"]
+
+    # 人裁决过之后前端置 False，这个 False 同样要回写，不能被当成"没这个键"丢掉
+    resolved = normalize_project_fact_field(
+        {**conflicted, "value": "60", "hasConflict": False},
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert resolved["hasConflict"] is False

@@ -225,6 +225,11 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
                 f"未找到值 {counts.get('notFound', 0)} 条、"
                 f"忽略 {counts.get('ignored', 0)} 条（已确认跳过 {counts.get('skippedConfirmed', 0)} 条）。"
             )
+            if counts.get("conflicts"):
+                message += (
+                    f"另有 {counts['conflicts']} 条与项目信息不一致（已在表中标红，值保持你选的，"
+                    "请点开核对后决定改不改）。"
+                )
             if counts.get("ignored"):
                 message += "存在未落表建议，请检查 curateReport.ignored 的原因。"
             if dropped:
