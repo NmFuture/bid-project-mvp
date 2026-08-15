@@ -467,6 +467,9 @@ const FactMaintenanceModal = ({
   curating,
   curatePhase,
   curateMessage,
+  batchTotal,
+  batchDone,
+  batchRunning,
   updatingScope,
   onClose,
   onConfirm,
@@ -475,6 +478,7 @@ const FactMaintenanceModal = ({
   onGoToRules,
   onSaveMaterialPaths,
   onCurate,
+  onFillBlanks,
 }) => {
   const [selectedPaths, setSelectedPaths] = useState(() => uniqueStrings(materialPaths || []))
   const [pathsEditing, setPathsEditing] = useState(false)
@@ -511,12 +515,18 @@ const FactMaintenanceModal = ({
     specSegments[factSpecSegment(field)] += 1
     return total + 1
   }, 0)
+  // 平台输入字段与 AI 查证结果对不上：值保持人选的，分歧挂在字段上等人裁决。
+  // 不显示的话这道保护就是负收益——AI 不再改错值，人也永远不知道有分歧。
+  const conflictCount = fields.filter((field) => field.hasConflict).length
+  // 「AI补空」的作用范围：没值可补时按钮置灰，免得白跑一轮
+  const blankCount = statusCounts.unextracted || 0
 
   const toggleFactFilter = (filter) => {
     setFactFilter((current) => (current && current.type === filter.type && current.key === filter.key ? null : filter))
   }
   const matchesFactFilter = (field) => {
     if (!factFilter) return true
+    if (factFilter.type === 'conflict') return Boolean(field.hasConflict)
     if (factFilter.type === 'status') return normalizeFactFieldStatus(field.status) === factFilter.key
     return hasFactSpecSeq(field) && factSpecSegment(field) === factFilter.key
   }
@@ -564,6 +574,11 @@ const FactMaintenanceModal = ({
       .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
     const refPaths = allRefPaths.slice(0, 2)
     const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
+    // 平台输入字段与 AI 查证不一致：值仍是人选的，AI 的候选挂在 alternatives 上。
+    // 取最后一条——同一字段多轮跑下来只有最新那条是本轮结论。
+    const conflictCandidate = field.hasConflict
+      ? asObjectArray(field.alternatives).slice(-1)[0] || null
+      : null
     return (
       <div
         key={field.id || `${field.label}-${index}`}
@@ -582,6 +597,15 @@ const FactMaintenanceModal = ({
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
+              {field.hasConflict ? (
+                <span
+                  className="material-symbols-outlined shrink-0 text-[16px] text-error"
+                  title="AI 查证结果与建项目时填的不一致，值保持你选的，请核对下方建议"
+                  aria-label="与项目信息不一致"
+                >
+                  error
+                </span>
+              ) : null}
             </div>
           )}
         </div>
@@ -592,11 +616,26 @@ const FactMaintenanceModal = ({
             placeholder="待填写"
             aria-label={`${field.label || '字段'}的事实值`}
             className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
-              isEmptyStatus
-                ? 'border-tertiary bg-tertiary-fixed/35'
-                : 'border-surface-container-high bg-surface'
+              field.hasConflict
+                ? 'border-error bg-error-container/25'
+                : isEmptyStatus
+                  ? 'border-tertiary bg-tertiary-fixed/35'
+                  : 'border-surface-container-high bg-surface'
             }`}
           />
+          {conflictCandidate ? (
+            <div className="mt-1.5 flex items-start gap-1.5 text-xs" title={String(field.notes || '')}>
+              <span className="mt-px shrink-0 text-error">AI 建议</span>
+              <button
+                type="button"
+                onClick={() => onFieldChange(index, 'value', String(conflictCandidate.value || ''))}
+                className="min-w-0 truncate rounded border border-error/40 bg-surface px-1.5 py-px font-semibold text-error hover:bg-error-container/40"
+                title={`点击采用「${conflictCandidate.value}」；依据：${conflictCandidate?.source?.evidence || '未给出'}`}
+              >
+                {conflictCandidate.value}
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
           {refPaths.length ? (
@@ -723,15 +762,29 @@ const FactMaintenanceModal = ({
                 disabled={busy || (!fields.length && !specsImported)}
                 title={
                   fields.length
-                    ? '先按最新素材范围刷新事实表，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）'
-                    : '按事实表清单生成字段，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）'
+                    ? '按最新素材范围重建整张表，再让 AI 全表查一遍。上一轮 AI 填的值会丢弃重算（约 8 分钟）'
+                    : '按事实表清单生成字段，再让 AI 逐个查证填写（约 8 分钟）'
                 }
                 size="md"
                 variant="success"
               >
                 {curating
-                  ? (curatePhase || '刷新填充中...')
-                  : (fields.length ? '刷新并 AI 填充' : '生成事实表并 AI 填充')}
+                  ? (curatePhase || '处理中...')
+                  : (fields.length ? 'AI重填' : 'AI建表')}
+              </Button>
+              <Button
+                type="button"
+                onClick={onFillBlanks}
+                disabled={busy || !blankCount}
+                title={
+                  blankCount
+                    ? `不重建，只把还没有值的 ${blankCount} 个字段交给 AI，已有的值一律不动`
+                    : '当前没有待填写的字段'
+                }
+                size="md"
+                variant="secondary"
+              >
+                {curating ? (curatePhase || '处理中...') : 'AI补空'}
               </Button>
               <Button type="button" onClick={onAddField} disabled={busy} size="md" variant="secondary">
                 新增字段
@@ -771,6 +824,20 @@ const FactMaintenanceModal = ({
                 </button>
               )
             })}
+            {conflictCount ? (
+              <button
+                type="button"
+                onClick={() => toggleFactFilter({ type: 'conflict', key: 'conflict', label: '与项目信息不一致' })}
+                title={`筛选 AI 查证与项目信息不一致的字段${factFilter?.type === 'conflict' ? '（再次点击取消）' : ''}`}
+                className={factFilterChipClass(
+                  factFilter?.type === 'conflict',
+                  'bg-error-container text-on-error-container',
+                  conflictCount,
+                )}
+              >
+                与项目信息不一致：{conflictCount}
+              </button>
+            ) : null}
             {specTotal ? (
               <div
                 className="ml-1 flex items-center gap-2 border-l border-surface-container-high pl-3"
@@ -797,11 +864,33 @@ const FactMaintenanceModal = ({
         </div>
 
         {curating ? (
-          <div className="flex items-center gap-2 border-b border-surface-container-high bg-tertiary-fixed/40 px-5 py-2.5 text-xs text-on-surface">
-            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-tertiary" />
-            <span className="font-semibold">{curatePhase || '刷新填充中'}</span>
-            <span className="min-w-0 truncate text-on-surface-variant">{curateMessage || ''}</span>
-            <span className="ml-auto shrink-0 text-on-surface-variant">任务在后台执行，可关闭本窗口</span>
+          <div className="flex flex-col gap-1.5 border-b border-surface-container-high bg-tertiary-fixed/40 px-5 py-2.5 text-xs text-on-surface">
+            <div className="flex items-center gap-2">
+              <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-tertiary" />
+              <span className="font-semibold">{curatePhase || '处理中'}</span>
+              <span className="min-w-0 truncate text-on-surface-variant">{curateMessage || ''}</span>
+              <span className="ml-auto shrink-0 text-on-surface-variant">任务在后台执行，可关闭本窗口</span>
+            </div>
+            {batchTotal ? (
+              // 分批并发的进度条。只有文字的话，第一批跑完之前（实测 4 分半）看着像卡死；
+              // 已完成的实心 + 进行中的脉冲，一眼能看出还有几批在跑
+              <div className="flex items-center gap-2">
+                <div className="flex h-1.5 flex-1 overflow-hidden rounded-full bg-surface-container-high">
+                  <div
+                    className="bg-tertiary transition-[width] duration-500"
+                    style={{ width: `${Math.round((batchDone / batchTotal) * 100)}%` }}
+                  />
+                  <div
+                    className="animate-pulse bg-tertiary/45 transition-[width] duration-500"
+                    style={{ width: `${Math.round((batchRunning / batchTotal) * 100)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 tabular-nums text-on-surface-variant">
+                  {batchDone}/{batchTotal} 批完成
+                  {batchRunning ? ` · ${batchRunning} 批进行中` : ''}
+                </span>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1011,7 +1100,7 @@ const FactMaintenanceModal = ({
                 {specsImported ? (
                   <>
                     <p className="mt-3 text-sm text-on-surface-variant">
-                      事实表清单「{specsFileName || '已上传'}」已就位，点右上角「生成事实表并 AI 填充」按清单生成字段；换清单请到素材库 · 规则页重新上传。
+                      事实表清单「{specsFileName || '已上传'}」已就位，点右上角「AI建表」按清单生成字段；换清单请到素材库 · 规则页重新上传。
                     </p>
                     <button
                       type="button"
@@ -2105,6 +2194,9 @@ export default function TechnicalGapRecognition({ showToast }) {
         ...field,
         [key]: value,
         sourceRefs,
+        // 人一动这个格子，冲突就算裁决过了（不管是采纳 AI 建议还是自己另填），
+        // 标记留着只会让它一直标红
+        ...(key === 'value' && field.hasConflict ? { hasConflict: false } : {}),
         // 三态：有值即可用，清空即回落待填写（「不适用」只走上面的 status 分支）
         status: String(key === 'value' ? value : field.value || '').trim() ? 'confirmed' : 'unextracted',
       }
@@ -2808,7 +2900,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     try {
       const payload = await technicalGapsAPI.saveMaterialSources(id, { paths })
       setFactMaterialPaths(Array.isArray(payload?.paths) ? payload.paths : [])
-      showToast?.('参考范围已保存，点「刷新并 AI 填充」按新范围重建事实表')
+      showToast?.('参考范围已保存，点「AI重填」按新范围重建事实表')
       return true
     } catch (e) {
       showToast?.(e?.message || '参考范围保存失败', 'error')
@@ -2818,11 +2910,13 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
   }
 
-  // 刷新并 AI 填充：保存当前编辑 → 按最新素材范围刷新事实表 → 事实表维护 Skill 按素材
+  // AI重填：保存当前编辑 → 按最新素材范围刷新事实表 → 事实表维护 Skill 按素材
   // 给字段补值/修正/口径建议，结果落为待人工确认。
   // 三步全在后端那一个任务里跑，这里只提交一次并把页面上的编辑带过去——拆成三次调用时，
   // 只有第三步有防重入，等待期间再点一次按钮，前两步照跑改了表，正在跑的那轮就作废了。
-  const handleCurateFacts = async () => {
+  // fillOnly=true 是「AI补空」：后端跳过重建，只把还没有值的字段交给 AI，上一轮的
+  // 结论留在表里。两个按钮共用一条链路和同一把锁，只差这个开关。
+  const handleCurateFacts = async ({ fillOnly = false } = {}) => {
     if (busyAction || factCurateRunning) return
     const hasUnnamedManualValue = factFields.some((field) => {
       const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
@@ -2840,10 +2934,11 @@ export default function TechnicalGapRecognition({ showToast }) {
       const payload = await technicalGapsAPI.curateFacts(id, {
         fields: fieldsToSave,
         operator: '当前用户',
+        fillOnly,
       })
       setFactCurateReport(null)
       setFactCurateState(payload?.factCurateState || null)
-      showToast?.(payload?.message || '已提交 AI 匹配填充任务')
+      showToast?.(payload?.message || (fillOnly ? '已提交 AI补空任务' : '已提交 AI重填任务'))
     } catch (e) {
       showToast?.(e?.message || '匹配填充失败，请稍后重试', 'error')
     } finally {
@@ -3633,6 +3728,9 @@ export default function TechnicalGapRecognition({ showToast }) {
           curating={busyAction === 'facts-curate' || factCurateRunning}
           curatePhase={factCurateRunning ? String(factCurateState?.phase || '') : ''}
           curateMessage={factCurateRunning ? String(factCurateState?.message || '') : ''}
+          batchTotal={factCurateRunning ? Number(factCurateState?.batchTotal || 0) : 0}
+          batchDone={factCurateRunning ? Number(factCurateState?.batchDone || 0) : 0}
+          batchRunning={factCurateRunning ? Number(factCurateState?.batchRunning || 0) : 0}
           updatingScope={busyAction === 'facts-material-sources'}
           onClose={() => setFactModalOpen(false)}
           onConfirm={handleConfirmFactTable}
@@ -3640,7 +3738,8 @@ export default function TechnicalGapRecognition({ showToast }) {
           onAddField={handleAddFactField}
           onGoToRules={() => navigate('/workspace/tech/materials/rules')}
           onSaveMaterialPaths={handleSaveMaterialPaths}
-          onCurate={handleCurateFacts}
+          onCurate={() => handleCurateFacts()}
+          onFillBlanks={() => handleCurateFacts({ fillOnly: true })}
         />
       ) : null}
       <TechnicalGenerationProgressModal

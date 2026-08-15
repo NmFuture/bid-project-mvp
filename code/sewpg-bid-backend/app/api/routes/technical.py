@@ -12,6 +12,7 @@ from app.services.auth_service import current_user, require_line_role
 from app.services.bid_ocr_service import technical_ocr_service
 from app.services.bid_parse_service import technical_parse_service
 from app.services.bid_project_service import technical_project_service
+from app.services.technical_parse_asset_sync_job import schedule_technical_parse_asset_sync
 from app.services.technical_delivery_service import technical_coverage_service, technical_export_service
 from app.services.technical_directory_service import technical_directory_service
 from app.services.technical_chat_service import technical_chat_service
@@ -73,6 +74,12 @@ async def get_technical_project(project_id: str) -> dict[str, Any]:
 @router.put("/api/technical/projects/{project_id}")
 async def update_technical_project(project_id: str, data: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return await technical_project_service.update(project_id, data)
+
+
+@router.post("/api/technical/projects/{project_id}/parse-assets/sync")
+async def retry_technical_parse_asset_sync(project_id: str) -> dict[str, Any]:
+    technical_project_service.ensure_project(project_id)
+    return schedule_technical_parse_asset_sync(project_id)
 
 
 @router.delete("/api/technical/projects/{project_id}")

@@ -4,6 +4,7 @@ import MaterialsViewSwitch from '../components/TechnicalMaterialsViewSwitch'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
@@ -110,12 +111,14 @@ const collectDefaultExpandedTreePaths = (nodes = [], depth = 0, result = new Set
 
 export default function TechnicalCertificateLedger({ showToast = () => {} }) {
   const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
-  const [data, setData] = useState({ items: [], total: 0, summary: {} })
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次台账，后台静默刷新
+  const [cachedLedger] = useState(() => readPageCache('tech:cert-ledger'))
+  const [data, setData] = useState(cachedLedger?.data || { items: [], total: 0, summary: {} })
+  const [loading, setLoading] = useState(!cachedLedger)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [scopes, setScopes] = useState([])
+  const [scopes, setScopes] = useState(cachedLedger?.scopes || [])
   const [suggestions, setSuggestions] = useState([])
   const [suggestionLoading, setSuggestionLoading] = useState(false)
   const [scopeSaving, setScopeSaving] = useState(false)
@@ -151,6 +154,10 @@ export default function TechnicalCertificateLedger({ showToast = () => {} }) {
       setData(payload || { items: [], total: 0, summary: {} })
       setScopes(payload?.config?.scopes || [])
       setSelectedConfirmedScopePaths(new Set())
+      writePageCache('tech:cert-ledger', {
+        data: payload || { items: [], total: 0, summary: {} },
+        scopes: payload?.config?.scopes || [],
+      })
     } catch (e) {
       const message = safeMessage(e, '证书台账加载失败，请稍后重试。')
       setError(message)

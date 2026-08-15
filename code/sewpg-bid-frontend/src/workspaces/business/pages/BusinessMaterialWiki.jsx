@@ -4,6 +4,7 @@ import MaterialsViewSwitch from '../components/BusinessMaterialsViewSwitch'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 
 const safeMessage = (error, fallback) =>
   error?.payload?.detail || error?.message || fallback
@@ -26,8 +27,10 @@ const normalizeNode = (node) => {
 export default function BusinessMaterialWiki({ showToast = () => {} }) {
   const activeBidType = BUSINESS_BID_TYPE
   const materialsBasePath = workspaceRoute(BUSINESS_WORKSPACE, '/materials')
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次的树，后台静默刷新
+  const wikiCacheKey = `business:wiki:${activeBidType}`
+  const [data, setData] = useState(() => readPageCache(wikiCacheKey) ?? null)
+  const [loading, setLoading] = useState(() => !readPageCache(wikiCacheKey))
   const [error, setError] = useState('')
 
   const [refreshingWiki, setRefreshingWiki] = useState(false)
@@ -61,6 +64,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         ...params,
         bidType: activeBidType,
       })
+      if (!options.preserveTree) writePageCache(wikiCacheKey, response)
       applyPayload(response, { preserveTree: options.preserveTree })
     } catch (e) {
       console.error(e)
@@ -76,7 +80,7 @@ export default function BusinessMaterialWiki({ showToast = () => {} }) {
         setLoading(false)
       }
     }
-  }, [activeBidType, applyPayload, showToast])
+  }, [activeBidType, applyPayload, showToast, wikiCacheKey])
 
   useEffect(() => {
     const timer = setTimeout(() => {

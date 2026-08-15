@@ -7,6 +7,7 @@ import TechnicalAppendixRulesEditModal from '../components/TechnicalAppendixRule
 import Button from '../../../components/ui/Button'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import { OTHER_OPTION_LABEL, deriveCustomerOptionsFromIndex } from '../../shared/projectInfoOptions'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 import { technicalAppendixSourceMatrixUploadMessage } from './technicalGapRecognitionHelpers'
 
 // 与各列表页一致的本地时间格式（zh-CN、24 小时制）
@@ -36,15 +37,17 @@ function MetaRow({ label, children }) {
 
 export default function TechnicalMaterialRules({ showToast = () => {} }) {
   const navigate = useNavigate()
-  const [factSpecsMeta, setFactSpecsMeta] = useState(null)
-  const [projects, setProjects] = useState([])
+  // 会话缓存：二次进入直接渲染上次规则页数据，后台静默刷新
+  const [cachedRules] = useState(() => readPageCache('tech:material-rules'))
+  const [factSpecsMeta, setFactSpecsMeta] = useState(cachedRules?.factSpecsMeta || null)
+  const [projects, setProjects] = useState(cachedRules?.projects || [])
   const [selectedProjectId, setSelectedProjectId] = useState('')
-  const [customerOptions, setCustomerOptions] = useState([])
+  const [customerOptions, setCustomerOptions] = useState(cachedRules?.customerOptions || [])
   const [customerOptionsError, setCustomerOptionsError] = useState('')
   const [selectedCustomer, setSelectedCustomer] = useState('')
   const [matrixMeta, setMatrixMeta] = useState(null)
   const [matrixLoading, setMatrixLoading] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!cachedRules)
   const [error, setError] = useState('')
   const [busyAction, setBusyAction] = useState('')
   const [factSpecsEditOpen, setFactSpecsEditOpen] = useState(false)
@@ -56,6 +59,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
     setLoading(true)
     setError('')
     setCustomerOptionsError('')
+    let firstStage = null
     try {
       const [metaPayload, projectsPayload] = await Promise.all([
         technicalMaterialsAPI.rules.factSpecsMeta(),
@@ -64,6 +68,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       setFactSpecsMeta(metaPayload || null)
       const items = Array.isArray(projectsPayload?.items) ? projectsPayload.items : []
       setProjects(items)
+      firstStage = { factSpecsMeta: metaPayload || null, projects: items }
       setSelectedProjectId((current) => (items.some((project) => project.id === current) ? current : items[0]?.id || ''))
     } catch (e) {
       setError(e?.message || '规则信息加载失败')
@@ -77,6 +82,9 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       const customers = deriveCustomerOptionsFromIndex(indexPayload).filter((name) => name !== OTHER_OPTION_LABEL)
       setCustomerOptions(customers)
       setSelectedCustomer((current) => (customers.includes(current) ? current : customers[0] || ''))
+      if (firstStage) {
+        writePageCache('tech:material-rules', { ...firstStage, customerOptions: customers })
+      }
     } catch (e) {
       setCustomerOptions([])
       setSelectedCustomer('')

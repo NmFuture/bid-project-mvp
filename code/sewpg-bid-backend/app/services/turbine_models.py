@@ -97,6 +97,25 @@ def normalize_project_turbine_models(value: Any) -> list[dict[str, Any]]:
     return output
 
 
+# 正式投标材料只写英数字型号编码：机型后的中文布局/配置后缀只用于系统内部选型和素材
+# 过滤，不能写进标书。按「中文一律剥掉」处理而不是维护一张后缀词表——LAYOUT_WORDS 只
+# 收了上置/下置，MODEL_PATTERN 却还认海外版、碳叶片，词表漏一个就把中文带进正式材料。
+_MODEL_CJK_PATTERN = re.compile(r"[㐀-鿿]+")
+
+
+def formal_model_code(model: Any) -> str:
+    """正式投标材料里该写的型号编码：剥掉中文后缀，只留英数字部分。
+
+    平台侧存的 model 保留后缀（`material_model_fit` 按 aliases 匹配素材要用它区分
+    上置/下置），事实表落值走这里。剥完为空说明本来就不是型号编码，原样返回不硬改。
+    """
+    text = _clean_model_text(model)
+    if not text:
+        return ""
+    stripped = _MODEL_CJK_PATTERN.sub("", text).strip("_-－—— ()（）")
+    return stripped or text
+
+
 def model_aliases(model: str) -> list[str]:
     text = _clean_model_text(model)
     if not text:

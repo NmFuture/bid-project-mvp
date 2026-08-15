@@ -5,6 +5,7 @@ import MaterialPipelineProgress from '../components/MaterialPipelineProgress'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import { PageEmpty, PageError, PageLoading } from '../../../components/states/PageState'
 import { workspaceRoute } from '../../../utils/workspace'
+import { readPageCache, writePageCache } from '../../../utils/pageCache'
 import { sortNodesByName } from '../../../utils/materialSort'
 import { startWikiJobStatusPolling } from '../technicalWikiJobPolling'
 import { createFulltextRequestGuard } from './fulltextRequestGuard'
@@ -129,8 +130,10 @@ const writeWikiJobStorage = (key, value) => {
 export default function TechnicalMaterialWiki({ showToast = () => {} }) {
   const activeBidType = TECHNICAL_BID_TYPE
   const materialsBasePath = workspaceRoute(TECHNICAL_WORKSPACE, '/materials')
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
+  // 会话缓存：二次进入直接渲染上次的树，后台静默刷新
+  const wikiCacheKey = `tech:wiki:${activeBidType}`
+  const [data, setData] = useState(() => readPageCache(wikiCacheKey) ?? null)
+  const [loading, setLoading] = useState(() => !readPageCache(wikiCacheKey))
   const [error, setError] = useState('')
 
   const [refreshingWikiPending, setRefreshingWiki] = useState(false)
@@ -211,6 +214,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         bidType: activeBidType,
       }, { signal: options.signal })
       if (isCancelled()) return
+      if (!options.preserveTree) writePageCache(wikiCacheKey, response)
       applyPayload(response, { preserveTree: options.preserveTree })
     } catch (e) {
       if (isCancelled()) return
@@ -227,7 +231,7 @@ export default function TechnicalMaterialWiki({ showToast = () => {} }) {
         setLoading(false)
       }
     }
-  }, [activeBidType, applyPayload, showToast])
+  }, [activeBidType, applyPayload, showToast, wikiCacheKey])
 
   useEffect(() => {
     const timer = setTimeout(() => {

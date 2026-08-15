@@ -4,7 +4,7 @@
 OpenCode 先调用一次 `factcurate <manifest>`，本脚本做确定性机械工作：
 - 汇总 manifest 给定的招标文件解析产物与素材为可检索文本；
 - 按字段 label/reviewLabel 检索候选原文片段；
-- 对 extracted 字段打机械脏数据标记（serial-text / range / unit-missing）。
+- 对 fix 桶字段（已经有取值的）打机械脏数据标记（serial-text / range / unit-missing）。
 
 本脚本不做最终事实判断：取值、修正、口径结论由 agent 读简报与原文后写入
 manifest 的 outputFile。
@@ -177,7 +177,7 @@ def _first_number(value: str) -> float | None:
 
 
 def _dirty_flags(field: dict[str, Any]) -> list[str]:
-    """extracted 字段的机械脏数据标记，只报线索不下结论。"""
+    """fix 桶字段（已经有取值的）的机械脏数据标记，只报线索不下结论。"""
     value = str(field.get("value") or "").strip()
     if not value:
         return []

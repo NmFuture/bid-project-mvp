@@ -65,7 +65,8 @@ function WorkspaceRedirect() {
 }
 
 export default function App() {
-  const [authLoading, setAuthLoading] = useState(true)
+  // 乐观启动：本地存有未过期会话时直接渲染应用壳，后台静默校验，
+  // 校验失败再清理并回登录页——消除每次打开/刷新的「正在校验登录状态」白屏拍
   const [session, setSession] = useState(() => readStoredSession())
   const [toast, setToast] = useState(null)
 
@@ -86,10 +87,8 @@ export default function App() {
       if (!stored?.token) {
         setSession(null)
         persistSession(null)
-        setAuthLoading(false)
         return
       }
-      setAuthLoading(true)
       try {
         const payload = await authAPI.me(stored.token)
         if (!mounted) return
@@ -103,8 +102,6 @@ export default function App() {
         if (error?.status === 401) {
           showToast('登录已过期，请重新登录。', 'error')
         }
-      } finally {
-        if (mounted) setAuthLoading(false)
       }
     }
     syncSession()
@@ -140,14 +137,6 @@ export default function App() {
     persistSession(null)
     showToast('已退出登录')
   }, [showToast])
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-surface flex items-center justify-center">
-        <div className="text-sm text-on-surface-variant">正在校验登录状态...</div>
-      </div>
-    )
-  }
 
   if (!session?.user) {
     return <Login onLogin={handleLogin} />

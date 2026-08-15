@@ -22,6 +22,11 @@ from app.services.job_queue import EnqueueResult
 from app.services.store import store
 from app.services.technical_fact_curate_job import _now_iso, run_fact_curate_job
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
+from app.services.technical_gap_fact_table import (
+    FACT_STATUS_CONFIRMED,
+    FACT_STATUS_NOT_APPLICABLE,
+    FACT_STATUS_UNEXTRACTED,
+)
 
 SCRIPT_PATH = (
     BASE_DIR / "opencode" / "skills" / "bid-tech-fact-curator" / "scripts" / "run_from_manifest.py"
@@ -147,10 +152,12 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     field = manifest["projectFactTable"]["fields"][0]
     for meta in ("specKey", "specSeq", "sourceKind", "status", "label", "value", "unit"):
         assert meta in field
-    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix
+    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix。
+    # 平台输入（投标机型）进 fix 不进 fill——它要接受核对（实测 AI 从这类字段抓出过
+    # 「台数 6 台 vs 招标要求 60 台」），只是落表时不覆盖值、走冲突通道。
     assert manifest["targets"] == {
         "fill": ["招标单机容量出口端mw"],
-        "fix": ["年平均风速", "电量承诺函版本"],
+        "fix": ["年平均风速", "电量承诺函版本", "投标机型"],
     }
     assert manifest["briefFile"].endswith("fact_curate_brief.json")
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
@@ -172,6 +179,32 @@ def test_skill_docs_only_teach_legal_actions() -> None:
     assert taught, "两份文档都没声明 action，正则或文档结构变了，这个守卫已失效"
     illegal = taught - curator.CURATE_ACTIONS
     assert not illegal, f"文档教了非法 action {sorted(illegal)}；合法值只有 {sorted(curator.CURATE_ACTIONS)}"
+
+
+# 三态收敛（产品裁决 2026-08-10）后废弃的状态名，文档里再出现就是过时描述。
+_RETIRED_FACT_STATUSES = ("extracted", "pending_confirmation", "missing_source", "conflict")
+
+
+def test_skill_docs_do_not_teach_retired_field_statuses() -> None:
+    """SKILL 文档里的状态名必须跟得上三态收敛。
+
+    上一个用例守 action，不守 status，所以这个坑漏了过去：七态收敛成三态时代码改了、
+    文档没改，SKILL.md 一边说 fix 桶装的是 extracted 字段，一边说「confirmed 字段
+    不会出现在任何桶里，不要为它产出建议」——而 _curate_targets 里 fix 桶装的**正是**
+    confirmed 字段。一个听话的 agent 会把整个 fix 桶跳过，脏数据清洗静默空转，报告里
+    只表现为 counts.fixed 一直是 0，不会有任何告警。
+    """
+    for doc in (SKILL_DIR / "SKILL.md", SKILL_DIR / "references" / "rules.md"):
+        text = doc.read_text(encoding="utf-8")
+        for retired in _RETIRED_FACT_STATUSES:
+            # unextracted 是合法状态且以 extracted 结尾，靠左右边界把它排除掉
+            hit = re.search(rf"(?<![0-9A-Za-z_]){retired}(?![0-9A-Za-z_])", text)
+            assert hit is None, f"{doc.name} 仍在教已废弃的字段状态 {retired!r}"
+
+    # 防守卫空转：文档必须仍然在讲这三态，否则上面的断言等于没跑
+    skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    for status in (FACT_STATUS_UNEXTRACTED, FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE):
+        assert status in skill_text, f"SKILL.md 不再提及合法状态 {status}，这个守卫已失效"
 
 
 def test_manifest_uses_isolated_run_directory(workspace_dirs, monkeypatch) -> None:
@@ -349,26 +382,105 @@ def test_confirm_advice_action_is_rejected() -> None:
     ]
 
 
-def test_confirmed_field_never_overwritten() -> None:
+def test_platform_field_not_overwritten_but_conflict_recorded() -> None:
+    """平台输入的值 AI 不许覆盖，但分歧要留痕、要能被看见。
+
+    以前是静默 skippedConfirmed：AI 发现不对也没人知道。实测 AI 在这类字段上抓出过
+    「机组台数 6 台 vs 招标要求 60 台」——那个错会一路抄进标书，不能不管；但也不能让
+    AI 直接改人选的东西。折中是值保持人选的，候选进 alternatives、原因进 notes、
+    打 hasConflict 供页面标红，由人裁决。
+    """
     table, report = _apply(
         [
             {
                 "fieldKey": "投标机型",
                 "suggestedValue": "EW5.0-200",
                 "unit": "",
-                "evidence": "试图覆盖已确认字段",
+                "evidence": "招标文件表14 要求 EW5.0-200",
                 "confidence": 0.99,
                 "action": "fix",
             }
         ]
     )
     field = table["fields"][3]
+    # 值一个字都不动
     assert field["value"] == "EW10.0-220"
     assert field["status"] == "confirmed"
+    # 不给平台字段挂 factCurator 来源——值不是它写的，挂了会让人以为这是 AI 填的
     assert all(ref.get("type") != "factCurator" for ref in field["sourceRefs"])
-    assert report["skippedConfirmed"] == ["投标机型"]
-    # 平台输入字段被硬门禁挡住，值没被 AI 改；表内原有 3 条有值字段计数不变
+    # 但分歧要留下来
+    assert field["hasConflict"] is True
+    assert [item["value"] for item in field["alternatives"]] == ["EW5.0-200"]
+    assert "EW5.0-200" in field["notes"] and "招标文件表14" in field["notes"]
+    assert report["conflicts"] == [
+        {
+            "fieldKey": "投标机型",
+            "label": "投标机型",
+            "currentValue": "EW10.0-220",
+            "suggestedValue": "EW5.0-200",
+            "evidence": "招标文件表14 要求 EW5.0-200",
+            "confidence": 0.99,
+        }
+    ]
+    assert report["counts"]["conflicts"] == 1
+    # 表内原有 3 条有值字段计数不变
     assert table["summary"]["confirmedCount"] == 3
+
+
+def test_platform_field_agreeing_with_ai_is_not_a_conflict() -> None:
+    """AI 查证结果与人选的一致：不标红、不留痕，免得满屏假冲突。"""
+    table, report = _apply(
+        [
+            {
+                "fieldKey": "投标机型",
+                "suggestedValue": "EW10.0-220",
+                "unit": "",
+                "evidence": "招标文件与素材一致",
+                "confidence": 0.95,
+                "action": "fix",
+            }
+        ]
+    )
+    field = table["fields"][3]
+    assert field["value"] == "EW10.0-220"
+    assert not field.get("hasConflict")
+    assert report["conflicts"] == []
+    assert report["skippedConfirmed"] == ["投标机型"]
+
+
+def test_platform_field_stays_out_of_fill_bucket() -> None:
+    """平台字段没值是人还没填，AI 不替人做主——只进 fix，不进 fill。"""
+    fields = [
+        {"key": "空的平台字段", "status": "unextracted", "value": "", "platformAuthored": True},
+        {"key": "有值的平台字段", "status": "confirmed", "value": "钢塔", "platformAuthored": True},
+    ]
+
+    targets = curator._curate_targets(fields)
+
+    assert targets["fill"] == []
+    assert targets["fix"] == ["有值的平台字段"]
+
+
+def test_platform_field_recognized_without_spec_source_kind() -> None:
+    """靠建表时打的 platformAuthored 标记认，不依赖清单来源列。
+
+    实测 PRJ-0004 的 61 个字段里 sourceKind=platform 的一个都没有：投标机型的来源列
+    写的是「项目定制…」被归成 material，机组台数、基础形式连 specKey 都是空的。
+    只看 sourceKind 的话这道保护等于没有。
+    """
+    assert curator._is_platform_authored_field({"sourceKind": "material", "platformAuthored": True})
+    assert curator._is_platform_authored_field({"sourceKind": "", "platformAuthored": True})
+    # 清单确实标了平台输入的也认
+    assert curator._is_platform_authored_field({"sourceKind": "platform"})
+    # 从素材抽出来的不是平台字段
+    assert not curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "materialFact", "materialId": "RAW-1"}]}
+    )
+    # 关键回归：挂着 projectTurbineModel 来源但平台没填值的，不算平台字段——
+    # 那圈字段不论平台值空不空都会挂这个标记，拿它当判据会把 AI 的正确修正锁死
+    assert not curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "projectTurbineModel", "field": "hubHeightM"}]}
+    )
 
 
 def test_not_found_keeps_unextracted_and_writes_notes() -> None:
@@ -776,6 +888,9 @@ class FactCurateApiTests(unittest.TestCase):
 
         def fake_skill(manifest_path: Path) -> dict:
             manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            # 故意每批都全量回传，模拟 agent 越界——本用例要测的正是那道硬门禁：
+            # 「项目名称」人工改过、不在任何一批的 targets 里，agent 仍回传时必须被挡下。
+            # 并行后同一条越界建议会被每批各记一次，靠报告合并时的去重保证计数不虚高。
             Path(manifest["outputFile"]).write_text(
                 json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": suggestions}, ensure_ascii=False),
                 encoding="utf-8",
@@ -806,6 +921,55 @@ class FactCurateApiTests(unittest.TestCase):
         confirmed = by_key[confirmed_target["key"]]
         self.assertEqual(confirmed["status"], "confirmed")
         self.assertEqual(confirmed["value"], confirmed_target["value"])
+
+    def test_fill_only_skips_rebuild_and_keeps_previous_ai_values(self) -> None:
+        """「AI补空」跳过重建，上一轮 AI 填的值必须还在。
+
+        重建时只有人工写过的值跨轮存活，AI 填的一律重算——这正是「整轮重来」丢结论的
+        原因。实测同样输入两轮抓到的东西并不相同（一轮 4 条修正、一轮 6 条，只有 4 条
+        重叠），重建抹掉的就是真发现。补空模式必须绕开它。
+        """
+        project_id = self._create_project()
+        self.assertEqual(
+            self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build").status_code, 200
+        )
+        # 造一个上一轮 AI 填出来的值（挂 factCurator 来源，不是人工值）
+        project = store._require(project_id)
+        table = project["gap_state"]["projectFactTable"]
+        ai_field = next(f for f in table["fields"] if not str(f.get("value") or "").strip())
+        ai_field["value"] = "上一轮 AI 填的值"
+        ai_field["status"] = "confirmed"
+        ai_field["sourceRefs"] = [{"type": "factCurator", "action": "fill", "evidence": "上一轮证据"}]
+        store._persist_project(project)
+
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None, on_progress=None):
+            self.assertTrue(data.get("fillOnly"), "补空模式必须把 fillOnly 传到 curator")
+            return copy.deepcopy(gap_state_snapshot["projectFactTable"]), {
+                "counts": {"filled": 0},
+                "ignored": [],
+                "touchedKeys": [],
+            }
+
+        with (
+            patch(
+                "app.services.technical_gap_fact_table.build_project_fact_table"
+            ) as rebuild,
+            patch(
+                "app.services.technical_fact_curator.run_fact_curator_for_project",
+                side_effect=fake_run,
+            ),
+        ):
+            run_fact_curate_job(project_id, {"operator": "测试用户", "fillOnly": True})
+            rebuild.assert_not_called()
+
+        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
+        kept = next(f for f in after["fields"] if f["id"] == ai_field["id"])
+        self.assertEqual(kept["value"], "上一轮 AI 填的值")
+        state = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts/curate").json()
+        self.assertEqual(state["factCurateState"]["status"], "succeeded")
+        # 补空不跑 fix 桶，文案不能报「修正 0 条」——那会让人以为查过没问题
+        self.assertIn("AI补空完成", state["factCurateState"]["message"])
+        self.assertNotIn("修正", state["factCurateState"]["message"])
 
     def test_curate_endpoint_submits_background_job(self) -> None:
         """接口只提交任务：立即返回 queued，执行体不在请求里跑；进行中重复提交被拒。"""
@@ -973,7 +1137,7 @@ class FactCurateApiTests(unittest.TestCase):
             if field["key"] != edited["key"] and field.get("sourceKind") not in {"template", "platform", "derived"}
         )
 
-        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None, on_progress=None):
             # AI 跑的这段时间里，人在页面上改了第一个字段（真实路径会带 manualEdit 标记）
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
@@ -1024,7 +1188,7 @@ class FactCurateApiTests(unittest.TestCase):
         self.assertEqual(build_response.status_code, 200, build_response.text)
         gone = build_response.json()["fields"][0]
 
-        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None, on_progress=None):
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
             latest_table["fields"] = [
@@ -1291,3 +1455,364 @@ def test_cross_project_evidence_appends_source_note() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_conflict_flag_survives_save_round_trip() -> None:
+    """冲突标记要扛过保存往返，否则一保存就没了、冲突等于没报过。
+
+    alternatives 和 notes 本来就在 normalize 的保留名单里，hasConflict 原先不在——
+    页面标红一保存就消失，人再也看不到 AI 报过什么。
+    """
+    from app.services.technical_gap_fact_table import normalize_project_fact_field
+
+    conflicted = normalize_project_fact_field(
+        {
+            "label": "机组台数",
+            "value": "6",
+            "hasConflict": True,
+            "alternatives": [{"value": "60", "source": {"type": "factCurator", "evidence": "招标表14"}}],
+            "notes": "AI 查证与项目信息不一致：建议「60」",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "turbineCount"}],
+        },
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert conflicted["hasConflict"] is True
+    assert [item["value"] for item in conflicted["alternatives"]] == ["60"]
+    assert "60" in conflicted["notes"]
+
+    # 人裁决过之后前端置 False，这个 False 同样要回写，不能被当成"没这个键"丢掉
+    resolved = normalize_project_fact_field(
+        {**conflicted, "value": "60", "hasConflict": False},
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert resolved["hasConflict"] is False
+
+
+def test_fill_only_targets_leave_fix_bucket_empty() -> None:
+    """「AI补空」只补没值的字段，已有的值一律不碰。"""
+    fields = [
+        {"key": "空的", "status": "unextracted", "value": "", "sourceKind": "tender"},
+        {"key": "有值的", "status": "confirmed", "value": "7.20", "sourceKind": "material"},
+    ]
+
+    assert curator._curate_targets(fields) == {"fill": ["空的"], "fix": ["有值的"]}
+    assert curator._curate_targets(fields, fill_only=True) == {"fill": ["空的"], "fix": []}
+
+
+def test_no_targets_short_circuits_without_opening_a_session(workspace_dirs, monkeypatch) -> None:
+    """没有目标字段就别开会话——白等一轮是 8 分钟。
+
+    「AI补空」在表已经填满时最容易撞上这种情况。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    filled = [
+        {**field, "value": "已有值", "status": "confirmed"} if not field.get("value") else field
+        for field in _fields()
+    ]
+    gap_state = {"projectFactTable": _table(filled)}
+
+    with patch.object(curator, "run_technical_fact_curator_skill") as skill:
+        table, report = curator.run_fact_curator_for_project(
+            _project(), gap_state, {"fillOnly": True}
+        )
+
+    skill.assert_not_called()
+    assert report["counts"]["filled"] == 0
+    assert report["suggestionCount"] == 0
+    # 表原样返回，不因为空跑就把值动了
+    assert [f["value"] for f in table["fields"]] == [f["value"] for f in filled]
+
+
+def test_platform_authored_only_when_the_person_actually_filled_it() -> None:
+    """平台没填值的字段不算平台输入，AI 该直接改。
+
+    实测 PRJ-0004：hubHeightM / ratedPowerKw / rotorDiameterM 平台侧全是空的，值其实
+    抽自素材。但这一圈字段不论平台值空不空都会挂 projectTurbineModel 来源标记，拿它
+    当判据就会把它们一起圈进保护区——结果 AI 把「轮毂高度」从跨列串行脏值「池建昌」
+    改成 125 的正确修正被降级成"建议"，脏值反倒被锁死在表里。
+    """
+    from app.services.technical_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-PARTIAL",
+        "name": "只填了一部分机型参数的项目",
+        # 人只选了机型和台数，轮毂高度/单机容量/叶轮直径都没填
+        "turbineModel": {"model": "EW10.0-220上置", "turbineCount": "60"},
+    }
+    table = build_project_fact_table(project, {})
+    by_label = {str(f.get("label") or ""): f for f in table.get("fields") or []}
+
+    for filled in ("投标机型", "机组台数"):
+        field = by_label.get(filled)
+        assert field is not None, f"缺字段 {filled}：{sorted(by_label)[:10]}"
+        assert curator._is_platform_authored_field(field), f"{filled} 人填过，应受保护"
+
+    for blank in ("轮毂高度", "单机容量", "叶轮直径"):
+        field = by_label.get(blank)
+        if field is None:
+            continue
+        assert not curator._is_platform_authored_field(field), (
+            f"{blank} 平台侧没填值，值抽自素材，AI 必须能直接改而不是只给建议"
+        )
+
+
+def test_platform_authored_flag_survives_save_round_trip() -> None:
+    """标记要扛过保存往返，否则保存一次保护就没了。"""
+    from app.services.technical_gap_fact_table import normalize_project_fact_field
+
+    saved = normalize_project_fact_field(
+        {"label": "机组台数", "value": "60", "platformAuthored": True},
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert saved["platformAuthored"] is True
+    assert curator._is_platform_authored_field(saved)
+
+
+# ---------------------------------------------------------------- 并行分批
+
+
+def test_split_targets_balances_instead_of_following_material_class() -> None:
+    """只按 materialClass 切会被最大那批卡死，批大小要按并发算出来。
+
+    实测 59 个目标字段的类别分布是 tender 25 / wind_resource 20 / none 7 / cert 3 /
+    未指定 2 / production_base 2，前两类占 76%。整轮耗时 = 最慢那批，所以大类必须再拆。
+    """
+    dist = {"tender": 25, "wind_resource": 20, "none": 7, "cert": 3, "": 2, "production_base": 2}
+    fields, keys = [], []
+    for index, (cls, count) in enumerate(dist.items()):
+        for seq in range(count):
+            key = f"{index}-{seq}"
+            fields.append({"key": key, "materialClass": cls})
+            keys.append(key)
+
+    batches = curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=8)
+    sizes = [len(b["fill"]) + len(b["fix"]) for b in batches]
+
+    assert sum(sizes) == len(keys), "切分丢字段了"
+    assert len(batches) <= 8
+    # 最大批不超过总量的两成——纯按类别切时它是 42%
+    assert max(sizes) / sum(sizes) < 0.2, f"批次不均衡：{sizes}"
+
+
+def test_split_targets_batch_count_does_not_track_field_count() -> None:
+    """清单换大版时批数不能跟着线性涨，否则波次翻倍反而更慢。"""
+    def batches_for(total: int) -> int:
+        fields = [{"key": f"k{i}", "materialClass": "tender"} for i in range(total)]
+        keys = [f["key"] for f in fields]
+        return len(curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=8))
+
+    assert batches_for(59) <= 8
+    assert batches_for(150) <= 8
+    assert batches_for(400) <= 8
+    # 字段少于批数上限时不切碎批——每个会话的固定开销是实打实的
+    assert batches_for(5) <= 2
+    assert batches_for(1) == 1
+
+
+def test_batch_manifest_keeps_full_field_roster_but_trims_non_targets(workspace_dirs, monkeypatch) -> None:
+    """切分只切 targets，可见字段仍是全表——交叉印证靠的就是同时看到别的字段。
+
+    实测 agent 分得清「招标场址要求安全等级」和「机型认证安全等级」、分得清「功率曲线
+    取值的湍流度」和「认证 Iref」，前提是这些字段在同一份 manifest 里。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+    batch = {"fill": ["招标单机容量出口端mw"], "fix": []}
+
+    manifest, _ = curator.build_fact_curator_manifest(
+        _project(), gap_state, {}, targets_override=batch
+    )
+
+    fields = manifest["projectFactTable"]["fields"]
+    assert len(fields) == 4, "全表字段都要在，只有 targets 被切"
+    assert manifest["targets"] == batch
+
+    by_key = {f["key"]: f for f in fields}
+    target = by_key["招标单机容量出口端mw"]
+    # 目标字段给全键位，空值也留成空串（SKILL 输入契约声明「value：当前值，可空」）
+    for contract_key in ("label", "value", "unit", "status", "sourceKind", "specKey", "materialClass"):
+        assert contract_key in target, f"目标字段缺契约键 {contract_key}"
+    # 非目标只留「叫什么、什么值」，不带 sourceRefs/notes 那些 agent 用不上的
+    context = by_key["投标机型"]
+    assert set(context) <= {"key", "label", "value", "unit"}, f"上下文字段没精简：{sorted(context)}"
+
+
+def test_one_batch_failure_keeps_the_other_batches_results(workspace_dirs, monkeypatch) -> None:
+    """一批挂了不能带走别批已经拿到的结果——这正是增量落表的意义。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    monkeypatch.setattr(settings, "fact_curate_concurrency", 2)
+    gap_state = {"projectFactTable": _table()}
+    import threading
+
+    # 并发下 append 与 len 之间有竞态，两个线程会同时读到 2，谁都不失败——用锁取号
+    lock = threading.Lock()
+    seen: list[Path] = []
+
+    def flaky_skill(manifest_path: Path) -> dict:
+        with lock:
+            seen.append(manifest_path)
+            call_no = len(seen)
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        if call_no == 1:
+            raise RuntimeError("第一批 mock 失败")
+        keys = set(manifest["targets"]["fill"]) | set(manifest["targets"]["fix"])
+        mine = [
+            {
+                "fieldKey": key,
+                "suggestedValue": "并行填的值",
+                "unit": "",
+                "evidence": "mock 证据",
+                "confidence": 0.8,
+                "action": "fill" if key in set(manifest["targets"]["fill"]) else "fix",
+            }
+            for key in keys
+        ]
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": mine}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=flaky_skill):
+        table, report = curator.run_fact_curator_for_project(_project(), gap_state, {})
+
+    assert len(report["batchErrors"]) == 1
+    assert "第一批 mock 失败" in report["batchErrors"][0]["message"]
+    assert report["batchDone"] == report["batchTotal"]
+    # 没失败那几批的结果照样落了表
+    assert report["counts"]["filled"] + report["counts"]["fixed"] > 0
+    assert any(str(f.get("value") or "") == "并行填的值" for f in table["fields"])
+
+
+def test_all_batches_failing_raises_instead_of_reporting_empty(workspace_dirs, monkeypatch) -> None:
+    """全批失败要如实报错：报「跑完了但一条建议都没有」跟「查了没找到」分不开。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+
+    with patch.object(
+        curator, "run_technical_fact_curator_skill", side_effect=RuntimeError("opencode 全挂")
+    ):
+        with pytest.raises(RuntimeError, match="均失败"):
+            curator.run_fact_curator_for_project(_project(), gap_state, {})
+
+
+def test_progress_reports_running_batches_not_just_completed(workspace_dirs, monkeypatch) -> None:
+    """开跑就要报进度，不能只在批完成时报。
+
+    实测单批要 4 分半，只在完成时报的话头几分钟进度纹丝不动，用户看着像卡死。
+    进行中的批数也要报——前端靠它画「N 批进行中」那段脉冲。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    monkeypatch.setattr(settings, "fact_curate_concurrency", 2)
+    gap_state = {"projectFactTable": _table()}
+    seen: list[dict] = []
+
+    def fake_skill(manifest_path: Path) -> dict:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
+        _, report = curator.run_fact_curator_for_project(
+            _project(), gap_state, {}, on_progress=seen.append
+        )
+
+    assert seen, "一次进度都没报"
+    total = report["batchTotal"]
+    assert all(item["batchTotal"] == total for item in seen)
+    # 有过「还没完成任何一批但已经有批在跑」的时刻——这正是进度条能立刻动起来的依据
+    assert any(item["batchDone"] == 0 and item["batchRunning"] > 0 for item in seen), seen
+    # 收尾时全部完成、没有残留的进行中
+    assert seen[-1]["batchDone"] == total
+    assert seen[-1]["batchRunning"] == 0
+
+
+def test_progress_failure_does_not_break_the_run(workspace_dirs, monkeypatch) -> None:
+    """进度上报炸了不该带走整轮结果——它只是给人看的。"""
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    gap_state = {"projectFactTable": _table()}
+
+    def fake_skill(manifest_path: Path) -> dict:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    def boom(_payload: dict) -> None:
+        raise RuntimeError("进度写库炸了")
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
+        table, report = curator.run_fact_curator_for_project(
+            _project(), gap_state, {}, on_progress=boom
+        )
+
+    assert report["batchDone"] == report["batchTotal"]
+    assert table["fields"]
+
+
+def test_batch_count_never_exceeds_the_cap() -> None:
+    """批数绝不能超过上限——多出来的一批就是多出来的一整波。
+
+    实测代价极大：上限 4 时早先的实现切出 5 批（零头合并那步会新开批次），第 5 批只有
+    4 个字段，却让整轮从预期约 5 分钟变成 10分43秒——4 并发跑 5 批，前 4 批并行完，
+    第 5 批只能等槽位，等于在后面串行接了一整批。
+    """
+    dist = {"tender": 25, "wind_resource": 20, "none": 7, "cert": 3, "": 2, "production_base": 2}
+    fields, keys = [], []
+    for index, (cls, count) in enumerate(dist.items()):
+        for seq in range(count):
+            key = f"{index}-{seq}"
+            fields.append({"key": key, "materialClass": cls})
+            keys.append(key)
+
+    for cap in (1, 2, 3, 4, 5, 8, 16, 32):
+        batches = curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=cap)
+        sizes = [len(b["fill"]) + len(b["fix"]) for b in batches]
+        assert len(batches) <= cap, f"上限 {cap} 却切出 {len(batches)} 批：{sizes}"
+        assert sum(sizes) == len(keys), f"上限 {cap} 时丢字段：{sum(sizes)} != {len(keys)}"
+
+    # 主场景：上限 4 要正好切 4 批，不能是 5
+    four = curator.split_curate_targets({"fill": keys, "fix": []}, fields, max_batches=4)
+    assert len(four) == 4, [len(b["fill"]) + len(b["fix"]) for b in four]
+
+
+def test_running_count_never_exceeds_concurrency(workspace_dirs, monkeypatch) -> None:
+    """进行中的批数不能超过并发度，否则进度条画出来是假的。
+
+    加法在 worker 线程、减法却在主线程收口时做的话，两者之间有个窗口：worker 算完、
+    槽位已腾出让下一批开跑，计数里前一批却还没减掉。实测显示过「4 并发却有 5 批进行中」。
+    """
+    monkeypatch.setattr(curator, "_curator_materials", lambda project, gap_state: [])
+    monkeypatch.setattr(settings, "fact_curate_concurrency", 2)
+    monkeypatch.setattr(settings, "fact_curate_batches_per_slot", 2)
+    gap_state = {"projectFactTable": _table()}
+    seen: list[dict] = []
+
+    def fake_skill(manifest_path: Path) -> dict:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        Path(manifest["outputFile"]).write_text(
+            json.dumps({"schema": "bid-tech-fact-curate-v1", "suggestions": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {"schema": "bid-tech-fact-curate-v1", "suggestionsPath": manifest["outputFile"]}
+
+    with patch.object(curator, "run_technical_fact_curator_skill", side_effect=fake_skill):
+        curator.run_fact_curator_for_project(_project(), gap_state, {}, on_progress=seen.append)
+
+    for item in seen:
+        assert item["batchRunning"] <= 2, f"进行中 {item['batchRunning']} 超过并发 2：{item}"
+        assert item["batchDone"] + item["batchRunning"] <= item["batchTotal"], item

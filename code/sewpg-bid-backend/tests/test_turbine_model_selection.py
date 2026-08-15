@@ -373,3 +373,56 @@ class TurbineModelSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- 正式材料型号编码
+
+
+def test_formal_model_code_strips_chinese_suffix() -> None:
+    """事实表落值只写英数字编码：中文布局/配置后缀不进正式投标材料。
+
+    按「中文一律剥掉」而不是匹配 LAYOUT_WORDS 词表——词表只收了上置/下置，
+    MODEL_PATTERN 却还认海外版、碳叶片，漏一个就把中文带进标书。
+    """
+    from app.services.turbine_models import formal_model_code
+
+    assert formal_model_code("EW10.0-220上置") == "EW10.0-220"
+    assert formal_model_code("EW10.0-220下置") == "EW10.0-220"
+    assert formal_model_code("EW10.0-220海外版") == "EW10.0-220"
+    assert formal_model_code("EW10.0-220碳叶片") == "EW10.0-220"
+    # 英数字尾缀是型号的一部分，不能跟着被剥掉
+    assert formal_model_code("EW10.0-220-125") == "EW10.0-220-125"
+    assert formal_model_code("EW10.0-220") == "EW10.0-220"
+    # 剥完为空说明本来就不是型号编码，原样返回不硬改
+    assert formal_model_code("整机") == "整机"
+    assert formal_model_code("") == ""
+    assert formal_model_code(None) == ""
+
+
+def test_fact_table_model_value_drops_suffix_but_keeps_it_for_tracing() -> None:
+    """事实表的值用干净编码；source_ref 与分组标签保留原始后缀。
+
+    平台侧那份必须留后缀：material_model_fit 靠 aliases 区分上置/下置来过滤素材，
+    抹掉会让素材匹配失灵。所以只在落值这一层剥。
+    """
+    from app.services.technical_gap_fact_table import build_project_fact_table
+
+    project = {
+        "id": "PRJ-SUFFIX",
+        "name": "后缀测试项目",
+        "turbineModel": {"model": "EW10.0-220上置", "turbineCount": "60", "hubHeightM": "125"},
+    }
+    table = build_project_fact_table(project, {})
+    by_label = {str(f.get("label") or ""): f for f in table.get("fields") or []}
+
+    model_field = by_label.get("投标机型")
+    assert model_field is not None, f"事实表里没有投标机型字段：{sorted(by_label)[:10]}"
+    assert model_field["value"] == "EW10.0-220"
+    assert "上置" not in model_field["value"]
+    # 追溯链路仍能看到人当初选的是哪个布局
+    ref = next(r for r in model_field["sourceRefs"] if r.get("type") == "projectTurbineModel")
+    assert ref["turbineModel"] == "EW10.0-220上置"
+
+    plan_field = by_label.get("投标方案")
+    if plan_field is not None and plan_field.get("value"):
+        assert "上置" not in plan_field["value"]

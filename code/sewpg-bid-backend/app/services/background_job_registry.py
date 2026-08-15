@@ -71,6 +71,12 @@ def get_job_status(name: str) -> dict[str, Any]:
     return _public_status(name)
 
 
+def is_job_active(name: str) -> bool:
+    job = _JOBS.get(name)
+    task = job.get("task") if isinstance(job, dict) else None
+    return bool(job and job.get("status") == "running" and task is not None and not task.done())
+
+
 def update_job_progress(name: str, progress: dict[str, Any]) -> None:
     job = _JOBS.get(name)
     if job is not None and job["status"] == "running":

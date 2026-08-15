@@ -7,7 +7,7 @@
 `factcurate <manifest>` 脚本只做机械工作，产出 `briefFile`：
 
 - `fields[].snippets`：按 label / reviewLabel 在招标文件与素材全文中检索到的原文片段（含来源名）。
-- `fields[].flags`：对 extracted 字段的机械脏数据标记：
+- `fields[].flags`：对 `fix` 桶字段（已经有取值的）的机械脏数据标记：
   - `serial-text`：值疑似表格跨列串行（多个数值用 `/` 连接、或数值后拖了另一个字段的中文名）；
   - `range`：数值超出常见合理区间（校验表见下）；
   - `unit-missing`：label 含单位标注（如 `（m/s）`）但字段 unit 为空。

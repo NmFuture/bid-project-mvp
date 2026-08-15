@@ -14,10 +14,9 @@ from app.services.identity import build_project_material_scope
 from app.services.material_folder_scope import project_material_root_path
 from app.services.peripheral import PeripheralError
 from app.services.template_store import template_fallback_payload
-from app.services.technical_parse_assets import (
-    TechnicalParseAssetError,
-    persist_technical_parse_result,
-    sync_technical_parse_appendices,
+from app.services.technical_parse_asset_sync_job import (
+    recover_stale_technical_parse_asset_sync,
+    schedule_technical_parse_asset_sync,
 )
 from app.services.technical_project_material_copy_job import schedule_technical_material_copy
 from app.services.technical_project_material_folder import (
@@ -102,6 +101,8 @@ class BidProjectService:
 
     def get(self, project_id: str) -> dict[str, Any]:
         self.ensure_project(project_id)
+        if self.sync_technical_parse_assets:
+            recover_stale_technical_parse_asset_sync(project_id)
         return get_workspace_project_detail(
             project_id,
             not_found_error=lambda _project_id: HTTPException(status_code=404, detail=self.not_found_message),
@@ -206,23 +207,6 @@ class BidProjectService:
                 for key, value in sync_result.items()
                 if key != "parseResult"
             }
-        technical_sync_status: dict[str, Any] | None = None
-        if self.sync_technical_parse_assets and decision == "participate":
-            parse_result = (
-                current_project.get("parse_result")
-                if isinstance(current_project.get("parse_result"), dict)
-                else {}
-            )
-            candidate_project["parse_result"] = parse_result
-            try:
-                technical_sync_status = await sync_technical_parse_appendices(
-                    candidate_project,
-                    parse_result,
-                )
-            except TechnicalParseAssetError as exc:
-                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-            finally:
-                persist_technical_parse_result(project_id, parse_result)
         project = update_workspace_project(
             project_id,
             payload,
@@ -243,8 +227,8 @@ class BidProjectService:
                 )
         if business_sync_status is not None:
             project["businessParseAssetSync"] = business_sync_status
-        if technical_sync_status is not None:
-            project["technicalParseAssetSync"] = technical_sync_status
+        if self.sync_technical_parse_assets and decision == "participate":
+            project["technicalParseAssetSyncState"] = schedule_technical_parse_asset_sync(project_id)
         return project
 
     async def delete(self, project_id: str) -> dict[str, Any]:
