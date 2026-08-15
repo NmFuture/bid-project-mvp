@@ -1281,7 +1281,9 @@ def test_manifest_materials_annotated_with_class_home_project(workspace_dirs, mo
     material = manifest["materials"][0]
     assert material["materialClass"] == "tower_quantity"
     assert material["homeProject"] == "事实表维护测试项目"
-    assert material["crossProject"] is False
+    # 本项目素材不再输出 crossProject：实测 175 份全是 false，空值白占 prompt，
+    # 分批并发后每批都要付一遍
+    assert "crossProject" not in material
 
 
 def test_manifest_injects_cross_project_candidates_for_missing_classes(workspace_dirs, monkeypatch) -> None:
@@ -1323,7 +1325,7 @@ def test_manifest_injects_cross_project_candidates_for_missing_classes(workspace
     # 本项目素材在前，缺失类别候选每类最多 3 份注入在后
     assert [item["id"] for item in materials] == ["RAW-OWN", "RAW-X0", "RAW-X1", "RAW-X2"]
     own, *injected = materials
-    assert own["crossProject"] is False
+    assert "crossProject" not in own
     for material in injected:
         assert material["crossProject"] is True
         assert material["homeProject"] == "乙项目"
@@ -1816,3 +1818,50 @@ def test_running_count_never_exceeds_concurrency(workspace_dirs, monkeypatch) ->
     for item in seen:
         assert item["batchRunning"] <= 2, f"进行中 {item['batchRunning']} 超过并发 2：{item}"
         assert item["batchDone"] + item["batchRunning"] <= item["batchTotal"], item
+
+
+def test_material_list_omits_empty_values_and_wrong_model(workspace_dirs, monkeypatch) -> None:
+    """素材清单不输出空值，也不给别的机型的素材。
+
+    实测 175 份素材占 manifest 64.8 KB（整个 manifest 的一半，约 1.6 万 token），其中
+    crossProject 全是 false、materialClass 只有 24 份非空、homeProject 只有 29 份、
+    path 只有 60 份——空值白占 22 KB。分批并发后每一批都要付一遍。
+
+    另有 7 份是 EW10.0-220「下置」的认证证书，而本项目选的是「上置」，根本用不上。
+    """
+    project = {"id": "P-MAT", "name": "素材裁剪测试", "turbineModel": {"model": "EW10.0-220上置"}}
+    monkeypatch.setattr(
+        curator,
+        "project_fact_material_index",
+        lambda *a, **k: [
+            # 本项目素材，除 id/name 外全空
+            {"id": "RAW-BARE", "name": "光秃秃的素材.docx"},
+            # 带完整元数据的
+            {
+                "id": "RAW-FULL",
+                "name": "风资源评估报告.docx",
+                "folderPath": "技术标/项目定制/素材裁剪测试",
+                "materialTier": "project",
+            },
+            # 明确属于另一个机型（下置），本项目是上置
+            {
+                "id": "RAW-WRONG",
+                "name": "EW10.0-220下置-认证证书.pdf",
+                "folderPath": "技术标/标准文件/EW10.0-220下置/认证证书",
+                "materialTier": "standard",
+            },
+        ],
+    )
+    monkeypatch.setattr(curator, "_cross_project_curator_candidates", lambda *a, **k: [])
+
+    materials = curator._curator_materials(project, {})
+    by_id = {m["id"]: m for m in materials}
+
+    assert "RAW-WRONG" not in by_id, "下置素材不该给上置项目"
+    bare = by_id["RAW-BARE"]
+    assert set(bare) == {"id", "name"}, f"空值不该输出：{sorted(bare)}"
+    full = by_id["RAW-FULL"]
+    assert full["folderPath"] == "技术标/项目定制/素材裁剪测试"
+    assert full["materialTier"] == "project"
+    # 本项目素材不标 crossProject（false 不输出）
+    assert "crossProject" not in full
