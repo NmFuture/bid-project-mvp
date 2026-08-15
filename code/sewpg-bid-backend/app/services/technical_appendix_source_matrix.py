@@ -121,6 +121,71 @@ def source_terms(value: Any) -> list[str]:
     return terms
 
 
+def container_segment_key(term: Any) -> str:
+    """复合来源词（文件夹-文件-sheet 逐级细化）的容器段（首段）归一键。
+
+    规则来源常写成「商务报价册-E 推荐备品备件（如果有）的分项报价」：素材文本只有
+    文件名与路径，整词永远匹配不上；首段（通常是文件夹名）命中素材的 folderPath
+    即可定位到工作簿，sheet 级定位由填写链路回源读原件时自行完成。
+    只对 folderPath 判定，避免「风电场空气密度-功率曲线与发电量-Ct」误命中文件名
+    里含「风电场空气密度」的图片素材。非复合词（无分隔符）返回空，不改变既有行为。
+    """
+    segments = re.split(r"[-—–]", clean_text(term), maxsplit=1)
+    if len(segments) < 2:
+        return ""
+    key = normalize_match_text(segments[0])
+    return key if len(key) >= 2 else ""
+
+
+# 容器段为文件名前缀时只认表格类文件：有 sheet/列 结构才可能承载复合词的后续段
+_SPREADSHEET_EXTS = (".xlsx", ".xls", ".csv")
+
+
+def strip_term_annotation(term: Any) -> str:
+    """去掉规则来源词里的括号注（如「设计认证（附完整的认证证书图片）」）。
+
+    括号内容是对来源的要求说明，不是素材名称的一部分；不去掉会让整词匹配永远失败。
+    """
+    return re.sub(r"[（(][^）)]*[）)]", "", clean_text(term)).strip()
+
+
+# 文档类型后缀词：规则写「低电压穿越报告」、素材实际叫「低电压穿越评估证书」，
+# 类型词是文档形态而非名称的一部分，剥掉后按核心词匹配
+_DOC_TYPE_SUFFIXES = ("报告", "证书", "文件", "复印件", "扫描件")
+
+
+def strip_doc_type_suffix(term: Any) -> str:
+    """剥掉规则来源词（去括号注后）尾部的文档类型后缀，返回核心词。
+
+    只剥一层；核心词过短（归一后 <3 字符）时调用方应放弃该兜底，避免
+    「认证证书」→「认证」这类过宽匹配。
+    """
+    text = strip_term_annotation(term)
+    for suffix in _DOC_TYPE_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return text.strip()
+
+
+def material_container_segment_hit(material: dict[str, Any], term: Any) -> str:
+    """容器段命中判定：folderPath 必查；文件名前缀仅对表格类文件放开。
+
+    「风电场空气密度-功率曲线与发电量-修正功率」这类 文件名前缀-sheet-列 复合词，
+    容器段在 xlsx 文件名里（风电场空气密度W10.0-220_….xlsx）；图片/文档没有
+    sheet 结构，按名称放开会把 风电场空气密度图片.png 误判成曲线数据源。
+    """
+    key = container_segment_key(term)
+    if not key:
+        return ""
+    if key in normalize_match_text(material.get("folderPath")):
+        return key
+    raw_name = str(material.get("name") or material.get("cleanedFileName") or "")
+    if raw_name.lower().endswith(_SPREADSHEET_EXTS) and key in normalize_match_text(raw_name):
+        return key
+    return ""
+
+
 def _header_kind(value: Any) -> str:
     text = normalize_match_text(value)
     if not text:
@@ -345,6 +410,12 @@ def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tup
             if term_key in text:
                 score += 420 if scope_hit else 260
                 reasons.append(f"{scope} 来源规定命中：{term}")
+            elif (main_key := normalize_match_text(strip_term_annotation(term))) and main_key != term_key and main_key in text:
+                score += 400 if scope_hit else 240
+                reasons.append(f"{scope} 来源规定命中（去括号注）：{term}")
+            elif (core_key := normalize_match_text(strip_doc_type_suffix(term))) and core_key != term_key and len(core_key) >= 3 and core_key in text:
+                score += 380 if scope_hit else 220
+                reasons.append(f"{scope} 来源规定命中（去类型后缀）：{term}")
             elif any(
                 part_key and len(part_key) >= 2 and part_key in text
                 for part in source_terms(term)
@@ -352,6 +423,9 @@ def matrix_material_score(material: dict[str, Any], rule: dict[str, Any]) -> tup
             ):
                 score += 180 if scope_hit else 120
                 reasons.append(f"{scope} 来源规定部分命中：{term}")
+            elif material_container_segment_hit(material, term):
+                score += 160 if scope_hit else 100
+                reasons.append(f"{scope} 来源容器命中：{term}")
     if score and _tier_is_project(tier):
         score += 30
     elif score and _tier_is_standard(tier):
