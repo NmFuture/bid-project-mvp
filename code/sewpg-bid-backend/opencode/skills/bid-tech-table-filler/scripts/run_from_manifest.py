@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import re
+from collections import Counter
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -47,6 +48,8 @@ FILL_VALUE_HEADERS = (
 )
 FIELD_HEADERS = ("主要项目", "参数名称", "指标名称", "项目名称", "项目", "字段", "名称", "条款")
 NON_VALUE_HEADERS = ("编号", "序号", "备注", "说明", "计量单位", "单位", "页码")
+# 模板尾部的签名/盖章行（业主固定模板结构特征），不是待填字段行
+SIGNATURE_ROW_TOKENS = ("授权代表签名", "签章", "盖章")
 REQUIREMENT_VALUE_HEADERS = ("招标人要求值", "招标要求值", "技术要求值", "要求值", "招标人要求", "招标要求")
 BIDDER_RESPONSE_HEADERS = ("投标人响应值", "投标响应值", "响应值", "投标响应", "投标值")
 GENERIC_FACT_LIMIT_PER_FILE = 500
@@ -2448,6 +2451,10 @@ def _extract_fields_from_table(
             continue
         field = cells[field_col]
         value = cells[value_col]
+        # 模板尾部签名/盖章行不是字段行（D.5 变体里这类行会被通用字段列误判成
+        # 待填字段，1 个垃圾字段就挡住网格型兜底）
+        if any(token in field for token in SIGNATURE_ROW_TOKENS):
+            continue
         if not cell_needs_fill(value):
             continue
         number = cells[0] if cells else ""
@@ -2520,14 +2527,20 @@ def extract_target_fields(spec: AppendixSpec) -> list[dict[str, Any]]:
     # 参数表路径一个字段都取不到时，再按清单型（行标签 + 多待填列）重试。
     # 放在兜底位置而不是前置分流：已能正常出字段的附表行为完全不变，只有原本
     # 0 字段（金标反评 B.1.1 43 行全丢）的清单表才走这条路。
-    return extract_list_target_fields(spec, doc)
+    fields = extract_list_target_fields(spec, doc)
+    if fields:
+        return fields
+    # 再兜底单元格级结构：网格型（曲线表，行键 × 数据列）与清单行型
+    # （记录行全空待生成）。同样是 0 字段才触发，不影响已出字段的附表。
+    return extract_grid_cell_target_fields(spec, doc)
 
 
 def table_is_curve_matrix(table: Any, header_row: int) -> bool:
     """曲线矩阵表判据（与 _extract_fields_from_table 内一致）。
 
-    曲线矩阵表无逐格响应单元格，设计上就该在字段抽取阶段返回 0 字段，
-    清单兜底不能把它们拉回逐格路径。
+    曲线矩阵表不是「字段行 + 响应列」结构，参数表路径与清单兜底路径都应
+    对它返回 0 字段；它的单元格级目标由网格型兜底（detect_matrix_table_layout）
+    产出。
     """
     curve_role_cols = [
         idx
@@ -2563,6 +2576,389 @@ def extract_list_target_fields(spec: AppendixSpec, doc: Any) -> list[dict[str, A
                 remark_col=remark_col,
             )
         )
+    return fields
+
+
+# 图片占位列的表头词（业主模板结构特征：「功率曲线对比图」「推力系数曲线」一类）。
+IMAGE_HEADER_TOKENS = ("对比图", "曲线图", "示意图", "图片", "照片")
+# 占位文字只在数据行时的识别词：比表头词多一个「曲线」（「推力系数曲线」逐行写死、
+# 表头为空，见 D.5）。「曲线」不进表头词表——「保证功率曲线」这类数据列表头不能误判。
+PLACEHOLDER_REPEAT_TOKENS = IMAGE_HEADER_TOKENS + ("曲线",)
+# 单元格级路径里不作为填写目标的列：序号/编号/备注/说明/页码是模板结构列，
+# 注意「单位」「数量」不能进这个词表——清单行型（备品备件清单）的单位/数量
+# 本身就是待生成的记录内容。
+CELL_SKIP_HEADERS = ("编号", "序号", "备注", "说明", "页码")
+
+
+def column_is_image_placeholder(table: Any, header_row: int, col: int, header_text: str) -> bool:
+    """图片占位列判据（都是结构特征，不针对单个项目样本）：
+    1. 表头含图类词；
+    2. 数据行大面积原样重复表头文字（占位文字逐行照抄表头，如「功率曲线对比图」）；
+    3. 表头为空、占位文字只写在数据行（D.5 末列每行写死「推力系数曲线」）：
+       非空数据格高度重复同一段曲线/图类文字。"""
+    if any(token in header_text for token in IMAGE_HEADER_TOKENS):
+        return True
+    cells = [
+        clean(row.cells[col].text)
+        for row in table.rows[header_row + 1 :]
+        if col < len(row.cells)
+    ]
+    nonempty = [text for text in cells if text]
+    if len(nonempty) < 2:
+        return False
+    if header_text:
+        repeated = sum(1 for text in nonempty if text == header_text)
+        if repeated / len(nonempty) >= 0.5:
+            return True
+    # 判据 3：占优文本占比 ≥0.8 且含曲线/图类词（允许少数行被注记打断，
+    # 如 D.5 末行「风电场空气密度为kg/m3」）
+    dominant, count = Counter(nonempty).most_common(1)[0]
+    return count / len(nonempty) >= 0.8 and any(token in dominant for token in PLACEHOLDER_REPEAT_TOKENS)
+
+
+def dominant_cell_text(table: Any, header_row: int, col: int) -> str:
+    """列数据行的占优文本：图片占位列的表头为空时，拿占位文字当列标签用。"""
+    texts = [
+        clean(row.cells[col].text)
+        for row in table.rows[header_row + 1 :]
+        if col < len(row.cells) and clean(row.cells[col].text)
+    ]
+    if not texts:
+        return ""
+    # clean() 把单元格内换行转成 " / "，首尾的空段会留下 "/ " 残片，剥掉
+    return Counter(texts).most_common(1)[0][0].strip(" /")
+
+
+def detect_matrix_table_layout(table: Any) -> tuple[int, tuple[int, ...]] | None:
+    """数据网格型（曲线表）布局检测：返回 (header_row, 图片占位列)。
+
+    网格型每行一个风速区间（或整行待生成），功率/推力等数据列逐格待填，
+    另有图片占位列。与清单型的差别：网格型靠曲线角色列（matrix_role）认定，
+    行键可预填（风速区间）也可为空（退化为行号）。返回 None 交回其他路径。
+    """
+    for header_row, row in enumerate(table.rows[:3]):
+        cells = [clean(cell.text) for cell in row.cells]
+        if len(cells) < 3 or not row_is_header_like(cells):
+            continue
+        role_cols = 0
+        image_cols: list[int] = []
+        seen_tc: list[Any] = []
+        for col, header in enumerate(cells):
+            tc = row.cells[col]._tc  # 横向合并单元格（对比图占两列）只认一次
+            if any(tc is seen for seen in seen_tc):
+                continue
+            seen_tc.append(tc)
+            # 表头为空的列也要过图片占位判据：D.5 末列表头为空、占位文字只在数据行
+            if column_is_image_placeholder(table, header_row, col, header):
+                image_cols.append(col)
+            elif header and matrix_role(header):
+                role_cols += 1
+        if not role_cols:
+            continue
+        data_rows = table.rows[header_row + 1 :]
+        if len(data_rows) < 3:
+            continue
+        # 防误伤：预填数字行键（风速区间/平均风速）或图片占位列至少占一条，
+        # 避免把表头里偶然带「功率」字样的普通表误判成曲线网格。
+        numeric_rows = sum(1 for data_row in data_rows if row_numeric_key(data_row) is not None)
+        if numeric_rows < 3 and not image_cols:
+            continue
+        return header_row, tuple(image_cols)
+    return None
+
+
+def detect_blank_list_layout(table: Any) -> tuple[int, tuple[int, ...], tuple[int, ...]] | None:
+    """清单行型（每行一条记录、数据行全空待生成）布局检测。
+
+    与清单兜底路径的差别：兜底路径要求行标签列预填（供货清单已有货物名称），
+    本路径对应备品备件清单/培训计划表/进度表这类「记录行全空待生成」的表。
+    判据：存在表头行，且其下至少一行整行为空（签名/注记等非空行不算记录行，
+    抽取时跳过）。返回 (header_row, 待填列, 图片占位列)。
+    """
+    for header_row, row in enumerate(table.rows[:3]):
+        cells = [clean(cell.text) for cell in row.cells]
+        if len(cells) < 2 or not row_is_header_like(cells):
+            continue
+        data_rows = table.rows[header_row + 1 :]
+        if not any(all(not clean(cell.text) for cell in data_row.cells) for data_row in data_rows):
+            continue
+        image_cols: list[int] = []
+        fill_cols: list[int] = []
+        seen_tc: list[Any] = []
+        for col, header in enumerate(cells):
+            tc = row.cells[col]._tc
+            if any(tc is seen for seen in seen_tc):
+                continue
+            seen_tc.append(tc)
+            if any(token in header for token in CELL_SKIP_HEADERS):
+                continue
+            if column_is_image_placeholder(table, header_row, col, header):
+                image_cols.append(col)
+            else:
+                fill_cols.append(col)
+        if fill_cols:
+            return header_row, tuple(fill_cols), tuple(image_cols)
+    return None
+
+
+def _build_cell_field(
+    spec: AppendixSpec,
+    *,
+    table_index: int,
+    row_index: int,
+    col: int,
+    row_key: str,
+    column_label: str,
+    remark: str,
+    cell_kind: str,
+) -> dict[str, Any]:
+    """单元格级字段（网格型/清单行型共用）：行键 × 列头定位一格。
+
+    字段形状与清单型一致（listRowLabel/listColumnLabel），写回坐标由
+    tableIndex/rowIndex/valueCol 逐字段带出，fill_doc/apply 校验无需改动。
+    """
+    field_name = f"{row_key} {column_label}".strip()
+    return {
+        "id": f"{spec.prefix}-T{table_index}R{row_index:02d}C{col:02d}",
+        "rowIndex": row_index,
+        "tableIndex": table_index,
+        "valueCol": col,
+        "unitCol": None,
+        "group": "",
+        "field": field_name,
+        # 网格/清单列的单位口径在列头里（如「标准空气密度下功率（kW）」）
+        "unit": field_embedded_unit(column_label),
+        "remark": remark,
+        "requirementValue": "",
+        "concepts": [] if cell_kind == "image" else concepts_for(field_name),
+        "generic": True,
+        "listColumnLabel": column_label,
+        "listRowLabel": row_key,
+        "listColumnAxis": list_column_axis(column_label),
+        "cellKind": cell_kind,
+        # 图片占位列：本期不支持图片插入，apply 统一降级 [待人工补充]
+        "imagePlaceholder": cell_kind == "image",
+    }
+
+
+def _extract_matrix_fields_from_table(
+    spec: AppendixSpec,
+    table: Any,
+    *,
+    table_index: int,
+    header_row: int,
+    image_cols: tuple[int, ...],
+    remark_col: int | None,
+) -> list[dict[str, Any]]:
+    """网格型表字段抽取：数据行里每个待填单元格是一个字段（行键 × 列头）。
+
+    行键取该行最左的预填实值（风速区间等），全空行退化为「第N行」。待填格
+    不限于曲线角色列：风速列在空表里同样待生成（D.1 推力系数表行键为空）。
+    """
+    header_cells = [clean(cell.text) for cell in table.rows[header_row].cells]
+    skip_cols = set(image_cols)
+    if remark_col is not None:
+        skip_cols.add(remark_col)
+    skip_cols.update(
+        col for col, header in enumerate(header_cells)
+        if any(token in header for token in CELL_SKIP_HEADERS)
+    )
+    fields: list[dict[str, Any]] = []
+    # 图片占位列常纵向合并成一个通栏大格（一条曲线就一张图），跨行去重：
+    # 同一合并区域只出一个字段，避免逐行决策反复写同一格（后者覆盖前者）。
+    seen_image_tc: list[Any] = []
+    # 行键预填数字的曲线表（D.1 功率曲线），尾部的签名/注记行（如
+    # 「投标人授权代表签名」）没有数字键，不是数据行，整行跳过；行键全空的
+    # 曲线表（D.5）退化为：图片占位列之外出现实值的行当注记/签名行跳过。
+    data_rows = table.rows[header_row + 1 :]
+    keyed = any(row_numeric_key(data_row) is not None for data_row in data_rows)
+    data_no = 0
+    for idx in range(header_row + 1, len(table.rows)):
+        row = table.rows[idx]
+        if keyed:
+            if row_numeric_key(row) is None:
+                continue
+        else:
+            probe = [
+                clean(cell.text)
+                for col, cell in enumerate(row.cells)
+                if col not in skip_cols
+            ]
+            if any(text and not cell_needs_fill(text) for text in probe):
+                continue
+        data_no += 1
+        cells = [clean(cell.text) for cell in row.cells]
+        # 横向合并单元格的延续列（对比图占两列）：整行只认头一次
+        seen_tc: list[Any] = []
+        merged_continuation: set[int] = set()
+        for col in range(len(cells)):
+            tc = row.cells[col]._tc
+            if any(tc is seen for seen in seen_tc):
+                merged_continuation.add(col)
+            else:
+                seen_tc.append(tc)
+        row_key = ""
+        for col, text in enumerate(cells):
+            if col in skip_cols or col in merged_continuation:
+                continue
+            if text and not cell_needs_fill(text):
+                row_key = text
+                break
+        if not row_key:
+            row_key = f"第{data_no}行"
+        remark = cells[remark_col] if remark_col is not None and remark_col < len(cells) else ""
+        for col in range(len(cells)):
+            if col in merged_continuation:
+                continue
+            column_label = header_cells[col] if col < len(header_cells) else ""
+            if col in image_cols:
+                tc = row.cells[col]._tc
+                if any(tc is seen for seen in seen_image_tc):
+                    continue  # 纵向合并的同一图片格已出过字段
+                seen_image_tc.append(tc)
+                # 表头为空时拿占优占位文字当列标签（D.5 末列「推力系数曲线」）
+                column_label = column_label or dominant_cell_text(table, header_row, col)
+                fields.append(
+                    _build_cell_field(
+                        spec,
+                        table_index=table_index,
+                        row_index=idx,
+                        col=col,
+                        row_key=row_key,
+                        column_label=column_label,
+                        remark=remark,
+                        cell_kind="image",
+                    )
+                )
+                continue
+            if col in skip_cols or not column_label or not cell_needs_fill(cells[col]):
+                continue
+            fields.append(
+                _build_cell_field(
+                    spec,
+                    table_index=table_index,
+                    row_index=idx,
+                    col=col,
+                    row_key=row_key,
+                    column_label=column_label,
+                    remark=remark,
+                    cell_kind="matrix",
+                )
+            )
+    return fields
+
+
+def _extract_blank_list_fields_from_table(
+    spec: AppendixSpec,
+    table: Any,
+    *,
+    table_index: int,
+    header_row: int,
+    fill_cols: tuple[int, ...],
+    image_cols: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    """清单行型表字段抽取：每个「记录行 × 待填列」是一个字段。
+
+    记录行全空，行键只能是「第N行」（数据行序号从 1 起，只数全空记录行）。
+    非全空行（签名/注记/已预填行）不是生成目标，跳过。
+    """
+    header_cells = [clean(cell.text) for cell in table.rows[header_row].cells]
+    fields: list[dict[str, Any]] = []
+    # 图片占位列可能纵向合并成一个通栏大格，跨行去重只出一个字段
+    seen_image_tc: list[Any] = []
+    data_no = 0
+    for idx in range(header_row + 1, len(table.rows)):
+        row = table.rows[idx]
+        cells = [clean(cell.text) for cell in row.cells]
+        if not all(not text for text in cells):
+            continue
+        data_no += 1
+        row_key = f"第{data_no}行"
+        seen_tc: list[Any] = []
+        for col in tuple(fill_cols) + tuple(image_cols):
+            if col >= len(cells):
+                continue
+            tc = row.cells[col]._tc
+            if any(tc is seen for seen in seen_tc):
+                continue
+            seen_tc.append(tc)
+            column_label = header_cells[col] if col < len(header_cells) else ""
+            if col in image_cols:
+                if any(tc is seen for seen in seen_image_tc):
+                    continue  # 纵向合并的同一图片格已出过字段
+                seen_image_tc.append(tc)
+                # 表头为空时拿占优占位文字当列标签（与网格型一致）
+                column_label = column_label or dominant_cell_text(table, header_row, col)
+                fields.append(
+                    _build_cell_field(
+                        spec,
+                        table_index=table_index,
+                        row_index=idx,
+                        col=col,
+                        row_key=row_key,
+                        column_label=column_label,
+                        remark="",
+                        cell_kind="image",
+                    )
+                )
+                continue
+            if not cell_needs_fill(cells[col]):
+                continue
+            fields.append(
+                _build_cell_field(
+                    spec,
+                    table_index=table_index,
+                    row_index=idx,
+                    col=col,
+                    row_key=row_key,
+                    column_label=column_label,
+                    remark="",
+                    cell_kind="blankList",
+                )
+            )
+    return fields
+
+
+def extract_grid_cell_target_fields(spec: AppendixSpec, doc: Any) -> list[dict[str, Any]]:
+    """单元格级兜底：逐表先判网格型（曲线表），再判清单行型（全空记录行）。
+
+    网格优先：曲线表的数据行可能全空（D.1 推力系数表），会被清单行型的
+    「整行为空」判据误收；一张表只走其中一条路，避免同一格出两份字段。
+    """
+    fields: list[dict[str, Any]] = []
+    for table_index, table in enumerate(doc.tables[: spec.own_tables]):
+        matrix = detect_matrix_table_layout(table)
+        if matrix is not None:
+            header_row, image_cols = matrix
+            header_cells = [clean(cell.text) for cell in table.rows[header_row].cells]
+            remark_col = next(
+                (idx for idx, cell in enumerate(header_cells) if "备注" in cell or "说明" in cell),
+                None,
+            )
+            fields.extend(
+                _extract_matrix_fields_from_table(
+                    spec,
+                    table,
+                    table_index=table_index,
+                    header_row=header_row,
+                    image_cols=image_cols,
+                    remark_col=remark_col,
+                )
+            )
+            continue
+        blank_list = detect_blank_list_layout(table)
+        if blank_list is not None:
+            header_row, fill_cols, image_cols = blank_list
+            fields.extend(
+                _extract_blank_list_fields_from_table(
+                    spec,
+                    table,
+                    table_index=table_index,
+                    header_row=header_row,
+                    fill_cols=fill_cols,
+                    image_cols=image_cols,
+                )
+            )
     return fields
 
 
@@ -3184,6 +3580,7 @@ FILL_BRIEF_RULES = (
     "有文件来源（素材/招标文件）的非 manual 格子必须带 evidence.excerpt（来源文件原文原句）；脚本会按 excerpt 在 sourcePath 中校验，命中不了强制降级 manual。",
     "无文件路由（factTable/parseFields/projectTurbineModel）的格子不要求 excerpt，但填的值必须与对应事实表/解析字段的值一致（单位归一后），不一致强制降级 manual。",
     "招标要求值 requirementValue 是明确具体值时优先直抄。",
+    "单元格级目标（targetField 带 cellKind）：matrix=网格型曲线表、blankList=清单行型记录行，按「行键 × 列头」逐格给值，targetFieldId 与坐标规则不变；cellKind=image 是图片占位列，无需给值，脚本统一降级 [待人工补充]。",
 )
 
 # 无文件路由：取值来自 manifest payload（事实表/解析字段/投标机型），
@@ -3447,6 +3844,9 @@ def brief_target_field(field: dict[str, Any], preferred: dict[str, Any] | None =
         "unit": clean(field.get("unit")),
         "group": clean(field.get("group")),
     }
+    if clean(field.get("cellKind")):
+        # 单元格级目标类型：matrix=网格型（曲线表）、blankList=清单行型、image=图片占位列
+        entry["cellKind"] = clean(field.get("cellKind"))
     if preferred is not None:
         # L1 事实表预绑定：命中的字段必须优先取事实表值
         entry["preferredRoute"] = "factTable"
@@ -3627,7 +4027,9 @@ def collect_plan_fills(
         if mismatch:
             errors.append({"field": label, "error": f"坐标 ({table_index}, {row_index}, {value_col}) 与 targetFieldId {field_id} 的坐标 {expected} 不一致。"})
             continue
-        if not cell_needs_fill(table.rows[row_index].cells[value_col].text):
+        # 图片占位列自带占位文字（非空），不受「待填空位」约束；其取值由
+        # run_apply 统一强制降级 manual，agent 是否给值都不影响结果。
+        if not field.get("imagePlaceholder") and not cell_needs_fill(table.rows[row_index].cells[value_col].text):
             errors.append({"field": label, "error": f"目标单元格（表 {table_index} 行 {row_index} 列 {value_col}）不是待填空位。"})
             continue
         accepted[(table_index, row_index, value_col)] = fill
@@ -3812,7 +4214,14 @@ def run_apply(manifest_path: Path) -> dict[str, Any]:
     decisions = [
         plan_fill_decision(
             field,
-            accepted.get(field_cell_key(spec, field)) or {"action": "manual", "reason": "填写计划未覆盖该字段，按待人工处理。"},
+            (
+                # 图片占位列（功率/推力曲线对比图）：本期不做图片插入，统一
+                # 降级 [待人工补充]，即使计划给了值也不落。
+                {"action": "manual", "reason": "图片占位列：本期不支持图片插入，保留人工补充。"}
+                if field.get("imagePlaceholder")
+                else accepted.get(field_cell_key(spec, field))
+                or {"action": "manual", "reason": "填写计划未覆盖该字段，按待人工处理。"}
+            ),
             manifest,
             manifest_path.parent,
             facts,
