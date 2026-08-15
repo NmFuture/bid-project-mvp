@@ -79,6 +79,16 @@ export function updateTechnicalTask(taskType, projectId, patch, storage = defaul
   }, storage)
 }
 
+// 恢复场景专用：已有登记只打补丁，保留发起页写下的任务名和回跳页；查无登记才补建一条。
+// 首次正文和重新生成正文共用一条登记，靠这个规则不被后进的页面改名。
+export function restoreTechnicalTask(task, storage = defaultStorage()) {
+  if (!task?.taskType || !task?.projectId) return null
+  const { taskType, projectId, taskName, page, projectName, ...patch } = task
+  const patched = updateTechnicalTask(taskType, projectId, patch, storage)
+  if (patched) return patched
+  return markTechnicalTask({ taskType, projectId, taskName, page, projectName, ...patch }, storage)
+}
+
 export function clearTechnicalTask(taskType, projectId, storage = defaultStorage()) {
   const key = technicalTaskKey(taskType, projectId)
   const tasks = parseStoredTasks(storage)

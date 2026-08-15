@@ -30,14 +30,15 @@ export default function TechnicalScoreIndexProgressModal({ open, status, onClose
   if (!open) return null
 
   const completed = status?.status === 'completed'
+  const cancelled = status?.status === 'cancelled'
   const failed = isScoreIndexProgressFailed(status)
   const title = running
     ? '正在重新生成章节索引'
-    : completed ? '章节索引重新生成完成' : failed ? '章节索引重新生成失败' : '重新生成章节索引'
+    : completed ? '章节索引重新生成完成' : cancelled ? '章节索引重新生成已停止' : failed ? '章节索引重新生成失败' : '重新生成章节索引'
   const summary = summarizeScoreIndexProgress(status || {})
   const elapsedText = progressElapsedLine(
     scoreIndexElapsedSeconds(status || {}, nowMs),
-    { finished: completed || failed },
+    { finished: completed || cancelled || failed },
   )
   const output = status?.output && typeof status.output === 'object' ? status.output : null
   const applied = Boolean(output?.applied)
@@ -59,6 +60,7 @@ export default function TechnicalScoreIndexProgressModal({ open, status, onClose
           elapsedText={elapsedText}
           percentage={scoreIndexDisplayPercentage(status || {}, nowMs)}
           running={running}
+          icon={cancelled ? 'stop_circle' : ''}
         />
         {running ? (
           <p className="text-xs text-outline">任务在后台运行，可以关闭弹窗或离开页面。</p>

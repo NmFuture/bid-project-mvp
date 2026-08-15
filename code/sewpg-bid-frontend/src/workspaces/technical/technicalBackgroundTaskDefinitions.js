@@ -29,15 +29,12 @@ export const TECHNICAL_TASK_DEFINITIONS = {
     status: (projectId) => technicalGapsAPI.detectionStatus(projectId),
     route: ({ projectId }) => projectRoute(projectId, 'outline'),
   },
+  // 首次生成正文和重新生成正文是后端同一个 fill-generation 任务，只登记一条，
+  // 由发起页写入 taskName 和 page，恢复时不改写，避免同一个任务出现两张卡。
   'body-generate': {
     taskName: '生成正文',
     status: (projectId) => technicalGenerateAPI.status(projectId),
-    route: ({ projectId }) => projectRoute(projectId, 'gaps'),
-  },
-  'body-regenerate': {
-    taskName: '重新生成正文',
-    status: (projectId) => technicalGenerateAPI.status(projectId),
-    route: ({ projectId }) => projectRoute(projectId, 'editor'),
+    route: ({ projectId, page }) => projectRoute(projectId, page || 'gaps'),
   },
   'index-regenerate': {
     taskName: '重新生成索引',

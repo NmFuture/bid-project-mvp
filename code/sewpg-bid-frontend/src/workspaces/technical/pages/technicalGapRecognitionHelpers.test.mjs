@@ -249,7 +249,8 @@ test('共创导出页二次确认后沿用正文生成接口并刷新最新文�
 
   assert.match(editorSource, /确认重新生成正文？/)
   assert.match(editorSource, /尚未保存的共创修改可能丢失/)
-  assert.match(editorSource, /const payload = await technicalGenerateAPI\.run\(id\)/)
+  // 任务改为按发起时的项目 id 请求，晚到响应才能被 owner gate 拦住
+  assert.match(editorSource, /await technicalGenerateAPI\.run\(requestProjectId\)/)
   assert.match(editorSource, /loadDocument\(\{ silent: true \}\)/)
   assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })

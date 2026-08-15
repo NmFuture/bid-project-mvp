@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { technicalDocumentAPI, technicalGenerateAPI, technicalScoreIndexAPI } from '../../../api'
+import { useParams, useSearchParams } from 'react-router-dom'
+import { technicalDocumentAPI, technicalGenerateAPI, technicalProjectsAPI, technicalScoreIndexAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import MarkdownLite from '../../../components/shared/MarkdownLite'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import TechnicalScoreIndexProgressModal from '../components/TechnicalScoreIndexProgressModal'
+import { markTechnicalTask, restoreTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
+import {
+  generationDisplayPercentage,
+  isGenerationProgressRunning,
+  summarizeGenerationProgress,
+} from '../technicalGenerationProgress.js'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
-import { isScoreIndexProgressRunning } from '../technicalScoreIndexProgress'
+import { technicalTaskResponseMatchesProject } from '../technicalOutlineTaskLifecycle.js'
+import {
+  isScoreIndexProgressRunning,
+  scoreIndexDisplayPercentage,
+  summarizeScoreIndexProgress,
+} from '../technicalScoreIndexProgress'
 import StageBreadcrumb from '../../../components/shared/StageBreadcrumb'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
@@ -74,8 +85,25 @@ const triggerDownload = (url, fileName) => {
   return true
 }
 
+const generationTaskPatch = (status) => ({
+  status: String(status?.status || 'queued').toLowerCase(),
+  percentage: Math.round(generationDisplayPercentage(status || {})),
+  summary: summarizeGenerationProgress(status || {}).detail,
+})
+
+const scoreIndexTaskPatch = (status) => ({
+  status: String(status?.status || 'queued').toLowerCase(),
+  percentage: Math.round(scoreIndexDisplayPercentage(status || {})),
+  summary: summarizeScoreIndexProgress(status || {}).detail,
+})
+
+const TECHNICAL_TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled'])
+
 export default function TechnicalCoCreationEditor({ showToast }) {
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
+  const progressTask = searchParams.get('progressTask')
+  const [projectName, setProjectName] = useState(id)
   const [data, setData] = useState(null)
   const [finalData, setFinalData] = useState(null)
   const [fallbackContent, setFallbackContent] = useState('')
@@ -88,16 +116,22 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const [wordPreparing, setWordPreparing] = useState(false)
   const [pdfPreparing, setPdfPreparing] = useState(false)
   const [generationStatus, setGenerationStatus] = useState(null)
+  const [generationOwnerId, setGenerationOwnerId] = useState('')
   const [generationModalOpen, setGenerationModalOpen] = useState(false)
+  const [generationStopping, setGenerationStopping] = useState(false)
   // 生成在后台跑，弹窗允许关掉；关掉后不因为「还在运行」被重新弹出来。
   const [generationModalDismissed, setGenerationModalDismissed] = useState(false)
   const [regenerationConfirmOpen, setRegenerationConfirmOpen] = useState(false)
   const [regenerationStarting, setRegenerationStarting] = useState(false)
   const [scoreIndexStatus, setScoreIndexStatus] = useState(null)
+  const [scoreIndexOwnerId, setScoreIndexOwnerId] = useState('')
   const [scoreIndexModalOpen, setScoreIndexModalOpen] = useState(false)
+  const [scoreIndexStopping, setScoreIndexStopping] = useState(false)
   const [scoreIndexModalDismissed, setScoreIndexModalDismissed] = useState(false)
   const [scoreIndexStarting, setScoreIndexStarting] = useState(false)
   const scoreIndexRequestedRef = useRef(false)
+  const generationStopRequestedRef = useRef(false)
+  const scoreIndexStopRequestedRef = useRef(false)
   const [technicalRightTab, setTechnicalRightTab] = useState('chat')
   const [chatMessages, setChatMessages] = useState(() => [...INITIAL_TECHNICAL_CHAT_MESSAGES])
   const [chatInput, setChatInput] = useState('')
@@ -106,20 +140,96 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const chatHistoryRef = useRef(null)
   const chatRequestVersionRef = useRef(0)
   const regenerationRequestedRef = useRef(false)
+  const currentProjectIdRef = useRef(String(id))
+  currentProjectIdRef.current = String(id)
   const [formatPreset, setFormatPreset] = useState('standard')
   const [formatApplying, setFormatApplying] = useState('')
   const [customFormat, setCustomFormat] = useState(DEFAULT_TECHNICAL_FORMAT_STYLE_OVERRIDES)
 
+  const applyGenerationPayload = useCallback((payload, ownerId = id) => {
+    const incomingStatus = String(payload?.status || '').toLowerCase()
+    const active = isGenerationProgressRunning(payload)
+    const ownsCurrentProject = technicalTaskResponseMatchesProject(ownerId, currentProjectIdRef.current)
+    if (ownsCurrentProject && incomingStatus === 'cancel_requested') {
+      generationStopRequestedRef.current = true
+    }
+    const nextPayload = ownsCurrentProject
+      && generationStopRequestedRef.current
+      && active
+      && incomingStatus !== 'cancel_requested'
+      ? {
+          ...payload,
+          status: 'cancel_requested',
+          summary: '已请求停止正文重新生成，正在等待安全停止点。',
+          message: '已请求停止正文重新生成，正在等待安全停止点。',
+        }
+      : payload
+    if (ownsCurrentProject && TECHNICAL_TASK_TERMINAL_STATUSES.has(incomingStatus)) {
+      generationStopRequestedRef.current = false
+    }
+    return nextPayload
+  }, [id])
+
+  const applyScoreIndexPayload = useCallback((payload, ownerId = id) => {
+    const incomingStatus = String(payload?.status || '').toLowerCase()
+    const active = isScoreIndexProgressRunning(payload)
+    const ownsCurrentProject = technicalTaskResponseMatchesProject(ownerId, currentProjectIdRef.current)
+    if (ownsCurrentProject && incomingStatus === 'cancel_requested') {
+      scoreIndexStopRequestedRef.current = true
+    }
+    const nextPayload = ownsCurrentProject
+      && scoreIndexStopRequestedRef.current
+      && active
+      && incomingStatus !== 'cancel_requested'
+      ? {
+          ...payload,
+          status: 'cancel_requested',
+          summary: '已请求停止章节索引重新生成，正在等待安全停止点。',
+          message: '已请求停止章节索引重新生成，正在等待安全停止点。',
+        }
+      : payload
+    if (ownsCurrentProject && TECHNICAL_TASK_TERMINAL_STATUSES.has(incomingStatus)) {
+      scoreIndexStopRequestedRef.current = false
+    }
+    return nextPayload
+  }, [id])
+
+  useEffect(() => {
+    // 项目切换先清空任务 UI；render 阶段的 owner gate 负责隔离切换首帧。
+    setGenerationStatus(null)
+    setGenerationOwnerId('')
+    setGenerationModalOpen(false)
+    setGenerationModalDismissed(false)
+    setGenerationStopping(false)
+    setRegenerationStarting(false)
+    setRegenerationConfirmOpen(false)
+    setScoreIndexStatus(null)
+    setScoreIndexOwnerId('')
+    setScoreIndexModalOpen(false)
+    setScoreIndexModalDismissed(false)
+    setScoreIndexStopping(false)
+    setScoreIndexStarting(false)
+    setProjectName(id)
+    regenerationRequestedRef.current = false
+    scoreIndexRequestedRef.current = false
+    generationStopRequestedRef.current = false
+    scoreIndexStopRequestedRef.current = false
+  }, [id])
+
   const loadDocument = useCallback(async ({ silent = false } = {}) => {
+    const requestProjectId = id
     if (!silent) {
       setLoading(true)
       setError('')
     }
     try {
-      const [payload, finalPayload] = await Promise.all([
-        technicalDocumentAPI.get(id),
-        technicalDocumentAPI.final(id).catch(() => null),
+      const [payload, finalPayload, projectPayload] = await Promise.all([
+        technicalDocumentAPI.get(requestProjectId),
+        technicalDocumentAPI.final(requestProjectId).catch(() => null),
+        technicalProjectsAPI.get(requestProjectId).catch(() => null),
       ])
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setProjectName(projectPayload?.name || requestProjectId)
       setData(payload)
       setFinalData(finalPayload)
       setFallbackContent(payload?.fallback?.content || '')
@@ -128,33 +238,92 @@ export default function TechnicalCoCreationEditor({ showToast }) {
       setCustomFormat(restoredFormat.styleOverrides)
       setOnlyofficeError('')
     } catch (e) {
-      setError(e?.message || '技术标共创文档加载失败')
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setError(e?.message || '技术标共创文档加载失败')
+      }
     } finally {
-      if (!silent) setLoading(false)
+      if (
+        !silent
+        && technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)
+      ) setLoading(false)
     }
   }, [id])
 
   const loadGenerationStatus = useCallback(async () => {
+    const requestProjectId = id
     try {
-      const payload = await technicalGenerateAPI.status(id)
-      if (payload?.status === 'running') regenerationRequestedRef.current = true
-      setGenerationStatus(payload)
-      return payload
+      const [payload, projectPayload] = await Promise.all([
+        technicalGenerateAPI.status(requestProjectId),
+        technicalProjectsAPI.get(requestProjectId).catch(() => null),
+      ])
+      const nextPayload = applyGenerationPayload(payload, requestProjectId)
+      const resolvedProjectName = projectPayload?.name || requestProjectId
+      const active = isGenerationProgressRunning(nextPayload)
+      if (active) {
+        // 正文任务全局只有一条登记：已有登记只更新进度，不把首次生成改名成重新生成。
+        restoreTechnicalTask({
+          taskType: 'body-generate',
+          taskName: '重新生成正文',
+          page: 'editor',
+          projectId: requestProjectId,
+          projectName: resolvedProjectName,
+          ...generationTaskPatch(nextPayload),
+        })
+      } else {
+        updateTechnicalTask('body-generate', requestProjectId, generationTaskPatch(nextPayload))
+      }
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return null
+      if (active) regenerationRequestedRef.current = true
+      setProjectName(resolvedProjectName)
+      setGenerationOwnerId(requestProjectId)
+      setGenerationStatus(nextPayload)
+      setGenerationStopping(String(nextPayload?.status || '').toLowerCase() === 'cancel_requested')
+      if (active || progressTask === 'body-generate') {
+        setGenerationModalDismissed(false)
+        setGenerationModalOpen(true)
+      }
+      return nextPayload
     } catch {
       return null
     }
-  }, [id])
+  }, [applyGenerationPayload, id, progressTask])
 
   const loadScoreIndexStatus = useCallback(async () => {
+    const requestProjectId = id
     try {
-      const payload = await technicalScoreIndexAPI.status(id)
-      if (isScoreIndexProgressRunning(payload)) scoreIndexRequestedRef.current = true
-      setScoreIndexStatus(payload)
-      return payload
+      const [payload, projectPayload] = await Promise.all([
+        technicalScoreIndexAPI.status(requestProjectId),
+        technicalProjectsAPI.get(requestProjectId).catch(() => null),
+      ])
+      const nextPayload = applyScoreIndexPayload(payload, requestProjectId)
+      const resolvedProjectName = projectPayload?.name || requestProjectId
+      const active = isScoreIndexProgressRunning(nextPayload)
+      if (active) {
+        markTechnicalTask({
+          taskType: 'index-regenerate',
+          taskName: '重新生成索引',
+          projectId: requestProjectId,
+          projectName: resolvedProjectName,
+          ...scoreIndexTaskPatch(nextPayload),
+        })
+      } else {
+        updateTechnicalTask('index-regenerate', requestProjectId, scoreIndexTaskPatch(nextPayload))
+      }
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return null
+      if (active) scoreIndexRequestedRef.current = true
+      setProjectName(resolvedProjectName)
+      setScoreIndexOwnerId(requestProjectId)
+      setScoreIndexStatus(nextPayload)
+      setScoreIndexStopping(String(nextPayload?.status || '').toLowerCase() === 'cancel_requested')
+      if (active || progressTask === 'index-regenerate') {
+        setScoreIndexModalDismissed(false)
+        setScoreIndexModalOpen(true)
+      }
+      return nextPayload
     } catch {
       return null
     }
-  }, [id])
+  }, [applyScoreIndexPayload, id, progressTask])
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -187,21 +356,41 @@ export default function TechnicalCoCreationEditor({ showToast }) {
   const bidLabel = TECHNICAL_BID_LABEL
   const defaultWordFileName = `${TECHNICAL_BID_LABEL}投标文件.docx`
   const defaultPdfFileName = `${TECHNICAL_BID_LABEL}投标文件.pdf`
-  const generationRunning = generationStatus?.status === 'running'
-  const scoreIndexRunning = isScoreIndexProgressRunning(scoreIndexStatus)
+  const generationBelongsToProject = generationOwnerId === id
+  const scoreIndexBelongsToProject = scoreIndexOwnerId === id
+  const generationRunning = generationBelongsToProject && isGenerationProgressRunning(generationStatus)
+  const scoreIndexRunning = scoreIndexBelongsToProject && isScoreIndexProgressRunning(scoreIndexStatus)
+
+  useEffect(() => {
+    if (!generationBelongsToProject || !generationStatus?.status) return
+    updateTechnicalTask('body-generate', id, generationTaskPatch(generationStatus))
+  }, [generationBelongsToProject, generationStatus, id])
+
+  useEffect(() => {
+    if (!scoreIndexBelongsToProject || !scoreIndexStatus?.status) return
+    updateTechnicalTask('index-regenerate', id, scoreIndexTaskPatch(scoreIndexStatus))
+  }, [id, scoreIndexBelongsToProject, scoreIndexStatus])
 
   useEffect(() => {
     if (!generationRunning) return undefined
     return subscribeTechnicalGenerationStatus({
       fetchStatus: () => technicalGenerateAPI.status(id),
       onStatus: (payload) => {
-        if (payload?.status === 'running') regenerationRequestedRef.current = true
-        setGenerationStatus(payload)
+        const nextPayload = applyGenerationPayload(payload, id)
+        if (isGenerationProgressRunning(nextPayload)) regenerationRequestedRef.current = true
+        setGenerationOwnerId(id)
+        setGenerationStatus(nextPayload)
+        setGenerationStopping(String(nextPayload?.status || '').toLowerCase() === 'cancel_requested')
       },
     })
-  }, [generationRunning, id])
+  }, [applyGenerationPayload, generationRunning, id])
 
   useEffect(() => {
+    if (!generationBelongsToProject) return
+    if (generationStatus?.status === 'cancelled') {
+      regenerationRequestedRef.current = false
+      return
+    }
     if (generationStatus?.status === 'failed') {
       regenerationRequestedRef.current = false
       return
@@ -210,20 +399,28 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     regenerationRequestedRef.current = false
     loadDocument({ silent: true })
     showToast?.('技术标正文已重新生成，当前文档已刷新。')
-  }, [generationStatus?.status, loadDocument, showToast])
+  }, [generationBelongsToProject, generationStatus?.status, loadDocument, showToast])
 
   useEffect(() => {
     if (!scoreIndexRunning) return undefined
     return subscribeTechnicalGenerationStatus({
       fetchStatus: () => technicalScoreIndexAPI.status(id),
       onStatus: (payload) => {
-        if (isScoreIndexProgressRunning(payload)) scoreIndexRequestedRef.current = true
-        setScoreIndexStatus(payload)
+        const nextPayload = applyScoreIndexPayload(payload, id)
+        if (isScoreIndexProgressRunning(nextPayload)) scoreIndexRequestedRef.current = true
+        setScoreIndexOwnerId(id)
+        setScoreIndexStatus(nextPayload)
+        setScoreIndexStopping(String(nextPayload?.status || '').toLowerCase() === 'cancel_requested')
       },
     })
-  }, [scoreIndexRunning, id])
+  }, [applyScoreIndexPayload, scoreIndexRunning, id])
 
   useEffect(() => {
+    if (!scoreIndexBelongsToProject) return
+    if (scoreIndexStatus?.status === 'cancelled') {
+      scoreIndexRequestedRef.current = false
+      return
+    }
     if (scoreIndexStatus?.status === 'failed') {
       // 只对本次会话发起的任务提示；页面加载时读到的历史失败态不该再弹一次。
       if (scoreIndexRequestedRef.current) {
@@ -238,7 +435,7 @@ export default function TechnicalCoCreationEditor({ showToast }) {
     if (!scoreIndexStatus?.output?.applied) return
     loadDocument({ silent: true })
     showToast?.('章节索引已重新生成，当前文档已刷新。')
-  }, [scoreIndexStatus?.status, scoreIndexStatus?.output?.applied, loadDocument, showToast])
+  }, [scoreIndexBelongsToProject, scoreIndexStatus?.status, scoreIndexStatus?.output?.applied, loadDocument, showToast])
 
   useEffect(() => {
     if (!technicalPreviewFullscreen) return undefined
@@ -354,21 +551,55 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   const handleRegenerateScoreIndex = async () => {
     if (scoreIndexStarting || scoreIndexRunning || generationRunning) return
+    const requestProjectId = id
+    const queuedStatus = {
+      status: 'queued',
+      percentage: 0,
+      summary: '正在准备重新生成章节索引。',
+      startedAt: new Date().toISOString(),
+    }
+    markTechnicalTask({
+      taskType: 'index-regenerate',
+      taskName: '重新生成索引',
+      projectId: requestProjectId,
+      projectName: projectName || requestProjectId,
+      ...scoreIndexTaskPatch(queuedStatus),
+      status: 'queued',
+    })
     setTechnicalPreviewFullscreen(false)
     setScoreIndexStarting(true)
+    setScoreIndexOwnerId(requestProjectId)
+    setScoreIndexStatus(queuedStatus)
+    setScoreIndexStopping(false)
+    // 新任务重置上一轮停止请求标记，否则上一轮的「停止中」会盖住这一轮的运行态。
+    scoreIndexStopRequestedRef.current = false
     setScoreIndexModalDismissed(false)
     setScoreIndexModalOpen(true)
     scoreIndexRequestedRef.current = true
     try {
-      const payload = await technicalScoreIndexAPI.run(id)
+      let payload = await technicalScoreIndexAPI.run(requestProjectId)
+      if (payload?.error) throw new Error(payload.error)
+      payload = applyScoreIndexPayload(payload, requestProjectId)
+      updateTechnicalTask('index-regenerate', requestProjectId, scoreIndexTaskPatch(payload))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setScoreIndexOwnerId(requestProjectId)
       setScoreIndexStatus(payload)
+      setScoreIndexStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
       showToast?.(payload?.message || '已开始重新生成章节索引。')
     } catch (e) {
+      updateTechnicalTask('index-regenerate', requestProjectId, {
+        status: 'failed',
+        summary: e?.message || '重新生成章节索引失败',
+      })
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       scoreIndexRequestedRef.current = false
+      setScoreIndexStatus({ ...queuedStatus, status: 'failed', error: e?.message || '重新生成章节索引失败' })
       setScoreIndexModalOpen(false)
       showToast?.(e?.message || '重新生成章节索引失败', 'error')
     } finally {
-      setScoreIndexStarting(false)
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setScoreIndexStarting(false)
+      }
     }
   }
 
@@ -381,21 +612,102 @@ export default function TechnicalCoCreationEditor({ showToast }) {
 
   const handleConfirmRegenerate = async () => {
     if (regenerationStarting || generationRunning || scoreIndexRunning) return
+    const requestProjectId = id
+    const queuedStatus = {
+      status: 'queued',
+      percentage: 0,
+      summary: '正在准备重新生成技术标正文。',
+      startedAt: new Date().toISOString(),
+    }
+    markTechnicalTask({
+      taskType: 'body-generate',
+      taskName: '重新生成正文',
+      page: 'editor',
+      projectId: requestProjectId,
+      projectName: projectName || requestProjectId,
+      ...generationTaskPatch(queuedStatus),
+      status: 'queued',
+    })
     setRegenerationConfirmOpen(false)
     setRegenerationStarting(true)
+    setGenerationOwnerId(requestProjectId)
+    setGenerationStatus(queuedStatus)
+    setGenerationStopping(false)
+    // 新任务重置上一轮停止请求标记，否则上一轮的「停止中」会盖住这一轮的运行态。
+    generationStopRequestedRef.current = false
     setGenerationModalDismissed(false)
     setGenerationModalOpen(true)
     regenerationRequestedRef.current = true
     try {
-      const payload = await technicalGenerateAPI.run(id)
+      let payload = await technicalGenerateAPI.run(requestProjectId)
+      if (payload?.error) throw new Error(payload.error)
+      payload = applyGenerationPayload(payload, requestProjectId)
+      updateTechnicalTask('body-generate', requestProjectId, generationTaskPatch(payload))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setGenerationOwnerId(requestProjectId)
       setGenerationStatus(payload)
+      setGenerationStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
       showToast?.(payload?.message || '已开始重新生成技术标正文。')
     } catch (e) {
+      updateTechnicalTask('body-generate', requestProjectId, {
+        status: 'failed',
+        summary: e?.message || '重新生成技术标正文失败',
+      })
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       regenerationRequestedRef.current = false
+      setGenerationStatus({ ...queuedStatus, status: 'failed', error: e?.message || '重新生成技术标正文失败' })
       setGenerationModalOpen(false)
       showToast?.(e?.message || '重新生成技术标正文失败', 'error')
     } finally {
-      setRegenerationStarting(false)
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setRegenerationStarting(false)
+      }
+    }
+  }
+
+  const handleStopGeneration = async () => {
+    if (!generationRunning || generationStopping) return
+    const requestProjectId = id
+    generationStopRequestedRef.current = true
+    setGenerationStopping(true)
+    try {
+      let payload = await technicalGenerateAPI.cancel(requestProjectId)
+      if (payload?.error) throw new Error(payload.error)
+      payload = applyGenerationPayload(payload, requestProjectId)
+      updateTechnicalTask('body-generate', requestProjectId, generationTaskPatch(payload))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setGenerationOwnerId(requestProjectId)
+      setGenerationStatus(payload)
+      setGenerationStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
+      showToast?.(payload?.message || '已请求停止正文重新生成。')
+    } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      generationStopRequestedRef.current = false
+      setGenerationStopping(false)
+      showToast?.(e?.message || '停止正文重新生成失败，请稍后重试', 'error')
+    }
+  }
+
+  const handleStopScoreIndex = async () => {
+    if (!scoreIndexRunning || scoreIndexStopping) return
+    const requestProjectId = id
+    scoreIndexStopRequestedRef.current = true
+    setScoreIndexStopping(true)
+    try {
+      let payload = await technicalScoreIndexAPI.cancel(requestProjectId)
+      if (payload?.error) throw new Error(payload.error)
+      payload = applyScoreIndexPayload(payload, requestProjectId)
+      updateTechnicalTask('index-regenerate', requestProjectId, scoreIndexTaskPatch(payload))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setScoreIndexOwnerId(requestProjectId)
+      setScoreIndexStatus(payload)
+      setScoreIndexStopping(String(payload?.status || '').toLowerCase() === 'cancel_requested')
+      showToast?.(payload?.message || '已请求停止章节索引重新生成。')
+    } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      scoreIndexStopRequestedRef.current = false
+      setScoreIndexStopping(false)
+      showToast?.(e?.message || '停止章节索引重新生成失败，请稍后重试', 'error')
     }
   }
 
@@ -835,17 +1147,22 @@ export default function TechnicalCoCreationEditor({ showToast }) {
         </DialogFooter>
       </Dialog>
       <TechnicalGenerationProgressModal
-        open={(generationModalOpen || generationRunning) && !generationModalDismissed}
+        open={generationBelongsToProject && (generationModalOpen || generationRunning) && !generationModalDismissed}
         status={generationStatus}
+        taskTitle="重新生成正文"
         completedMessage="技术标正文已重新生成，共创文档已刷新为最新版本。"
+        onStop={handleStopGeneration}
+        stopping={generationStopping}
         onClose={() => {
           setGenerationModalDismissed(true)
           setGenerationModalOpen(false)
         }}
       />
       <TechnicalScoreIndexProgressModal
-        open={(scoreIndexModalOpen || scoreIndexRunning) && !scoreIndexModalDismissed}
+        open={scoreIndexBelongsToProject && (scoreIndexModalOpen || scoreIndexRunning) && !scoreIndexModalDismissed}
         status={scoreIndexStatus}
+        onStop={handleStopScoreIndex}
+        stopping={scoreIndexStopping}
         onClose={() => {
           setScoreIndexModalDismissed(true)
           setScoreIndexModalOpen(false)

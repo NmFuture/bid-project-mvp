@@ -557,6 +557,9 @@ export default function TechnicalTenderReview({ showToast }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryProjectId = String(searchParams.get('projectId') || '').trim()
+  const restoringParseTask = String(searchParams.get('progressTask') || '').trim() === 'parse'
+  const parseProgressRef = useRef(null)
+  const parseProgressScrolledRef = useRef('')
   const [, setProjects] = useState([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [project, setProject] = useState(null)
@@ -751,6 +754,14 @@ export default function TechnicalTenderReview({ showToast }) {
     const timer = window.setInterval(() => setParseProgressClock(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [isParseRunning])
+
+  // 从右下角任务卡回到解析页：解析没有弹窗，进度只在页面里，先把它滚进视野。同一次恢复只滚一次。
+  useEffect(() => {
+    if (!restoringParseTask || !selectedProjectId || !parseProgress) return
+    if (parseProgressScrolledRef.current === selectedProjectId) return
+    parseProgressScrolledRef.current = selectedProjectId
+    parseProgressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [parseProgress, restoringParseTask, selectedProjectId])
 
   useEffect(() => {
     if (!selectedProjectId || !parseProgress) return
@@ -1359,6 +1370,7 @@ export default function TechnicalTenderReview({ showToast }) {
     const running = RUNNING_PARSE_STATUSES.has(status)
 
     return (
+      <div ref={parseProgressRef}>
       <BidProgressPanel
         className="mt-4 rounded-md border-x border-y"
         tone={stopped && progressSummary.tone !== 'danger' ? 'neutral' : progressSummary.tone}
@@ -1371,6 +1383,7 @@ export default function TechnicalTenderReview({ showToast }) {
         percentage={parseDisplayPercentage(progress)}
         running={running && !stopped}
       />
+      </div>
     )
   }
 

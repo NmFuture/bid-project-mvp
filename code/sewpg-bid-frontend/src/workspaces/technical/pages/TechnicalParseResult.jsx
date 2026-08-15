@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { technicalDirectoryAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageError, PageLoading } from '../../../components/states/PageState'
@@ -88,6 +88,8 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
   const [directoryStopRequested, setDirectoryStopRequested] = useState(false)
   const [autoAdvanceAfterDirectory, setAutoAdvanceAfterDirectory] = useState(false)
   const [directoryProgressClock, setDirectoryProgressClock] = useState(() => Date.now())
+  const directoryProgressRef = useRef(null)
+  const directoryProgressScrolledRef = useRef('')
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -156,6 +158,14 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
     const timer = window.setInterval(() => setDirectoryProgressClock(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [isDirectoryRunning])
+
+  // 从右下角任务卡回到本页：目录生成没有弹窗，进度只在页面里，先把它滚进视野。同一次恢复只滚一次。
+  useEffect(() => {
+    if (!restoringDirectoryTask || !directoryState) return
+    if (directoryProgressScrolledRef.current === id) return
+    directoryProgressScrolledRef.current = id
+    directoryProgressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [directoryState, id, restoringDirectoryTask])
 
   useEffect(() => {
     if (isDirectoryRunning) return undefined
@@ -517,7 +527,7 @@ export default function TechnicalParseResult({ showToast, workspaceKind = 'tech'
           <div className="flex flex-col gap-4 p-4 sm:p-6 lg:min-h-[388px]">
             <h3 className="text-base font-headline font-semibold text-on-surface">目录生成</h3>
 
-          <div className="flex min-h-24 items-center sm:min-h-[132px]">
+          <div ref={directoryProgressRef} className="flex min-h-24 items-center sm:min-h-[132px]">
             {(isDirectoryRunning || isDirectoryCompleted || isDirectoryFailed) ? (
               <TechnicalDirectoryProgressPanel
                 state={directoryState}

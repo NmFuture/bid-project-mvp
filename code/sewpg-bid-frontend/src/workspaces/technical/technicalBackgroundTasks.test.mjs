@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   clearTechnicalTask,
   markTechnicalTask,
+  restoreTechnicalTask,
   readTechnicalTasks,
   sortTechnicalTasks,
   technicalTaskKey,
@@ -85,4 +86,49 @@ test('任务支持局部更新、清除和过期清理', () => {
     updatedAt: '2026-08-01T00:00:00Z',
   }, storage)
   assert.deepEqual(readTechnicalTasks(storage, Date.parse('2026-08-15T00:00:00Z')), [])
+})
+
+test('恢复登记只补进度，不改写发起页写下的任务名和回跳页', () => {
+  const storage = memoryStorage()
+  markTechnicalTask({
+    taskType: 'body-generate',
+    projectId: 'P-9',
+    projectName: '陆上风电项目',
+    taskName: '生成正文',
+    page: 'gaps',
+    status: 'running',
+    percentage: 20,
+  }, storage)
+
+  // 共创页读到同一个后端任务：只更新进度，不能把它改名成「重新生成正文」
+  restoreTechnicalTask({
+    taskType: 'body-generate',
+    projectId: 'P-9',
+    projectName: '陆上风电项目',
+    taskName: '重新生成正文',
+    page: 'editor',
+    status: 'running',
+    percentage: 55,
+  }, storage)
+
+  const [restored] = readTechnicalTasks(storage)
+  assert.equal(restored.taskName, '生成正文')
+  assert.equal(restored.page, 'gaps')
+  assert.equal(restored.percentage, 55)
+  assert.equal(readTechnicalTasks(storage).length, 1)
+
+  // 本地登记丢了才补建，这时按当前页的标题和回跳页登记
+  clearTechnicalTask('body-generate', 'P-9', storage)
+  restoreTechnicalTask({
+    taskType: 'body-generate',
+    projectId: 'P-9',
+    projectName: '陆上风电项目',
+    taskName: '重新生成正文',
+    page: 'editor',
+    status: 'running',
+    percentage: 60,
+  }, storage)
+  const [rebuilt] = readTechnicalTasks(storage)
+  assert.equal(rebuilt.taskName, '重新生成正文')
+  assert.equal(rebuilt.page, 'editor')
 })

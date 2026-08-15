@@ -18,6 +18,10 @@ const gapRecognitionSource = readFileSync(
   new URL('./pages/TechnicalGapRecognition.jsx', import.meta.url),
   'utf8',
 )
+const coCreationEditorSource = readFileSync(
+  new URL('./pages/TechnicalCoCreationEditor.jsx', import.meta.url),
+  'utf8',
+)
 
 test('技术标解析启动后登记后台任务并持续同步进度', () => {
   assert.match(tenderReviewSource, /markTechnicalTask/)
@@ -207,7 +211,8 @@ test('首次正文晚到的活动响应先保留原项目后台追踪再阻断�
   const loadStart = gapRecognitionSource.indexOf('const loadGenerationStatus')
   const loadEnd = gapRecognitionSource.indexOf('useEffect(() => {', loadStart)
   const loadSource = gapRecognitionSource.slice(loadStart, loadEnd)
-  const markIndex = loadSource.indexOf('markTechnicalTask({')
+  // 恢复走 restoreTechnicalTask：已有登记只补进度，不改写发起页写下的任务名
+  const markIndex = loadSource.indexOf('restoreTechnicalTask({')
   const guardIndex = loadSource.indexOf(
     'technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)',
   )
@@ -233,4 +238,188 @@ test('首次正文停止接口返回业务错误时不覆盖后台任务并恢�
   assert.ok(errorCheckIndex >= 0 && errorCheckIndex < taskPatchIndex)
   assert.match(handlerSource, /if \(payload\?\.error\) throw new Error\(payload\.error\)/)
   assert.match(handlerSource, /catch \(e\) \{[\s\S]*?setGenerationStopping\(false\)/)
+})
+
+test('共创页恢复正文和索引后台任务但不会自动重新发起', () => {
+  assert.match(coCreationEditorSource, /useSearchParams/)
+  assert.match(coCreationEditorSource, /searchParams\.get\(\s*['"]progressTask['"]\s*\)/)
+  assert.match(coCreationEditorSource, /progressTask\s*===\s*['"]body-generate['"]/)
+  assert.match(coCreationEditorSource, /progressTask\s*===\s*['"]index-regenerate['"]/)
+  assert.match(coCreationEditorSource, /taskType:\s*['"]body-generate['"]/)
+  assert.match(coCreationEditorSource, /taskName:\s*['"]重新生成正文['"]/)
+  assert.match(coCreationEditorSource, /taskType:\s*['"]index-regenerate['"]/)
+  assert.match(coCreationEditorSource, /taskName:\s*['"]重新生成索引['"]/)
+  assert.match(coCreationEditorSource, /updateTechnicalTask\(\s*['"]body-generate['"]\s*,/)
+  assert.match(coCreationEditorSource, /updateTechnicalTask\(\s*['"]index-regenerate['"]\s*,/)
+
+  assert.equal([...coCreationEditorSource.matchAll(/technicalGenerateAPI\.run\(/g)].length, 1)
+  assert.equal([...coCreationEditorSource.matchAll(/technicalScoreIndexAPI\.run\(/g)].length, 1)
+})
+
+test('共创页主加载取得真实项目名并隔离跨项目任务 UI', () => {
+  assert.match(coCreationEditorSource, /technicalProjectsAPI\.get\(requestProjectId\)/)
+  assert.match(coCreationEditorSource, /const currentProjectIdRef = useRef\(String\(id\)\)/)
+  assert.match(coCreationEditorSource, /currentProjectIdRef\.current\s*=\s*String\(id\)/)
+  assert.match(
+    coCreationEditorSource,
+    /setGenerationStatus\(null\)[\s\S]*?setGenerationOwnerId\(['"]['"]\)[\s\S]*?setScoreIndexStatus\(null\)[\s\S]*?setScoreIndexOwnerId\(['"]['"]\)/,
+  )
+  assert.match(
+    coCreationEditorSource,
+    /open=\{generationBelongsToProject\s*&&[\s\S]*?open=\{scoreIndexBelongsToProject\s*&&/,
+  )
+  assert.match(coCreationEditorSource, /technicalTaskResponseMatchesProject\(requestProjectId, currentProjectIdRef\.current\)/)
+})
+
+test('共创页正文和索引都提供真实停止且业务错误不覆盖任务', () => {
+  for (const [handlerName, nextHandler, apiName, stoppingSetter, taskType] of [
+    ['handleStopGeneration', 'handleStopScoreIndex', 'technicalGenerateAPI', 'setGenerationStopping', 'body-generate'],
+    ['handleStopScoreIndex', 'handleApplyTechnicalFormat', 'technicalScoreIndexAPI', 'setScoreIndexStopping', 'index-regenerate'],
+  ]) {
+    const start = coCreationEditorSource.indexOf(`const ${handlerName}`)
+    const end = coCreationEditorSource.indexOf(`const ${nextHandler}`, start)
+    const handlerSource = coCreationEditorSource.slice(start, end)
+    const responseIndex = handlerSource.indexOf(`await ${apiName}.cancel(requestProjectId)`)
+    const errorIndex = handlerSource.indexOf('if (payload?.error)')
+    const updateIndex = handlerSource.indexOf(`updateTechnicalTask('${taskType}'`)
+    assert.ok(start >= 0 && responseIndex >= 0 && responseIndex < errorIndex && errorIndex < updateIndex)
+    assert.match(handlerSource, new RegExp(`${stoppingSetter}\\(false\\)`))
+  }
+
+  assert.match(coCreationEditorSource, /taskTitle=['"]重新生成正文['"]/)
+  assert.match(coCreationEditorSource, /onStop=\{handleStopGeneration\}[\s\S]*?stopping=\{generationStopping\}/)
+  assert.match(coCreationEditorSource, /onStop=\{handleStopScoreIndex\}[\s\S]*?stopping=\{scoreIndexStopping\}/)
+})
+
+test('共创页取消任务保持互斥，终止后清请求标记且不刷新文档', () => {
+  assert.match(coCreationEditorSource, /const generationRunning = generationBelongsToProject && isGenerationProgressRunning\(generationStatus\)/)
+  assert.match(coCreationEditorSource, /const scoreIndexRunning = scoreIndexBelongsToProject && isScoreIndexProgressRunning\(scoreIndexStatus\)/)
+  assert.match(
+    coCreationEditorSource,
+    /generationStatus\?\.status === ['"]cancelled['"][\s\S]*?regenerationRequestedRef\.current = false[\s\S]*?return/,
+  )
+  assert.match(
+    coCreationEditorSource,
+    /scoreIndexStatus\?\.status === ['"]cancelled['"][\s\S]*?scoreIndexRequestedRef\.current = false[\s\S]*?return/,
+  )
+})
+
+test('首次正文停止请求不会被晚到的活动响应覆盖', () => {
+  assert.match(gapRecognitionSource, /const generationStopRequestedRef = useRef\(false\)/)
+
+  const applyStart = gapRecognitionSource.indexOf('const applyGenerationPayload')
+  const applyEnd = gapRecognitionSource.indexOf('useEffect(() => {', applyStart)
+  const applySource = gapRecognitionSource.slice(applyStart, applyEnd)
+  assert.ok(applyStart >= 0)
+  assert.match(applySource, /generationStopRequestedRef\.current\s*&&\s*active/)
+  assert.match(applySource, /incomingStatus\s*!==\s*['"]cancel_requested['"]/)
+  assert.match(applySource, /status:\s*['"]cancel_requested['"]/)
+  assert.match(applySource, /generationStopRequestedRef\.current\s*=\s*false/)
+
+  for (const [startMarker, endMarker] of [
+    ['const loadGenerationStatus', 'useEffect(() => {'],
+    ['onStatus: (payload) => {', '},\n    })'],
+    ['const runTechnicalAssembly', 'const handleStopGeneration'],
+  ]) {
+    const start = gapRecognitionSource.indexOf(startMarker)
+    const end = gapRecognitionSource.indexOf(endMarker, start + startMarker.length)
+    assert.match(gapRecognitionSource.slice(start, end), /applyGenerationPayload\(payload/)
+  }
+
+  const runStart = gapRecognitionSource.indexOf('const runTechnicalAssembly')
+  const runEnd = gapRecognitionSource.indexOf('const handleStopGeneration', runStart)
+  const runSource = gapRecognitionSource.slice(runStart, runEnd)
+  assert.ok(runSource.indexOf('generationStopRequestedRef.current = false') < runSource.indexOf('technicalGenerateAPI.run'))
+
+  const stopStart = gapRecognitionSource.indexOf('const handleStopGeneration')
+  const stopEnd = gapRecognitionSource.indexOf('const advanceToTechnicalEditor', stopStart)
+  const stopSource = gapRecognitionSource.slice(stopStart, stopEnd)
+  assert.ok(stopSource.indexOf('generationStopRequestedRef.current = true') < stopSource.indexOf('technicalGenerateAPI.cancel'))
+  assert.match(stopSource, /catch \(e\) \{[\s\S]*?generationStopRequestedRef\.current\s*=\s*false/)
+  assert.match(
+    gapRecognitionSource,
+    /setGenerationStopping\(false\)[\s\S]*?generationStopRequestedRef\.current\s*=\s*false[\s\S]*?\}, \[id\]\)/,
+  )
+})
+
+test('共创页正文停止请求不会被 load、run 或 poll 的晚到活动响应覆盖', () => {
+  assert.match(coCreationEditorSource, /const generationStopRequestedRef = useRef\(false\)/)
+
+  const applyStart = coCreationEditorSource.indexOf('const applyGenerationPayload')
+  const applyEnd = coCreationEditorSource.indexOf('const applyScoreIndexPayload', applyStart)
+  const applySource = coCreationEditorSource.slice(applyStart, applyEnd)
+  assert.ok(applyStart >= 0)
+  assert.match(applySource, /generationStopRequestedRef\.current\s*&&\s*active/)
+  assert.match(applySource, /status:\s*['"]cancel_requested['"]/)
+  assert.match(applySource, /generationStopRequestedRef\.current\s*=\s*false/)
+
+  for (const [startMarker, endMarker] of [
+    ['const loadGenerationStatus', 'const loadScoreIndexStatus'],
+    ['fetchStatus: () => technicalGenerateAPI.status(id)', '},\n    })'],
+    ['const handleConfirmRegenerate', 'const handleStopGeneration'],
+  ]) {
+    const start = coCreationEditorSource.indexOf(startMarker)
+    const end = coCreationEditorSource.indexOf(endMarker, start + startMarker.length)
+    assert.match(coCreationEditorSource.slice(start, end), /applyGenerationPayload\(payload/)
+  }
+
+  const runStart = coCreationEditorSource.indexOf('const handleConfirmRegenerate')
+  const runEnd = coCreationEditorSource.indexOf('const handleStopGeneration', runStart)
+  const runSource = coCreationEditorSource.slice(runStart, runEnd)
+  assert.ok(runSource.indexOf('generationStopRequestedRef.current = false') < runSource.indexOf('technicalGenerateAPI.run'))
+
+  const stopStart = coCreationEditorSource.indexOf('const handleStopGeneration')
+  const stopEnd = coCreationEditorSource.indexOf('const handleStopScoreIndex', stopStart)
+  const stopSource = coCreationEditorSource.slice(stopStart, stopEnd)
+  assert.ok(stopSource.indexOf('generationStopRequestedRef.current = true') < stopSource.indexOf('technicalGenerateAPI.cancel'))
+  assert.match(stopSource, /catch \(e\) \{[\s\S]*?generationStopRequestedRef\.current\s*=\s*false/)
+})
+
+test('共创页索引停止请求不会被 load、run 或 poll 的晚到活动响应覆盖', () => {
+  assert.match(coCreationEditorSource, /const scoreIndexStopRequestedRef = useRef\(false\)/)
+
+  const applyStart = coCreationEditorSource.indexOf('const applyScoreIndexPayload')
+  const applyEnd = coCreationEditorSource.indexOf('useEffect(() => {', applyStart)
+  const applySource = coCreationEditorSource.slice(applyStart, applyEnd)
+  assert.ok(applyStart >= 0)
+  assert.match(applySource, /scoreIndexStopRequestedRef\.current\s*&&\s*active/)
+  assert.match(applySource, /status:\s*['"]cancel_requested['"]/)
+  assert.match(applySource, /scoreIndexStopRequestedRef\.current\s*=\s*false/)
+
+  for (const [startMarker, endMarker] of [
+    ['const loadScoreIndexStatus', 'useEffect(() => {'],
+    ['fetchStatus: () => technicalScoreIndexAPI.status(id)', '},\n    })'],
+    ['const handleRegenerateScoreIndex', 'const handleRequestRegenerate'],
+  ]) {
+    const start = coCreationEditorSource.indexOf(startMarker)
+    const end = coCreationEditorSource.indexOf(endMarker, start + startMarker.length)
+    assert.match(coCreationEditorSource.slice(start, end), /applyScoreIndexPayload\(payload/)
+  }
+
+  const runStart = coCreationEditorSource.indexOf('const handleRegenerateScoreIndex')
+  const runEnd = coCreationEditorSource.indexOf('const handleRequestRegenerate', runStart)
+  const runSource = coCreationEditorSource.slice(runStart, runEnd)
+  assert.ok(runSource.indexOf('scoreIndexStopRequestedRef.current = false') < runSource.indexOf('technicalScoreIndexAPI.run'))
+
+  const stopStart = coCreationEditorSource.indexOf('const handleStopScoreIndex')
+  const stopEnd = coCreationEditorSource.indexOf('const handleApplyTechnicalFormat', stopStart)
+  const stopSource = coCreationEditorSource.slice(stopStart, stopEnd)
+  assert.ok(stopSource.indexOf('scoreIndexStopRequestedRef.current = true') < stopSource.indexOf('technicalScoreIndexAPI.cancel'))
+  assert.match(stopSource, /catch \(e\) \{[\s\S]*?scoreIndexStopRequestedRef\.current\s*=\s*false/)
+})
+
+test('解析与首次目录没有弹窗，恢复时把页面内进度滚进视野且只滚一次', () => {
+  assert.match(tenderReviewSource, /progressTask['"]\s*\)\s*\|\|\s*['"]{2}\)\.trim\(\)\s*===\s*['"]parse['"]/)
+  assert.match(tenderReviewSource, /ref=\{parseProgressRef\}/)
+  assert.match(
+    tenderReviewSource,
+    /if \(parseProgressScrolledRef\.current === selectedProjectId\) return[\s\S]*?parseProgressRef\.current\?\.scrollIntoView/,
+  )
+
+  assert.match(parseResultSource, /const restoringDirectoryTask = progressTask === ['"]directory-generate['"]/)
+  assert.match(parseResultSource, /ref=\{directoryProgressRef\}/)
+  assert.match(
+    parseResultSource,
+    /if \(directoryProgressScrolledRef\.current === id\) return[\s\S]*?directoryProgressRef\.current\?\.scrollIntoView/,
+  )
 })

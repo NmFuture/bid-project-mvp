@@ -17,6 +17,9 @@ test('统一进度弹窗使用加长的两段式布局', () => {
 test('右上角是文字关闭且关闭不触发停止', () => {
   assert.match(source, /onClick=\{onClose\}[\s\S]*?>关闭</)
   assert.doesNotMatch(source, /<DialogHeader[^>]*onClose=/)
+  // DialogHeader 的标题块按内容收缩，不撑满就会把「关闭」挤到标题旁边而不是贴右
+  assert.match(source, /<DialogHeader[^>]*\[&>div:first-child\]:flex-1/)
+  assert.match(source, /<div className="flex w-full items-center justify-between gap-3">/)
 })
 
 test('运行中任务在主体右下角显示安静的停止按钮', () => {
