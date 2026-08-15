@@ -23,6 +23,9 @@ import {
 import BidProgressPanel from '../../../components/shared/BidProgressPanel'
 import { progressElapsedLine } from '../../../utils/progressDuration'
 import { clearParseRunning, findRunningParseMarker, markParseRunning } from '../../shared/parseRunningMarker'
+import PresenceTable from '../../shared/components/reviewTables/PresenceTable'
+import ProjectBasicsTable from '../../shared/components/reviewTables/ProjectBasicsTable'
+import ScoringCriteriaTable from '../../shared/components/reviewTables/ScoringCriteriaTable'
 import {
   selectTechnicalParseProjectId,
   shouldSyncTechnicalProjectParseResultRoute,
@@ -46,14 +49,6 @@ const ALLOWED_EXTENSIONS = new Set([
 ])
 
 const EMPTY_APPENDICES = []
-const PROJECT_BASIC_FIELDS = [
-  ['projectName', '项目名称'],
-  ['tenderNo', '招标编号'],
-  ['projectUnit', '项目单位'],
-  ['tenderer', '招标人'],
-  ['tenderAgency', '招标代理机构'],
-  ['bidDeadline', '递交截止时间'],
-]
 
 const extensionOf = (name) => {
   const parts = String(name || '').split('.')
@@ -102,21 +97,6 @@ const groupValue = (field) => {
   const value = String(field.value || '').trim()
   return value || '未识别'
 }
-
-const displayValue = (value, emptyText = '-') => {
-  if (Array.isArray(value)) {
-    const text = value.map((item) => String(item || '').trim()).filter(Boolean).join('，')
-    return text || emptyText
-  }
-  const text = String(value ?? '').trim()
-  return text || emptyText
-}
-
-const sourceValue = (row = {}) => displayValue(
-  [row.sourceFile, row.section, row.evidenceLocation].filter(Boolean),
-)
-
-const presenceLabel = (status) => (status === 'present' ? '有明确要求' : '未识别')
 
 const appendixKey = (appendix, index = 0) =>
   String(appendix?.id || appendix?.title || `appendix-${index}`)
@@ -218,141 +198,6 @@ function FieldGroupTable({ title, fields = [], showEvidenceLocationColumn = true
                 ) : null}
               </tr>
             ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function ScoringCriteriaTable({
-  title,
-  rows = [],
-  emptyText = '未识别到相关评分细则。',
-  showEvidenceLocationColumn = true,
-  showSourceColumns = true,
-  showCount = true,
-  showScoreColumn = true,
-  showRequirementColumn = true,
-  showProofRequirementColumn = true,
-  scoringItemAlign = 'center',
-  headerAction = null,
-}) {
-  const emptyColSpan = 2
-    + (showScoreColumn ? 1 : 0)
-    + (showRequirementColumn ? 1 : 0)
-    + (showProofRequirementColumn ? 1 : 0)
-    + (showSourceColumns ? 2 : 0)
-    + (showEvidenceLocationColumn ? 1 : 0)
-
-  return (
-    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
-        {headerAction || (showCount ? <span className="text-xs text-outline">{rows.length} 条</span> : null)}
-      </div>
-      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
-        <table className={`business-scoring-table w-full table-fixed text-sm ${showSourceColumns ? 'min-w-[980px]' : 'min-w-[860px]'}`}>
-          <colgroup>
-            <col className="w-16" />
-            <col className={showSourceColumns ? 'w-44' : 'w-52'} />
-            {showScoreColumn ? <col className="w-32" /> : null}
-            {showRequirementColumn ? <col className="w-96" /> : null}
-            {showProofRequirementColumn ? <col className="w-72" /> : null}
-            {showSourceColumns ? (
-              <>
-                <col className="w-56" />
-                <col className="w-48" />
-              </>
-            ) : null}
-            {showEvidenceLocationColumn ? <col className="w-44" /> : null}
-          </colgroup>
-          <thead>
-            <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">序号</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">评分/审查项</th>
-              {showScoreColumn ? <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">分值</th> : null}
-              {showRequirementColumn ? <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">得分点/要求</th> : null}
-              {showProofRequirementColumn ? <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">证明材料要求</th> : null}
-              {showSourceColumns ? (
-                <>
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">来源</th>
-                  <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">章节</th>
-                </>
-              ) : null}
-              {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">证据位置</th>
-              ) : null}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length ? rows.map((item, index) => (
-              <tr key={item.id || `${title}-${index}`} className="border-b border-surface-container-high last:border-b-0">
-                <td className="px-4 py-2 text-center text-on-surface-variant whitespace-nowrap">{item.order || index + 1}</td>
-                <td className={`business-scoring-text-cell px-4 py-2 text-on-surface font-medium align-middle ${scoringItemAlign === 'left' ? 'text-left' : 'text-center'}`}>{item.scoringItem || '-'}</td>
-                {showScoreColumn ? <td className="business-scoring-text-cell px-4 py-2 text-center text-primary align-top">{item.score || '-'}</td> : null}
-                {showRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.scorePoint || '-'}</td> : null}
-                {showProofRequirementColumn ? <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.proofRequirement || '-'}</td> : null}
-                {showSourceColumns ? (
-                  <>
-                    <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.sourceFile || '-'}</td>
-                    <td className="business-scoring-text-cell px-4 py-2 text-on-surface-variant align-top">{item.section || '-'}</td>
-                  </>
-                ) : null}
-                {showEvidenceLocationColumn ? (
-                  <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{item.evidenceLocation || '-'}</td>
-                ) : null}
-              </tr>
-            )) : (
-              <tr>
-                <td className="px-4 py-3 text-outline" colSpan={emptyColSpan}>{emptyText}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function PresenceTable({ title = '专题方案 / 供货范围 / 考核条款', rows = [], showEvidenceLocationColumn = true }) {
-  return (
-    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
-        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
-      </div>
-      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
-        <table className="w-full text-sm min-w-[860px]">
-          <thead>
-            <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">项目</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">识别结果</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">摘要</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
-              {showEvidenceLocationColumn ? (
-                <th className="px-4 py-2 text-center font-semibold text-on-surface">证据位置</th>
-              ) : null}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const evidence = Array.isArray(row.item?.evidences) ? row.item.evidences[0] : null
-              return (
-                <tr key={row.label} className="border-b border-surface-container-high last:border-b-0">
-                  <td className="px-4 py-2 text-on-surface font-medium whitespace-nowrap">{row.label}</td>
-                  <td className="px-4 py-2 whitespace-nowrap">
-                    <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${row.item?.status === 'present' ? 'bg-secondary-container text-on-secondary-container' : 'bg-surface-container-high text-on-surface-variant'}`}>
-                      {presenceLabel(row.item?.status)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-on-surface-variant min-w-[340px]">{row.item?.summary || '未识别到明确要求。'}</td>
-                  <td className="px-4 py-2 text-on-surface-variant min-w-[180px]">{evidence?.sourceFile || '-'}</td>
-                  {showEvidenceLocationColumn ? (
-                    <td className="px-4 py-2 text-on-surface-variant whitespace-nowrap">{evidence?.evidenceLocation || '-'}</td>
-                  ) : null}
-                </tr>
-              )
-            })}
           </tbody>
         </table>
       </div>
@@ -507,57 +352,6 @@ const buildStoppedParseProgress = (previous, summary) => ({
   ].slice(-8),
   opencodeOutput: previous?.opencodeOutput || { parts: [] },
 })
-
-function ProjectBasicsTable({ title, fields = [] }) {
-  const byKey = new Map(fields.map((field) => [field.key || field.fieldKey, field]))
-  const normalizedFields = PROJECT_BASIC_FIELDS.map(([key, label]) => {
-    const field = byKey.get(key) || {}
-    return {
-      key,
-      label,
-      ...field,
-      value: field.value ?? '',
-    }
-  })
-
-  return (
-    <div className="border border-surface-container-high rounded-md overflow-hidden bg-white">
-      <div className="px-4 py-3 border-b border-surface-container-high bg-surface-container-low">
-        <h4 className="text-sm font-semibold text-on-surface">{title}</h4>
-      </div>
-      <div className="overflow-x-auto" role="region" aria-label={`${title}，可横向滚动`} tabIndex={0}>
-        <table className="w-full table-fixed text-sm min-w-[720px]">
-          <colgroup>
-            <col className="w-44" />
-            <col className="w-[26rem]" />
-            <col className="w-72" />
-          </colgroup>
-          <thead>
-            <tr className="border-b border-surface-container-high">
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">字段</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">解析内容</th>
-              <th className="px-4 py-2 text-center font-semibold text-on-surface">来源</th>
-            </tr>
-          </thead>
-          <tbody>
-            {normalizedFields.map((field) => {
-              const found = Boolean(String(field.value || '').trim())
-              return (
-                <tr key={field.key} className="border-b border-surface-container-high last:border-b-0">
-                  <td className="px-4 py-2 text-center font-semibold text-on-surface whitespace-nowrap">{field.label}</td>
-                  <td className={`px-4 py-2 ${found ? 'text-primary font-medium' : 'text-outline'}`}>
-                    {found ? displayValue(field.value) : '未识别'}
-                  </td>
-                  <td className="px-4 py-2 text-on-surface-variant">{sourceValue(field)}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
 
 export default function TechnicalTenderReview({ showToast }) {
   const reviewConfig = TECHNICAL_REVIEW_CONFIG

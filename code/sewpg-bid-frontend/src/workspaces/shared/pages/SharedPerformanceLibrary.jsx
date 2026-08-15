@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { performanceAPI } from '../../../api'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import MaterialsViewSwitch from '../components/MaterialsViewSwitch'
+import { normalizeTagList } from '../components/materialDbUtils'
 import { availableWorkspacesFor, defaultWorkspaceFor } from '../../../utils/permissions'
 import { workspaceRoute } from '../../../utils/workspace'
 
@@ -42,22 +43,8 @@ const ITEM_EDIT_FIELDS = [
   { key: 'contactInfo', label: '联系人及电话' },
 ]
 
-const normalizeTags = (value) => {
-  const source = Array.isArray(value) ? value : String(value || '').split(/[,，;；\n\r\t]+/)
-  const seen = new Set()
-  const tags = []
-  source.forEach((item) => {
-    const tag = String(item || '').replace(/\s+/g, ' ').trim().slice(0, 40)
-    if (!tag) return
-    const key = tag.toLocaleLowerCase()
-    if (seen.has(key)) return
-    seen.add(key)
-    tags.push(tag)
-  })
-  return tags.slice(0, 20)
-}
-
-const tagsText = (value) => normalizeTags(value).join('，')
+// 与素材库共用同一份标签规整逻辑（拆分/去重/40 字截断/20 上限）
+const tagsText = (value) => normalizeTagList(value).join('，')
 const compactParts = (...parts) => parts.map((part) => String(part || '').trim()).filter(Boolean).join(' · ')
 const compactList = (value, limit = 4) => {
   const list = Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : []

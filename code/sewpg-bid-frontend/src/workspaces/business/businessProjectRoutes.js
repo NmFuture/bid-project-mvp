@@ -1,30 +1,20 @@
-export const businessProjectParseResultRoute = (projectId = '') =>
-  projectId ? `/parse/business?projectId=${encodeURIComponent(projectId)}` : '/parse/business'
+// 实现已合并到 shared/utils/projectRoutes.js（两侧归一化后完全相同），
+// 这里只保留商务标命名的薄壳，页面与测试的 import 不变。
+import {
+  createProjectParseResultRoutes,
+  selectParseProjectId,
+  shouldSyncProjectParseResultRoute,
+} from '../shared/utils/projectRoutes.js'
 
-export const businessProjectParseResultMenuRoute = (projectId = '', event = null) => {
-  event?.stopPropagation?.()
-  return businessProjectParseResultRoute(projectId)
-}
+const {
+  projectParseResultRoute,
+  projectParseResultMenuRoute,
+  projectParseResultNavigation,
+} = createProjectParseResultRoutes('/parse/business')
 
-export const businessProjectParseResultNavigation = (projectId = '') => ({
-  to: businessProjectParseResultRoute(projectId),
-  options: { replace: true },
-})
+export const businessProjectParseResultRoute = projectParseResultRoute
+export const businessProjectParseResultMenuRoute = projectParseResultMenuRoute
+export const businessProjectParseResultNavigation = projectParseResultNavigation
 
-export const selectBusinessParseProjectId = ({
-  queryProjectId = '',
-  currentProjectId = '',
-  reviewItems = [],
-} = {}) => {
-  const queryId = String(queryProjectId || '').trim()
-  if (queryId && reviewItems.some((item) => item?.id === queryId)) return queryId
-  const currentId = String(currentProjectId || '').trim()
-  if (queryId && currentId && reviewItems.some((item) => item?.id === currentId)) return currentId
-  return ''
-}
-
-export const shouldSyncBusinessProjectParseResultRoute = ({
-  projectId = '',
-  queryProjectId = '',
-  parseCompleted = false,
-} = {}) => Boolean(parseCompleted && projectId && projectId !== queryProjectId)
+export const selectBusinessParseProjectId = selectParseProjectId
+export const shouldSyncBusinessProjectParseResultRoute = shouldSyncProjectParseResultRoute
