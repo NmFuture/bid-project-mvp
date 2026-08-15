@@ -180,6 +180,40 @@ test('同项目加载才合并旧目录进度，素材状态写入 owner', () =>
   assert.match(loadSource, /applyMaterialMatchPayload\(detectionPayload, requestProjectId\)/)
 })
 
+test('项目切换首帧在操作区渲染前阻止显示旧项目目录', () => {
+  assert.match(outlineSource, /const \[loadedProjectId, setLoadedProjectId\] = useState\(['"]['"]\)/)
+  const loadingGuardIndex = outlineSource.indexOf('if (loading || loadedProjectId !== id)')
+  const pageHeaderIndex = outlineSource.indexOf('<PageHeader')
+  const saveHandlerIndex = outlineSource.indexOf('const handleSave')
+
+  assert.notEqual(loadingGuardIndex, -1, '必须按已加载项目 ID 守住切换后的首帧')
+  assert.ok(loadingGuardIndex < pageHeaderIndex, '加载 guard 必须位于操作 UI 前')
+  assert.ok(loadingGuardIndex > saveHandlerIndex, '加载 guard 应在 hooks 与事件处理器声明完成后执行')
+})
+
+test('项目切换同步清空旧项目内容且加载收口标记对应项目', () => {
+  const resetStart = outlineSource.indexOf('setDirectoryState(null)')
+  const loadStart = outlineSource.indexOf('const loadData', resetStart)
+  const resetSource = outlineSource.slice(resetStart, loadStart)
+  const loadSource = sourceBetween('const loadData', 'const directoryRunning')
+
+  assert.match(resetSource, /setLoading\(true\)/)
+  assert.match(resetSource, /setLoadedProjectId\(['"]['"]\)/)
+  assert.match(resetSource, /setNodes\(\[\]\)/)
+  assert.match(resetSource, /setActiveNodeId\(['"]['"]\)/)
+  assert.match(resetSource, /setDirty\(false\)/)
+  assert.match(resetSource, /setProjectName\(id\)/)
+  assert.match(resetSource, /setReviewStatus\(['"]draft['"]\)/)
+  assert.match(
+    loadSource,
+    /technicalTaskResponseMatchesProject\(requestProjectId, currentProjectIdRef\.current\)[\s\S]*?setLoadedProjectId\(requestProjectId\)/,
+  )
+  assert.match(
+    loadSource,
+    /catch \(e\)[\s\S]*?technicalTaskResponseMatchesProject\(requestProjectId, currentProjectIdRef\.current\)[\s\S]*?setLoadedProjectId\(requestProjectId\)/,
+  )
+})
+
 test('关闭两个进度弹窗都只隐藏弹窗，不会隐式取消任务', () => {
   const directoryClose = outlineSource.match(/onClose=\{\(\) => setRegenerationModalOpen\(false\)\}/)?.[0] || ''
   const materialClose = outlineSource.match(/onClose=\{\(\) => setMaterialMatchModalOpen\(false\)\}/)?.[0] || ''

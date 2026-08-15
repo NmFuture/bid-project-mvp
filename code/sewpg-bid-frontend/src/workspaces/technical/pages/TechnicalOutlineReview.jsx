@@ -266,6 +266,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const [nodes, setNodes] = useState([])
   const [activeNodeId, setActiveNodeId] = useState('')
   const [loading, setLoading] = useState(true)
+  const [loadedProjectId, setLoadedProjectId] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
@@ -355,6 +356,17 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     // 项目切换必须在新项目加载前同步清空上一项目的任务 UI。
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setDirectoryState(null)
+    setLoading(true)
+    setLoadedProjectId('')
+    setNodes([])
+    setActiveNodeId('')
+    setDirty(false)
+    setProjectName(id)
+    setReviewStatus('draft')
+    setCurrentStage(2)
+    setTenderPreview(null)
+    setOnlyofficeError('')
+    setCollapsedNodeIds(new Set())
     setMaterialMatchStatus(null)
     setRegenerationModalOpen(false)
     setMaterialMatchModalOpen(false)
@@ -426,9 +438,11 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           setMaterialMatchModalOpen(true)
         }
       }
+      setLoadedProjectId(requestProjectId)
     } catch (e) {
       if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       setError(e?.message || '目录数据加载失败')
+      setLoadedProjectId(requestProjectId)
     } finally {
       if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
         setLoading(false)
@@ -1138,7 +1152,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     </div>
   )
 
-  if (loading) return <PageLoading title="正在加载目录确认..." />
+  if (loading || loadedProjectId !== id) return <PageLoading title="正在加载目录确认..." />
 
   if (error) {
     return (
