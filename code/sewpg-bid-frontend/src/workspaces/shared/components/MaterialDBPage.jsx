@@ -1810,7 +1810,7 @@ export default function MaterialDBPage({ config, showToast = () => {} }) {
             <button
               type="button"
               title={selectedFolderPath && isFolderDeleteProtected(selectedFolderPath) ? '基础素材目录不可删除' : '删除文件夹'}
-              onClick={handleDeleteFolder}
+              onClick={() => handleDeleteFolder()}
               disabled={!canDeleteFolder}
               className="rounded-lg bg-error-container/45 px-3 py-2 text-xs font-semibold text-error hover:bg-error-container disabled:cursor-not-allowed disabled:opacity-45"
             >
