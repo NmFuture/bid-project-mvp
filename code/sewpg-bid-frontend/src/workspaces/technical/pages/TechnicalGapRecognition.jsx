@@ -1,15 +1,25 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalOutlineAPI, technicalParseAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
+import { technicalGapsAPI, technicalGenerateAPI, technicalMaterialsAPI, technicalOutlineAPI, technicalProjectsAPI, technicalStagesAPI } from '../../../api'
 import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
-import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
+import FactMaintenanceModal from './technicalGapFactModal'
+import AiFillReferenceModal from './technicalGapAiFillModal'
+import MaterialCandidateCard from './technicalGapMaterialCard'
+import TechnicalPreviewModal from './technicalGapPreviewModal'
+import {
+  TechnicalGapActionControls,
+  TechnicalGapQualityBadge,
+  TechnicalGapQualityNotice,
+  TechnicalTocActionBadge,
+} from './technicalGapBadges'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
+import { useGapPreviewSession } from './useGapPreviewSession'
+import { useBackgroundTaskPolling } from './useBackgroundTaskPolling'
 import Badge from '../../../components/ui/Badge'
 import Button from '../../../components/ui/Button'
-import IconButton from '../../../components/ui/IconButton'
 import Toolbar from '../../../components/ui/Toolbar'
 import { projectRoute, useWorkspaceSlug } from '../../../utils/workspace'
 import {
@@ -22,17 +32,14 @@ import {
   currentResolvedArtifact,
   currentResolvedArtifacts,
   isFillTemplateMaterial,
-  isStructuralItem,
   latestResolvedArtifact,
   matchedMaterialForItem,
-  previewChoicesForItem,
   primaryBlankSource,
   recommendedSelectionsForItem,
   resultSummaryForItem,
   TECHNICAL_GAP_TAG_CONFIG,
   TECHNICAL_WORD_FILL_SKILL,
   technicalBodyFillCounts,
-  technicalGapDescendants,
   technicalGapFillError,
   technicalGapProgressCounts,
   technicalGapQualityFlag,
@@ -42,20 +49,6 @@ import {
   tenderDocumentStateForAiFill,
   uniqueStrings,
 } from './technicalGapRecognitionHelpers'
-
-const previewKindLabels = {
-  material: '素材预览',
-  appendix: '未填写预览',
-  blankMaterial: '未填写预览',
-  artifact: '结果预览',
-}
-
-const previewKindIcons = {
-  material: 'description',
-  appendix: 'table_view',
-  blankMaterial: 'description',
-  artifact: 'task',
-}
 
 const compactList = (items, limit = 4) => {
   const list = uniqueStrings(items)
@@ -110,12 +103,6 @@ const normalizeItems = (payload) => {
   }))
 }
 
-const materialTierLabels = {
-  standard: '通用素材',
-  customer: '客户素材',
-  project: '项目素材',
-}
-
 // 合并清单条目的来源标签。
 const artifactSourceLabels = {
   material_library: '选用素材',
@@ -123,1285 +110,12 @@ const artifactSourceLabels = {
   ai_fill: 'AI填写',
 }
 
-const isEditableArtifactChoice = (choice) => (
-  choice?.kind === 'artifact' && String(choice?.artifact?.source || '') === 'ai_fill'
-)
-
-// 目录列表里的标签：三字工作态 / 四字旁路态（命名 v6，产品裁决 2026-08-04），hover 出提示。
-// 「仅留标题」的三条来源已在 technicalGapOwnTag 收口为同一个标签，这里只按来源区分 tip，
-// 消除"第1章为什么没标签还放开了子级"的困惑（产品反馈 2026-08-04）。
-function TechnicalTocActionBadge({ item, items }) {
-  const tag = technicalGapTagOf(item, items)
-  const config = TECHNICAL_GAP_TAG_CONFIG[tag]
-  if (!config) return null
-  const tip = tag === 'title_only' && !item?.titleOnly
-    ? '未找到整章素材，内容由下级承接'
-    : config.tip
-  return (
-    <Badge className="business-toc-status-badge" shape="square" size="xs" variant={config.variant} title={tip}>
-      {config.label}
-    </Badge>
-  )
-}
-
-// 逐条质量警示徽标（frontend-01）：AI 填写未过质检或仍有未填字段时亮黄标，hover 出原因。
-// 与工作态标签并列但不抢口径：标签说「待审核」，徽标说「为什么值得警惕」。
-function TechnicalGapQualityBadge({ item }) {
-  const flag = technicalGapQualityFlag(item)
-  if (!flag) return null
-  return (
-    <span title={flag.tip}>
-      <Badge shape="square" size="xs" variant="warn">{flag.label}</Badge>
-    </span>
-  )
-}
-
-// 详情区警示条：选中项有待复核质量问题时，在标题下方点明原因，
-// 与列表行徽标、批量复核按钮 title 共用 technicalGapQualityFlag 同一口径。
-function TechnicalGapQualityNotice({ item }) {
-  const flag = technicalGapQualityFlag(item)
-  if (!flag) return null
-  return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-5 py-2.5 text-xs text-amber-800">
-      <span className="material-symbols-outlined text-[15px]">warning</span>
-      <span className="min-w-0">{flag.tip}</span>
-    </div>
-  )
-}
-
-// 右侧详情面板标题旁的操作控件（产品裁决 2026-08-04 v6）：
-// - 「忽略/取消忽略」：有下级且未被冻结的节点都有——红色「待补充」的章、无标签骨架章同样适用；
-//   列表行保持纯展示（回归 2026-07-21 裁决），忽略操作只在这里。
-// - 「确认」：只对有系统预选素材（matchedMaterials 非空）的待确认项渲染——空确认不产生定案
-//   （产品反馈 2026-08-04）；备选/搜索里的素材走「选择」即定案。
-// - 已定案（待填写/已就绪）：展示定案态，可点撤销回落；
-// - 待审核：「重新AI填写」+「复核通过」。
-function TechnicalGapActionControls({ item, items, busy, onConfirmReady, onReviewPass, onRefill, onTitleOnly }) {
-  const tag = technicalGapTagOf(item, items)
-  if (tag === 'parent_covered') return null
-  const ignored = tag === 'title_only'
-  // 结构章天生骨架，无自身匹配可忽略；忽略按钮只给「有自身匹配的带下级节点」。
-  const hasChildren = !isStructuralItem(item) && technicalGapDescendants(item, items).length > 0
-  const ignoreButton = hasChildren ? (
-    <Button
-      type="button"
-      onClick={() => onTitleOnly(item, !ignored)}
-      disabled={busy}
-      title={ignored ? '取消忽略：本级恢复匹配素材，子级重新冻结' : '忽略本级：仅保留标题，下级各自匹配素材'}
-      size="sm"
-      variant="quiet"
-    >
-      {ignored ? '取消忽略' : '忽略本级'}
-    </Button>
-  ) : null
-  if (ignored) return ignoreButton
-  if (tag === 'template_review') {
-    return (
-      <>
-        {ignoreButton}
-        <Button
-          type="button"
-          onClick={() => onRefill(item)}
-          disabled={busy}
-          title="复核不通过时重新发起 AI 填写"
-          size="sm"
-          variant="secondary"
-        >
-          重新AI填写
-        </Button>
-        <Button
-          type="button"
-          onClick={() => onReviewPass(item)}
-          disabled={busy}
-          title="确认 AI 填写结果无误，本条定案"
-          size="sm"
-          variant="primary"
-        >
-          复核通过
-        </Button>
-      </>
-    )
-  }
-  const settled = tag === 'material_ready' || tag === 'template_ready'
-  const confirmable = tag === 'needs_choice' && asObjectArray(item?.matchedMaterials).length > 0
-  // 上一轮填写失败的项停在「待填写」，这里给出原地重填入口（一键批量里失败的也走这条）
-  const fillError = technicalGapFillError(item)
-  return (
-    <>
-      {ignoreButton}
-      {fillError ? (
-        <Button
-          type="button"
-          onClick={() => onRefill(item)}
-          disabled={busy}
-          title={`上次填写失败：${fillError}`}
-          size="sm"
-          variant="secondary"
-        >
-          重新填写
-        </Button>
-      ) : null}
-      {settled || confirmable ? (
-        <Button
-          type="button"
-          onClick={() => onConfirmReady(item, !settled)}
-          disabled={busy}
-          title={settled ? '已定案，点击撤销（回落到待确认）' : '确认使用系统预选的素材'}
-          size="sm"
-          variant={settled ? 'secondary' : 'primary'}
-        >
-          {settled ? '已定案' : '确认'}
-        </Button>
-      ) : null}
-    </>
-  )
-}
-
-// 素材卡（产品裁决 2026-07-21 交互重构）：候选池/搜索结果里的素材一律只有 预览 + 选择；
-// 点「选择」进入上方已选区后，待填写素材（命名纪律「待填写-」前缀或填写任务空白模板）
-// 才出现 AI填写，不用填写的已选素材只有 预览——AI填写 按钮仅在传入 onAiFill 时渲染。
-// leading 用于前置控件（如 AI 参考素材勾选框）。系统召回、来源推荐、搜索结果共用此卡片。
-// coverageLabel：父级覆盖等场景的说明标签，只加标签不改变卡片基础结构（产品意见 2026-07-17）。
-// onSelect 为空时不渲染「选择」按钮（如解析空表、AI 参考素材弹窗）；
-// onCardClick 使整卡可点（AI 弹窗里点卡即勾选参考素材），卡内按钮均阻断冒泡。
-function MaterialCandidateCard({
-  material,
-  isSelected,
-  busy,
-  selecting,
-  onPreview,
-  onSelect,
-  fillable,
-  onAiFill,
-  aiFillBusy,
-  aiFillCompleted,
-  aiFillDisabled,
-  aiFillDisabledReason,
-  leading,
-  coverageLabel,
-  onCardClick,
-}) {
-  const name = material.name || material.cleanedFileName || material.id || material.materialId
-  const path = material.folderPath || material.path || material.id
-  // 新口径 matchScore 已是 0~1（启发式封顶 0.98，0.99=文件名精确命中）；Math.min 仅为存量旧版无界分兜底。
-  const matchPercent = Math.min(100, Math.round(technicalMatchScore(material) * 100))
-  const tierLabel = materialTierLabels[String(material.materialTier || '')] || ''
-  const isFillable = fillable ?? isFillTemplateMaterial(material)
-  // 展示极简口径（产品裁决）：文件名 + 匹配度 + 路径，不展示召回原因/清洗状态/证据片段。
-  // 匹配度做成色块徽标（≥99 绿 = 精确命中 / ≥50 琥珀 / <50 灰 = 低置信），按钮横排收紧卡片高度。
-  return (
-    <div
-      onClick={onCardClick || undefined}
-      className={`rounded-lg border px-3 py-2.5 text-xs transition-[background-color,border-color,box-shadow,color] ${
-        isSelected ? 'border-secondary bg-secondary-container/40' : 'border-surface-container-high bg-surface-container-lowest hover:border-primary/30 hover:shadow-sm'
-      }${onCardClick ? ' cursor-pointer' : ''}`}
-    >
-      <div className="flex items-center justify-between gap-3">
-        {leading || null}
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[13px] font-semibold text-on-surface" title={name}>{name}</span>
-            {matchPercent > 0 ? (
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
-                  matchPercent >= 99
-                    ? 'bg-secondary-container text-on-secondary-container'
-                    : matchPercent >= 50
-                      ? 'bg-amber-100 text-amber-800'
-                      : 'bg-surface-container-high text-outline'
-                }`}
-              >
-                {matchPercent}%{matchPercent < 50 ? ' 低置信' : ''}
-              </span>
-            ) : null}
-            {isSelected ? <Badge size="xs" variant="done">已选中</Badge> : null}
-          </div>
-          <div className="mt-1 flex min-w-0 items-center gap-1.5">
-            {coverageLabel ? <Badge size="xs" variant="pending">{coverageLabel}</Badge> : null}
-            {isFillable ? <Badge size="xs" variant="info">待填写</Badge> : null}
-            {tierLabel ? <span className="shrink-0 text-[10px] text-outline">{tierLabel}</span> : null}
-            <span className="min-w-0 truncate text-[11px] text-outline" title={path}>{path}</span>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              onPreview(material)
-            }}
-            disabled={busy}
-            size="sm"
-            variant="quiet"
-          >
-            预览
-          </Button>
-          {onSelect ? (
-            <Button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                onSelect(material)
-              }}
-              disabled={busy}
-              size="sm"
-              variant={isSelected ? 'secondary' : 'primary'}
-            >
-              {selecting ? '选择中...' : isSelected ? '已选中' : '选择'}
-            </Button>
-          ) : null}
-          {isFillable && onAiFill ? (
-            <Button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation()
-                onAiFill(material)
-              }}
-              disabled={busy || aiFillDisabled}
-              title={aiFillDisabled ? (aiFillDisabledReason || '') : aiFillCompleted ? '已完成，可再次发起 AI 填写' : ''}
-              size="sm"
-              variant="secondary"
-            >
-              {aiFillBusy ? 'AI填写中...' : aiFillCompleted ? (
-                <>
-                  <span className="material-symbols-outlined align-[-3px] text-[14px] text-secondary">check_circle</span>
-                  已AI填写
-                </>
-              ) : 'AI填写'}
-            </Button>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// 表级与字段级都有 confirmed，含义不同（表：全部了结 / 字段：有值可用），分成两张表
-const factTableStatusLabels = {
-  empty: '待生成',
-  draft: '待补齐',
-  confirmed: '已填满',
-}
-
-// 字段级三态（产品裁决 2026-08-10：取消人工确认闸门，有值即可用）
-const factFieldStatusLabels = {
-  confirmed: '可用',
-  unextracted: '待填写',
-  not_applicable: '不适用',
-}
-
-// 历史状态归一：extracted/pending_confirmation/conflict/candidate 都是「有值但没人看过」，
-// missing/missing_source 都是「没值」，后端已收敛成三态，这里兜住尚未重建的旧项目状态。
-const LEGACY_FACT_FIELD_STATUS = {
-  extracted: 'confirmed',
-  pending_confirmation: 'confirmed',
-  conflict: 'confirmed',
-  candidate: 'confirmed',
-  missing: 'unextracted',
-  missing_source: 'unextracted',
-}
-
-const normalizeFactFieldStatus = (status) => {
-  const value = String(status || 'unextracted')
-  return LEGACY_FACT_FIELD_STATUS[value] || value
-}
-
-// 字段状态配色（统计 chip 与列表状态下拉共用）：confirmed 绿 / unextracted 浅琥珀 / not_applicable 灰
-const factFieldStatusTone = (status) => {
-  switch (normalizeFactFieldStatus(status)) {
-    case 'confirmed':
-      return 'bg-secondary-container text-on-secondary-container'
-    case 'unextracted':
-      return 'bg-amber-50 text-amber-800'
-    default:
-      return 'bg-surface-container-high text-on-surface-variant'
-  }
-}
-
-// 统计条 chip 的展示顺序
-const factStatusChipOrder = ['confirmed', 'unextracted', 'not_applicable']
-
-const hasFactSpecSeq = (field) =>
-  field?.specSeq !== null && field?.specSeq !== undefined && String(field.specSeq) !== ''
-
-// 清单进度分段，口径与后端 summary 的 spec*Count 一致：
-// confirmed=有值可用；unfilled=没值待人工填；notApplicable=人工标了不适用，不计待办
-const factSpecSegment = (field) => {
-  if (normalizeFactFieldStatus(field?.status) === 'not_applicable') return 'notApplicable'
-  return String(field?.value || '').trim() ? 'confirmed' : 'unfilled'
-}
-
-// 来源素材路径展示（产品反馈 2026-08-03：事实表只保留 字段/确认值/来源路径 三列）：
-// 优先素材完整路径，其次解析来源文件，退回 目录/文件名 或素材名。
-const factRefPath = (ref) => {
-  const direct = String(ref?.path || ref?.sourceFile || '').trim()
-  if (direct) return direct
-  const folder = String(ref?.folderPath || '').trim().replace(/\/+$/, '')
-  const name = String(ref?.name || '').trim()
-  if (folder && name) return `${folder}/${name}`
-  return name || String(ref?.title || '').trim()
-}
-
-// 来源列只展示文件名降噪，完整路径放 tooltip（产品反馈 2026-08-03）
-const factRefFileName = (path) => String(path || '').split('/').filter(Boolean).pop() || String(path || '')
-
-// 固定三段最小宽度，避免原生 table 自动布局把“事实值”挤成竖条。
-const factRowGridStyle = {
-  gridTemplateColumns: 'minmax(180px, 0.75fr) minmax(320px, 1.25fr) minmax(300px, 1.5fr)',
-}
-
-const normalizeMaterialTreePath = (value) => String(value || '').replace(/^\/+|\/+$/g, '')
-const normalizeMaterialTreeNodes = (nodes = []) =>
-  (Array.isArray(nodes) ? nodes : [])
-    .map((node) => {
-      const path = normalizeMaterialTreePath(node?.path || node?.name || '')
-      return {
-        path,
-        name: String(node?.name || node?.title || path.split('/').pop() || '未命名目录'),
-        fileCount: Number(node?.fileCount || 0),
-        children: normalizeMaterialTreeNodes(node?.children || []),
-      }
-    })
-    .filter((node) => node.path)
-const collectDefaultExpandedTreePaths = (nodes = [], depth = 0, result = new Set()) => {
-  nodes.forEach((node) => {
-    if (node.children.length) {
-      if (depth < 2) result.add(node.path)
-      collectDefaultExpandedTreePaths(node.children, depth + 1, result)
-    }
-  })
-  return result
-}
-
-const FactMaintenanceModal = ({
-  open,
-  factTable,
-  fields,
-  busy,
-  specsImported,
-  specsFileName,
-  materialPaths,
-  materialScopes,
-  curateReport,
-  curating,
-  curatePhase,
-  curateMessage,
-  updatingScope,
-  onClose,
-  onConfirm,
-  onFieldChange,
-  onAddField,
-  onGoToRules,
-  onSaveMaterialPaths,
-  onCurate,
-}) => {
-  const [selectedPaths, setSelectedPaths] = useState(() => uniqueStrings(materialPaths || []))
-  const [pathsEditing, setPathsEditing] = useState(false)
-  const [treeNodes, setTreeNodes] = useState([])
-  const [treeLoading, setTreeLoading] = useState(false)
-  const [treeError, setTreeError] = useState('')
-  const [expandedTreePaths, setExpandedTreePaths] = useState(() => new Set())
-  // 统计条联动筛选：{ type: 'status' | 'spec', key, label }，null 表示全部
-  const [factFilter, setFactFilter] = useState(null)
-  const ignoredSuggestions = Array.isArray(curateReport?.ignored) ? curateReport.ignored : []
-  if (!open) return null
-  const status = factTable?.status || 'empty'
-
-  // 默认素材范围：后端给出的三层（标准文件/客户定制/项目定制），与 AI 匹配填充的扫描口径一致。
-  // 摘要只显示层名，完整路径与自定义参考目录放 title，避免长路径撑破工具条。
-  const scopeList = Array.isArray(materialScopes) ? materialScopes.filter(Boolean) : []
-  const scopeNames = scopeList.map((scope) => materialTierLabels[scope.tier] || String(scope.tier || '')).filter(Boolean)
-  const scopeSummary = scopeNames.length ? scopeNames.join(' · ') : '项目素材'
-  const scopeTitle = [
-    ...scopeList.map((scope) => `${materialTierLabels[scope.tier] || scope.tier}：${scope.path || ''}`),
-    ...(materialPaths || []).map((path) => `参考目录：${path}`),
-  ].join('\n')
-
-  // 统计口径：全部从本地 fields（factFields state）实时推导，与列表同一数据源，
-  // 新增字段、本地改状态后立即反映，不再依赖后端 summary 快照
-  const statusCounts = {}
-  fields.forEach((field) => {
-    const fieldStatus = normalizeFactFieldStatus(field.status)
-    statusCounts[fieldStatus] = (statusCounts[fieldStatus] || 0) + 1
-  })
-  const specSegments = { confirmed: 0, unfilled: 0, notApplicable: 0 }
-  const specTotal = fields.reduce((total, field) => {
-    if (!hasFactSpecSeq(field)) return total
-    specSegments[factSpecSegment(field)] += 1
-    return total + 1
-  }, 0)
-
-  const toggleFactFilter = (filter) => {
-    setFactFilter((current) => (current && current.type === filter.type && current.key === filter.key ? null : filter))
-  }
-  const matchesFactFilter = (field) => {
-    if (!factFilter) return true
-    if (factFilter.type === 'status') return normalizeFactFieldStatus(field.status) === factFilter.key
-    return hasFactSpecSeq(field) && factSpecSegment(field) === factFilter.key
-  }
-  // 保留原始下标：onFieldChange 按 factFields 下标回写，筛选后不能重排
-  const visibleRows = fields
-    .map((field, index) => ({ field, index }))
-    .filter(({ field }) => matchesFactFilter(field))
-
-  // 多机型项目按机型分段成块显示（后端已把这些行按 turbineGroup 排到表首）。
-  // 单机型只有一组，不分块，表现与改动前一致。
-  const turbineGroupCount = new Set(
-    fields.map((field) => Number(field.turbineGroup) || 0).filter(Boolean),
-  ).size
-  // 连续同组的行归成一段：机型段渲染成带边框的小块，其余段平铺
-  const factRowSections = []
-  visibleRows.forEach((row) => {
-    const group = turbineGroupCount > 1 ? Number(row.field.turbineGroup) || 0 : 0
-    const last = factRowSections[factRowSections.length - 1]
-    if (last && last.group === group) {
-      last.rows.push(row)
-      return
-    }
-    factRowSections.push({
-      group,
-      // 组内各行的机型名相同，取第一行的即可
-      modelLabel: String(row.field.turbineModelLabel || '').trim(),
-      rows: [row],
-    })
-  })
-  // 机型块标题右侧的摘要：台数与基础形式已在块内成行，这里只做一眼可辨的概览
-  const factGroupSummary = (rows) => {
-    const valueOf = (suffix) =>
-      String(rows.find(({ field }) => String(field.label || '').endsWith(suffix))?.field.value || '').trim()
-    const count = valueOf('台数')
-    const foundation = valueOf('基础形式')
-    return [count ? `${count} 台` : '', foundation].filter(Boolean).join(' · ')
-  }
-
-  // index 是 factFields 里的原始下标，onFieldChange 按它回写，分段渲染不能改
-  const renderFactRow = ({ field, index }) => {
-    const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
-    const isEmptyStatus = normalizeFactFieldStatus(field.status) === 'unextracted'
-    const fieldNames = new Set([field.label, field.reviewLabel].map((value) => String(value || '').trim()).filter(Boolean))
-    const allRefPaths = uniqueStrings(asObjectArray(field.sourceRefs).map(factRefPath))
-      .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
-    const refPaths = allRefPaths.slice(0, 2)
-    const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
-    return (
-      <div
-        key={field.id || `${field.label}-${index}`}
-        className="grid min-h-[60px] items-center transition-colors hover:bg-surface-container-low/60"
-        style={factRowGridStyle}
-        role="row"
-      >
-        <div className="min-w-0 px-4 py-3" role="cell">
-          {isManualField ? (
-            <input
-              value={field.label || ''}
-              onChange={(event) => onFieldChange(index, 'label', event.target.value)}
-              placeholder="字段名称"
-              className="h-9 w-full rounded-md border border-surface-container-high bg-surface px-3 text-sm font-semibold text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-            />
-          ) : (
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
-              {field.needsConfirmation ? (
-                <span className="shrink-0 rounded bg-tertiary-fixed px-1.5 py-0.5 text-[10px] font-semibold text-on-tertiary-fixed" title={field.notes || '清单标记：该字段口径建议人工核一遍'}>
-                  核口径
-                </span>
-              ) : null}
-            </div>
-          )}
-        </div>
-        <div className="px-4 py-3" role="cell">
-          <input
-            value={field.value || ''}
-            onChange={(event) => onFieldChange(index, 'value', event.target.value)}
-            placeholder="待填写"
-            aria-label={`${field.label || '字段'}的事实值`}
-            className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
-              isEmptyStatus
-                ? 'border-tertiary bg-tertiary-fixed/35'
-                : 'border-surface-container-high bg-surface'
-            }`}
-          />
-        </div>
-        <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
-          {refPaths.length ? (
-            <div className="space-y-1">
-              {refPaths.map((refPath) => (
-                <div key={refPath} className="flex min-w-0 items-center gap-1.5" title={refPath}>
-                  <span className="material-symbols-outlined shrink-0 text-[15px] text-outline">description</span>
-                  <span className="truncate">{factRefFileName(refPath)}</span>
-                </div>
-              ))}
-              {hiddenRefCount ? (
-                <div className="pl-[21px] text-[11px] text-outline">另有 {hiddenRefCount} 份素材</div>
-              ) : null}
-            </div>
-          ) : (
-            <span className="text-outline">暂无匹配素材</span>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  const factFilterChipClass = (active, tone, count) =>
-    `rounded-md px-2.5 py-1 text-xs font-semibold ${tone} ${
-      active ? 'ring-2 ring-primary/70' : 'hover:brightness-95'
-    } ${count ? '' : 'opacity-50'}`
-
-  const enterPathsEditing = async () => {
-    if (pathsEditing) {
-      // 收起时丢弃未保存的勾选，回退到已保存的参考路径
-      setSelectedPaths(uniqueStrings(materialPaths || []))
-      setPathsEditing(false)
-      return
-    }
-    setPathsEditing(true)
-    if (treeNodes.length || treeLoading) return
-    setTreeLoading(true)
-    setTreeError('')
-    try {
-      const payload = await technicalMaterialsAPI.raw.tree()
-      const nodes = normalizeMaterialTreeNodes(payload?.tree || payload?.items || payload?.nodes || [])
-      setTreeNodes(nodes)
-      setExpandedTreePaths(collectDefaultExpandedTreePaths(nodes))
-    } catch (e) {
-      setTreeError(e?.message || '素材目录树加载失败')
-    } finally {
-      setTreeLoading(false)
-    }
-  }
-
-  const togglePathSelected = (path) => {
-    setSelectedPaths((prev) => (prev.includes(path) ? prev.filter((item) => item !== path) : [...prev, path]))
-  }
-
-  const toggleTreeExpand = (path) => {
-    setExpandedTreePaths((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-  }
-
-  const renderPathTreeNode = (node, depth = 0) => {
-    const checked = selectedPaths.includes(node.path)
-    const hasChildren = node.children.length > 0
-    const expanded = expandedTreePaths.has(node.path)
-    return (
-      <div key={node.path}>
-        <div
-          className="flex items-center gap-1.5 rounded py-1 pr-1.5 text-xs hover:bg-surface-container-high/60"
-          style={{ paddingLeft: `${depth * 16 + 4}px` }}
-        >
-          {hasChildren ? (
-            <button
-              type="button"
-              onClick={() => toggleTreeExpand(node.path)}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-outline hover:bg-surface-container-high"
-              aria-label={expanded ? `收起 ${node.name}` : `展开 ${node.name}`}
-            >
-              <span className="material-symbols-outlined text-[16px]">{expanded ? 'expand_more' : 'chevron_right'}</span>
-            </button>
-          ) : (
-            <span className="h-5 w-5 shrink-0" aria-hidden="true" />
-          )}
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={() => togglePathSelected(node.path)}
-            className="h-4 w-4 shrink-0 accent-primary"
-            aria-label={`选择参考目录 ${node.path}`}
-          />
-          <span className="min-w-0 flex-1 truncate text-on-surface" title={node.path}>{node.name}</span>
-          {node.fileCount > 0 && (
-            <span className="shrink-0 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] tabular-nums text-on-surface-variant">{node.fileCount}</span>
-          )}
-        </div>
-        {hasChildren && expanded ? node.children.map((child) => renderPathTreeNode(child, depth + 1)) : null}
-      </div>
-    )
-  }
-
-  return (
-    // 点弹窗外空白关闭（仅点遮罩本身生效，点弹窗内容不误关，产品反馈 2026-08-03）
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
-    >
-      <div role="dialog" aria-modal="true" aria-labelledby="technical-fact-modal-title" className="flex h-[calc(100dvh-1rem)] max-h-[860px] w-full max-w-[1180px] flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:h-[calc(100dvh-2rem)]">
-        <div className="flex flex-col gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-3.5 sm:px-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 id="technical-fact-modal-title" className="text-lg font-headline font-bold text-on-surface">项目事实表维护</h3>
-              <span className={`rounded-md px-2.5 py-1 text-xs font-semibold ${status === 'confirmed' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-fixed text-on-tertiary-fixed'}`}>
-                {factTableStatusLabels[status] || status}
-              </span>
-            </div>
-            <Toolbar className="w-full sm:w-auto">
-              <Button
-                type="button"
-                onClick={onCurate}
-                disabled={busy || !fields.length}
-                title="先按最新素材范围刷新事实表，再由 AI 匹配素材填充字段值，结果置为待人工确认（耗时较长）"
-                size="md"
-                variant="success"
-              >
-                {curating ? (curatePhase || '刷新填充中...') : '刷新并 AI 填充'}
-              </Button>
-              <Button type="button" onClick={onAddField} disabled={busy} icon="add" size="md" variant="secondary">
-                新增字段
-              </Button>
-              <Button type="button" onClick={onConfirm} disabled={busy || !fields.length} icon="save" size="md" variant="primary">
-                保存
-              </Button>
-              <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="ghost" />
-            </Toolbar>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => setFactFilter(null)}
-              className={`rounded-md px-2.5 py-1 text-xs font-semibold ${
-                factFilter
-                  ? 'bg-surface-container-high text-on-surface-variant hover:bg-surface-dim'
-                  : 'bg-primary/10 text-primary ring-1 ring-primary/40'
-              }`}
-            >
-              全部：{fields.length}
-            </button>
-            {factStatusChipOrder.map((statusKey) => {
-              const count = statusCounts[statusKey] || 0
-              const active = factFilter?.type === 'status' && factFilter.key === statusKey
-              const label = factFieldStatusLabels[statusKey] || statusKey
-              return (
-                <button
-                  key={statusKey}
-                  type="button"
-                  onClick={() => toggleFactFilter({ type: 'status', key: statusKey, label })}
-                  title={`筛选「${label}」字段${active ? '（再次点击取消）' : ''}`}
-                  className={factFilterChipClass(active, factFieldStatusTone(statusKey), count)}
-                >
-                  {label}：{count}
-                </button>
-              )
-            })}
-            {specTotal ? (
-              <div
-                className="ml-1 flex items-center gap-2 border-l border-surface-container-high pl-3"
-                title={`清单字段共 ${specTotal} 个：可用 ${specSegments.confirmed} · 待填写 ${specSegments.unfilled} · 不适用 ${specSegments.notApplicable}`}
-              >
-                <span className="text-xs text-on-surface-variant">清单进度</span>
-                <div className="flex h-2 w-32 overflow-hidden rounded-full bg-surface-container-high">
-                  {[
-                    ['confirmed', 'bg-secondary', specSegments.confirmed],
-                    ['unfilled', 'bg-amber-300', specSegments.unfilled],
-                    ['notApplicable', 'bg-surface-container-highest', specSegments.notApplicable],
-                  ].map(([segmentKey, barClass, count]) =>
-                    count ? (
-                      <span key={segmentKey} className={barClass} style={{ width: `${(count / specTotal) * 100}%` }} />
-                    ) : null
-                  )}
-                </div>
-                <span className="text-xs font-semibold tabular-nums text-on-surface">
-                  {specSegments.confirmed}/{specTotal} 可用
-                </span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        {curating ? (
-          <div className="flex items-center gap-2 border-b border-surface-container-high bg-tertiary-fixed/40 px-5 py-2.5 text-xs text-on-surface">
-            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-tertiary" />
-            <span className="font-semibold">{curatePhase || '刷新填充中'}</span>
-            <span className="min-w-0 truncate text-on-surface-variant">{curateMessage || ''}</span>
-            <span className="ml-auto shrink-0 text-on-surface-variant">任务在后台执行，可关闭本窗口</span>
-          </div>
-        ) : null}
-
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-surface-container-high bg-surface-container-lowest px-5 py-2.5 text-xs text-on-surface-variant">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <span className="material-symbols-outlined shrink-0 text-[16px] text-outline">description</span>
-              <span className="truncate" title={specsFileName || ''}>
-                {specsImported ? (specsFileName || '事实表已上传') : '尚未上传事实表'}
-              </span>
-            </span>
-            <Button
-              type="button"
-              onClick={onGoToRules}
-              disabled={busy}
-              icon="open_in_new"
-              size="xs"
-              variant="quiet"
-              title="事实表清单已迁至素材库 · 规则页统一维护"
-            >
-              去规则页维护
-            </Button>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <span className="material-symbols-outlined shrink-0 text-[16px] text-outline">folder_open</span>
-              <span className="max-w-[22rem] truncate" title={scopeTitle}>
-                {scopeSummary}
-                {materialPaths?.length ? ` + ${materialPaths.length} 个参考目录` : ''}
-              </span>
-            </span>
-            <Button
-              type="button"
-              onClick={enterPathsEditing}
-              disabled={busy}
-              icon={pathsEditing ? 'expand_less' : 'tune'}
-              size="xs"
-              variant="quiet"
-            >
-              {pathsEditing ? '收起' : '设置范围'}
-            </Button>
-          </div>
-        </div>
-
-        {pathsEditing ? (
-          <div className="border-b border-surface-container-high bg-surface-container-lowest px-5 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-on-surface-variant">
-                从素材目录树勾选额外参考目录（默认三层范围始终参与，无需勾选）
-              </p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const saved = await onSaveMaterialPaths(selectedPaths)
-                    if (saved) setPathsEditing(false)
-                  }}
-                  disabled={busy}
-                  className="inline-flex h-7 items-center rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-                >
-                  {updatingScope ? '更新中...' : '保存'}
-                </button>
-                <button
-                  type="button"
-                  onClick={enterPathsEditing}
-                  disabled={busy}
-                  className="inline-flex h-7 items-center rounded-md bg-surface-container-high px-3 text-xs text-on-surface-variant hover:bg-surface-dim disabled:opacity-50"
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-            {selectedPaths.length ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {selectedPaths.map((path) => (
-                  <span
-                    key={path}
-                    className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
-                    title={path}
-                  >
-                    <span className="max-w-[320px] truncate">{path}</span>
-                    <button
-                      type="button"
-                      onClick={() => togglePathSelected(path)}
-                      className="flex h-4 w-4 items-center justify-center rounded hover:bg-primary/15"
-                      aria-label={`移除参考目录 ${path}`}
-                    >
-                      <span className="material-symbols-outlined text-[13px]">close</span>
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            <div className="mt-2 max-h-56 overflow-y-auto rounded-md border border-surface-container-high bg-surface p-1.5">
-              {treeLoading ? (
-                <div className="flex h-24 items-center justify-center text-xs text-outline">正在加载素材目录树...</div>
-              ) : treeError ? (
-                <div className="flex h-24 items-center justify-center text-xs text-error">{treeError}</div>
-              ) : treeNodes.length ? (
-                treeNodes.map((node) => renderPathTreeNode(node, 0))
-              ) : (
-                <div className="flex h-24 items-center justify-center text-xs text-outline">素材目录树为空，请先在原始材料库中建立目录</div>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {ignoredSuggestions.length ? (
-          <div className="border-b border-error/30 bg-error-container/35 px-5 py-3 text-xs text-on-error-container">
-            <p className="font-semibold">有 {ignoredSuggestions.length} 条 AI 建议未能写入事实表</p>
-            <ul className="mt-1 space-y-1">
-              {ignoredSuggestions.slice(0, 5).map((item, index) => (
-                <li key={`${typeof item === 'object' ? item?.fieldKey : item}-${index}`}>
-                  {typeof item === 'object'
-                    ? `${item?.fieldKey || '未知字段'}：${item?.reason || '未提供原因'}`
-                    : String(item)}
-                </li>
-              ))}
-            </ul>
-            {ignoredSuggestions.length > 5 ? <p className="mt-1">另有 {ignoredSuggestions.length - 5} 条未展示</p> : null}
-          </div>
-        ) : null}
-
-        <div className="flex min-h-0 flex-1 flex-col p-4">
-          {fields.length ? (
-            <>
-              <div className="mb-2 flex h-6 shrink-0 items-center gap-2 text-xs text-on-surface-variant" aria-live="polite">
-                {factFilter ? (
-                  <>
-                    <span className="material-symbols-outlined text-[14px]">filter_alt</span>
-                    <span>筛选中：{factFilter.label}（{visibleRows.length} 条）</span>
-                    <button
-                      type="button"
-                      onClick={() => setFactFilter(null)}
-                      className="inline-flex h-6 items-center gap-0.5 rounded-md bg-surface-container-high px-2 font-semibold text-on-surface-variant hover:bg-surface-dim"
-                    >
-                      <span className="material-symbols-outlined text-[13px]">close</span>
-                      清除筛选
-                    </button>
-                  </>
-                ) : null}
-              </div>
-              <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest">
-                <div className="h-full overflow-auto [scrollbar-gutter:stable]" role="table" aria-label="项目事实字段">
-                  <div className="min-w-[840px]">
-                    <div
-                      className="sticky top-0 z-10 grid items-center border-b border-surface-container-high bg-surface-container-low text-xs font-semibold text-outline"
-                      style={factRowGridStyle}
-                      role="row"
-                    >
-                      <div className="px-4 py-2.5" role="columnheader">字段</div>
-                      <div className="px-4 py-2.5" role="columnheader">事实值</div>
-                      <div className="px-4 py-2.5" role="columnheader">来源素材</div>
-                    </div>
-                    <div>
-                      {factRowSections.map((section) => {
-                        const summary = section.group ? factGroupSummary(section.rows) : ''
-                        const rows = (
-                          <div className="divide-y divide-surface-container-high" role="rowgroup">
-                            {section.rows.map(renderFactRow)}
-                          </div>
-                        )
-                        if (!section.group) {
-                          return (
-                            <Fragment key={`fact-section-shared-${section.rows[0].index}`}>
-                              {turbineGroupCount > 1 ? (
-                                <div className="flex items-center gap-1.5 border-y border-surface-container-high bg-surface-container-low px-4 py-2 text-xs font-semibold text-on-surface-variant">
-                                  <span className="material-symbols-outlined text-[15px] text-outline">public</span>
-                                  全场共用
-                                </div>
-                              ) : null}
-                              {rows}
-                            </Fragment>
-                          )
-                        }
-                        return (
-                          <div key={`fact-section-turbine-${section.group}`} className="px-3 pb-1 pt-3">
-                            <div className="overflow-hidden rounded-lg border border-primary/30 shadow-sm">
-                              <div className="flex items-center gap-2 border-b border-primary/20 bg-primary/[0.08] px-3 py-2">
-                                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold leading-none text-on-primary">
-                                  {section.group}
-                                </span>
-                                <span className="truncate text-sm font-semibold text-on-surface" title={section.modelLabel}>
-                                  {section.modelLabel || `机型${section.group}`}
-                                </span>
-                                {summary ? (
-                                  <span className="ml-auto shrink-0 rounded-md bg-surface px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
-                                    {summary}
-                                  </span>
-                                ) : null}
-                              </div>
-                              {rows}
-                            </div>
-                          </div>
-                        )
-                      })}
-                      {!visibleRows.length ? (
-                        <div className="px-4 py-10 text-center text-xs text-outline">
-                          没有符合「{factFilter?.label}」筛选条件的字段
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="flex min-h-[260px] flex-1 items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest text-center">
-              <div>
-                <span className="material-symbols-outlined text-4xl text-primary">upload_file</span>
-                {specsImported ? (
-                  <>
-                    <p className="mt-3 text-sm text-on-surface-variant">
-                      事实表「{specsFileName || '已上传'}」尚未生成字段，请到素材库 · 规则页重新上传后重试。
-                    </p>
-                    <button
-                      type="button"
-                      onClick={onGoToRules}
-                      disabled={busy}
-                      className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                      前往规则页
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <p className="mt-3 text-sm text-on-surface-variant">
-                      还没有项目事实表。请先到素材库 · 规则页上传事实表清单 Excel，系统会从表中提取要填写的字段，再匹配项目素材。
-                    </p>
-                    <button
-                      type="button"
-                      onClick={onGoToRules}
-                      disabled={busy}
-                      className="mt-4 inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container disabled:opacity-50"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                      前往规则页上传
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// AI 填写参考素材选择弹窗（产品裁决：点素材卡上的 AI填写 → 弹窗选参考素材 → 执行）。
-// 弹窗内出现哪些素材的规则后续由匹配规则定义，当前沿用本目录项的推荐/召回候选池。
-// 单一职责（产品意见 2026-07-17）：弹窗只做「挑 AI 参考素材」一件事——卡上不出现
-// 「选择（选用为章节素材）」按钮，整卡点击即勾选/取消，避免「勾选」与「选择」两个概念混淆。
-function AiFillReferenceModal({
-  open,
-  blankTitle,
-  sourceRoutingSummary,
-  tenderDocumentState,
-  candidates,
-  referenceIds,
-  busy,
-  onToggle,
-  onPreview,
-  onConfirm,
-  onClose,
-  onUpload,
-  uploadBusy,
-  confirmBlockReason,
-}) {
-  if (!open) return null
-  const usesTenderDocument = Boolean(tenderDocumentState?.required)
-  const missingTenderDocument = Boolean(tenderDocumentState?.missingSource)
-  const tenderDocumentNames = asArray(tenderDocumentState?.documentNames)
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2 sm:p-4">
-      <div role="dialog" aria-modal="true" aria-labelledby="technical-ai-fill-modal-title" className="flex max-h-[calc(100dvh-1rem)] w-full max-w-4xl flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:max-h-[calc(100dvh-2rem)]">
-        <div className="flex items-start justify-between gap-3 border-b border-surface-container-high bg-surface-container-low px-3 py-4 sm:px-5">
-          <div className="min-w-0">
-            <h3 id="technical-ai-fill-modal-title" className="text-lg font-headline font-bold text-on-surface">AI 填写</h3>
-            <p className="mt-1 truncate text-xs text-on-surface-variant" title={blankTitle}>
-              待填写对象：{blankTitle || '待填写空表/Word'}
-            </p>
-          </div>
-          <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <div className="rounded-md border border-secondary/20 bg-secondary-container/30 px-3 py-2 text-[11px] text-on-secondary-container">
-            勾选结果会锁定为本次 AI 填写的唯一素材范围，不会自动扩大到其他素材。
-          </div>
-          {sourceRoutingSummary ? (
-            <div className="mt-2 rounded-md bg-surface-container-low px-3 py-2 text-[11px] leading-relaxed text-on-surface-variant">
-              {sourceRoutingSummary}
-            </div>
-          ) : null}
-          {usesTenderDocument ? (
-            <div className={`mt-2 rounded-md px-3 py-2 text-[11px] leading-relaxed ${missingTenderDocument ? 'bg-error-container text-on-error-container' : 'bg-primary-container/45 text-on-primary-container'}`}>
-              <div className="font-semibold">使用项目招标文件全文</div>
-              <div className="mt-0.5">
-                {missingTenderDocument
-                  ? '项目当前没有可读取的招标文件，请先在技术标解析中补充或替换招标文件并重新解析。'
-                  : tenderDocumentNames.length
-                    ? `${tenderDocumentNames.join('、')}（共 ${tenderDocumentState.documentCount} 份）`
-                    : '执行时将读取解析阶段上传的完整招标文件及其全文、表格解析结果。'}
-              </div>
-            </div>
-          ) : null}
-          <div className="mt-3 space-y-2">
-            {candidates.length ? candidates.map((material) => {
-              const materialId = String(material.id || material.materialId || '').trim()
-              const checked = referenceIds.includes(materialId)
-              return (
-                <MaterialCandidateCard
-                  key={materialId || material.name}
-                  material={material}
-                  isSelected={false}
-                  busy={busy || !materialId}
-                  selecting={false}
-                  onPreview={onPreview}
-                  onSelect={null}
-                  fillable={false}
-                  onCardClick={materialId && !busy ? () => onToggle(materialId) : null}
-                  leading={(
-                    <label
-                      className="flex shrink-0 items-center gap-1 pt-0.5"
-                      title="勾选后作为本次 AI 填写的参考素材"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={busy || !materialId}
-                        onChange={() => onToggle(materialId)}
-                        className="h-4 w-4 shrink-0 accent-primary"
-                        aria-label={`勾选 ${material.name || material.cleanedFileName || materialId} 用于 AI 填写`}
-                      />
-                      {checked ? (
-                        <span className="rounded bg-secondary-container px-1.5 py-0.5 text-[10px] font-semibold text-on-secondary-container">
-                          用于AI
-                        </span>
-                      ) : null}
-                    </label>
-                  )}
-                />
-              )
-            }) : (
-              <div className="rounded-md bg-surface-container-low px-3 py-2 text-[11px] text-outline">
-                {usesTenderDocument && !missingTenderDocument
-                  ? '本次无需额外选择素材，AI 将读取项目招标文件全文进行填写。'
-                  : '暂无推荐素材，可先在目录项底部搜索或上传素材后再发起 AI 填写。'}
-              </div>
-            )}
-          </div>
-          {onUpload ? (
-            <div className="mt-3 rounded-md border border-dashed border-surface-container-high bg-surface-container-low/50 px-3 py-2">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0">
-                  <div className="text-xs font-semibold text-on-surface">上传补充素材</div>
-                  <div className="mt-0.5 text-[11px] text-outline">
-                    自动匹配不准时可手动补料：上传的文件会存入项目素材库，并自动勾选为本次 AI 填写的参考素材。
-                  </div>
-                </div>
-                <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-on-primary hover:bg-primary-container hover:text-on-primary-container ${busy || uploadBusy ? 'pointer-events-none opacity-50' : ''}`}>
-                  <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                  {uploadBusy ? '上传中...' : '上传素材'}
-                  <input
-                    type="file"
-                    multiple
-                    accept=".docx,.xlsx,.xls,.pdf"
-                    className="hidden"
-                    disabled={busy || uploadBusy}
-                    onChange={(event) => {
-                      const files = event.target.files
-                      event.target.value = ''
-                      if (files?.length) onUpload(files)
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-          ) : null}
-        </div>
-        <div className="flex flex-col gap-3 border-t border-surface-container-high bg-surface-container-low px-3 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <div className="flex flex-wrap gap-1.5">
-            <span className="rounded bg-secondary-container px-2 py-0.5 text-[10px] font-semibold text-on-secondary-container">
-              已选 {referenceIds.length} 份参考素材
-            </span>
-            {usesTenderDocument && !missingTenderDocument ? (
-              <span className="rounded bg-primary-container px-2 py-0.5 text-[10px] font-semibold text-on-primary-container">
-                招标文件 {tenderDocumentState.documentCount || '全部'} 份
-              </span>
-            ) : null}
-          </div>
-          <div className="flex w-full gap-2 sm:w-auto">
-            <Button type="button" onClick={onClose} disabled={busy} variant="quiet">取消</Button>
-            <Button
-              type="button"
-              onClick={onConfirm}
-              disabled={busy || missingTenderDocument || Boolean(confirmBlockReason)}
-              title={confirmBlockReason || ''}
-              variant="primary"
-            >
-              {busy ? '处理中...' : missingTenderDocument ? '缺少招标文件' : '开始 AI 填写'}
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-
-function PreviewDocumentPane({
-  eyebrow,
-  title,
-  icon,
-  loading,
-  session,
-  error,
-  mode = 'view',
-}) {
-  return (
-    <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-md border border-surface-container-high bg-surface-container-lowest lg:min-h-[35rem]">
-      <div className="flex min-h-[64px] shrink-0 items-center gap-3 border-b border-surface-container-high px-4 py-3">
-        <span className="material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-fixed text-[20px] text-primary">
-          {icon}
-        </span>
-        <div className="min-w-0">
-          <div className="text-[11px] font-semibold text-primary">{eyebrow}</div>
-          <h4 className="mt-0.5 truncate text-sm font-semibold text-on-surface" title={title}>{title}</h4>
-        </div>
-        {mode === 'edit' ? (
-          <span className="ml-auto shrink-0 rounded bg-primary-fixed px-2 py-0.5 text-[10px] font-semibold text-primary">
-            可编辑 · 自动保存
-          </span>
-        ) : null}
-      </div>
-      <div className="min-h-0 flex-1 bg-surface-container-low p-2">
-        {loading ? (
-          <div className="flex h-full min-h-[20rem] items-center justify-center rounded-md bg-surface-container-lowest px-4 text-center lg:min-h-[30rem] lg:px-6">
-            <div>
-              <span className="material-symbols-outlined text-3xl text-primary">hourglass_empty</span>
-              <p className="mt-2 text-sm text-on-surface-variant">正在加载预览...</p>
-            </div>
-          </div>
-        ) : session?.onlyoffice ? (
-          <OnlyOfficeEmbed
-            session={session.onlyoffice}
-            mode={mode}
-            className="h-full min-h-[480px] w-full rounded-md border border-surface-container-high bg-white"
-            onError={() => {}}
-          />
-        ) : (
-          <div className="flex h-full min-h-[480px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
-            <p className="max-w-md text-sm text-on-surface-variant">
-              {error || '当前文档暂时无法预览，请检查素材是否已清洗为 Word。'}
-            </p>
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function TechnicalPreviewModal({
-  open,
-  sectionTitle,
-  selectedPreviewChoice,
-  comparison,
-  previewLoading,
-  previewSession,
-  previewError,
-  referencePreviewLoading,
-  referencePreviewSession,
-  referencePreviewError,
-  onClose,
-  reviewQueue,
-  reviewCurrentId,
-  onReviewStep,
-  onReviewPass,
-  reviewBusy,
-}) {
-  if (!open) return null
-  const comparing = Boolean(comparison)
-  // 待审核队列：一键填完是一批产物，在弹窗里连着审，不用退出去逐条点目录
-  const queue = asObjectArray(reviewQueue)
-  const queueIndex = queue.findIndex((item) => item?.id === reviewCurrentId)
-  const showQueue = comparing && queue.length > 1
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-2 sm:p-4">
-      <section role="dialog" aria-modal="true" aria-labelledby="technical-preview-modal-title" className="flex h-[calc(100dvh-1rem)] w-full max-w-[1800px] flex-col overflow-hidden overscroll-contain rounded-lg bg-surface shadow-[0_12px_28px_rgba(13,33,55,0.14)] sm:h-[min(94dvh,980px)] sm:w-[min(96vw,1800px)]">
-        <div className="flex min-h-[68px] shrink-0 flex-col gap-3 border-b border-surface-container-high bg-surface px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <div className="min-w-0">
-            <h3 id="technical-preview-modal-title" className="truncate text-base font-semibold text-on-surface">
-              {comparing ? 'AI 填写结果对比' : (selectedPreviewChoice?.title || '文档预览')}
-            </h3>
-            <p className="mt-1 truncate text-xs text-outline" title={sectionTitle || selectedPreviewChoice?.subtitle || ''}>
-              {comparing
-                ? (sectionTitle || '对照填写前参考稿与 AI 填写结果')
-                : `${previewKindLabels[selectedPreviewChoice?.kind] || '预览'} · ${selectedPreviewChoice?.subtitle || '-'}`}
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {showQueue ? (
-              <div className="flex items-center gap-1 rounded-md bg-surface-container-low px-1 py-0.5">
-                <IconButton
-                  aria-label="上一条待审核"
-                  icon="chevron_left"
-                  onClick={() => onReviewStep?.(-1)}
-                  disabled={reviewBusy}
-                  variant="quiet"
-                />
-                <span className="min-w-12 text-center text-[11px] tabular-nums text-on-surface-variant">
-                  {queueIndex >= 0 ? queueIndex + 1 : '-'}/{queue.length}
-                </span>
-                <IconButton
-                  aria-label="下一条待审核"
-                  icon="chevron_right"
-                  onClick={() => onReviewStep?.(1)}
-                  disabled={reviewBusy}
-                  variant="quiet"
-                />
-              </div>
-            ) : null}
-            {comparing && onReviewPass ? (
-              <Button
-                type="button"
-                onClick={onReviewPass}
-                disabled={reviewBusy}
-                title="确认本条 AI 填写结果无误，定案后自动看下一条"
-                size="sm"
-                variant="primary"
-              >
-                复核通过
-              </Button>
-            ) : null}
-            <IconButton aria-label="关闭" icon="close" onClick={onClose} variant="quiet" />
-          </div>
-        </div>
-
-        <div className={`min-h-0 flex-1 overflow-auto bg-surface-container-low p-3 ${comparing ? 'grid gap-3 lg:grid-cols-2' : ''}`}>
-          {comparing ? (
-            <>
-              <PreviewDocumentPane
-                eyebrow="填写前 · 参考稿"
-                title={comparison.reference.title || '待填写文档'}
-                icon={previewKindIcons[comparison.reference.kind] || 'description'}
-                loading={referencePreviewLoading}
-                session={referencePreviewSession}
-                error={referencePreviewError}
-              />
-              <PreviewDocumentPane
-                eyebrow="填写后 · AI 结果"
-                title={comparison.result.title || 'AI 填写结果'}
-                icon="auto_awesome"
-                loading={previewLoading}
-                session={previewSession}
-                error={previewError}
-                mode={isEditableArtifactChoice(comparison.result) ? 'edit' : 'view'}
-              />
-            </>
-          ) : selectedPreviewChoice ? (
-            <PreviewDocumentPane
-              eyebrow={previewKindLabels[selectedPreviewChoice.kind] || '文档预览'}
-              title={selectedPreviewChoice.title || '文档预览'}
-              icon={previewKindIcons[selectedPreviewChoice.kind] || 'description'}
-              loading={previewLoading}
-              session={previewSession}
-              error={previewError}
-              mode={isEditableArtifactChoice(selectedPreviewChoice) ? 'edit' : 'view'}
-            />
-          ) : (
-            <div className="flex h-full min-h-[520px] items-center justify-center rounded-md border border-dashed border-surface-container-high bg-surface-container-lowest px-6 text-center">
-              <p className="max-w-md text-sm text-on-surface-variant">当前目录项还没有可预览的素材、空表或处理产物。</p>
-            </div>
-          )}
-        </div>
-      </section>
-    </div>
-  )
-}
+// 后台任务终态口径：AI 匹配填充只有成功/失败；一键填写（正文+附表）另有部分成功。
+// 轮询的去重与通知逻辑见 useBackgroundTaskPolling / technicalGapTaskPolling。
+const FACT_CURATE_TERMINAL_STATUSES = ['succeeded', 'failed']
+const BODY_FILL_TERMINAL_STATUSES = ['succeeded', 'partial', 'failed']
+const factCurateStateOf = (payload) => payload?.factCurateState || null
+const bodyFillStateOf = (payload) => payload?.bodyFillState || null
 
 export default function TechnicalGapRecognition({ showToast }) {
   const { id } = useParams()
@@ -1425,18 +139,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [materialSearch, setMaterialSearch] = useState({ items: [], total: 0 })
   const [materialLoading, setMaterialLoading] = useState(false)
   const [materialScope, setMaterialScope] = useState(null)
-  const [previewChoiceKey, setPreviewChoiceKey] = useState('')
-  const [previewSession, setPreviewSession] = useState(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewError, setPreviewError] = useState('')
-  // 预览 session 的实时引用：静默轮询刷新数据后判断产物 documentKey 是否真的变了，
-  // 没变就不重载编辑器，避免打断正在进行的在线编辑。
-  const previewSessionRef = useRef(null)
-  const [referencePreviewSession, setReferencePreviewSession] = useState(null)
-  const [referencePreviewLoading, setReferencePreviewLoading] = useState(false)
-  const [referencePreviewError, setReferencePreviewError] = useState('')
-  const [manualPreviewChoice, setManualPreviewChoice] = useState(null)
-  const [previewOpen, setPreviewOpen] = useState(false)
   const [factModalOpen, setFactModalOpen] = useState(false)
   const [factTable, setFactTable] = useState(null)
   const [factFields, setFactFields] = useState([])
@@ -1463,11 +165,9 @@ export default function TechnicalGapRecognition({ showToast }) {
   const [factMaterialScopes, setFactMaterialScopes] = useState([])
   // AI 匹配填充任务状态：执行在后台 worker，弹窗关闭/页面刷新都不影响，靠轮询恢复
   const [factCurateState, setFactCurateState] = useState(null)
-  const factCurateNotifiedRef = useRef('')
   const factCurateRunning = ['queued', 'running'].includes(String(factCurateState?.status || ''))
   // 一键填写（正文+附表）任务状态：同样跑在后台 worker，进度靠轮询恢复，关页面不影响
   const [bodyFillState, setBodyFillState] = useState(null)
-  const bodyFillNotifiedRef = useRef('')
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
   const bodyFillDone = Number(bodyFillState?.done || 0)
   const bodyFillTotal = Number(bodyFillState?.total || 0)
@@ -1620,34 +320,25 @@ export default function TechnicalGapRecognition({ showToast }) {
   const selectedCandidateMaterials = asObjectArray(selected?.candidateMaterials)
   const selectedMaterialMatch = matchedMaterialForItem(selected, items)
   const selectedBlankSource = primaryBlankSource(selected)
-  const selectedPreviewChoices = useMemo(
-    () => previewChoicesForItem(selected, items),
-    [items, selected],
-  )
-  const manualPreviewActive = manualPreviewChoice
-    && manualPreviewChoice.itemId === selected?.id
-    && manualPreviewChoice.key === previewChoiceKey
-    ? manualPreviewChoice
-    : null
-  const effectivePreviewChoiceKey = manualPreviewActive
-    ? manualPreviewActive.key
-    : selectedPreviewChoices.some((choice) => choice.key === previewChoiceKey)
-    ? previewChoiceKey
-    : (selectedPreviewChoices[0]?.key || '')
-  const selectedPreviewChoice = manualPreviewActive
-    || selectedPreviewChoices.find((choice) => choice.key === effectivePreviewChoiceKey)
-    || null
-  const visiblePreviewChoices = useMemo(() => {
-    const choices = [...selectedPreviewChoices]
-    if (manualPreviewActive && !choices.some((choice) => choice.key === manualPreviewActive.key)) {
-      choices.push(manualPreviewActive)
-    }
-    return choices
-  }, [manualPreviewActive, selectedPreviewChoices])
-  const previewComparison = useMemo(
-    () => aiFillComparisonPair(visiblePreviewChoices, selectedPreviewChoice),
-    [selectedPreviewChoice, visiblePreviewChoices],
-  )
+  // 预览族状态与派生态（选项/会话/弹窗开关/防重载轮询）已收口到 useGapPreviewSession
+  const {
+    setPreviewChoiceKey,
+    previewSession,
+    setPreviewSession,
+    previewLoading,
+    previewError,
+    setPreviewError,
+    referencePreviewSession,
+    referencePreviewLoading,
+    referencePreviewError,
+    setManualPreviewChoice,
+    previewOpen,
+    setPreviewOpen,
+    selectedPreviewChoices,
+    selectedPreviewChoice,
+    previewComparison,
+    resetPreviewChoice,
+  } = useGapPreviewSession({ projectId: id, items, selected, onSilentReload: loadData })
   const selectedFillTasks = asObjectArray(selected?.fillTasks)
   const selectedFillTask = selectedFillTasks[0] || null
   const selectedAppendixTask = appendixTaskForFillTask(selected, selectedFillTask)
@@ -1875,89 +566,6 @@ export default function TechnicalGapRecognition({ showToast }) {
   const hasTechnicalGapPlan = data?.status === 'completed' && Boolean(data?.gapPlan || items.length)
   const generationRunning = generationStatus?.status === 'running'
   const generationCompleted = generationStatus?.status === 'completed'
-
-  useEffect(() => {
-    let cancelled = false
-    const sessionForChoice = async (choice) => {
-      if (choice.kind === 'artifact') {
-        return {
-          onlyoffice: choice.artifact?.onlyoffice,
-          fileName: choice.title,
-          source: 'artifact',
-          artifactId: String(choice.artifact?.id || ''),
-        }
-      }
-      return choice.kind === 'appendix'
-        ? technicalParseAPI.appendixPreview(id, choice.blankSource.id)
-        : technicalMaterialsAPI.raw.previewCleanedFile(choice.material.id)
-    }
-
-    const loadSelectedPreview = async () => {
-      setPreviewLoading(true)
-      try {
-        const payload = await sessionForChoice(selectedPreviewChoice)
-        if (!cancelled) setPreviewSession(payload)
-      } catch (e) {
-        if (!cancelled) setPreviewError(e?.message || '预览加载失败')
-      } finally {
-        if (!cancelled) setPreviewLoading(false)
-      }
-    }
-
-    const loadReferencePreview = async () => {
-      if (!previewComparison?.reference) return
-      setReferencePreviewLoading(true)
-      try {
-        const payload = await sessionForChoice(previewComparison.reference)
-        if (!cancelled) setReferencePreviewSession(payload)
-      } catch (e) {
-        if (!cancelled) setReferencePreviewError(e?.message || '参考稿预览加载失败')
-      } finally {
-        if (!cancelled) setReferencePreviewLoading(false)
-      }
-    }
-
-    const loadPreviews = async () => {
-      const current = previewSessionRef.current
-      if (
-        selectedPreviewChoice?.kind === 'artifact'
-        && current?.source === 'artifact'
-        && current.artifactId === String(selectedPreviewChoice?.artifact?.id || '')
-        && current.onlyoffice?.documentKey
-        && current.onlyoffice.documentKey === selectedPreviewChoice?.artifact?.onlyoffice?.documentKey
-      ) {
-        // 同一产物同一版本（静默轮询带来的对象刷新）：不重载编辑器，避免打断在线编辑
-        return
-      }
-      setPreviewSession(null)
-      setPreviewLoading(false)
-      setPreviewError('')
-      setReferencePreviewSession(null)
-      setReferencePreviewLoading(false)
-      setReferencePreviewError('')
-      if (!previewOpen || !selectedPreviewChoice) return
-      await Promise.all([loadSelectedPreview(), loadReferencePreview()])
-    }
-
-    loadPreviews()
-    return () => {
-      cancelled = true
-    }
-  }, [id, previewComparison, previewOpen, selectedPreviewChoice])
-
-  useEffect(() => {
-    previewSessionRef.current = previewSession
-  }, [previewSession])
-
-  // 只有 AI 填写产物可在线编辑；同一会话的阶段性保存不会改变 documentKey。
-  const artifactPreviewOpen = previewOpen && isEditableArtifactChoice(selectedPreviewChoice)
-  useEffect(() => {
-    if (!artifactPreviewOpen) return undefined
-    const timer = setInterval(() => {
-      loadData({ silent: true })
-    }, 15000)
-    return () => clearInterval(timer)
-  }, [artifactPreviewOpen, loadData])
 
   const updatePayload = (payload) => {
     const next = payload?.payload || payload
@@ -2190,10 +798,7 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   const handleSelectTocItem = (itemId) => {
     setSelectedId(itemId)
-    setPreviewChoiceKey('')
-    setPreviewSession(null)
-    setPreviewError('')
-    setManualPreviewChoice(null)
+    resetPreviewChoice()
     setPreviewOpen(false)
     setAiFillModalTask(null)
     setMaterialSwapOpen(false)
@@ -2487,10 +1092,7 @@ export default function TechnicalGapRecognition({ showToast }) {
       (result) => (result?.artifact?.fileName ? `AI填写完成：${result.artifact.fileName}` : 'AI填写完成'),
     )
     if (payload) {
-      setPreviewChoiceKey('')
-      setPreviewSession(null)
-      setPreviewError('')
-      setManualPreviewChoice(null)
+      resetPreviewChoice()
       // 产品裁决 2026-08-04（行为①，推翻 2026-07-17 自动确认）：AI 填写完成后停在
       // 「待复核模板」，由人点「复核通过」定案；这里只弹出结果预览方便当场检查。
       const artifactId = String(payload?.artifact?.id || '').trim()
@@ -2560,59 +1162,47 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   // AI 匹配填充轮询：任务在后台 worker 执行，这里只负责取进度；终态时把结果一次性落到界面。
   // 完成通知按 jobId+finishedAt 去重，避免收尾那一拍重复弹 toast。
-  useEffect(() => {
-    if (!factCurateRunning) return undefined
-    const timer = window.setInterval(async () => {
-      try {
-        const payload = await technicalGapsAPI.curateFactsStatus(id)
-        const state = payload?.factCurateState || null
-        setFactCurateState(state)
-        const status = String(state?.status || '')
-        if (status !== 'succeeded' && status !== 'failed') return
-        const notifyKey = `${state?.jobId || ''}:${state?.finishedAt || ''}`
-        if (factCurateNotifiedRef.current === notifyKey) return
-        factCurateNotifiedRef.current = notifyKey
-        if (payload?.projectFactTable?.schemaVersion) {
-          setFactTable(payload.projectFactTable)
-          setFactFields(asObjectArray(payload.projectFactTable.fields))
-          setData((current) =>
-            current ? { ...current, projectFactTable: payload.projectFactTable } : current,
-          )
-        }
-        setFactCurateReport(payload?.curateReport || null)
-        showToast?.(
-          payload?.message || (status === 'succeeded' ? '匹配填充完成' : '匹配填充失败'),
-          status === 'succeeded' ? undefined : 'error',
-        )
-      } catch {
-        // 轮询失败不打断任务，下个周期继续取
-      }
-    }, 2000)
-    return () => window.clearInterval(timer)
-  }, [factCurateRunning, id, showToast])
+  const fetchFactCurateStatus = useCallback(() => technicalGapsAPI.curateFactsStatus(id), [id])
+  const handleFactCurateTerminal = useCallback(async (payload, state) => {
+    const status = String(state?.status || '')
+    if (payload?.projectFactTable?.schemaVersion) {
+      setFactTable(payload.projectFactTable)
+      setFactFields(asObjectArray(payload.projectFactTable.fields))
+      setData((current) =>
+        current ? { ...current, projectFactTable: payload.projectFactTable } : current,
+      )
+    }
+    setFactCurateReport(payload?.curateReport || null)
+    showToast?.(
+      payload?.message || (status === 'succeeded' ? '匹配填充完成' : '匹配填充失败'),
+      status === 'succeeded' ? undefined : 'error',
+    )
+  }, [showToast])
+  useBackgroundTaskPolling({
+    running: factCurateRunning,
+    fetchStatus: fetchFactCurateStatus,
+    extractState: factCurateStateOf,
+    terminalStatuses: FACT_CURATE_TERMINAL_STATUSES,
+    onState: setFactCurateState,
+    onTerminal: handleFactCurateTerminal,
+  })
 
   // 一键填写（正文+附表）轮询：与 AI 匹配填充同一套范式，终态按 jobId+finishedAt 去重通知，
   // 完成后拉一次最新数据把产物、标签、审核队列一起刷新。
-  useEffect(() => {
-    if (!bodyFillRunning) return undefined
-    const timer = window.setInterval(async () => {
-      try {
-        const payload = await technicalGapsAPI.bodyFillStatus(id)
-        const state = payload?.bodyFillState || null
-        setBodyFillState(state)
-        const status = String(state?.status || '')
-        if (!['succeeded', 'partial', 'failed'].includes(status)) return
-        const notifyKey = `${state?.jobId || ''}:${state?.finishedAt || ''}`
-        if (bodyFillNotifiedRef.current === notifyKey) return
-        bodyFillNotifiedRef.current = notifyKey
-        await loadData({ silent: true })
-        showToast?.(state?.message || '正文填写完成', status === 'failed' ? 'error' : undefined)
-      } catch {
-        // 轮询失败不打断任务，下个周期继续取
-      }
-    }, 2000)
-    return () => window.clearInterval(timer)
-  }, [bodyFillRunning, id, loadData, showToast])
+  const fetchBodyFillStatus = useCallback(() => technicalGapsAPI.bodyFillStatus(id), [id])
+  const handleBodyFillTerminal = useCallback(async (payload, state) => {
+    const status = String(state?.status || '')
+    await loadData({ silent: true })
+    showToast?.(state?.message || '正文填写完成', status === 'failed' ? 'error' : undefined)
+  }, [loadData, showToast])
+  const { resetNotified: resetBodyFillNotified } = useBackgroundTaskPolling({
+    running: bodyFillRunning,
+    fetchStatus: fetchBodyFillStatus,
+    extractState: bodyFillStateOf,
+    terminalStatuses: BODY_FILL_TERMINAL_STATUSES,
+    onState: setBodyFillState,
+    onTerminal: handleBodyFillTerminal,
+  })
 
   // 一键填写：范围取当前标签筛选后的可见目录项（没筛选就是全部待填写正文/附表）。
   // 提交后立即返回，不再逐条弹预览；产物统一停在「待审核」，由人集中复核。
@@ -2625,7 +1215,7 @@ export default function TechnicalGapRecognition({ showToast }) {
     setBusyAction('body-fill')
     try {
       const payload = await technicalGapsAPI.bodyFill(id, { gapIds, operator: '当前用户' })
-      bodyFillNotifiedRef.current = ''
+      resetBodyFillNotified()
       setBodyFillState(payload?.bodyFillState || null)
       showToast?.(`已提交 ${payload?.total || 0} 条正文填写，可离开页面`)
     } catch (e) {

@@ -37,7 +37,7 @@ flowchart LR
 | 步骤 | API / 模块 | Input → Output |
 |---|---|---|
 | 蓝图生成 | `POST .../materials/wiki/bootstrap` → `business_wiki_generation` / `technical_wiki_generation`（共用 `wiki_blueprint_common`） | 素材库引用路径/JSON 索引 → Wiki 节点树蓝图（mode=create，可回退确定性生成） |
-| 节点维护 | `wiki_create/update/delete/move` | 人工整理树结构 |
+| 节点维护 | `wiki/{node}/move` | 人工整理树结构（create/update/delete 已随 deadcode-03/04 删除） |
 | 附件 | `wiki/{node}/attachments`（上传/下载/删除） | 节点挂素材附件（MinIO） |
 | AI 摘要 | `POST .../wiki/{node}/refresh-summary` | 节点内容 → LLM 摘要 |
 | 导出/健康度 | `wiki_export` / `wiki_health` | Wiki 树 → 导出件 / 健康检查报告 |

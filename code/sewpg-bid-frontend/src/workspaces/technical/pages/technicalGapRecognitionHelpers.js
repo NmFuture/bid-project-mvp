@@ -818,3 +818,16 @@ export const resultSummaryForItem = (selected, allItems = []) => {
 
   return { label: selected?.coverageRole === 'structural' || selected?.usage === 'structural' ? '结构目录' : '暂无预览产物', tone: 'none' }
 }
+
+// 素材层级标签：素材候选卡与事实表范围摘要共用（原 TechnicalGapRecognition.jsx 内联常量）。
+export const materialTierLabels = {
+  standard: '通用素材',
+  customer: '客户素材',
+  project: '项目素材',
+}
+
+// AI 填写产物的预览可在线编辑（OnlyOffice edit 模式）；素材/空表预览只读。
+// 预览弹窗与主组件的自动保存轮询共用这一判定（原 TechnicalGapRecognition.jsx 内联）。
+export const isEditableArtifactChoice = (choice) => (
+  choice?.kind === 'artifact' && String(choice?.artifact?.source || '') === 'ai_fill'
+)

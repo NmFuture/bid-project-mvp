@@ -13,7 +13,7 @@
 - 共创页请求：chat 消息、重写选段（original/replacement）、格式预设（`BUSINESS_FORMAT_PRESETS`，默认 standard）。
 
 ## Output（输出）
-- OnlyOffice 会话/保存/终稿（继承底座）；chat/suggest 回复（`OpencodeClient` 即时调用）；apply 后的正文与 `document_state.businessFormat*` 更新、MinIO 同步。
+- OnlyOffice 会话/保存/终稿（继承底座）；chat/suggest 回复（`OpencodeEngine` 即时调用）；apply 后的正文与 `document_state.businessFormat*` 更新、MinIO 同步。
 
 ## 调用链
 - **上游**: `routes/business.py` document 端点组（chat/rewrite/format/save/callback/final）。

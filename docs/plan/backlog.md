@@ -5,9 +5,9 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 ## engine-01（review 01，2026-08-13，结论 pass）
 
 - [ ] F1: commit message 测试口径（2265 passed）与复跑（2167 passed + 30 deselected）不一致，后续 commit 统一用复跑口径
-- [ ] F2: A0 阶段 `OpencodeEngine` 尚不满足 `AgentEngine` 协议（`create_session` 返回 dict、缺 `run_session`/`list_messages`/`delete_session`），`factory.create() -> AgentEngine` 为名义标注；对齐排期 engine-02/03
+- [x] ~~F2~~ 已闭环（engine-09）：与 engine-03 F5 是同一问题——`OpencodeEngine` 已对齐 `AgentEngine` 协议形态（`create_session -> str`、`run_session`/`list_messages`/`delete_session` 齐备），`factory.create() -> AgentEngine` 不再是名义标注
 - [ ] F3: 调用方口径 17 个 service 文件 + `scripts/technical_wiki_preview.py`（engine-01 任务清单原文写 16 处，遗漏 scripts 一处）
-- [ ] F4: 遗留旧名引用：`graft/` 索引、架构总览其它文档（00/04/05、_data/business.json、common.json、两个 html）、archive/历史文档；`_data` 卡片名保留 `opencode_client`（downstream 引用自洽）
+- [ ] F4: 文档同步统一条目（合并 engine-02 F4）：遗留旧名引用——graft 索引与 docs/anbc_doc 模块卡片旧结构已于 2026-08-15 文档清理同步（graft 重建去幽灵卡、补 parse_*/agent_engine 卡片、刷新 05/04/03 与 AGENTS/README）；仍待同步：架构总览 00、`_data/business.json`、`common.json`、两个 html、archive/历史文档；`_data` 卡片名保留 `opencode_client`（downstream 引用自洽）
 - [ ] F5: `AgentEngineFactory` 在 A0 无生产调用方，待后续波次接线（符合 §6 规划，登记备查）
 
 ## engine-02（review 01，2026-08-13，结论 pass）
@@ -15,14 +15,14 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] F1: s2outline 同会话多候选且最新校验失败时，新回调会对所有未见过候选各跑一次 validator（旧实现每轮只验最新候选）；validator 与候选无关、结果等价，仅冗余调用，评估可接受
 - [ ] F2: `OpencodeEngine` 门面委托用 `*args/**kwargs`（opencode_engine.py:222-277），丢失显式签名信息；两个方法保留显式签名、口径不一
 - [ ] F3: 表征测试覆盖缺口：btplnav 的 prompt 返回后等待相位、s2 多候选去重路径无直接用例
-- [ ] F4: graft 模块卡片（graft/app/services/opencode_client.md）仍指向旧模块，engine-01 改名遗留；docs/anbc_doc 模块卡片描述旧结构，待后续任务统一同步
+- [x] ~~F4: graft 模块卡片（graft/app/services/opencode_client.md）仍指向旧模块，engine-01 改名遗留；docs/anbc_doc 模块卡片描述旧结构~~ 已合并至 engine-01 F4（文档同步统一条目）；graft 幽灵卡与 docs 模块卡片已于 2026-08-15 文档清理处理
 
 ## engine-03（review 01 + 复验，2026-08-13，结论 pass）
 
 - [x] ~~F1 (blocking)~~ 已修复（486d16e）：`_request_slot` 非阻塞轮询，取消不再泄漏信号量许可，附 2 个回归测试
 - [ ] F2: 一个 stalled 测试改由 prompt 返回后 grace 等待路径抛出（原主循环 idle 路径），异常类型与 trace 结构一致，review 判语义等价
 - [x] ~~F5~~ 已闭环（engine-09）：`OpencodeEngine` 对齐协议形态（`create_session -> str`、新增 `run_session`/`list_messages`，门面旧名保留），S1 分片链路编排层只经协议方法驱动引擎
-- [ ] 并发冒烟（S1 分片并行）需 dev 环境验证，本地未覆盖
+- [x] ~~并发冒烟（S1 分片并行）需 dev 环境验证，本地未覆盖~~ 已合并至 engine-09 并发冒烟条目（需 dev/5090）
 
 ## engine-08（review 01 + 复验，2026-08-13，结论 pass）
 
@@ -42,7 +42,7 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [x] ~~F2 (P2)~~ 已修复（2d9f4a8）：stderr 伴随 drain task（有界尾部 8KB），防管道缓冲写满假停滞
 - [x] ~~F3/F4~~ 顺手修复（2d9f4a8）：ERROR_PATTERNS 词边界；未配 model 时按请求 model_id 也记 warning
 - [ ] F5: 同会话并发 run 无防护（state.process 覆盖）；prompt 未加 `--` 分隔——当前编排层串行不触发
-- [ ] F6: heartbeat/idle 与 opencode_engine 是第二份内联拷贝，待 §5 SessionMonitor 收敛
+- [x] ~~F6: heartbeat/idle 与 opencode_engine 是第二份内联拷贝，待 §5 SessionMonitor 收敛~~ 已闭环：`SessionMonitor` 落地 `agent_engine/monitor.py`，心跳/idle/断线计时收敛为唯一实现
 - [x] ~~未做真实 CLI 联通验证~~ 已闭环（engine-09 PoC）：codex 0.147.0 真实跑通；`exec resume` 子命令拼法与 `agent_message` 事件键按实测校准，双轮 resume 复验通过
 - [ ] 消息日志与 trace 在引擎进程内存，后端重启即失；resume 只依赖 codex 侧 thread 持久化
 - [x] ~~orchestrator 的 EarlyCompletionPlan 链路只接 OpencodeEngine~~ 已闭环（engine-09）：`base.tool_completed_callback_from_plan` 落地 plan→协议回调适配，S1 分片链路只经协议方法驱动（带轮询相位的三条 finalize 链路仍由 OpencodeEngine 驱动）
@@ -70,7 +70,7 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] P2-2: 部署行为变化需晋级 PR 显式告知——既有部署 .env 的 `OPENCODE_MAX_CONCURRENCY` 静默失效（由 `AGENT_CONCURRENCY_BUDGET` 取代，默认 8）；5090 有效并发 1→8，`docker-compose.5090.yml` 取值归发布负责人确认
 - [ ] P3-3: 架构总览文档（05-Harness基建.md 等）仍描述旧三池，漂移待统一更新
 - [ ] Pi 会话创建后永不 terminate/delete 时许可与进程同生命周期滞留（即进程泄漏本身，孤儿回收归 engine-09/后续）
-- [ ] 并发冒烟（S1 分片真实并行观察峰值 ≤ 预算）需 dev/5090 环境
+- [x] ~~并发冒烟（S1 分片真实并行观察峰值 ≤ 预算）需 dev/5090 环境~~ 已合并至 engine-09 并发冒烟条目
 
 ## engine-09（review 01 + 复验，2026-08-14，结论 pass；PoC 记录留存 docs/plan/reviews/engine-09-poc.md）
 
@@ -81,5 +81,5 @@ verify 产出的 non-blocking findings 登记处（按任务追加）。
 - [ ] P3-4: 适配器在回调内即 harvest，与 opencode 轮询「先停会话再 harvest」顺序相反；当前无带 produce_payload 的协议链路触发，未来检查点
 - [ ] P3-5: `_run_protocol_session(early_tool_command=...)` 暂无传非空值的调用方
 - [ ] 三条 finalize 链路（带轮询相位）仍只由 opencode 驱动；codex/pi 只接了 S1 分片
-- [ ] 多分片真实并发冒烟、大输出/超长会话压测需 dev/5090（5090 切引擎前必做）
+- [ ] 并发冒烟统一条目（合并 engine-03/06 同项）：S1 分片真实并行观察峰值 ≤ 预算、大输出/超长会话压测，需 dev/5090 环境（5090 切引擎前必做）
 - [ ] PoC 结论：语义等价通过；候选优先级 pi > codex；AGENT_ENGINE 默认恒 opencode 不变

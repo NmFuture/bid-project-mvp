@@ -44,10 +44,10 @@ sewpg-bid-backend/
   - 技术标项目、目录、缺口、review、覆盖率、交付、文档格式、素材/Wiki 和投标机型专属逻辑
 - `app/services/tech_assembly.py`
   - 准备目录 JSON、缺口计划、Wiki、素材库导出，并调用 `bid-tech-assembler` 拼装 `S4` 正文
-- `app/services/wiki_generation.py`
-  - 按项目标类选择技术标/商务标素材库 facade 导入生成的 Wiki 蓝图
+- `app/services/business_wiki_generation.py` / `technical_wiki_generation.py`
+  - 两轨各自的 Wiki 蓝图生成入口（共用 `wiki_blueprint_common`），生成后经素材库 facade 导入
 - `app/services/peripheral.py`
-  - 外围模块的轻量状态承接与 fixture 数据
+  - 外围共享小件：`PeripheralError`（全后端统一业务异常）与 `now_day()` 日期串工具
 - `app/core/config.py`
   - 环境变量与本地目录配置
 

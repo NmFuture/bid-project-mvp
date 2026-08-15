@@ -271,7 +271,7 @@ test('素材范围变更后自动重建事实表，不保留手动刷新入口',
 })
 
 test('事实表弹窗使用动态视口高度并只滚动表格区域', async () => {
-  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./technicalGapFactModal.jsx', import.meta.url), 'utf8')
 
   assert.match(source, /h-\[calc\(100dvh-1rem\)\] max-h-\[860px\]/)
   assert.match(source, /sm:h-\[calc\(100dvh-2rem\)\]/)

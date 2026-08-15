@@ -29,9 +29,9 @@
 | bid-tech-word-placeholder-filler | S3 待填 Word 占位符填写 | 同上链路 |
 | bid-tech-fact-curator | 事实表 AI 复核（只产待确认建议） | `technical_fact_curator.py` |
 | bid-tech-assembler | S4 正文 docx 组装 | 装配链路 |
+| bid-tech-score-index-xref | 评分索引与正文交叉引用 | `tech_assembly.py`（装配链路） |
 | bid-tech-format-cleaner | 成稿格式清洗 | 格式清洗服务 |
 | bid-tech-wiki-material-builder | 按三级索引重建素材 Wiki | Wiki 生成链路 |
-| bid-tech-tag-importer | 标签导入模糊匹配兜底（只匹配不写库） | `material_tag_import_fuzzy.py` |
 
 商务轨（8）：bid-business-tender-structured-parser / outline-generator / gap-planner / table-fill / assembler / format-cleaner / template-extractor / wiki-material-builder，调用方对应 `parsing.py`、`outline_generation.py`、`business_gap_planning.py`、`business_assembly.py`、`business_template_extractor.py`、`business_wiki_generation.py`。
 
