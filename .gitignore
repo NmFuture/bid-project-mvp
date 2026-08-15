@@ -50,3 +50,13 @@ code/qa/logs/
 
 # 预置 wheel（体积大，只在目标主机本地存放）
 code/sewpg-bid-backend/wheels/*.whl
+
+# 本地个人文档（不入库）
+docs/archive/
+docs/anbc_doc/0808会议任务整理.md
+docs/anbc_doc/架构总览.zip
+docs/anbc_doc/架构总览/04-技术标操作串讲.md
+docs/anbc_doc/架构总览/05-Harness基建.md
+docs/anbc_doc/架构总览/lib/
+docs/anbc_doc/架构总览/opencode-链路与替换可行性示意.html
+docs/anbc_doc/架构总览/架构串讲3D.html
