@@ -266,7 +266,11 @@ test('素材范围保存与事实表重建解耦，重建只走「刷新并 AI �
   assert.ok(!scopeFlow.includes('buildFacts'))
   // 没有独立的「生成/重建事实表」按钮：建表与重建都由「刷新并 AI 填充」一个入口承担
   assert.doesNotMatch(source, /onBuild\b|handleBuildFacts/)
-  assert.match(source.slice(curateStart), /buildFacts/)
+  // 保存与重建已经搬进后端那一个任务，前端只提交一次。拆成三次调用时只有第三次有
+  // 防重入，等待期间再点一次按钮，前两次照跑改了表，正在跑的那轮就作废了。
+  const curateFlow = source.slice(curateStart)
+  assert.doesNotMatch(curateFlow, /technicalGapsAPI\.saveFacts|technicalGapsAPI\.buildFacts/)
+  assert.match(curateFlow, /technicalGapsAPI\.curateFacts\(id, \{/)
   // 清单只有全局一份，本页没有上传入口，只跳转到素材库 · 规则页
   assert.doesNotMatch(source, /uploadFactSpecs/)
   assert.match(source, /workspace\/tech\/materials\/rules/)
@@ -278,8 +282,22 @@ test('事实表为空但清单已上传时，「刷新并 AI 填充」兼职生�
   // 清单没上传仍禁用（后端会 400），上传后允许从空表直接建
   assert.match(source, /disabled=\{busy \|\| \(!fields\.length && !specsImported\)\}/)
   assert.match(source, /'刷新并 AI 填充' : '生成事实表并 AI 填充'/)
-  // 空表没有可保存的编辑，跳过 saveFacts 直接进构建
-  assert.match(source, /if \(factFields\.length\) \{\s*\n\s*const fieldsToSave/)
+  // 空表时 fieldsToSave 是空数组，后端据此跳过保存直接建表，前端不再自己分支
+  assert.match(source, /const fieldsToSave = factFields\.filter/)
+  assert.match(source, /curateFacts\(id, \{\s*\n\s*fields: fieldsToSave,/)
+})
+
+test('AI 匹配填充跑着时，事实表弹窗的改动入口全部置灰', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  // busy 以前只在请求在途时为真，后台任务跑的十几分钟里按钮全是可点的——
+  // 点下去后端 409，用户却看不出为什么没反应
+  assert.match(source, /\.includes\(busyAction\) \|\| factCurateRunning/)
+  // 保存 / 新增字段 / 设置范围都挂在同一个 busy 上，置灰一处即全覆盖
+  assert.match(source, /onClick=\{onAddField\} disabled=\{busy\}/)
+  assert.match(source, /onClick=\{onConfirm\} disabled=\{busy \|\| !fields\.length\}/)
+  // 重复提交在函数入口也挡一道，不只靠按钮态
+  assert.match(source, /if \(busyAction \|\| factCurateRunning\) return/)
 })
 
 test('事实表弹窗使用动态视口高度并只滚动表格区域', async () => {
@@ -960,4 +978,23 @@ test('父章覆盖只继承一份素材，不做多机型展开', () => {
 test('没有匹配素材时已选区为空', () => {
   const item = { id: 'GAP-1', matchedMaterials: [] }
   assert.deepEqual(technicalHelpers.recommendedSelectionsForItem(item, [item]), [])
+})
+
+test('平台字段与 AI 查证不一致时，页面要标红并给出可一键采纳的候选', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  // 后端把分歧写进 hasConflict/alternatives/notes，前端不显示的话这道保护就是负收益：
+  // AI 不再改错值，人也永远不知道有分歧
+  assert.match(source, /const conflictCount = fields\.filter\(\(field\) => field\.hasConflict\)\.length/)
+  assert.match(source, /与项目信息不一致：\{conflictCount\}/)
+  // 冲突行要能筛出来单独看
+  assert.match(source, /factFilter\.type === 'conflict'/)
+  // 值框标红 + 字段名挂错误图标
+  assert.match(source, /field\.hasConflict\s*\n?\s*\?\s*'border-error/)
+  assert.match(source, /aria-label="与项目信息不一致"/)
+  // AI 的候选值点一下就能采纳，证据挂在 title 上可查
+  assert.match(source, /onFieldChange\(index, 'value', String\(conflictCandidate\.value \|\| ''\)\)/)
+  assert.match(source, /conflictCandidate\?\.source\?\.evidence/)
+  // 人一改值就算裁决过，标记要清掉，否则改完还一直标红
+  assert.match(source, /key === 'value' && field\.hasConflict \? \{ hasConflict: false \}/)
 })

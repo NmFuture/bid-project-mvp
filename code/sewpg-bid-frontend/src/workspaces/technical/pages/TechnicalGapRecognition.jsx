@@ -495,12 +495,16 @@ const FactMaintenanceModal = ({
     specSegments[factSpecSegment(field)] += 1
     return total + 1
   }, 0)
+  // 平台输入字段与 AI 查证结果对不上：值保持人选的，分歧挂在字段上等人裁决。
+  // 不显示的话这道保护就是负收益——AI 不再改错值，人也永远不知道有分歧。
+  const conflictCount = fields.filter((field) => field.hasConflict).length
 
   const toggleFactFilter = (filter) => {
     setFactFilter((current) => (current && current.type === filter.type && current.key === filter.key ? null : filter))
   }
   const matchesFactFilter = (field) => {
     if (!factFilter) return true
+    if (factFilter.type === 'conflict') return Boolean(field.hasConflict)
     if (factFilter.type === 'status') return normalizeFactFieldStatus(field.status) === factFilter.key
     return hasFactSpecSeq(field) && factSpecSegment(field) === factFilter.key
   }
@@ -548,6 +552,11 @@ const FactMaintenanceModal = ({
       .filter((refPath) => !fieldNames.has(factRefFileName(refPath)))
     const refPaths = allRefPaths.slice(0, 2)
     const hiddenRefCount = Math.max(0, allRefPaths.length - refPaths.length)
+    // 平台输入字段与 AI 查证不一致：值仍是人选的，AI 的候选挂在 alternatives 上。
+    // 取最后一条——同一字段多轮跑下来只有最新那条是本轮结论。
+    const conflictCandidate = field.hasConflict
+      ? asObjectArray(field.alternatives).slice(-1)[0] || null
+      : null
     return (
       <div
         key={field.id || `${field.label}-${index}`}
@@ -566,6 +575,15 @@ const FactMaintenanceModal = ({
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate font-semibold text-on-surface" title={field.label}>{field.label}</span>
+              {field.hasConflict ? (
+                <span
+                  className="material-symbols-outlined shrink-0 text-[16px] text-error"
+                  title="AI 查证结果与建项目时填的不一致，值保持你选的，请核对下方建议"
+                  aria-label="与项目信息不一致"
+                >
+                  error
+                </span>
+              ) : null}
             </div>
           )}
         </div>
@@ -576,11 +594,26 @@ const FactMaintenanceModal = ({
             placeholder="待填写"
             aria-label={`${field.label || '字段'}的事实值`}
             className={`h-9 w-full rounded-md border px-3 text-sm text-on-surface outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 ${
-              isEmptyStatus
-                ? 'border-tertiary bg-tertiary-fixed/35'
-                : 'border-surface-container-high bg-surface'
+              field.hasConflict
+                ? 'border-error bg-error-container/25'
+                : isEmptyStatus
+                  ? 'border-tertiary bg-tertiary-fixed/35'
+                  : 'border-surface-container-high bg-surface'
             }`}
           />
+          {conflictCandidate ? (
+            <div className="mt-1.5 flex items-start gap-1.5 text-xs" title={String(field.notes || '')}>
+              <span className="mt-px shrink-0 text-error">AI 建议</span>
+              <button
+                type="button"
+                onClick={() => onFieldChange(index, 'value', String(conflictCandidate.value || ''))}
+                className="min-w-0 truncate rounded border border-error/40 bg-surface px-1.5 py-px font-semibold text-error hover:bg-error-container/40"
+                title={`点击采用「${conflictCandidate.value}」；依据：${conflictCandidate?.source?.evidence || '未给出'}`}
+              >
+                {conflictCandidate.value}
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="min-w-0 px-4 py-3 text-xs text-on-surface-variant" role="cell">
           {refPaths.length ? (
@@ -755,6 +788,20 @@ const FactMaintenanceModal = ({
                 </button>
               )
             })}
+            {conflictCount ? (
+              <button
+                type="button"
+                onClick={() => toggleFactFilter({ type: 'conflict', key: 'conflict', label: '与项目信息不一致' })}
+                title={`筛选 AI 查证与项目信息不一致的字段${factFilter?.type === 'conflict' ? '（再次点击取消）' : ''}`}
+                className={factFilterChipClass(
+                  factFilter?.type === 'conflict',
+                  'bg-error-container text-on-error-container',
+                  conflictCount,
+                )}
+              >
+                与项目信息不一致：{conflictCount}
+              </button>
+            ) : null}
             {specTotal ? (
               <div
                 className="ml-1 flex items-center gap-2 border-l border-surface-container-high pl-3"
@@ -2000,6 +2047,9 @@ export default function TechnicalGapRecognition({ showToast }) {
         ...field,
         [key]: value,
         sourceRefs,
+        // 人一动这个格子，冲突就算裁决过了（不管是采纳 AI 建议还是自己另填），
+        // 标记留着只会让它一直标红
+        ...(key === 'value' && field.hasConflict ? { hasConflict: false } : {}),
         // 三态：有值即可用，清空即回落待填写（「不适用」只走上面的 status 分支）
         status: String(key === 'value' ? value : field.value || '').trim() ? 'confirmed' : 'unextracted',
       }
@@ -2643,9 +2693,11 @@ export default function TechnicalGapRecognition({ showToast }) {
   }
 
   // 刷新并 AI 填充：保存当前编辑 → 按最新素材范围刷新事实表 → 事实表维护 Skill 按素材
-  // 给字段补值/修正/口径建议，结果落为待人工确认
+  // 给字段补值/修正/口径建议，结果落为待人工确认。
+  // 三步全在后端那一个任务里跑，这里只提交一次并把页面上的编辑带过去——拆成三次调用时，
+  // 只有第三步有防重入，等待期间再点一次按钮，前两步照跑改了表，正在跑的那轮就作废了。
   const handleCurateFacts = async () => {
-    if (busyAction) return
+    if (busyAction || factCurateRunning) return
     const hasUnnamedManualValue = factFields.some((field) => {
       const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
       return isManualField && String(field.value || '').trim() && !String(field.label || '').trim()
@@ -2656,26 +2708,13 @@ export default function TechnicalGapRecognition({ showToast }) {
     }
     setBusyAction('facts-curate')
     try {
-      // 表还没建过（清单刚上传）时没有可保存的编辑，跳过保存直接进构建
-      if (factFields.length) {
-        const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
-        const savedTable = await technicalGapsAPI.saveFacts(id, {
-          fields: fieldsToSave,
-          confirm: false,
-          operator: '当前用户',
-        })
-        setFactTable(savedTable)
-        setFactFields(asObjectArray(savedTable?.fields))
-        setData((current) => (current ? { ...current, projectFactTable: savedTable } : current))
-      }
-      // 先按最新素材范围刷新事实表（重跑规则抽取，并把无值的终态字段复位为未提取），
-      // 再交给 AI 补抽——否则上一轮标成「缺少来源」的字段不会进 AI 的工作清单。
-      const rebuiltTable = await technicalGapsAPI.buildFacts(id)
-      setFactTable(rebuiltTable)
-      setFactFields(asObjectArray(rebuiltTable?.fields))
-      setData((current) => (current ? { ...current, projectFactTable: rebuiltTable } : current))
+      // 表还没建过（清单刚上传）时没有可保存的编辑，fields 为空，后端跳过保存直接建表
+      const fieldsToSave = factFields.filter((field) => String(field.label || field.value || '').trim())
       // 提交后台任务后立即返回，执行进度由轮询接管；此后关弹窗、刷新页面都不影响
-      const payload = await technicalGapsAPI.curateFacts(id, {})
+      const payload = await technicalGapsAPI.curateFacts(id, {
+        fields: fieldsToSave,
+        operator: '当前用户',
+      })
       setFactCurateReport(null)
       setFactCurateState(payload?.factCurateState || null)
       showToast?.(payload?.message || '已提交 AI 匹配填充任务')
@@ -3455,7 +3494,11 @@ export default function TechnicalGapRecognition({ showToast }) {
           open
           factTable={factTable}
           fields={factFields}
-          busy={['facts-confirm', 'facts-material-sources', 'facts-curate'].includes(busyAction)}
+          // 后台任务跑着时同样置灰：保存/刷新/范围三个动作现在都在任务里跑，
+          // 中途再点会被后端 409 挡掉，按钮先灰掉省得用户以为点上了
+          busy={
+            ['facts-confirm', 'facts-material-sources', 'facts-curate'].includes(busyAction) || factCurateRunning
+          }
           specsImported={factSpecsMeta.imported}
           specsFileName={factSpecsMeta.fileName}
           materialPaths={factMaterialPaths}

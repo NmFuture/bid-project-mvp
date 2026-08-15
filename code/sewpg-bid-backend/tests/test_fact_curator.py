@@ -20,8 +20,13 @@ from app.core.config import BASE_DIR, settings
 from app.services import technical_fact_curator as curator
 from app.services.job_queue import EnqueueResult
 from app.services.store import store
-from app.services.technical_fact_curate_job import run_fact_curate_job
+from app.services.technical_fact_curate_job import _now_iso, run_fact_curate_job
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
+from app.services.technical_gap_fact_table import (
+    FACT_STATUS_CONFIRMED,
+    FACT_STATUS_NOT_APPLICABLE,
+    FACT_STATUS_UNEXTRACTED,
+)
 
 SCRIPT_PATH = (
     BASE_DIR / "opencode" / "skills" / "bid-tech-fact-curator" / "scripts" / "run_from_manifest.py"
@@ -147,10 +152,12 @@ def test_manifest_targets_buckets(workspace_dirs, monkeypatch) -> None:
     field = manifest["projectFactTable"]["fields"][0]
     for meta in ("specKey", "specSeq", "sourceKind", "status", "label", "value", "unit"):
         assert meta in field
-    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix
+    # 两件事分桶：unextracted+tender→fill，有值的非只读字段→fix。
+    # 平台输入（投标机型）进 fix 不进 fill——它要接受核对（实测 AI 从这类字段抓出过
+    # 「台数 6 台 vs 招标要求 60 台」），只是落表时不覆盖值、走冲突通道。
     assert manifest["targets"] == {
         "fill": ["招标单机容量出口端mw"],
-        "fix": ["年平均风速", "电量承诺函版本"],
+        "fix": ["年平均风速", "电量承诺函版本", "投标机型"],
     }
     assert manifest["briefFile"].endswith("fact_curate_brief.json")
     assert manifest["outputFile"].endswith("fact_curate_suggestions.json")
@@ -172,6 +179,32 @@ def test_skill_docs_only_teach_legal_actions() -> None:
     assert taught, "两份文档都没声明 action，正则或文档结构变了，这个守卫已失效"
     illegal = taught - curator.CURATE_ACTIONS
     assert not illegal, f"文档教了非法 action {sorted(illegal)}；合法值只有 {sorted(curator.CURATE_ACTIONS)}"
+
+
+# 三态收敛（产品裁决 2026-08-10）后废弃的状态名，文档里再出现就是过时描述。
+_RETIRED_FACT_STATUSES = ("extracted", "pending_confirmation", "missing_source", "conflict")
+
+
+def test_skill_docs_do_not_teach_retired_field_statuses() -> None:
+    """SKILL 文档里的状态名必须跟得上三态收敛。
+
+    上一个用例守 action，不守 status，所以这个坑漏了过去：七态收敛成三态时代码改了、
+    文档没改，SKILL.md 一边说 fix 桶装的是 extracted 字段，一边说「confirmed 字段
+    不会出现在任何桶里，不要为它产出建议」——而 _curate_targets 里 fix 桶装的**正是**
+    confirmed 字段。一个听话的 agent 会把整个 fix 桶跳过，脏数据清洗静默空转，报告里
+    只表现为 counts.fixed 一直是 0，不会有任何告警。
+    """
+    for doc in (SKILL_DIR / "SKILL.md", SKILL_DIR / "references" / "rules.md"):
+        text = doc.read_text(encoding="utf-8")
+        for retired in _RETIRED_FACT_STATUSES:
+            # unextracted 是合法状态且以 extracted 结尾，靠左右边界把它排除掉
+            hit = re.search(rf"(?<![0-9A-Za-z_]){retired}(?![0-9A-Za-z_])", text)
+            assert hit is None, f"{doc.name} 仍在教已废弃的字段状态 {retired!r}"
+
+    # 防守卫空转：文档必须仍然在讲这三态，否则上面的断言等于没跑
+    skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    for status in (FACT_STATUS_UNEXTRACTED, FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE):
+        assert status in skill_text, f"SKILL.md 不再提及合法状态 {status}，这个守卫已失效"
 
 
 def test_manifest_uses_isolated_run_directory(workspace_dirs, monkeypatch) -> None:
@@ -349,26 +382,114 @@ def test_confirm_advice_action_is_rejected() -> None:
     ]
 
 
-def test_confirmed_field_never_overwritten() -> None:
+def test_platform_field_not_overwritten_but_conflict_recorded() -> None:
+    """平台输入的值 AI 不许覆盖，但分歧要留痕、要能被看见。
+
+    以前是静默 skippedConfirmed：AI 发现不对也没人知道。实测 AI 在这类字段上抓出过
+    「机组台数 6 台 vs 招标要求 60 台」——那个错会一路抄进标书，不能不管；但也不能让
+    AI 直接改人选的东西。折中是值保持人选的，候选进 alternatives、原因进 notes、
+    打 hasConflict 供页面标红，由人裁决。
+    """
     table, report = _apply(
         [
             {
                 "fieldKey": "投标机型",
                 "suggestedValue": "EW5.0-200",
                 "unit": "",
-                "evidence": "试图覆盖已确认字段",
+                "evidence": "招标文件表14 要求 EW5.0-200",
                 "confidence": 0.99,
                 "action": "fix",
             }
         ]
     )
     field = table["fields"][3]
+    # 值一个字都不动
     assert field["value"] == "EW10.0-220"
     assert field["status"] == "confirmed"
+    # 不给平台字段挂 factCurator 来源——值不是它写的，挂了会让人以为这是 AI 填的
     assert all(ref.get("type") != "factCurator" for ref in field["sourceRefs"])
-    assert report["skippedConfirmed"] == ["投标机型"]
-    # 平台输入字段被硬门禁挡住，值没被 AI 改；表内原有 3 条有值字段计数不变
+    # 但分歧要留下来
+    assert field["hasConflict"] is True
+    assert [item["value"] for item in field["alternatives"]] == ["EW5.0-200"]
+    assert "EW5.0-200" in field["notes"] and "招标文件表14" in field["notes"]
+    assert report["conflicts"] == [
+        {
+            "fieldKey": "投标机型",
+            "label": "投标机型",
+            "currentValue": "EW10.0-220",
+            "suggestedValue": "EW5.0-200",
+            "evidence": "招标文件表14 要求 EW5.0-200",
+            "confidence": 0.99,
+        }
+    ]
+    assert report["counts"]["conflicts"] == 1
+    # 表内原有 3 条有值字段计数不变
     assert table["summary"]["confirmedCount"] == 3
+
+
+def test_platform_field_agreeing_with_ai_is_not_a_conflict() -> None:
+    """AI 查证结果与人选的一致：不标红、不留痕，免得满屏假冲突。"""
+    table, report = _apply(
+        [
+            {
+                "fieldKey": "投标机型",
+                "suggestedValue": "EW10.0-220",
+                "unit": "",
+                "evidence": "招标文件与素材一致",
+                "confidence": 0.95,
+                "action": "fix",
+            }
+        ]
+    )
+    field = table["fields"][3]
+    assert field["value"] == "EW10.0-220"
+    assert not field.get("hasConflict")
+    assert report["conflicts"] == []
+    assert report["skippedConfirmed"] == ["投标机型"]
+
+
+def test_platform_field_stays_out_of_fill_bucket() -> None:
+    """平台字段没值是人还没填，AI 不替人做主——只进 fix，不进 fill。"""
+    fields = [
+        {
+            "key": "空的平台字段",
+            "status": "unextracted",
+            "value": "",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "foundationType"}],
+        },
+        {
+            "key": "有值的平台字段",
+            "status": "confirmed",
+            "value": "钢塔",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "foundationType"}],
+        },
+    ]
+
+    targets = curator._curate_targets(fields)
+
+    assert targets["fill"] == []
+    assert targets["fix"] == ["有值的平台字段"]
+
+
+def test_platform_field_recognized_without_spec_source_kind() -> None:
+    """靠 projectTurbineModel 来源标记认平台字段，不依赖清单来源列。
+
+    实测 PRJ-0004 的 61 个字段里 sourceKind=platform 的一个都没有：投标机型的来源列
+    写的是「项目定制…」被归成 material，机组台数、基础形式连 specKey 都是空的。
+    只看 sourceKind 的话这道保护等于没有。
+    """
+    assert curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "projectTurbineModel", "field": "model"}]}
+    )
+    assert curator._is_platform_authored_field(
+        {"sourceKind": "", "sourceRefs": [{"type": "projectTurbineModel", "field": "turbineCount"}]}
+    )
+    # 清单确实标了平台输入的也认
+    assert curator._is_platform_authored_field({"sourceKind": "platform", "sourceRefs": []})
+    # 从素材抽出来的不是平台字段
+    assert not curator._is_platform_authored_field(
+        {"sourceKind": "material", "sourceRefs": [{"type": "materialFact", "materialId": "RAW-1"}]}
+    )
 
 
 def test_not_found_keeps_unextracted_and_writes_notes() -> None:
@@ -813,10 +934,22 @@ class FactCurateApiTests(unittest.TestCase):
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
 
+        # 真实入队会同时拿到队列锁，两者必须一起 mock：只 mock 入队的话，僵尸判定
+        # （jobId 在但锁没了 = worker 死了）会把刚提交的任务当成死的，锁形同虚设
+        locked = {"value": False}
+
+        def fake_enqueue(job_type, target_project_id, payload):
+            locked["value"] = True
+            return EnqueueResult(queued=True, job_id="JOB-CURATE-1")
+
         with (
             patch(
                 "app.services.technical_fact_curate_job.enqueue_generation_job",
-                return_value=EnqueueResult(queued=True, job_id="JOB-CURATE-1"),
+                side_effect=fake_enqueue,
+            ),
+            patch(
+                "app.services.technical_fact_curate_job.is_generation_locked",
+                side_effect=lambda *args, **kwargs: locked["value"],
             ),
             patch.object(curator, "run_technical_fact_curator_skill") as skill,
         ):
@@ -834,6 +967,77 @@ class FactCurateApiTests(unittest.TestCase):
                 f"/api/technical/projects/{project_id}/gaps/facts/curate", json={}
             )
             self.assertEqual(conflict.status_code, 409, conflict.text)
+
+            # 保存与重建现在归同一把锁管：三步都在任务里跑，中途放任何一步进来都会
+            # 改表、让正在跑的那一轮失去前提（旧实现只锁 curate，实测 16 分钟白跑）
+            save_conflict = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": [], "operator": "测试用户"},
+            )
+            self.assertEqual(save_conflict.status_code, 409, save_conflict.text)
+            build_conflict = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/facts/build"
+            )
+            self.assertEqual(build_conflict.status_code, 409, build_conflict.text)
+            # 正文填写读事实表来填 Word，这时候读到的是重建到一半的表
+            body_fill_conflict = self.client.post(
+                f"/api/technical/projects/{project_id}/gaps/body-fill", json={}
+            )
+            self.assertEqual(body_fill_conflict.status_code, 409, body_fill_conflict.text)
+
+    def test_zombie_curate_state_does_not_lock_out_save_and_build(self) -> None:
+        """worker 被杀留下的 running 状态不能永久锁死页面。
+
+        没有这道判断，保存和刷新会跟着一起卡住，只能改库才能恢复——三个接口共用一把锁
+        之后，僵尸状态的代价比只锁 curate 时大得多。
+        """
+        project_id = self._create_project()
+        self.assertEqual(
+            self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build").status_code, 200
+        )
+        project = store._require(project_id)
+        project["gap_state"]["factCurateState"] = {
+            "status": "running",
+            "jobId": "JOB-DEAD",
+            "phase": "AI 分析素材",
+            "message": "",
+            "startedAt": "2026-07-30T00:00:00Z",
+        }
+        store._persist_project(project)
+
+        # jobId 在但队列锁没了 = worker 死了：放行
+        with patch("app.services.technical_fact_curate_job.is_generation_locked", return_value=False):
+            save_response = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": [], "operator": "测试用户"},
+            )
+            self.assertEqual(save_response.status_code, 200, save_response.text)
+
+    def test_local_executor_run_is_not_mistaken_for_zombie(self) -> None:
+        """Redis 不可用时任务走本地执行器，没有队列锁可查——不能因此把它当成僵尸。
+
+        只照抄「锁没了就是僵尸」会让本地路径下每个在跑的任务都被判死，这把锁等于没加。
+        """
+        project_id = self._create_project()
+        self.assertEqual(
+            self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build").status_code, 200
+        )
+        project = store._require(project_id)
+        project["gap_state"]["factCurateState"] = {
+            "status": "running",
+            "jobId": "",  # 本地执行器：从来没进过 Redis 队列
+            "phase": "AI 分析素材",
+            "message": "",
+            "startedAt": _now_iso(),
+        }
+        store._persist_project(project)
+
+        with patch("app.services.technical_fact_curate_job.is_generation_locked", return_value=False):
+            save_response = self.client.put(
+                f"/api/technical/projects/{project_id}/gaps/facts",
+                json={"fields": [], "operator": "测试用户"},
+            )
+            self.assertEqual(save_response.status_code, 409, save_response.text)
 
     def test_curate_endpoint_requires_completed_recognition(self) -> None:
         project_id = self._create_project()
@@ -871,39 +1075,104 @@ class FactCurateApiTests(unittest.TestCase):
             [(field["key"], field["value"], field["status"]) for field in before["fields"]],
         )
 
-    def test_curate_endpoint_does_not_overwrite_concurrent_manual_edit(self) -> None:
+    def test_curate_keeps_concurrent_manual_edit_and_still_lands_the_rest(self) -> None:
+        """期间被人工改过的字段让位，其余照落——整轮不再作废。
+
+        旧实现是整表快照比对，表被动过一个字节就抛异常整轮不保存，实测让一次 16 分钟的
+        运行全部白跑。现在按字段合并：只有被人工接手的那个字段跳过，并在 dropped 里带原因。
+        """
         project_id = self._create_project()
         build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
         self.assertEqual(build_response.status_code, 200, build_response.text)
-        target = build_response.json()["fields"][0]
+        fields = build_response.json()["fields"]
+        edited = fields[0]
+        # 对照字段必须是 AI 可写的：平台输入/模板占位/自动生成本来就在只读门禁里，
+        # 拿它做对照会分不清「被人工挡住」和「本来就不许 AI 碰」
+        untouched_by_human = next(
+            field
+            for field in fields
+            if field["key"] != edited["key"] and field.get("sourceKind") not in {"template", "platform", "derived"}
+        )
 
         def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+            # AI 跑的这段时间里，人在页面上改了第一个字段（真实路径会带 manualEdit 标记）
             latest = store._require(project_id)
             latest_table = latest["gap_state"]["projectFactTable"]
             latest_table["fields"][0]["value"] = "人工运行中修改"
-            latest_table["fields"][0]["status"] = "extracted"
+            latest_table["fields"][0]["sourceRefs"] = [
+                {"type": "manualEdit", "title": "人工修改", "field": edited.get("label") or ""}
+            ]
             latest_table["updatedAt"] = "2026-07-30T12:00:00Z"
             store._persist_project(latest)
 
-            stale_result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
-            stale_result["fields"][0]["value"] = "AI 旧快照结果"
-            return stale_result, {"counts": {}, "ignored": []}
+            # AI 基于开跑时的旧快照，两个字段都写了值
+            result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
+            by_key = {field["key"]: field for field in result["fields"]}
+            by_key[edited["key"]]["value"] = "AI 旧快照结果"
+            by_key[untouched_by_human["key"]]["value"] = "AI 正常结果"
+            by_key[untouched_by_human["key"]]["status"] = "confirmed"
+            return result, {
+                "counts": {"filled": 2},
+                "ignored": [],
+                "touchedKeys": [edited["key"], untouched_by_human["key"]],
+            }
 
         with patch(
             "app.services.technical_fact_curator.run_fact_curator_for_project",
             side_effect=fake_run,
         ):
-            with self.assertRaises(ValueError):
-                run_fact_curate_job(project_id, {"operator": "测试用户"})
+            run_fact_curate_job(project_id, {"operator": "测试用户"})
 
         status_payload = self.client.get(
             f"/api/technical/projects/{project_id}/gaps/facts/curate"
         ).json()
-        self.assertEqual(status_payload["factCurateState"]["status"], "failed")
-        self.assertIn("本次结果未覆盖保存", status_payload["factCurateState"]["message"])
+        self.assertEqual(status_payload["factCurateState"]["status"], "succeeded")
+        dropped = status_payload["curateReport"]["dropped"]
+        self.assertEqual([item["fieldKey"] for item in dropped], [edited["key"]])
+        self.assertIn("人工", dropped[0]["reason"])
+        # 未覆盖的条数要出现在给用户看的文案里，不能静默少写
+        self.assertIn("1 条", status_payload["factCurateState"]["message"])
+
         after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
-        by_id = {field["id"]: field for field in after["fields"]}
-        self.assertEqual(by_id[target["id"]]["value"], "人工运行中修改")
+        by_key = {field["key"]: field for field in after["fields"]}
+        self.assertEqual(by_key[edited["key"]]["value"], "人工运行中修改")
+        self.assertEqual(by_key[untouched_by_human["key"]]["value"], "AI 正常结果")
+
+    def test_curate_drops_field_that_vanished_from_latest_table(self) -> None:
+        """期间换过清单、字段已不在最新表里：跳过并带原因，不静默丢也不整轮失败。"""
+        project_id = self._create_project()
+        build_response = self.client.post(f"/api/technical/projects/{project_id}/gaps/facts/build")
+        self.assertEqual(build_response.status_code, 200, build_response.text)
+        gone = build_response.json()["fields"][0]
+
+        def fake_run(project_snapshot, gap_state_snapshot, data, *, on_phase=None):
+            latest = store._require(project_id)
+            latest_table = latest["gap_state"]["projectFactTable"]
+            latest_table["fields"] = [
+                field for field in latest_table["fields"] if field["key"] != gone["key"]
+            ]
+            store._persist_project(latest)
+
+            result = copy.deepcopy(gap_state_snapshot["projectFactTable"])
+            for field in result["fields"]:
+                if field["key"] == gone["key"]:
+                    field["value"] = "AI 给这个已消失字段的值"
+            return result, {"counts": {"filled": 1}, "ignored": [], "touchedKeys": [gone["key"]]}
+
+        with patch(
+            "app.services.technical_fact_curator.run_fact_curator_for_project",
+            side_effect=fake_run,
+        ):
+            run_fact_curate_job(project_id, {"operator": "测试用户"})
+
+        status_payload = self.client.get(
+            f"/api/technical/projects/{project_id}/gaps/facts/curate"
+        ).json()
+        self.assertEqual(status_payload["factCurateState"]["status"], "succeeded")
+        dropped = status_payload["curateReport"]["dropped"]
+        self.assertEqual([item["fieldKey"] for item in dropped], [gone["key"]])
+        after = self.client.get(f"/api/technical/projects/{project_id}/gaps/facts").json()
+        self.assertNotIn(gone["key"], {field["key"] for field in after["fields"]})
 
 
 # ---------------------------------------------------------------- T3 定向增强
@@ -1143,3 +1412,40 @@ def test_cross_project_evidence_appends_source_note() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_conflict_flag_survives_save_round_trip() -> None:
+    """冲突标记要扛过保存往返，否则一保存就没了、冲突等于没报过。
+
+    alternatives 和 notes 本来就在 normalize 的保留名单里，hasConflict 原先不在——
+    页面标红一保存就消失，人再也看不到 AI 报过什么。
+    """
+    from app.services.technical_gap_fact_table import normalize_project_fact_field
+
+    conflicted = normalize_project_fact_field(
+        {
+            "label": "机组台数",
+            "value": "6",
+            "hasConflict": True,
+            "alternatives": [{"value": "60", "source": {"type": "factCurator", "evidence": "招标表14"}}],
+            "notes": "AI 查证与项目信息不一致：建议「60」",
+            "sourceRefs": [{"type": "projectTurbineModel", "field": "turbineCount"}],
+        },
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert conflicted["hasConflict"] is True
+    assert [item["value"] for item in conflicted["alternatives"]] == ["60"]
+    assert "60" in conflicted["notes"]
+
+    # 人裁决过之后前端置 False，这个 False 同样要回写，不能被当成"没这个键"丢掉
+    resolved = normalize_project_fact_field(
+        {**conflicted, "value": "60", "hasConflict": False},
+        index=1,
+        confirm=False,
+        operator="测试用户",
+        saved_at="2026-08-15T00:00:00Z",
+    )
+    assert resolved["hasConflict"] is False

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { businessParseAPI, businessProjectsAPI } from '../../../api'
+import { invalidatePageCache } from '../../../utils/pageCache'
 import { PageError, PageLoading } from '../../../components/states/PageState'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
@@ -781,6 +782,8 @@ export default function BusinessTenderReview({ showToast }) {
         deadline: '',
         reviewDecision: 'pending',
       })
+      invalidatePageCache('business:projects')
+      invalidatePageCache('dashboard')
       await loadProjects()
       setSelectedProjectId(created?.id || '')
       if (!silent) {
@@ -1625,13 +1628,13 @@ export default function BusinessTenderReview({ showToast }) {
     )
   }
 
-  if (loadingProjects) return <PageLoading title="正在加载解析模块..." />
+  // 列表与详情合并为一个加载态，避免进解析页连续两次整页替换
+  if (loadingProjects || loadingDetail) return <PageLoading title="正在加载解析模块..." />
   if (error) return <PageError title="解析模块加载失败" description={error} onRetry={loadProjects} />
-  if (loadingDetail) return <PageLoading title="正在加载解析详情..." />
 
   if (showBusinessCompactUpload) {
     return (
-      <div className="review-page business-ui-shell flex w-full max-w-none flex-col gap-4 animate-fade-in">
+      <div className="review-page business-ui-shell flex w-full max-w-none flex-col gap-4">
         <PageHeader
           variant="panel"
           title="商务标解析"
@@ -1666,10 +1669,10 @@ export default function BusinessTenderReview({ showToast }) {
               disabled={uploading || reviewDecision === 'abandon'}
               onChange={handleFilesPicked}
             />
-            <div className="mt-3">
+            <div className="mt-2">
               {renderPickedFiles()}
             </div>
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-center">
               <Button
                 type="button"
                 onClick={handleUploadAndParse}
@@ -1722,7 +1725,7 @@ export default function BusinessTenderReview({ showToast }) {
   }
 
   return (
-    <div className="review-page flex max-w-none flex-col gap-4 animate-fade-in sm:gap-6">
+    <div className="review-page flex max-w-none flex-col gap-4 sm:gap-6">
       <PageHeader
         variant="panel"
         title={reviewConfig.pageTitle}
@@ -2136,6 +2139,8 @@ export default function BusinessTenderReview({ showToast }) {
             setShowProjectInfoModal(false)
             setProjectToComplete(null)
             setProject(updatedProject)
+            invalidatePageCache('business:projects')
+            invalidatePageCache('dashboard')
             setProjects((prev) => prev.map((item) => (
               item.id === updatedProject.id ? { ...item, ...updatedProject } : item
             )))

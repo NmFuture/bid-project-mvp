@@ -23,7 +23,7 @@ from app.services.technical_fact_field_specs import (
 )
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_material_store import technical_material_store
-from app.services.turbine_models import project_turbine_model, project_turbine_models
+from app.services.turbine_models import formal_model_code, project_turbine_model, project_turbine_models
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +370,10 @@ def normalize_project_fact_field(
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
         normalized["outOfSpec"] = True
+    # 冲突标记要扛过保存往返：AI 查证与平台输入不一致时打上，页面据此标红并给出候选；
+    # 人改过值之后前端会置 False。漏掉这一句的话一保存标记就没了，冲突等于没报过。
+    if field.get("hasConflict") is not None:
+        normalized["hasConflict"] = bool(field.get("hasConflict"))
     if normalized["status"] == FACT_STATUS_CONFIRMED:
         normalized["confirmedAt"] = saved_at
         normalized["confirmedBy"] = operator
@@ -509,6 +513,45 @@ def is_human_authored_fact_field(field: dict[str, Any]) -> bool:
     ):
         return True
     return str(field.get("status") or "") == FACT_STATUS_NOT_APPLICABLE
+
+
+def compose_saved_fact_table(
+    project_id: str,
+    current: dict[str, Any],
+    incoming_fields: list[Any],
+    *,
+    confirm: bool,
+    operator: str,
+    saved_at: str,
+) -> dict[str, Any]:
+    """按页面提交的字段组出要落库的整张事实表（纯计算，不读写项目状态）。
+
+    保存接口与「刷新并 AI 填充」的后台任务共用同一份口径：任务把保存挪进了 worker，
+    两处再各写一遍必然漂移。
+
+    整表 confirm 只把表级 status 升为 confirmed（正文填写的准入闸门），不逐字段盖成
+    「已人工确认」——否则一次保存就把整表变成 AI 禁区，AI 自己填错的值再也纠正不了。
+    """
+    specs, specs_ref = resolve_fact_specs()
+    fields = [
+        normalize_project_fact_field(field, index=index, confirm=False, operator=operator, saved_at=saved_at)
+        for index, field in enumerate(incoming_fields, start=1)
+        if isinstance(field, dict)
+    ]
+    return {
+        "schemaVersion": PROJECT_FACT_TABLE_SCHEMA_VERSION,
+        "projectId": project_id,
+        "status": "confirmed" if confirm else "draft",
+        "builtAt": str(current.get("builtAt") or saved_at),
+        "updatedAt": saved_at,
+        "confirmedAt": saved_at if confirm else str(current.get("confirmedAt") or ""),
+        "confirmedBy": operator if confirm else str(current.get("confirmedBy") or ""),
+        "fields": fields,
+        "summary": summarize_project_fact_fields(fields, spec_total=len(specs)),
+        "factSpecsRef": copy.deepcopy(current.get("factSpecsRef"))
+        if isinstance(current.get("factSpecsRef"), dict)
+        else copy.deepcopy(specs_ref),
+    }
 
 
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
@@ -739,7 +782,9 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         row_rated_mw = f"{row_rated_kw / 1000:g}" if isinstance(row_rated_kw, (int, float)) else ""
         for order, (label, value, field_name, unit, confidence, priority) in enumerate(
             (
-                (f"投标机型{index}" if multi_turbine else "投标机型", row_model, "model", "", 0.98, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                # 落表的是正式材料用的英数字编码；source_ref 与分组标签仍带原始后缀，
+                # 供追溯和多机型（上置/下置）区分
+                (f"投标机型{index}" if multi_turbine else "投标机型", formal_model_code(row_model), "model", "", 0.98, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
                 (f"{prefix}台数" if multi_turbine else "机组台数", row.get("turbineCount"), "turbineCount", "台", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
                 (f"{prefix}基础形式", row.get("foundationType"), "foundationType", "", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
                 (f"{prefix}单机容量", row_rated_mw or row_rated_kw, "ratedPowerKw", "MW" if row_rated_mw else "", 0.9, FACT_SOURCE_PRIORITY_PROJECT),
@@ -773,7 +818,11 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         # 来源里标明是哪个机型（各机型取值口径待正文填写支持按机型铺开后再收口）。
         add_candidate(
             "投标机型",
-            "、".join(str(row.get("model") or "").strip() for row in turbine_models if str(row.get("model") or "").strip()),
+            "、".join(
+                code
+                for code in (formal_model_code(row.get("model")) for row in turbine_models)
+                if code
+            ),
             category="机型参数",
             source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型（全部机型）"},
             confidence=0.98,
@@ -813,11 +862,13 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             unit="台",
             source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
         )
-    if model and hub_height:
-        add_candidate("投标方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-        add_candidate("方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-    elif model:
-        add_candidate("投标方案", model, category="方案口径", source_ref={"type": "derived", "field": "model", "title": "投标方案"}, confidence=0.64, source_priority=80)
+    # 投标方案同样进正式材料，用英数字编码拼
+    model_code = formal_model_code(model)
+    if model_code and hub_height:
+        add_candidate("投标方案", f"{model_code}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+        add_candidate("方案", f"{model_code}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+    elif model_code:
+        add_candidate("投标方案", model_code, category="方案口径", source_ref={"type": "derived", "field": "model", "title": "投标方案"}, confidence=0.64, source_priority=80)
 
     for fact in trusted_parse_facts:
         add_candidate(

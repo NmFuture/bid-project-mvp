@@ -1032,9 +1032,15 @@ class GapReviewFlowTests(unittest.TestCase):
         self.assertNotIn("招标方", labels)
         self.assertNotIn("未知保证值", labels)
         model = next(field for field in payload["fields"] if field["label"] == "投标机型")
-        self.assertEqual(model["value"], "EW10.0-220下置")
+        # 落表只写正式材料用的英数字编码：中文布局后缀（上置/下置）是内部选型和素材
+        # 过滤用的，不进标书。追溯链路上仍能看到人当初选的是哪个布局。
+        self.assertEqual(model["value"], "EW10.0-220")
         self.assertEqual(model["status"], "confirmed")
         self.assertTrue(model["sourceRefs"])
+        turbine_ref = next(
+            ref for ref in model["sourceRefs"] if ref.get("type") == "projectTurbineModel"
+        )
+        self.assertEqual(turbine_ref["turbineModel"], "EW10.0-220下置")
         # 没抽到值的清单骨架一律计 unextracted（三态收敛后不再区分 missing_source）
         self.assertTrue(payload["summary"]["unextractedCount"] > 0)
         self.assertEqual(payload["summary"]["specTotal"], 148)
