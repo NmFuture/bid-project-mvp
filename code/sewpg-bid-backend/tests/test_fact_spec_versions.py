@@ -31,7 +31,7 @@ from app.services.technical_fact_spec_global import (
     GLOBAL_FACT_SPECS_PROJECT_ID,
     resolve_fact_specs,
 )
-from app.services.technical_fact_spec_import import EXPECTED_HEADER
+from app.services.technical_fact_spec_import import EXPECTED_HEADER, SHEET_FILL
 from app.services.technical_fact_spec_versions import (
     FACT_SPECS_SOURCE_GLOBAL,
     load_fact_spec_version,
@@ -44,12 +44,12 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 def _build_xlsx(path: Path, labels: list[str]) -> Path:
     wb = openpyxl.Workbook()
     ws = wb.active
+    ws.title = SHEET_FILL
     ws.append(EXPECTED_HEADER)
     for index, label in enumerate(labels, start=1):
         ws.append(
             [
                 index,
-                "待填写",
                 "标准文件",
                 "招标文件-技术规范书",
                 f"[{label}，待填写]",

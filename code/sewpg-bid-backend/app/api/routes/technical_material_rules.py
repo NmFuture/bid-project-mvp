@@ -25,11 +25,13 @@ from app.services.technical_appendix_source_matrix import (
 )
 from app.services.technical_fact_field_specs import load_specs
 from app.services.technical_fact_spec_global import (
+    apply_embed_rules_override,
     global_fact_specs_archive_path,
+    load_embed_rules,
     load_global_fact_specs_meta,
     save_global_fact_specs,
 )
-from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
+from app.services.technical_fact_spec_import import FactSpecImportError, import_rule_book
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_rules_store import (
@@ -113,21 +115,29 @@ async def upload_global_fact_specs(
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
             handle.write(content)
             tmp_upload = Path(handle.name)
-        specs = import_specs(tmp_upload)
+        book = import_rule_book(tmp_upload)
     except FactSpecImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         if tmp_upload is not None:
             tmp_upload.unlink(missing_ok=True)
 
+    specs = book["specs"]
     result = save_global_fact_specs(
         specs,
         file_name=filename,
         uploaded_by=_operator_name(user),
         content=content,
     )
+    embed_summary = apply_embed_rules_override(book["embedRules"])
     await store_imported_fact_spec_rows(specs, _operator_name(user))
-    return result
+    # sheet 识别结果回给前端：名字认错一个字会被当作不认识而跳过，不展示就看不出没生效
+    return {
+        **result,
+        **embed_summary,
+        "recognizedSheets": book["recognizedSheets"],
+        "skippedSheets": book["skippedSheets"],
+    }
 
 
 @router.get("/api/technical/materials/rules/fact-specs")
@@ -198,11 +208,13 @@ async def download_global_fact_specs() -> FileResponse:
 
 @router.get("/api/technical/materials/rules/fact-specs/export")
 async def export_global_fact_specs() -> Response:
-    """导出当前生效清单为 xlsx（列头与导入解析器兼容，导出件可再导入）；无鉴权同 download。"""
+    """导出当前生效规则表为 xlsx（列头与导入解析器兼容，导出件可再导入）；无鉴权同 download。"""
     specs = await list_fact_spec_rows()
     if not specs:
         specs = list(load_specs())
-    return _xlsx_response(export_fact_specs_xlsx(specs), "technical_fact_specs.xlsx")
+    return _xlsx_response(
+        export_fact_specs_xlsx(specs, load_embed_rules()), "technical_fact_specs.xlsx"
+    )
 
 
 # ---------------------------------------------------------------------------

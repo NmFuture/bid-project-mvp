@@ -10,8 +10,11 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Uplo
 
 from app.services.auth_service import auth_service, current_user
 from app.services.system_settings import system_settings_service
-from app.services.technical_fact_spec_global import apply_fact_specs_override
-from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
+from app.services.technical_fact_spec_global import (
+    apply_embed_rules_override,
+    apply_fact_specs_override,
+)
+from app.services.technical_fact_spec_import import FactSpecImportError, import_rule_book
 
 router = APIRouter()
 
@@ -179,12 +182,18 @@ async def settings_technical_fact_specs_upload(
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
             handle.write(content)
             tmp_upload = Path(handle.name)
-        specs = import_specs(tmp_upload)
+        book = import_rule_book(tmp_upload)
     except FactSpecImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         if tmp_upload is not None:
             tmp_upload.unlink(missing_ok=True)
 
-    # 原子写 override + 清缓存的逻辑与素材库「规则」tab 共用，见 technical_fact_spec_global
-    return apply_fact_specs_override(specs)
+    # 原子写 override + 清缓存的逻辑与素材库「规则」tab 共用，见 technical_fact_spec_global。
+    # 插入规则同为这份表解析出来，两半必须一起写，否则本入口传的表只有待填写会生效。
+    return {
+        **apply_fact_specs_override(book["specs"]),
+        **apply_embed_rules_override(book["embedRules"]),
+        "recognizedSheets": book["recognizedSheets"],
+        "skippedSheets": book["skippedSheets"],
+    }

@@ -28,7 +28,14 @@ from app.services.technical_fact_spec_global import (
     global_fact_specs_archive_path,
     global_fact_specs_meta_path,
 )
-from app.services.technical_fact_spec_import import EXPECTED_HEADER, import_specs
+from app.services.technical_fact_spec_import import (
+    EMBED_EXPECTED_HEADER,
+    EXPECTED_HEADER,
+    SHEET_EMBED,
+    SHEET_FILL,
+    import_embed_rules,
+    import_specs,
+)
 from app.services.technical_rules_store import ensure_technical_rules_tables
 
 MATRIX_HEADER = ["客户", "表格", "项目定制", "标准文件", "其他"]
@@ -36,15 +43,24 @@ TEST_USER = {"id": "u-rules", "name": "规则测试用户"}
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _build_specs_xlsx(path: Path, rows: list[tuple[str, str]], header: list[str] | None = None) -> Path:
+def _build_specs_xlsx(
+    path: Path,
+    rows: list[tuple[str, str]],
+    header: list[str] | None = None,
+    embed_rows: list[list[str]] | None = None,
+) -> Path:
     """rows: (字段名, 引用文件) 列表；字段名写进占位符内容列，导入时剥离得出。"""
     wb = openpyxl.Workbook()
     ws = wb.active
+    ws.title = SHEET_FILL
     ws.append(header if header is not None else EXPECTED_HEADER)
     for index, (label, reference_file) in enumerate(rows, start=1):
-        ws.append(
-            [index, "待填写", "标准文件", "招标文件-技术规范书", f"[{label}，待填写]", reference_file]
-        )
+        ws.append([index, "标准文件", "招标文件-技术规范书", f"[{label}，待填写]", reference_file])
+    if embed_rows is not None:
+        embed_ws = wb.create_sheet(SHEET_EMBED)
+        embed_ws.append(EMBED_EXPECTED_HEADER)
+        for row in embed_rows:
+            embed_ws.append(row)
     wb.save(path)
     return path
 
@@ -327,6 +343,43 @@ class MaterialRulesFactSpecsTests(_MaterialRulesTestBase):
         exported.write_bytes(response.content)
         reimported = import_specs(exported)
         self.assertEqual([spec["label"] for spec in reimported], ["招标编号", "总装机容量"])
+
+    def test_upload_stores_embed_rules_and_export_round_trips(self) -> None:
+        """待插入 30 行以前解析时整行丢弃，落不了库也导不出来，这里守住整条通路。"""
+        xlsx_path = _build_specs_xlsx(
+            Path(self.temp_dir.name) / "规则表.xlsx",
+            [("招标编号", "招标文件/招标公告")],
+            embed_rows=[
+                ["标准文件", "待填写-塔筒设计", "[基础弯矩表-完整插入，待插入]", "基础弯矩表", "", ""],
+                ["客户定制-华能", "待填写-齿轮箱专题（X2）", "[齿轮箱型式认证-完整插入，待插入]", "齿轮箱", "", ""],
+                ["客户定制-华能", "待填写-齿轮箱专题（X3）", "[齿轮箱型式认证-完整插入，待插入]", "齿轮箱", "", ""],
+                ["客户定制-华能", "待填写-物流", "[物流解决方案-x，待插入]", "物流解决方案", "项目运输方案", "场内道路建议参数"],
+            ],
+        )
+
+        payload = self._upload_specs(xlsx_path).json()
+        self.assertEqual(payload["specTotal"], 1)
+        self.assertEqual(payload["embedRuleTotal"], 4)
+        self.assertEqual(payload["recognizedSheets"], [SHEET_FILL, SHEET_EMBED])
+        self.assertEqual(payload["skippedSheets"], [])
+
+        exported = Path(self.temp_dir.name) / "导出规则表.xlsx"
+        exported.write_bytes(self.client.get("/api/technical/materials/rules/fact-specs/export").content)
+        reimported = import_embed_rules(exported)
+
+        # X2/X3 两行不归并，导出后仍是两次独立插入
+        self.assertEqual(len(reimported), 4)
+        self.assertEqual(
+            [(rule["targetFile"], rule["material"]) for rule in reimported],
+            [
+                ("待填写-塔筒设计", "基础弯矩表"),
+                ("待填写-齿轮箱专题（X2）", "齿轮箱"),
+                ("待填写-齿轮箱专题（X3）", "齿轮箱"),
+                ("待填写-物流", "物流解决方案"),
+            ],
+        )
+        self.assertEqual(reimported[3]["headingStart"], "项目运输方案")
+        self.assertEqual(reimported[3]["headingEnd"], "场内道路建议参数")
 
 
 class MaterialRulesAppendixSourceMatrixTests(_MaterialRulesTestBase):

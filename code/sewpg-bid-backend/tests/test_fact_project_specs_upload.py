@@ -16,7 +16,7 @@ from app.services import technical_gap_fact_table as fact_table_module
 from app.services.auth_service import current_user
 from app.services.store import store
 from app.services.technical_fact_field_specs import clear_specs_cache
-from app.services.technical_fact_spec_import import EXPECTED_HEADER
+from app.services.technical_fact_spec_import import EXPECTED_HEADER, SHEET_FILL
 
 TEST_USER = {"id": "u-facts", "name": "事实表测试用户"}
 
@@ -25,11 +25,10 @@ def _build_xlsx(path: Path, rows: list[tuple[str, str]], header: list[str] | Non
     """rows: (字段名, 引用文件) 列表；字段名写进占位符内容列，导入时剥离得出。"""
     wb = openpyxl.Workbook()
     ws = wb.active
+    ws.title = SHEET_FILL
     ws.append(header if header is not None else EXPECTED_HEADER)
     for index, (label, reference_file) in enumerate(rows, start=1):
-        ws.append(
-            [index, "待填写", "标准文件", "招标文件-技术规范书", f"[{label}，待填写]", reference_file]
-        )
+        ws.append([index, "标准文件", "招标文件-技术规范书", f"[{label}，待填写]", reference_file])
     wb.save(path)
     return path
 
