@@ -254,7 +254,7 @@ test('共创导出页二次确认后沿用正文生成接口并刷新最新文�
   assert.match(editorSource, /<TechnicalGenerationProgressModal/)
 })
 
-test('素材范围保存与事实表重建解耦，重建只走「刷新并 AI 填充」', async () => {
+test('素材范围保存与事实表重建解耦，重建只走「AI重填」', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
   const scopeStart = source.indexOf('const handleSaveMaterialPaths')
   const curateStart = source.indexOf('const handleCurateFacts')
@@ -264,7 +264,7 @@ test('素材范围保存与事实表重建解耦，重建只走「刷新并 AI �
   // 范围就是范围：保存范围只写范围，不顺带触发耗时约一分钟的整表重建
   assert.ok(scopeFlow.includes('saveMaterialSources'))
   assert.ok(!scopeFlow.includes('buildFacts'))
-  // 没有独立的「生成/重建事实表」按钮：建表与重建都由「刷新并 AI 填充」一个入口承担
+  // 没有独立的「生成/重建事实表」按钮：建表与重建都由「AI重填」一个入口承担
   assert.doesNotMatch(source, /onBuild\b|handleBuildFacts/)
   // 保存与重建已经搬进后端那一个任务，前端只提交一次。拆成三次调用时只有第三次有
   // 防重入，等待期间再点一次按钮，前两次照跑改了表，正在跑的那轮就作废了。
@@ -276,12 +276,12 @@ test('素材范围保存与事实表重建解耦，重建只走「刷新并 AI �
   assert.match(source, /workspace\/tech\/materials\/rules/)
 })
 
-test('事实表为空但清单已上传时，「刷新并 AI 填充」兼职生成事实表', async () => {
+test('事实表为空但清单已上传时，「AI建表」兼职生成事实表', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
 
   // 清单没上传仍禁用（后端会 400），上传后允许从空表直接建
   assert.match(source, /disabled=\{busy \|\| \(!fields\.length && !specsImported\)\}/)
-  assert.match(source, /'刷新并 AI 填充' : '生成事实表并 AI 填充'/)
+  assert.match(source, /'AI重填' : 'AI建表'/)
   // 空表时 fieldsToSave 是空数组，后端据此跳过保存直接建表，前端不再自己分支
   assert.match(source, /const fieldsToSave = factFields\.filter/)
   assert.match(source, /curateFacts\(id, \{\s*\n\s*fields: fieldsToSave,/)
@@ -997,4 +997,21 @@ test('平台字段与 AI 查证不一致时，页面要标红并给出可一键�
   assert.match(source, /conflictCandidate\?\.source\?\.evidence/)
   // 人一改值就算裁决过，标记要清掉，否则改完还一直标红
   assert.match(source, /key === 'value' && field\.hasConflict \? \{ hasConflict: false \}/)
+})
+
+test('两个 AI 按钮分工明确：AI重填从头算，AI补空只补空白', async () => {
+  const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
+
+  // 重建会把上一轮 AI 填的值整片抹掉（只有人工值跨轮存活），而实测两轮抓到的东西
+  // 并不相同——抹掉就是丢发现。所以补空必须是独立入口，不能只做成重填的附带行为。
+  assert.match(source, /'AI重填' : 'AI建表'/)
+  assert.match(source, /\{curating \? \(curatePhase \|\| '处理中\.\.\.'\) : 'AI补空'\}/)
+  // 两个按钮走同一条链路，只差 fillOnly 开关
+  assert.match(source, /const handleCurateFacts = async \(\{ fillOnly = false \} = \{\}\) =>/)
+  assert.match(source, /onCurate=\{\(\) => handleCurateFacts\(\)\}/)
+  assert.match(source, /onFillBlanks=\{\(\) => handleCurateFacts\(\{ fillOnly: true \}\)\}/)
+  assert.match(source, /fillOnly,/)
+  // 没空可补时置灰，免得白跑一轮（实测一轮约 8 分钟）
+  assert.match(source, /const blankCount = statusCounts\.unextracted \|\| 0/)
+  assert.match(source, /disabled=\{busy \|\| !blankCount\}/)
 })

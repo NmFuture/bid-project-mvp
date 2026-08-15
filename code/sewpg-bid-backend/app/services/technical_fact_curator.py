@@ -252,8 +252,11 @@ def _is_curator_readonly_field(field: dict[str, Any]) -> bool:
     return str(field.get("sourceKind") or "") in _READONLY_SOURCE_KINDS
 
 
-def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """按方案 B 的两件事给字段分桶，桶内只放 fieldKey。"""
+def _curate_targets(fields: list[dict[str, Any]], *, fill_only: bool = False) -> dict[str, list[str]]:
+    """按方案 B 的两件事给字段分桶，桶内只放 fieldKey。
+
+    fill_only=True 是「AI补空」：只补还没有值的字段，已有的值一律不碰，fix 桶留空。
+    """
     targets: dict[str, list[str]] = {"fill": [], "fix": []}
     for field in fields:
         field_key = str(field.get("key") or "").strip()
@@ -269,7 +272,7 @@ def _curate_targets(fields: list[dict[str, Any]]) -> dict[str, list[str]]:
             targets["fill"].append(field_key)
         # 脏数据校验只针对从招标文件/素材抽出来的值。平台字段也进这一桶——它要接受
         # 核对，只是落表时走冲突通道不覆盖值。
-        if status == FACT_STATUS_CONFIRMED:
+        if status == FACT_STATUS_CONFIRMED and not fill_only:
             targets["fix"].append(field_key)
     return targets
 
@@ -326,7 +329,7 @@ def build_fact_curator_manifest(
             "schemaVersion": str(table.get("schemaVersion") or ""),
             "fields": fields,
         },
-        "targets": _curate_targets(fields),
+        "targets": _curate_targets(fields, fill_only=bool(data.get("fillOnly"))),
         "tenderSources": _tender_sources(project),
         "materials": _curator_materials(project, gap_state),
         # 素材按需拉取入口：materials 里没有 path 的条目，读取前先取一次拿到本地路径
@@ -703,6 +706,26 @@ def run_fact_curator_for_project(
                 artifact.unlink()
     targets = manifest.get("targets") if isinstance(manifest.get("targets"), dict) else {}
     target_total = sum(len(targets.get(key) or []) for key in ("fill", "fix"))
+    if not target_total:
+        # 没有目标字段还开会话，就是白等一轮（实测一轮约 8 分钟）。「AI补空」在表已填满时
+        # 最容易撞上这种情况，直接如实返回空报告。
+        empty_report = {
+            "filled": [],
+            "fixed": [],
+            "notFound": [],
+            "skippedConfirmed": [],
+            "ignored": [],
+            "conflicts": [],
+            "touchedKeys": [],
+            "manifestPath": str(manifest_path),
+            "suggestionCount": 0,
+            "factSpecsRef": manifest.get("factSpecsRef") or {},
+            "opencodeOutput": {},
+        }
+        empty_report["counts"] = {
+            key: 0 for key, value in empty_report.items() if isinstance(value, list)
+        }
+        return copy.deepcopy(table), empty_report
     notify("AI 分析素材", f"AI 正在按 {target_total} 个目标字段查证素材（耗时较长）。")
     result = run_technical_fact_curator_skill(manifest_path)
     notify("回收建议落表", "正在回收 AI 建议并写入事实表。")
