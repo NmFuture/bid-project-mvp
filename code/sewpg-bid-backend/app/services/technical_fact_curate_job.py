@@ -150,6 +150,8 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
 
     payload = dict(data or {})
     operator = str(payload.get("operator") or "当前用户")
+    # 「AI补空」：跳过重建、只跑 fill 桶，把上一轮的结论留在表里
+    fill_only = bool(payload.get("fillOnly"))
     _write_state(project_id, status="running", phase=FACT_CURATE_PHASES[0], message="正在保存当前编辑。")
 
     def on_phase(phase: str, message: str = "") -> None:
@@ -186,17 +188,23 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
 
         # ② 按最新素材范围重建（重跑规则抽取，并把无值的终态字段复位为未提取），否则
         #    上一轮标成「缺少来源」的字段不会进 AI 的工作清单。实测约 54 秒。
-        on_phase(FACT_CURATE_PHASES[1], "正在按最新素材范围刷新事实表。")
-        project = require_technical_gap_project_for_update(project_id)
-        gap_state = ensure_technical_gap_state(project)
-        table = build_project_fact_table(project, gap_state)
-        built_at = _now_iso()
+        #
+        #    「AI补空」跳过这一步：重建时只有人工写过的值跨轮存活，AI 填的一律重算，
+        #    上一轮的结论会被整片抹掉。而实测同样输入两轮抓到的东西并不相同（一轮 4 条
+        #    修正、一轮 6 条，只有 4 条重叠），抹掉就是真的丢发现。补空只在现有表上补
+        #    还没有值的字段，已有的一律不动。
+        if not fill_only:
+            on_phase(FACT_CURATE_PHASES[1], "正在按最新素材范围刷新事实表。")
+            project = require_technical_gap_project_for_update(project_id)
+            gap_state = ensure_technical_gap_state(project)
+            table = build_project_fact_table(project, gap_state)
+            built_at = _now_iso()
 
-        def store_built(latest_project: dict[str, Any]) -> None:
-            ensure_technical_gap_state(latest_project)["projectFactTable"] = copy.deepcopy(table)
-            latest_project["updatedAt"] = built_at
+            def store_built(latest_project: dict[str, Any]) -> None:
+                ensure_technical_gap_state(latest_project)["projectFactTable"] = copy.deepcopy(table)
+                latest_project["updatedAt"] = built_at
 
-        mutate_technical_gap_project(project_id, store_built)
+            mutate_technical_gap_project(project_id, store_built)
 
         # ③ AI 补抽 / 纠错。这一步十几分钟，期间的表改动由落表侧按字段让位，不再整轮作废。
         project = require_technical_gap_project_for_update(project_id)
@@ -219,12 +227,21 @@ def run_fact_curate_job(project_id: str, data: dict[str, Any] | None = None) -> 
                 touched_keys,
             )
             counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
-            message = (
-                "事实表维护完成："
-                f"补抽 {counts.get('filled', 0)} 条、修正 {counts.get('fixed', 0)} 条、"
-                f"未找到值 {counts.get('notFound', 0)} 条、"
-                f"忽略 {counts.get('ignored', 0)} 条（已确认跳过 {counts.get('skippedConfirmed', 0)} 条）。"
-            )
+            if fill_only:
+                # 补空模式不跑 fix 桶，报「修正 0 条」会让人以为查过没问题，而不是压根没查
+                message = (
+                    "AI补空完成："
+                    f"补上 {counts.get('filled', 0)} 条、"
+                    f"未找到值 {counts.get('notFound', 0)} 条、"
+                    f"忽略 {counts.get('ignored', 0)} 条。已有取值的字段本轮未参与核对。"
+                )
+            else:
+                message = (
+                    "事实表维护完成："
+                    f"补抽 {counts.get('filled', 0)} 条、修正 {counts.get('fixed', 0)} 条、"
+                    f"未找到值 {counts.get('notFound', 0)} 条、"
+                    f"忽略 {counts.get('ignored', 0)} 条（已确认跳过 {counts.get('skippedConfirmed', 0)} 条）。"
+                )
             if counts.get("conflicts"):
                 message += (
                     f"另有 {counts['conflicts']} 条与项目信息不一致（已在表中标红，值保持你选的，"
