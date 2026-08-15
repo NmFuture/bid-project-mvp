@@ -151,7 +151,8 @@ class SystemSettingsService:
                     "apiKey": settings.default_ocr_api_key,
                     "model": settings.default_ocr_model,
                     "timeoutMs": 60000,
-                    "maxTokens": 16384,
+                    # SiliconFlow DeepSeek-OCR 的 max_seq_len 为 8192，maxTokens 超限会直接 400；留余量取 8000。
+                    "maxTokens": 8000,
                 },
             }
             for key, value in defaults.items():
@@ -230,7 +231,7 @@ class SystemSettingsService:
         else:
             config["model"] = str(settings.default_ocr_model or "").strip()
         config["timeoutMs"] = int(config.get("timeoutMs") or 60000)
-        config["maxTokens"] = int(config.get("maxTokens") or 16384)
+        config["maxTokens"] = int(config.get("maxTokens") or 8000)
         config["enabled"] = bool(config.get("enabled"))
         return config
 
