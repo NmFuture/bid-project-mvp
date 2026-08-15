@@ -1,5 +1,10 @@
 """删除 DOCX 中未被使用的样式，避免超大样式表拖慢 python-docx。"""
 
+# 单一事实源：本文件是 DOCX 未使用样式裁剪逻辑的唯一事实源。
+# opencode/skills/bid-tech-assembler/scripts/docx_style_pruner.py 是它在 opencode
+# 容器环境的 vendored 拷贝（仅文件头互指注释不同）。修改本文件的裁剪逻辑后
+# 必须同步该拷贝；tests/test_technical_final_assembly.py 的 TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 from collections.abc import Iterable

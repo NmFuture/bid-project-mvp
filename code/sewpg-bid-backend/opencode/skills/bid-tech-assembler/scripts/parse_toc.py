@@ -21,6 +21,11 @@
     python3 parse_toc.py <目录 docx> [--out toc.json]
 """
 
+# 注意：本文件是 app/document_processing/technical_document/assembly/parse_toc.py 的
+# vendored 拷贝。opencode 容器内没有 app 包，差异只在文件头互指注释；
+# 解析逻辑一律先改源文件再同步回本文件，tests/test_technical_final_assembly.py 的
+# TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse

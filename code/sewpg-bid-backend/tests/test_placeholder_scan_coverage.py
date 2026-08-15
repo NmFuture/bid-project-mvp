@@ -85,11 +85,17 @@ class PlaceholderPatternTests(unittest.TestCase):
             self.assertEqual(len(self._hits(text)), 1, text)
 
     def test_skill_copy_stays_in_sync_with_backend(self) -> None:
-        # 两份副本必须一致：backend 走 S4 组装，skill 副本在 opencode 容器里执行
-        self.assertEqual(
-            _BACKEND_VERIFY.read_text(encoding="utf-8"),
-            _SKILL_VERIFY.read_text(encoding="utf-8"),
-        )
+        # 两份副本的逻辑主体必须一致：backend 走 S4 组装，skill 副本在 opencode
+        # 容器里执行。文件头 vendored 互指注释允许不同（见两份文件头注释）；
+        # 带 unified diff 的全量漂移拦截见 tests/test_technical_final_assembly.py
+        # 的 TestSkillVendoredDrift。
+        marker = '_PLACEHOLDER_MARKERS = "'
+
+        def _logic_body(path: Path) -> str:
+            source = path.read_text(encoding="utf-8")
+            return source[source.index(marker) :]
+
+        self.assertEqual(_logic_body(_BACKEND_VERIFY), _logic_body(_SKILL_VERIFY))
 
 
 class ScanDocxTests(unittest.TestCase):

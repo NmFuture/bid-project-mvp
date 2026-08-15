@@ -24,6 +24,11 @@ merger v2（方案 B）：按 assembly_plan.json 合并素材到技术标母版�
         --out /tmp/bid_merged.docx
 """
 
+# 单一事实源：本文件是技术标成稿正文合并（assembly_plan → 母版 docx）逻辑的唯一事实源。
+# opencode/skills/bid-tech-assembler/scripts/merger.py 是它在 opencode
+# 容器环境的 vendored 拷贝（仅同包模块的导入适配段不同）。修改本文件的合并逻辑后
+# 必须同步该拷贝；tests/test_technical_final_assembly.py 的 TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse

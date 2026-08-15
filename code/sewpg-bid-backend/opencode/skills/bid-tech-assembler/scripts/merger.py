@@ -24,6 +24,11 @@ merger v2（方案 B）：按 assembly_plan.json 合并素材到技术标母版�
         --out /tmp/bid_merged.docx
 """
 
+# 注意：本文件是 app/document_processing/technical_document/assembly/merger.py 的
+# vendored 拷贝。opencode 容器内没有 app 包，差异只在同包模块的扁平导入适配段；
+# 合并逻辑一律先改源文件再同步回本文件，tests/test_technical_final_assembly.py 的
+# TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse
@@ -34,7 +39,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -250,7 +255,10 @@ def merge(
     params: dict,
     prep_dir: Path,
     out_path: Path,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict:
+    """progress_callback(done, total)：正文遍历是整条组装里最长的一段，逐条回传真实计数，
+    让上层进度条有可核对的量化数据而不是纯时间估算。节流交给调用方。"""
     os.makedirs(os.fspath(prep_dir), exist_ok=True)
 
     # 打开母版并清空 body（只保留 sectPr）
@@ -338,6 +346,8 @@ def merge(
 
     # Step 1: 遍历正文 plan
     for i, entry in enumerate(non_cover):
+        if progress_callback:
+            progress_callback(i, len(non_cover))
         status = entry["status"]
         level = entry["level"]
         title = entry["title"]
@@ -522,6 +532,9 @@ def merge(
                 _add_body_paragraph(master_doc, f"[缺失：{title}——没有可用素材，请补充后重试]")
                 stats["inserted_placeholders"] += 1
                 warning_counts["DIRECTORY_WITHOUT_MATERIAL"] += 1
+
+    if progress_callback:
+        progress_callback(len(non_cover), len(non_cover))
 
     # Save
     strip_numPr_from_heading_styles(master_doc)

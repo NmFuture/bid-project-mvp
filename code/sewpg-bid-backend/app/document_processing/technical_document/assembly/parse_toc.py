@@ -21,6 +21,11 @@
     python3 parse_toc.py <目录 docx> [--out toc.json]
 """
 
+# 单一事实源：本文件是投标目录 docx 解析（→ toc.json）逻辑的唯一事实源。
+# opencode/skills/bid-tech-assembler/scripts/parse_toc.py 是它在 opencode
+# 容器环境的 vendored 拷贝（仅文件头互指注释不同）。修改本文件的解析逻辑后
+# 必须同步该拷贝；tests/test_technical_final_assembly.py 的 TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse

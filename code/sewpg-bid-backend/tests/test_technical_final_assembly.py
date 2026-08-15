@@ -1296,11 +1296,14 @@ ASSEMBLER_REFERENCES_DIR = ASSEMBLER_SCRIPTS.parent / "references"
 
 
 class TestSkillVendoredDrift(unittest.TestCase):
-    """bid-tech-assembler skill 的 finalize.py / numbering_fixer.py 是 app 侧的 vendored 拷贝。
+    """bid-tech-assembler skill 的 finalize.py / numbering_fixer.py / merger.py /
+    build_assembly.py / preprocess.py / parse_toc.py / verify.py / docx_style_pruner.py
+    是 app 侧的 vendored 拷贝。
 
     opencode 容器内没有 app 包，两边只允许存在环境适配段差异（marker 之前的文件头
-    互指注释与导入适配，finalize 为 numbering_fixer 的相对/扁平导入）。marker 起的
-    逻辑主体必须逐字节一致，漂移即红。改动 app 侧源文件后，把同一改动同步进 skill 拷贝。
+    互指注释与导入适配，merger / preprocess / finalize 为同包模块的相对/扁平导入）。
+    marker 起的逻辑主体必须逐字节一致，漂移即红。改动 app 侧源文件后，把同一改动
+    同步进 skill 拷贝。
 
     heading_style.json 同为 vendored 关系（app/resources ↔ skill references），JSON
     无法内嵌互指注释，两边必须逐字节一致，由本类直接比对。
@@ -1346,6 +1349,54 @@ class TestSkillVendoredDrift(unittest.TestCase):
             ASSEMBLER_SCRIPTS / "numbering_fixer.py",
             "_PREFIX_PATTERNS = [",
             "bid-tech-assembler/scripts/numbering_fixer.py",
+        )
+
+    def test_merger_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "merger.py",
+            ASSEMBLER_SCRIPTS / "merger.py",
+            "def _path_exists(path: Path) -> bool:",
+            "bid-tech-assembler/scripts/merger.py",
+        )
+
+    def test_build_assembly_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "build_assembly.py",
+            ASSEMBLER_SCRIPTS / "build_assembly.py",
+            "# ---------- 卡片加载 ----------",
+            "bid-tech-assembler/scripts/build_assembly.py",
+        )
+
+    def test_preprocess_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "preprocess.py",
+            ASSEMBLER_SCRIPTS / "preprocess.py",
+            "def _normalize_headings_by_outline_level(doc) -> int:",
+            "bid-tech-assembler/scripts/preprocess.py",
+        )
+
+    def test_parse_toc_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "parse_toc.py",
+            ASSEMBLER_SCRIPTS / "parse_toc.py",
+            "# ---------- 中文数字 ↔ 阿拉伯 ----------",
+            "bid-tech-assembler/scripts/parse_toc.py",
+        )
+
+    def test_verify_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "verify.py",
+            ASSEMBLER_SCRIPTS / "verify.py",
+            '_PLACEHOLDER_MARKERS = "',
+            "bid-tech-assembler/scripts/verify.py",
+        )
+
+    def test_docx_style_pruner_logic_matches_application_source(self) -> None:
+        self._assert_logic_body_in_sync(
+            APP_ASSEMBLY_DIR / "docx_style_pruner.py",
+            ASSEMBLER_SCRIPTS / "docx_style_pruner.py",
+            "_STYLE_REFERENCE_TAGS = (",
+            "bid-tech-assembler/scripts/docx_style_pruner.py",
         )
 
     def test_heading_style_json_matches_application_source(self) -> None:

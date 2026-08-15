@@ -17,6 +17,11 @@
     python3 preprocess.py <in.docx> <out.docx> [--params params.json]
 """
 
+# 单一事实源：本文件是技术标素材 docx 预处理逻辑的唯一事实源。
+# opencode/skills/bid-tech-assembler/scripts/preprocess.py 是它在 opencode
+# 容器环境的 vendored 拷贝（仅同包模块的导入适配段不同）。修改本文件的预处理逻辑后
+# 必须同步该拷贝；tests/test_technical_final_assembly.py 的 TestSkillVendoredDrift 会拦截漏同步。
+
 from __future__ import annotations
 
 import argparse
