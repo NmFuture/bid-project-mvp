@@ -448,6 +448,8 @@ export const technicalProjectsAPI = {
     timeoutMs: 5 * 60 * 1000,
     retryCount: 0,
   }),
+  retryParseAssetSync: (id) =>
+    request(`/technical/projects/${id}/parse-assets/sync`, { method: 'POST' }),
   delete: (id) => request(`/technical/projects/${id}`, {
     method: 'DELETE',
     timeoutMs: 5 * 60 * 1000,

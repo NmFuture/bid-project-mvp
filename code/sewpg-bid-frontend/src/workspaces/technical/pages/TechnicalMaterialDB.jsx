@@ -1001,6 +1001,12 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [loading, setLoading] = useState(!cachedLibrary)
   const [error, setError] = useState('')
   const [materialCopyState, setMaterialCopyState] = useState(null)
+  const [technicalParseAssetSyncState, setTechnicalParseAssetSyncState] = useState(null)
+  const [parseAssetSyncRetrying, setParseAssetSyncRetrying] = useState(false)
+  const [projectSyncPollRevision, setProjectSyncPollRevision] = useState(0)
+  const parseAssetSyncNeedsRetry = ['failed', 'superseded'].includes(
+    String(technicalParseAssetSyncState?.status || ''),
+  )
 
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [uploadKind, setUploadKind] = useState(() => readStoredUploadKind())
@@ -1168,24 +1174,33 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
     persistUploadKind(uploadKind)
   }, [uploadKind])
 
-  // 来源项目素材在后台复制，边复制边入库：轮询进度，跑完刷新一次目录树。
+  // 来源项目素材复制和解析附表入库共用项目详情轮询，任一任务结束后刷新目录树。
   useEffect(() => {
     if (!linkedProjectId) return undefined
     let cancelled = false
     let timer = 0
+    let consecutiveFailures = 0
     const poll = async () => {
       try {
         const detail = await technicalProjectsAPI.get(linkedProjectId)
         if (cancelled) return
-        const state = detail?.materialCopyState || null
-        setMaterialCopyState(state)
-        if (String(state?.status || '') === 'running') {
+        consecutiveFailures = 0
+        const copyState = detail?.materialCopyState || null
+        const parseAssetState = detail?.technicalParseAssetSyncState || null
+        setMaterialCopyState(copyState)
+        setTechnicalParseAssetSyncState(parseAssetState)
+        const hasRunningTask = [copyState, parseAssetState]
+          .some((state) => String(state?.status || '') === 'running')
+        if (hasRunningTask) {
           timer = window.setTimeout(poll, 2000)
-        } else if (state) {
+        } else if (copyState || parseAssetState) {
           await loadLibrary({ silent: true })
         }
       } catch {
-        // 进度查询失败不打断素材库本身，下次进入页面再取
+        if (cancelled) return
+        consecutiveFailures += 1
+        const retryDelay = Math.min(10000, 1000 * (2 ** consecutiveFailures))
+        timer = window.setTimeout(poll, retryDelay)
       }
     }
     poll()
@@ -1193,7 +1208,29 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       cancelled = true
       if (timer) window.clearTimeout(timer)
     }
-  }, [linkedProjectId, loadLibrary])
+  }, [linkedProjectId, loadLibrary, projectSyncPollRevision])
+
+  const retryTechnicalParseAssetSync = async () => {
+    if (!linkedProjectId || parseAssetSyncRetrying) return
+    setParseAssetSyncRetrying(true)
+    try {
+      const state = await technicalProjectsAPI.retryParseAssetSync(linkedProjectId)
+      setTechnicalParseAssetSyncState(state)
+      setProjectSyncPollRevision((value) => value + 1)
+      showToast('已重新启动解析附表同步。', 'success')
+    } catch (retryError) {
+      const message = safeMessage(retryError, '解析附表同步重试失败。')
+      setTechnicalParseAssetSyncState((state) => ({
+        ...(state || {}),
+        status: 'failed',
+        error: message,
+        message: '解析附表同步失败，可再次重试。',
+      }))
+      showToast(message, 'error')
+    } finally {
+      setParseAssetSyncRetrying(false)
+    }
+  }
 
   useEffect(() => {
     if (!previewFullscreen) return undefined
@@ -2026,6 +2063,48 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       />
 
       <MaterialPipelineProgress />
+
+      {technicalParseAssetSyncState?.status && technicalParseAssetSyncState.status !== 'idle' && (
+        <div
+          className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4 text-sm ${
+            parseAssetSyncNeedsRetry
+              ? 'border-error/25 bg-error-container/40 text-error'
+              : 'border-surface-container-high bg-surface-container-low/60 text-on-surface'
+          }`}
+        >
+          <div className="flex min-w-0 items-start gap-2">
+            <span className={`material-symbols-outlined mt-0.5 text-[18px] ${technicalParseAssetSyncState.status === 'running' ? 'animate-spin' : ''}`}>
+              {technicalParseAssetSyncState.status === 'running'
+                ? 'sync'
+                : parseAssetSyncNeedsRetry
+                  ? 'error'
+                  : 'check_circle'}
+            </span>
+            <div className="min-w-0">
+              <div>{technicalParseAssetSyncState.message || '正在同步解析附表到项目素材库。'}</div>
+              {technicalParseAssetSyncState.error && (
+                <div className="mt-1 break-words text-xs opacity-85">{technicalParseAssetSyncState.error}</div>
+              )}
+              {Number(technicalParseAssetSyncState.selectedCount || 0) > 0 && (
+                <div className="mt-1 text-xs opacity-70">
+                  已同步 {Number(technicalParseAssetSyncState.syncedCount || 0)} / {Number(technicalParseAssetSyncState.selectedCount || 0)} 个解析附表
+                </div>
+              )}
+            </div>
+          </div>
+          {parseAssetSyncNeedsRetry && (
+            <button
+              type="button"
+              onClick={retryTechnicalParseAssetSync}
+              disabled={parseAssetSyncRetrying}
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-on-error hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className={`material-symbols-outlined text-[17px] ${parseAssetSyncRetrying ? 'animate-spin' : ''}`}>refresh</span>
+              {parseAssetSyncRetrying ? '重试中' : '重试同步'}
+            </button>
+          )}
+        </div>
+      )}
 
       {materialCopyState?.status && materialCopyState.status !== 'idle' && (
         <div

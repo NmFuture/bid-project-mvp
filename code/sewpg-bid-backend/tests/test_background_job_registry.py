@@ -6,6 +6,7 @@ import unittest
 from app.services.background_job_registry import (
     _JOBS,
     get_job_status,
+    is_job_active,
     start_job,
     update_job_progress,
 )
@@ -17,6 +18,20 @@ class BackgroundJobRegistryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_status_for_unknown_job(self) -> None:
         self.assertEqual(get_job_status("missing"), {"name": "missing", "status": "idle"})
+        self.assertFalse(is_job_active("missing"))
+
+    async def test_job_is_active_only_until_task_finishes(self) -> None:
+        release = asyncio.Event()
+
+        async def work() -> dict:
+            await release.wait()
+            return {"message": "done"}
+
+        start_job("active-check", work)
+        self.assertTrue(is_job_active("active-check"))
+        release.set()
+        await asyncio.gather(*[job["task"] for job in _JOBS.values() if job.get("task")])
+        self.assertFalse(is_job_active("active-check"))
 
     async def test_job_runs_to_succeeded_with_progress_and_result(self) -> None:
         async def work() -> dict:
