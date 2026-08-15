@@ -23,7 +23,7 @@ from app.services.technical_fact_field_specs import (
 )
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_material_store import technical_material_store
-from app.services.turbine_models import project_turbine_model, project_turbine_models
+from app.services.turbine_models import formal_model_code, project_turbine_model, project_turbine_models
 
 logger = logging.getLogger(__name__)
 
@@ -778,7 +778,9 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         row_rated_mw = f"{row_rated_kw / 1000:g}" if isinstance(row_rated_kw, (int, float)) else ""
         for order, (label, value, field_name, unit, confidence, priority) in enumerate(
             (
-                (f"投标机型{index}" if multi_turbine else "投标机型", row_model, "model", "", 0.98, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
+                # 落表的是正式材料用的英数字编码；source_ref 与分组标签仍带原始后缀，
+                # 供追溯和多机型（上置/下置）区分
+                (f"投标机型{index}" if multi_turbine else "投标机型", formal_model_code(row_model), "model", "", 0.98, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
                 (f"{prefix}台数" if multi_turbine else "机组台数", row.get("turbineCount"), "turbineCount", "台", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
                 (f"{prefix}基础形式", row.get("foundationType"), "foundationType", "", 0.95, FACT_SOURCE_PRIORITY_PROJECT_TURBINE),
                 (f"{prefix}单机容量", row_rated_mw or row_rated_kw, "ratedPowerKw", "MW" if row_rated_mw else "", 0.9, FACT_SOURCE_PRIORITY_PROJECT),
@@ -812,7 +814,11 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         # 来源里标明是哪个机型（各机型取值口径待正文填写支持按机型铺开后再收口）。
         add_candidate(
             "投标机型",
-            "、".join(str(row.get("model") or "").strip() for row in turbine_models if str(row.get("model") or "").strip()),
+            "、".join(
+                code
+                for code in (formal_model_code(row.get("model")) for row in turbine_models)
+                if code
+            ),
             category="机型参数",
             source_ref={"type": "projectTurbineModel", "field": "model", "title": "投标机型（全部机型）"},
             confidence=0.98,
@@ -852,11 +858,13 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             unit="台",
             source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
         )
-    if model and hub_height:
-        add_candidate("投标方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-        add_candidate("方案", f"{model}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
-    elif model:
-        add_candidate("投标方案", model, category="方案口径", source_ref={"type": "derived", "field": "model", "title": "投标方案"}, confidence=0.64, source_priority=80)
+    # 投标方案同样进正式材料，用英数字编码拼
+    model_code = formal_model_code(model)
+    if model_code and hub_height:
+        add_candidate("投标方案", f"{model_code}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "投标方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+        add_candidate("方案", f"{model_code}-{hub_height}m", category="方案口径", source_ref={"type": "derived", "field": "modelHubHeight", "title": "方案"}, confidence=0.78, source_priority=FACT_SOURCE_PRIORITY_PROJECT)
+    elif model_code:
+        add_candidate("投标方案", model_code, category="方案口径", source_ref={"type": "derived", "field": "model", "title": "投标方案"}, confidence=0.64, source_priority=80)
 
     for fact in trusted_parse_facts:
         add_candidate(
