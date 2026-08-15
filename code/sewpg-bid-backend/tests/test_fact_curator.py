@@ -22,6 +22,11 @@ from app.services.job_queue import EnqueueResult
 from app.services.store import store
 from app.services.technical_fact_curate_job import _now_iso, run_fact_curate_job
 from app.services.technical_fact_field_specs import fillable_specs, load_specs
+from app.services.technical_gap_fact_table import (
+    FACT_STATUS_CONFIRMED,
+    FACT_STATUS_NOT_APPLICABLE,
+    FACT_STATUS_UNEXTRACTED,
+)
 
 SCRIPT_PATH = (
     BASE_DIR / "opencode" / "skills" / "bid-tech-fact-curator" / "scripts" / "run_from_manifest.py"
@@ -172,6 +177,32 @@ def test_skill_docs_only_teach_legal_actions() -> None:
     assert taught, "两份文档都没声明 action，正则或文档结构变了，这个守卫已失效"
     illegal = taught - curator.CURATE_ACTIONS
     assert not illegal, f"文档教了非法 action {sorted(illegal)}；合法值只有 {sorted(curator.CURATE_ACTIONS)}"
+
+
+# 三态收敛（产品裁决 2026-08-10）后废弃的状态名，文档里再出现就是过时描述。
+_RETIRED_FACT_STATUSES = ("extracted", "pending_confirmation", "missing_source", "conflict")
+
+
+def test_skill_docs_do_not_teach_retired_field_statuses() -> None:
+    """SKILL 文档里的状态名必须跟得上三态收敛。
+
+    上一个用例守 action，不守 status，所以这个坑漏了过去：七态收敛成三态时代码改了、
+    文档没改，SKILL.md 一边说 fix 桶装的是 extracted 字段，一边说「confirmed 字段
+    不会出现在任何桶里，不要为它产出建议」——而 _curate_targets 里 fix 桶装的**正是**
+    confirmed 字段。一个听话的 agent 会把整个 fix 桶跳过，脏数据清洗静默空转，报告里
+    只表现为 counts.fixed 一直是 0，不会有任何告警。
+    """
+    for doc in (SKILL_DIR / "SKILL.md", SKILL_DIR / "references" / "rules.md"):
+        text = doc.read_text(encoding="utf-8")
+        for retired in _RETIRED_FACT_STATUSES:
+            # unextracted 是合法状态且以 extracted 结尾，靠左右边界把它排除掉
+            hit = re.search(rf"(?<![0-9A-Za-z_]){retired}(?![0-9A-Za-z_])", text)
+            assert hit is None, f"{doc.name} 仍在教已废弃的字段状态 {retired!r}"
+
+    # 防守卫空转：文档必须仍然在讲这三态，否则上面的断言等于没跑
+    skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    for status in (FACT_STATUS_UNEXTRACTED, FACT_STATUS_CONFIRMED, FACT_STATUS_NOT_APPLICABLE):
+        assert status in skill_text, f"SKILL.md 不再提及合法状态 {status}，这个守卫已失效"
 
 
 def test_manifest_uses_isolated_run_directory(workspace_dirs, monkeypatch) -> None:
