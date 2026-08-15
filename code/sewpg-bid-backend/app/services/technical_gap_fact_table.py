@@ -1,3 +1,11 @@
+"""技术标项目事实表：状态归一化、主构建与派生事实（门面）。
+
+解析文本事实提取与素材事实提取分别拆到
+technical_fact_extract_parse / technical_fact_extract_materials，
+与技术/商务两线共享的抽取辅助（fact_table_common）一并在本文件 re-export，
+外部调用方与 patch 目标无需改动。
+"""
+
 from __future__ import annotations
 
 import copy
@@ -8,22 +16,64 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from docx import Document
-from openpyxl import load_workbook
-
-from app.core.config import settings
+# 模块符号保留：bid_type 单一事实来源（scope_state_rules 源码约束）+ 素材作用域 re-export。
 from app.services.bid_type import TECHNICAL_BID_TYPE
-from app.services.file_utils import run_awaitable_sync
 from app.services.identity import build_project_material_scope
-from app.services.project_fact_materials import prepare_project_fact_material_files
 from app.services.technical_fact_field_specs import (
     SPEC_LABEL_ALIASES,
     fillable_specs,
     spec_category,
 )
 from app.services.technical_fact_spec_global import resolve_fact_specs
-from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model, project_turbine_models
+# 拆分搬迁：标签归一基元与两线共享抽取辅助已移至 fact_table_common，门面 re-export。
+from app.services.fact_table_common import (
+    COMMON_PROJECT_FACT_LABELS,
+    FACT_MATERIAL_SOURCE_PRIORITIES,
+    FACT_TABLE_HEADER_WORDS,
+    add_performance_facts_from_parse_text,
+    canonical_fact_label,
+    fact_label_key,
+    looks_like_project_name,
+    looks_like_tender_no,
+)
+# 拆分搬迁：解析文本事实提取已移至 technical_fact_extract_parse，门面 re-export。
+from app.services.technical_fact_extract_parse import (
+    blank_source_docx_path,
+    clean_table_cell_text,
+    fillable_table_labels_from_blank_source,
+    iter_parse_fact_fields,
+    looks_like_party_name,
+    looks_like_table_field_label,
+    table_field_label_from_row,
+    technical_fact_labels_from_task,
+    trusted_parse_fact_fields,
+)
+# 拆分搬迁：素材事实提取已移至 technical_fact_extract_materials，门面 re-export。
+from app.services.technical_fact_extract_materials import (
+    FACT_MATERIAL_USAGE_BUILD,
+    FACT_MATERIAL_USAGE_CURATE,
+    FILL_TEMPLATE_NAME_PREFIX,
+    clean_fact_text,
+    clean_fact_unit,
+    clean_fact_value,
+    facts_from_docx_material,
+    facts_from_free_text,
+    facts_from_guarantee_table,
+    facts_from_material_name,
+    facts_from_table_cells,
+    facts_from_xlsx_material,
+    material_fact,
+    material_fact_from_label_value,
+    material_is_fact_relevant,
+    material_is_fill_template,
+    prepare_project_fact_materials,
+    project_fact_material_index,
+    project_fact_material_work_dir,
+    project_material_fact_fields,
+    run_async_material_files,
+    xlsx_model_column,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,54 +112,6 @@ def normalize_fact_status(status: Any, *, has_value: bool) -> str:
         return FACT_STATUS_NOT_APPLICABLE
     return FACT_STATUS_CONFIRMED if has_value else FACT_STATUS_UNEXTRACTED
 
-FACT_TABLE_HEADER_WORDS = {
-    "编号",
-    "序号",
-    "项目",
-    "名称",
-    "内容",
-    "备注",
-    "说明",
-    "单位",
-    "计量单位",
-    "技术参数与规格",
-    "主要项目",
-    "投标机型1",
-    "投标机型2",
-    "保证值",
-    "授权人签名",
-}
-
-COMMON_PROJECT_FACT_LABELS = {
-    "项目名称",
-    "招标编号",
-    "招标人",
-    "招标方",
-    "客户名称",
-    "投标方案",
-    "投标机型",
-    "机组类型",
-    "机组台数",
-    "总装机容量",
-    "单机容量",
-    "叶轮直径",
-    "轮毂高度",
-    "扫风面积",
-    "比功率",
-    "安全等级",
-    "设计寿命",
-    "空气密度",
-    "湍流强度",
-    "极端风速",
-    "年平均风速",
-    "风剪切",
-    "保证发电量",
-    "保证有效小时数",
-    "功率曲线保证率",
-    "全场可利用率",
-    "单台可利用率",
-    "主要部件更换率",
-}
 
 # 来源优先级（数值越大越优先），口径见 docs/20260723-项目事实表填写任务梳理.md §5：
 # 招标文件原文 > 项目创建信息 > 项目定制素材 > 客户定制素材 > 标准素材。
@@ -121,11 +123,6 @@ FACT_SOURCE_PRIORITY_PROJECT = 320
 # 是机型参数表带出来的，不属于人填，仍按 FACT_SOURCE_PRIORITY_PROJECT。
 FACT_SOURCE_PRIORITY_PROJECT_TURBINE = 350
 
-FACT_MATERIAL_SOURCE_PRIORITIES = {
-    "project": 300,
-    "customer": 200,
-    "standard": 100,
-}
 
 # 人工来源标记：manualFact 是人工新增的字段行，manualEdit 是人在页面上改过的格子。
 # 重建时只有带这些标记（或人工确认/标不适用）的值跨轮保留，见 is_human_authored_fact_field。
@@ -200,96 +197,6 @@ def summarize_project_fact_fields(fields: list[dict[str, Any]], spec_total: int 
         }
     )
     return summary
-
-
-def canonical_fact_label(label: Any) -> str:
-    raw = str(label or "").strip()
-    if not raw:
-        return ""
-    text = re.sub(r"\s+", "", raw)
-    text = re.sub(r"[（(]\s*(?:MW|kW|m|m2/kW|m²/kW|%|h|MWh/y|MWh/a|台)\s*[）)]", "", text, flags=re.I)
-    text = text.strip("：:；;，,、")
-    aliases = {
-        "方案": "投标方案",
-        "项目方案": "投标方案",
-        "机型": "投标方案",
-        "建设容量": "总装机容量",
-        "标段规模": "总装机容量",
-        "机组数量": "机组台数",
-        "风机数量": "机组台数",
-        "台数": "机组台数",
-        "总容量": "总装机容量",
-        "容量": "总装机容量",
-        "单机容量": "单机容量",
-        "机组额定功率": "单机容量",
-        "项目编号": "招标编号",
-        "招标文件编号": "招标编号",
-        "项目单位": "招标人",
-        "建设单位": "招标人",
-        "业主": "招标人",
-        "交货期": "交货周期",
-        "质量保证期": "质保期",
-        "投标截止时间": "投标截止日期",
-        "轮毂中心高度": "轮毂高度",
-        "轮毂高度": "轮毂高度",
-        "风轮直径": "叶轮直径",
-        "叶轮直径": "叶轮直径",
-        "发电小时数承诺": "保证有效小时数",
-        "保证有效小时": "保证有效小时数",
-        "风电机组设备年平均可利用率保证值": "全场可利用率",
-        "适用等级": "安全等级",
-    }
-    if text in aliases:
-        return aliases[text]
-    # 多机型展开出来的「机型N单机容量」「机型N轮毂高度」等按原文保留：下面的包含式规则
-    # 会把它们归一成全场共用的那一行，各机型的值互相覆盖。
-    if re.match(r"^机型\d+", text):
-        return text
-    if "总装机容量" in text or text.startswith("总容量"):
-        return "总装机容量"
-    if (
-        "年平均风速" in text
-        or "代表年风速" in text
-        or ("平均风速" in text and ("机位" in text or "尾流" in text or "轮毂" in text))
-    ):
-        return "年平均风速"
-    if "轮毂" in text and "高度" in text:
-        return "轮毂高度"
-    if "叶轮直径" in text or "风轮直径" in text:
-        return "叶轮直径"
-    if ("机组" in text or "风机" in text) and ("台数" in text or "数量" in text):
-        return "机组台数"
-    if "单机容量" in text or "额定功率" in text:
-        return "单机容量"
-    if "安全等级" in text or ("安全" in text and "等级" in text):
-        return "安全等级"
-    if "设计寿命" in text:
-        return "设计寿命"
-    if "单位千瓦扫风面积" in text:
-        return "单位千瓦扫风面积"
-    if "空气密度" in text and not re.search(r"参数|系数", text):
-        return "空气密度"
-    if "湍流强度" in text:
-        return "湍流强度"
-    if "极端风速" in text or "极大风速" in text:
-        return "极端风速"
-    if "风剪切" in text or "风切变" in text or "风剪切指数" in text:
-        return "风剪切"
-    if "功率曲线" in text and ("保证" in text or "保证率" in text):
-        return "功率曲线保证率"
-    if "单台" in text and "可利用率" in text:
-        return "单台可利用率"
-    if ("全场" in text or "风电场" in text or "年平均" in text) and "可利用率" in text:
-        return "全场可利用率"
-    if "发电量" in text and ("保证" in text or "承诺" in text):
-        return "保证发电量"
-    if "有效小时" in text or "发电小时" in text or "等效利用小时" in text:
-        return "保证有效小时数"
-    return text
-
-
-def fact_label_key(label: Any) -> str:
-    return re.sub(r"\s+", "", canonical_fact_label(label)).lower()
 
 
 def fact_source_ref_priority(ref: dict[str, Any]) -> int:
@@ -515,6 +422,48 @@ def is_human_authored_fact_field(field: dict[str, Any]) -> bool:
     return str(field.get("status") or "") == FACT_STATUS_NOT_APPLICABLE
 
 
+def preserve_compatible_existing_fields(
+    existing_by_key: dict[str, dict[str, Any]],
+    fields_by_key: dict[str, dict[str, Any]],
+) -> None:
+    """保留人工产出的字段（新增/改值/确认/不适用），避免重建时丢失人工结论。
+
+    已确认字段先移除旧 spec 元数据，再参与当前规则对齐；若没有命中当前规则，
+    则以 outOfSpec 标记留在表尾，且不计入当前规则版本的进度。
+    """
+    for existing in existing_by_key.values():
+        if not isinstance(existing, dict):
+            continue
+        label_text = canonical_fact_label(existing.get("label"))
+        key = fact_label_key(label_text)
+        if not key:
+            continue
+        source_refs = [
+            ref
+            for ref in (existing.get("sourceRefs") if isinstance(existing.get("sourceRefs"), list) else [])
+            if isinstance(ref, dict)
+        ]
+        if not is_human_authored_fact_field(existing):
+            continue
+        is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
+        has_value = bool(str(existing.get("value") or "").strip())
+        field = copy.deepcopy(existing)
+        for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
+            field.pop(meta_key, None)
+        field["label"] = label_text
+        field["key"] = key
+        field["category"] = str(field.get("category") or ("人工补充事实" if is_manual else "清单外历史事实"))
+        field["status"] = normalize_fact_status(field.get("status"), has_value=has_value)
+        field["sourceRefs"] = source_refs or (
+            [{"type": "manualFact", "title": "人工新增", "field": label_text}] if is_manual else []
+        )
+        # 人工改过值的清单字段没命中当前规则版本时留在表尾且不计进度；
+        # 人工新增字段本来就在清单外，不标；标了不适用的没有值，也不标。
+        if field["status"] == FACT_STATUS_CONFIRMED and not is_manual:
+            field["outOfSpec"] = True
+        fields_by_key[key] = field
+
+
 def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any]) -> dict[str, Any]:
     built_at = _now_iso()
     existing_table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
@@ -676,43 +625,6 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if preserve_existing and value_text:
             field["status"] = normalize_fact_status(existing.get("status"), has_value=True)
 
-    def preserve_compatible_existing_fields() -> None:
-        """保留人工产出的字段（新增/改值/确认/不适用），避免重建时丢失人工结论。
-
-        已确认字段先移除旧 spec 元数据，再参与当前规则对齐；若没有命中当前规则，
-        则以 outOfSpec 标记留在表尾，且不计入当前规则版本的进度。
-        """
-        for existing in existing_by_key.values():
-            if not isinstance(existing, dict):
-                continue
-            label_text = canonical_fact_label(existing.get("label"))
-            key = fact_label_key(label_text)
-            if not key:
-                continue
-            source_refs = [
-                ref
-                for ref in (existing.get("sourceRefs") if isinstance(existing.get("sourceRefs"), list) else [])
-                if isinstance(ref, dict)
-            ]
-            if not is_human_authored_fact_field(existing):
-                continue
-            is_manual = any(str(ref.get("type") or "") == "manualFact" for ref in source_refs)
-            has_value = bool(str(existing.get("value") or "").strip())
-            field = copy.deepcopy(existing)
-            for meta_key in ("specSeq", "specKey", "reviewLabel", "needsConfirmation", "sourceKind", "sourceHint", "placeholder", "targetFile"):
-                field.pop(meta_key, None)
-            field["label"] = label_text
-            field["key"] = key
-            field["category"] = str(field.get("category") or ("人工补充事实" if is_manual else "清单外历史事实"))
-            field["status"] = normalize_fact_status(field.get("status"), has_value=has_value)
-            field["sourceRefs"] = source_refs or (
-                [{"type": "manualFact", "title": "人工新增", "field": label_text}] if is_manual else []
-            )
-            # 人工改过值的清单字段没命中当前规则版本时留在表尾且不计进度；
-            # 人工新增字段本来就在清单外，不标；标了不适用的没有值，也不标。
-            if field["status"] == FACT_STATUS_CONFIRMED and not is_manual:
-                field["outOfSpec"] = True
-            fields_by_key[key] = field
 
     trusted_parse_facts = trusted_parse_fact_fields(project.get("parse_result"))
     first_parse_value = {
@@ -904,7 +816,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 confidence=0.0,
             )
 
-    preserve_compatible_existing_fields()
+    preserve_compatible_existing_fields(existing_by_key, fields_by_key)
     # 字段骨架来自任务启动时固化的规则快照（项目绑定版本，无绑定回落系统默认清单）
     spec_mode = bool(project_specs)
     if not spec_mode:
@@ -996,840 +908,6 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         "summary": summarize_project_fact_fields(fields, spec_total=len(project_specs)),
         # 本次构建实际使用的规则版本快照（审计：正式标书用了哪版规则）
         "factSpecsRef": fact_specs_meta,
-    }
-
-
-def technical_fact_labels_from_task(task: dict[str, Any]) -> list[str]:
-    title = str(task.get("title") or "")
-    task_key = str(task.get("taskKey") or "")
-    text = f"{title} {task_key}"
-    labels: list[str] = []
-    if re.search(r"技术响应|技术偏差|技术参数|技术方案|供货范围|机组|风机|塔筒|叶片|发电量|功率曲线|保证值|承诺|声明", text):
-        labels.extend(["项目名称", "招标编号", "招标人", "投标人", "日期"])
-    if re.search(r"规格|货物|供货范围|供货清单|设备清单|机组配置", text):
-        labels.extend(["投标机型", "单机容量", "总装机容量", "机组台数"])
-    if re.search(r"技术偏差|参数偏差|条款偏差", text):
-        labels.extend(["招标编号", "项目名称", "技术偏差说明"])
-    if re.search(r"发电量|有效小时|利用率|功率曲线|性能保证", text):
-        labels.extend(["保证发电量", "保证有效小时数", "功率曲线保证率", "全场可利用率"])
-    return list(dict.fromkeys(labels))
-
-
-def trusted_parse_fact_fields(parse_result: Any) -> list[dict[str, Any]]:
-    fields: dict[str, dict[str, Any]] = {}
-
-    def add(
-        label: str,
-        value: Any,
-        *,
-        category: str,
-        source_field: dict[str, Any],
-        confidence: float,
-        required: bool = False,
-        unit: str = "",
-    ) -> None:
-        label_text = canonical_fact_label(label)
-        value_text = str(value or "").strip()
-        if not label_text or not value_text:
-            return
-        key = fact_label_key(label_text)
-        current = fields.get(key)
-        fact = {
-            "label": label_text,
-            "value": value_text,
-            "category": category,
-            "confidence": confidence,
-            "required": required,
-            "unit": unit,
-            "sourceRef": {
-                "type": "parseField",
-                "field": str(source_field.get("id") or source_field.get("fieldKey") or source_field.get("title") or ""),
-                "fieldKey": str(source_field.get("fieldKey") or ""),
-                "title": str(source_field.get("title") or source_field.get("label") or label_text),
-                "sourceFile": str(source_field.get("sourceFile") or ""),
-            },
-        }
-        if current is None or confidence > float(current.get("confidence") or 0):
-            fields[key] = fact
-
-    for field in iter_parse_fact_fields(parse_result):
-        field_key = str(field.get("fieldKey") or "").strip()
-        label = str(field.get("title") or field.get("label") or field.get("key") or field.get("id") or "").strip()
-        value = str(field.get("value") or field.get("keyValue") or "").strip()
-        evidence = str(field.get("evidence") or "").strip()
-        text = "。".join(part for part in (label, value, evidence) if part)
-
-        if field_key == "projectName" or fact_label_key(label) == fact_label_key("项目名称"):
-            if looks_like_project_name(value):
-                add("项目名称", value, category="项目基础信息", source_field=field, confidence=0.95, required=True)
-        elif field_key == "tenderNo" or fact_label_key(label) == fact_label_key("招标编号"):
-            if looks_like_tender_no(value):
-                add("招标编号", value, category="项目基础信息", source_field=field, confidence=0.94, required=True)
-        elif field_key in {"tenderer", "owner", "customerName"} or fact_label_key(label) in {
-            fact_label_key("招标人"),
-            fact_label_key("招标方"),
-            fact_label_key("客户名称"),
-        }:
-            if looks_like_party_name(value):
-                add("招标人", value, category="项目基础信息", source_field=field, confidence=0.84, required=False)
-        elif field_key == "managementUnit" or fact_label_key(label) == fact_label_key("管理单位"):
-            if looks_like_party_name(value):
-                add("管理单位", value, category="项目基础信息", source_field=field, confidence=0.82, required=False)
-        elif field_key == "bidSectionScale" or fact_label_key(label) in {
-            fact_label_key("标段规模"),
-            fact_label_key("招标规模"),
-        }:
-            add("标段规模", value, category="项目基础信息", source_field=field, confidence=0.78, required=False)
-        elif field_key == "deliveryPeriod" or fact_label_key(label) == fact_label_key("交货周期"):
-            add("交货周期", value, category="项目基础信息", source_field=field, confidence=0.78, required=False)
-        elif field_key == "warrantyPeriod" or fact_label_key(label) == fact_label_key("质保期"):
-            add("质保期", value, category="项目基础信息", source_field=field, confidence=0.78, required=False)
-        elif field_key == "bidStartDate" or fact_label_key(label) == fact_label_key("投标起始日期"):
-            add("投标起始日期", value, category="投标时间信息", source_field=field, confidence=0.78, required=False)
-        elif field_key == "bidDeadline" or fact_label_key(label) in {
-            fact_label_key("投标截止日期"),
-            fact_label_key("投标截止时间"),
-        }:
-            add("投标截止日期", value, category="投标时间信息", source_field=field, confidence=0.82, required=True)
-
-        add_performance_facts_from_parse_text(text, field, add)
-
-    return list(fields.values())
-
-
-def iter_parse_fact_fields(value: Any) -> list[dict[str, Any]]:
-    fields: list[dict[str, Any]] = []
-
-    def visit(node: Any) -> None:
-        if len(fields) >= 200:
-            return
-        if isinstance(node, dict):
-            has_label = any(key in node for key in ("label", "title", "key", "id"))
-            has_value = any(key in node for key in ("value", "keyValue", "evidence"))
-            if has_label and has_value:
-                fields.append(node)
-            for child in node.values():
-                visit(child)
-        elif isinstance(node, list):
-            for child in node:
-                visit(child)
-
-    visit(value)
-    return fields
-
-
-def looks_like_project_name(value: Any) -> bool:
-    text = str(value or "").strip()
-    if not text or len(text) > 160:
-        return False
-    if re.search(r"投标人|招标人|应当|必须|不得|标准|规范|条款|认可|提供", text):
-        return False
-    return "项目" in text or "工程" in text
-
-
-def looks_like_tender_no(value: Any) -> bool:
-    text = str(value or "").strip()
-    return bool(text and len(text) <= 80 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\-./]+", text))
-
-
-def looks_like_party_name(value: Any) -> bool:
-    text = str(value or "").strip()
-    if not text or len(text) > 80:
-        return False
-    if re.search(r"[。；;]|投标人|应|必须|不得|标准|规范|条款|认可|提供|要求|报告|测试|审查", text):
-        return False
-    return bool(re.search(r"公司|集团|有限|招标|业主|电力|能源|华能|国电|大唐|华电", text))
-
-
-def add_performance_facts_from_parse_text(text: str, source_field: dict[str, Any], add: Any) -> None:
-    normalized = re.sub(r"\s+", "", str(text or ""))
-    if not normalized:
-        return
-
-    patterns = [
-        (r"功率曲线[^。；;]{0,24}(?:不低于|≥|>=)(?:保证值的)?([0-9]+(?:\.[0-9]+)?%)", "功率曲线保证率"),
-        (r"风电场机组年平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "全场可利用率"),
-        (r"(?:全部机组|全场).*?平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "全场可利用率"),
-        (r"单台机组年平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "单台可利用率"),
-        (r"主要部件更换率(?:低于|不高于|≤|<=)([0-9]+(?:\.[0-9]+)?%)", "主要部件更换率"),
-    ]
-    for pattern, label in patterns:
-        match = re.search(pattern, normalized)
-        if match:
-            add(
-                label,
-                match.group(1),
-                category="性能保证",
-                source_field=source_field,
-                confidence=0.86,
-                required=False,
-                unit="%",
-            )
-
-
-def fillable_table_labels_from_blank_source(blank: dict[str, Any]) -> list[str]:
-    path = blank_source_docx_path(blank)
-    if path is None:
-        return []
-    try:
-        document = Document(str(path))
-    except Exception:
-        return []
-
-    labels: list[str] = []
-    seen: set[str] = set()
-    for table in document.tables:
-        for row in table.rows:
-            cells = [clean_table_cell_text(cell.text) for cell in row.cells]
-            label = table_field_label_from_row(cells)
-            if not label:
-                continue
-            key = fact_label_key(label)
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            labels.append(label)
-    return labels
-
-
-def blank_source_docx_path(blank: dict[str, Any]) -> Path | None:
-    for key in ("docxPath", "path", "workspacePath"):
-        value = str(blank.get(key) or "").strip()
-        if not value:
-            continue
-        path = Path(value)
-        if path.exists():
-            return path
-    return None
-
-
-def clean_table_cell_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).strip()
-
-
-def table_field_label_from_row(cells: list[str]) -> str:
-    if not cells:
-        return ""
-    fill_positions = [
-        index
-        for index, text in enumerate(cells)
-        if not text or re.search(r"待(?:人工)?(?:补充|填写|解析)|未填写|待确认", text)
-    ]
-    if not fill_positions:
-        return ""
-    candidates = cells[: fill_positions[0]]
-    for candidate in reversed(candidates):
-        label = canonical_fact_label(candidate)
-        if looks_like_table_field_label(label):
-            return label
-    return ""
-
-
-def looks_like_table_field_label(label: str) -> bool:
-    text = str(label or "").strip()
-    if not text or len(text) < 2 or len(text) > 80:
-        return False
-    if text in FACT_TABLE_HEADER_WORDS:
-        return False
-    if re.fullmatch(r"[\d一二三四五六七八九十]+[.、]?", text):
-        return False
-    if re.search(r"待(?:人工)?(?:补充|填写|解析)|未填写|授权人签名|日期", text):
-        return False
-    if re.search(r"同等质量|知名品牌|件套|厂家|品牌|Fluke|FLUKE|SKYLOTEC|DEHN|ABB|西门子|施耐德", text, flags=re.I):
-        return False
-    if re.search(r"参数|方法|折减|系数", text):
-        return False
-    if re.fullmatch(r"[A-Z]{1,8}[-A-Z0-9（）()\"'.—]+", text):
-        return False
-    if re.match(r"^\d", text) and not re.search(r"风速|年|容量|功率|高度|直径|小时|电量|温度", text):
-        return False
-    if text in COMMON_PROJECT_FACT_LABELS:
-        return True
-    return bool(
-        re.search(
-            r"投标机型|机组类型|机组台数|风机台数|单机容量|总装机容量|叶轮直径|风轮直径|轮毂.*高度|"
-            r"扫风面积|比功率|安全等级|设计寿命|功率曲线|可利用率|保证电量|保证发电量|发电小时|"
-            r"有效小时|等效利用小时|平均风速|空气密度|湍流|风切变|风剪切|极端风速|极大风速|"
-            r"低温|高温|海拔|覆冰|盐雾|沙尘|雷电",
-            text,
-        )
-    )
-
-
-def project_material_fact_fields(
-    project: dict[str, Any],
-    gap_state: dict[str, Any],
-    *,
-    excluded_paths: set[str] | None = None,
-    specs: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    materials = project_fact_material_index(project, gap_state)
-    if not materials:
-        return []
-    prepared = prepare_project_fact_materials(project, materials)
-    # 延迟 import 避免循环：专项模块复用本模块的 material_fact/clean_fact_text
-    from app.services.technical_fact_special_extractors import (
-        facts_from_certificate_materials,
-        run_special_extractor,
-        special_extractor_for_material,
-    )
-
-    facts: list[dict[str, Any]] = []
-    cert_materials: list[tuple[dict[str, Any], Path]] = []
-    for material in prepared:
-        if not isinstance(material, dict):
-            continue
-        facts.extend(facts_from_material_name(material))
-        path_text = str(material.get("path") or material.get("docx") or "").strip()
-        if not path_text:
-            continue
-        path = Path(path_text)
-        if not path.exists():
-            continue
-        if str(path.resolve()) in (excluded_paths or set()):
-            continue
-        kind = special_extractor_for_material(material)
-        if kind == "certificate":
-            # 证书按"型式认证 > 设计认证"成组处理
-            cert_materials.append((material, path))
-            continue
-        if kind:
-            special_facts = run_special_extractor(kind, path, material, project, specs=specs)
-            if special_facts is not None:
-                facts.extend(special_facts)
-                continue
-        suffix = path.suffix.lower()
-        if suffix in {".docx", ".doc"}:
-            facts.extend(facts_from_docx_material(path, material))
-        elif suffix in {".xlsx", ".xlsm"}:
-            facts.extend(facts_from_xlsx_material(path, material, project))
-    facts.extend(facts_from_certificate_materials(cert_materials, project, specs=specs))
-    facts.extend(derived_material_fact_fields(project, facts))
-    return facts
-
-
-# 素材索引口径：build 供规则抽取（只认项目定制素材的格式），
-# curate 供 AI 补抽（机型标准配置类字段的来源只在标准文件目录下）
-FACT_MATERIAL_USAGE_BUILD = "build"
-FACT_MATERIAL_USAGE_CURATE = "curate"
-
-
-def project_fact_material_index(
-    project: dict[str, Any],
-    gap_state: dict[str, Any],
-    *,
-    usage: str = FACT_MATERIAL_USAGE_BUILD,
-) -> list[dict[str, Any]]:
-    plan = gap_state.get("plan") if isinstance(gap_state.get("plan"), dict) else {}
-    materials: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def material_key(item: dict[str, Any]) -> str:
-        material_id = str(item.get("id") or item.get("materialId") or "").strip()
-        if material_id:
-            return f"id:{material_id}"
-        path = str(item.get("path") or item.get("folderPath") or "").strip()
-        name = str(item.get("name") or item.get("materialName") or item.get("fileName") or "").strip()
-        return f"path:{path}/{name}" if path or name else ""
-
-    def append_material(item: dict[str, Any]) -> None:
-        key = material_key(item)
-        if not key or key in seen:
-            return
-        seen.add(key)
-        materials.append(item)
-
-    for item in (plan.get("materialIndex") if isinstance(plan.get("materialIndex"), list) else []):
-        if isinstance(item, dict):
-            append_material(dict(item))
-
-    if not materials and isinstance(plan.get("tasks"), list):
-        for task in plan.get("tasks") or []:
-            if not isinstance(task, dict):
-                continue
-            for raw in [*(task.get("candidateMaterials") or []), *(task.get("selectedMaterialRefs") or [])]:
-                if not isinstance(raw, dict):
-                    continue
-                material_id = str(raw.get("id") or raw.get("materialId") or "").strip()
-                if not material_id:
-                    continue
-                append_material(
-                    {
-                        "id": material_id,
-                        "name": str(raw.get("name") or raw.get("materialName") or raw.get("fileName") or material_id),
-                        "folderPath": str(raw.get("folderPath") or raw.get("path") or ""),
-                        "materialTier": str(raw.get("materialTier") or raw.get("libraryScope") or ""),
-                        "cleanedFileName": str(raw.get("cleanedFileName") or ""),
-                        "hasCleanedWord": bool(raw.get("hasCleanedWord")),
-                        "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
-                    }
-                )
-    try:
-        selected_model = project_turbine_model(project)
-
-        def collect_scope_files(
-            folder_path: str,
-            material_tier: str,
-            *,
-            customer_name: str = "",
-            project_id: str = "",
-        ) -> None:
-            payload = run_async_material_files(
-                folder_path=folder_path,
-                bid_type=TECHNICAL_BID_TYPE,
-                material_tier=material_tier,
-                customer_name=customer_name,
-                project_id=project_id,
-                turbine_model=selected_model,
-                recursive=True,
-                page=1,
-                page_size=1000,
-            )
-            for raw in payload.get("items") or []:
-                if not isinstance(raw, dict):
-                    continue
-                material_id = str(raw.get("id") or "")
-                if not material_id:
-                    continue
-                append_material(
-                    {
-                        "id": material_id,
-                        "name": str(raw.get("name") or ""),
-                        "folderPath": str(raw.get("folderPath") or ""),
-                        "materialTier": str(raw.get("materialTier") or material_tier),
-                        "hasCleanedWord": bool(raw.get("hasCleanedWord")),
-                        "cleanedFileName": str(raw.get("cleanedFileName") or ""),
-                        "turbineModelLabel": str(raw.get("turbineModelLabel") or ""),
-                        "size": int(raw.get("size") or 0),
-                    }
-                )
-
-        # 无现成索引时，沿用项目默认目录扫描作为回退。
-        if not materials:
-            material_scope = build_project_material_scope(project)
-            for scope in material_scope.get("readableScopes") or []:
-                if not isinstance(scope, dict):
-                    continue
-                # build 只扫本项目「项目定制」目录（recursive 覆盖下一级子目录，
-                # 相关项目素材由用户归置到该目录下）：规则抽取器只认这些素材的格式。
-                # curate 三层都扫，标准文件目录已由 turbine_model 收敛到本机型。
-                tier = str(scope.get("materialTier") or "")
-                if usage == FACT_MATERIAL_USAGE_BUILD and tier != "project":
-                    continue
-                folder_path = str(scope.get("path") or "").strip()
-                if not folder_path:
-                    continue
-                # 素材库按客户别名建目录（如「华能」而非规范名「华能集团」），拼全路径查不到。
-                # 与 planner 同口径：客户/项目层路径截到标类根，改用 customer_name/project_id
-                # 交给 customer_matches/project_matches 做别名匹配。
-                if tier in {"customer", "project"}:
-                    folder_path = "/".join([part for part in folder_path.split("/") if part][:2])
-                collect_scope_files(
-                    folder_path,
-                    tier,
-                    customer_name=str(scope.get("customerName") or "") if tier == "customer" else "",
-                    project_id=str(scope.get("projectId") or "") if tier == "project" else "",
-                )
-
-        # 用户显式选择的目录始终叠加到计划索引，并按素材 ID 去重。
-        custom_paths = gap_state.get("factMaterialPaths") if isinstance(gap_state.get("factMaterialPaths"), list) else []
-        for raw_path in custom_paths:
-            folder_path = str(raw_path or "").strip().strip("/")
-            if folder_path and not folder_path.startswith(f"{TECHNICAL_BID_TYPE}/"):
-                folder_path = f"{TECHNICAL_BID_TYPE}/{folder_path}"
-            if folder_path:
-                # 显式目录不按 tier 过滤，相关性由 material_is_fact_relevant 把守。
-                collect_scope_files(folder_path, "")
-    except Exception:
-        logger.exception("项目事实素材索引查询失败，保留已收集素材继续构建")
-    return [item for item in materials if material_is_fact_relevant(item, usage=usage)]
-
-
-# 业主待填目标表格模板的文件名前缀（「待填写-附表X….docx」「待填写、待用印-….docx」等，
-# 前缀取自业主下发的空白附表命名约定）：它们是要填的目标，不是取数素材，不进事实表素材体系
-FILL_TEMPLATE_NAME_PREFIX = "待填写"
-
-
-def material_is_fill_template(material: dict[str, Any]) -> bool:
-    """按文件名前缀识别待填目标表格模板（不看 folderPath，避免按目录名猜内容）。"""
-    name = str(material.get("name") or material.get("cleanedFileName") or "").strip()
-    return name.startswith(FILL_TEMPLATE_NAME_PREFIX)
-
-
-def material_is_fact_relevant(
-    material: dict[str, Any],
-    *,
-    usage: str = FACT_MATERIAL_USAGE_BUILD,
-) -> bool:
-    if material_is_fill_template(material):
-        return False
-    tier = str(material.get("materialTier") or "").strip()
-    if tier == "project":
-        return True
-    # curate 的范围已由 build_project_material_scope 按机型/客户收敛，无需再按关键词猜内容：
-    # 白名单会挡掉机型标准配置类素材（如自动消防系统），而这类素材正是 Excel 未指定来源
-    # （referenceFile 为「/」）的字段的唯一取值处。
-    if usage == FACT_MATERIAL_USAGE_CURATE:
-        return True
-    text = " ".join(
-        str(material.get(key) or "")
-        for key in ("name", "cleanedFileName", "folderPath", "path")
-    )
-    return bool(
-        re.search(
-            r"参数|机型|功率曲线|风资源|发电量|报价|容量|安全|场址|载荷|工程量|技术承诺|投标关键数据|"
-            r"弯矩|认证|承诺函|生产制造基地",
-            text,
-        )
-    )
-
-
-def project_fact_material_work_dir(project: dict[str, Any]) -> Path:
-    """事实表素材物化目录：build 批量落地与 curate 按需拉取共用同一份缓存。"""
-    project_id = str(project.get("id") or "project")
-    return settings.documents_dir / project_id / "technical-workspace" / "gaps" / "fact_table_materials"
-
-
-def prepare_project_fact_materials(project: dict[str, Any], materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    path_materials = [item for item in materials if item.get("path")]
-    if path_materials and len(path_materials) == len(materials) and all(
-        Path(str(item.get("path") or "")).exists() for item in path_materials
-    ):
-        return materials
-    work_dir = project_fact_material_work_dir(project)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        return prepare_project_fact_material_files(
-            materials, work_dir, bid_type=TECHNICAL_BID_TYPE, limit=120
-        )
-    except Exception:
-        return materials
-
-
-def facts_from_material_name(material: dict[str, Any]) -> list[dict[str, Any]]:
-    text = str(material.get("name") or material.get("cleanedFileName") or "")
-    facts: list[dict[str, Any]] = []
-    for pattern, label, unit in [
-        (r"空气密度\s*([0-9]+(?:\.[0-9]+)?)", "空气密度", "kg/m3"),
-        (r"湍流强度\s*([0-9]+(?:\.[0-9]+)?)", "湍流强度", ""),
-        (r"风(?:剪切|切变)(?:指数)?\s*([0-9]+(?:\.[0-9]+)?)", "风剪切", ""),
-    ]:
-        match = re.search(pattern, text, flags=re.I)
-        if match:
-            facts.append(material_fact(label, match.group(1), material, unit=unit, confidence=0.9))
-    return facts
-
-
-def facts_from_docx_material(path: Path, material: dict[str, Any]) -> list[dict[str, Any]]:
-    facts: list[dict[str, Any]] = []
-    try:
-        document = Document(str(path))
-    except Exception:
-        return facts
-    text_parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-    for para_idx, paragraph in enumerate(document.paragraphs, start=1):
-        text = clean_fact_text(paragraph.text)
-        if not text or len(text) > 180:
-            continue
-        match = re.match(r"^([^:：]{2,40})[:：]\s*(.{1,100})$", text)
-        if match:
-            fact = material_fact_from_label_value(match.group(1), match.group(2), material, location=f"P{para_idx}", confidence=0.78)
-            if fact:
-                facts.append(fact)
-    for table_idx, table in enumerate(document.tables, start=1):
-        facts.extend(facts_from_guarantee_table(table, material, table_idx=table_idx))
-        for row_idx, row in enumerate(table.rows, start=1):
-            cells = [clean_fact_text(cell.text) for cell in row.cells]
-            text_parts.append(" | ".join(cell for cell in cells if cell))
-            facts.extend(facts_from_table_cells(cells, material, location=f"T{table_idx}/R{row_idx}"))
-    facts.extend(facts_from_free_text("\n".join(text_parts), material))
-    return facts
-
-
-def facts_from_guarantee_table(table: Any, material: dict[str, Any], *, table_idx: int) -> list[dict[str, Any]]:
-    if not getattr(table, "rows", None) or len(table.rows) < 2:
-        return []
-    header = " ".join(clean_fact_text(cell.text) for cell in table.rows[0].cells)
-    if not ("年平均风速" in header and "保证年上网电量" in header and "满负荷小时" in header):
-        return []
-    facts: list[dict[str, Any]] = []
-    for row_idx, row in enumerate(table.rows[1:], start=2):
-        cells = [clean_fact_text(cell.text) for cell in row.cells]
-        if len(cells) < 3:
-            continue
-        wind_speed = clean_fact_value("年平均风速", cells[0])
-        energy = clean_fact_value("保证发电量", cells[1])
-        hours = clean_fact_value("保证有效小时数", cells[2])
-        if not (wind_speed and energy and hours):
-            continue
-        matrix_fact = material_fact(
-            "__guaranteeMatrixRow",
-            {"windSpeed": wind_speed, "energyMwh": energy, "hours": hours},
-            material,
-            location=f"T{table_idx}/R{row_idx}",
-            confidence=0.82,
-        )
-        matrix_fact["internal"] = True
-        facts.append(matrix_fact)
-    return facts
-
-
-def facts_from_xlsx_material(path: Path, material: dict[str, Any], project: dict[str, Any]) -> list[dict[str, Any]]:
-    facts: list[dict[str, Any]] = []
-    try:
-        workbook = load_workbook(path, data_only=True, read_only=True)
-    except Exception:
-        return facts
-    project_model = str((project_turbine_model(project) or {}).get("model") or "")
-    model_key = re.sub(r"(上置|下置|内置|外置|塔上|塔下)", "", project_model)
-    for worksheet in workbook.worksheets:
-        selected_col = xlsx_model_column(worksheet, model_key)
-        for row_idx, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
-            cells = [clean_fact_text(cell) for cell in row]
-            if selected_col is not None and selected_col < len(cells):
-                for label_idx in (2, 1, 0):
-                    if label_idx < len(cells):
-                        fact = material_fact_from_label_value(
-                            cells[label_idx],
-                            cells[selected_col],
-                            material,
-                            unit=cells[3] if len(cells) > 3 else "",
-                            location=f"{worksheet.title}!R{row_idx}",
-                            confidence=0.82,
-                        )
-                        if fact:
-                            facts.append(fact)
-                            break
-            facts.extend(facts_from_table_cells(cells, material, location=f"{worksheet.title}!R{row_idx}"))
-            if len(facts) >= 800:
-                return facts
-    return facts
-
-
-def xlsx_model_column(worksheet: Any, model_key: str) -> int | None:
-    if not model_key:
-        return None
-    normalized_model = re.sub(r"\s+", "", model_key)
-    for row in worksheet.iter_rows(min_row=1, max_row=min(12, worksheet.max_row), values_only=True):
-        for index, value in enumerate(row):
-            text = re.sub(r"\s+", "", str(value or ""))
-            if normalized_model and normalized_model in text:
-                return index
-    return None
-
-
-def facts_from_table_cells(cells: list[str], material: dict[str, Any], *, location: str) -> list[dict[str, Any]]:
-    facts: list[dict[str, Any]] = []
-    nonempty = [(index, value) for index, value in enumerate(cells) if value]
-    if len(nonempty) < 2:
-        return facts
-    if len(cells) >= 4:
-        fact = material_fact_from_label_value(cells[1], cells[3], material, unit=cells[2], location=location, confidence=0.88)
-        if fact:
-            facts.append(fact)
-    for first, second in zip(nonempty, nonempty[1:]):
-        fact = material_fact_from_label_value(first[1], second[1], material, location=location, confidence=0.76)
-        if fact:
-            facts.append(fact)
-            break
-    if len(cells) >= 3 and cells[0]:
-        wind_fact = material_fact_from_label_value(cells[0], cells[2], material, unit=cells[1], location=location, confidence=0.84)
-        if wind_fact:
-            facts.append(wind_fact)
-    return facts
-
-
-def material_fact_from_label_value(
-    label: Any,
-    value: Any,
-    material: dict[str, Any],
-    *,
-    unit: str = "",
-    location: str = "",
-    confidence: float = 0.78,
-) -> dict[str, Any] | None:
-    label_text = canonical_fact_label(label)
-    value_text = clean_fact_value(label_text, value)
-    if not label_text or not value_text:
-        return None
-    if label_text not in COMMON_PROJECT_FACT_LABELS and not looks_like_table_field_label(label_text):
-        return None
-    unit_text = clean_fact_unit(unit)
-    raw_label = str(label or "")
-    raw_value = str(value or "")
-    if not unit_text:
-        raw_context = f"{raw_label}{raw_value}"
-        if label_text in {"轮毂高度", "叶轮直径"} and re.search(r"(?:m|米)", raw_context, flags=re.I):
-            unit_text = "m"
-        elif label_text in {"极端风速", "年平均风速"} and re.search(r"m/?s|米/秒", raw_context, flags=re.I):
-            unit_text = "m/s"
-        elif label_text == "空气密度" and re.search(r"kg/?m|kg/m3|kg/m³", raw_context, flags=re.I):
-            unit_text = "kg/m3"
-        elif label_text == "机组台数" and "台" in raw_value:
-            unit_text = "台"
-    if not unit_text:
-        if label_text in {"轮毂高度", "叶轮直径"}:
-            unit_text = "m"
-        elif label_text in {"极端风速", "年平均风速"}:
-            unit_text = "m/s"
-        elif label_text == "空气密度":
-            unit_text = "kg/m3"
-        elif label_text == "机组台数":
-            unit_text = "台"
-    return material_fact(label_text, value_text, material, unit=unit_text, location=location, confidence=confidence)
-
-
-def facts_from_free_text(text: str, material: dict[str, Any]) -> list[dict[str, Any]]:
-    compact = clean_fact_text(text)
-    facts: list[dict[str, Any]] = []
-    patterns = [
-        (r"(?:总装机容量|建设容量|标段规模|总容量)[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*(?:MW|万千瓦|kW)?)", "总装机容量", ""),
-        (r"(?:机组台数|机组数量|风机台数|风机数量|安装)[^0-9]{0,12}([0-9]+)\s*台", "机组台数", "台"),
-        (r"轮毂(?:中心)?高度[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*m?)", "轮毂高度", "m"),
-        (r"(?:安全等级|适用等级|设计等级)[^A-Za-z0-9]{0,12}((?:IEC\s*)?[A-Z0-9][A-Z0-9/ .-]{0,20})", "安全等级", ""),
-        (r"空气密度[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)", "空气密度", "kg/m3"),
-        (r"湍流强度[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)", "湍流强度", ""),
-        (r"(?:极端风速|极大风速|Ve50)[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*m/s?)", "极端风速", "m/s"),
-        (r"年平均风速[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?\s*m/s?)", "年平均风速", "m/s"),
-    ]
-    for pattern, label, unit in patterns:
-        match = re.search(pattern, compact, flags=re.I)
-        if match:
-            value = clean_fact_value(label, match.group(1))
-            if value:
-                facts.append(material_fact(label, value, material, unit=unit, confidence=0.78))
-    return facts
-
-
-def clean_fact_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).strip()
-
-
-def clean_fact_unit(value: Any) -> str:
-    text = re.sub(r"\s+", "", str(value or "")).strip()
-    text = text.strip("：:；;，,、")
-    if text in {"", "-", "/", "—", "NA", "N/A", "字段", "值", "年份", "参数内容", "结果", "说明", "备注", "机型", "型号"}:
-        return ""
-    text = text.replace("m³", "m3")
-    text = re.sub(r"kg/?m3", "kg/m3", text, flags=re.I)
-    text = re.sub(r"m/?s", "m/s", text, flags=re.I)
-    return text
-
-
-def clean_fact_value(label: str, value: Any) -> str:
-    text = str(value or "").strip()
-    text = re.sub(r"\s+", "", text)
-    text = text.strip("：:；;，,、")
-    if not text or len(text) > 120:
-        return ""
-    if any(token in text for token in ("待填写", "待人工", "未填写")):
-        return ""
-    if text in {"-", "/", "—", "无", "暂无", "值", "结果", "参数内容", "单位", "年份"}:
-        return ""
-    numeric_ranges = {
-        "机组台数": (1, 1000),
-        "轮毂高度": (40, 250),
-        "叶轮直径": (50, 350),
-        "空气密度": (0.7, 1.5),
-        "湍流强度": (0, 1),
-        "风剪切": (0, 1),
-        "极端风速": (20, 100),
-        "年平均风速": (2, 15),
-    }
-    numeric_noise = (
-        "年份",
-        "各年",
-        "版本",
-        "编制",
-        "校核",
-        "审核",
-        "批准",
-        "日期",
-        "参数内容",
-        "结果结果",
-        "场址空气密度下",
-    )
-    if label in numeric_ranges and (
-        any(token in text for token in numeric_noise)
-        or re.search(r"\d{4}[-/年]\d{1,2}", text)
-    ):
-        return ""
-    if label in {"总装机容量", "单机容量"}:
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)(万千瓦|MW|kW)?", text, flags=re.I)
-        if match:
-            return f"{match.group(1)}{match.group(2) or ''}".strip()
-    if label in {"机组台数"}:
-        match = re.search(r"([0-9]+)", text)
-        if not match:
-            return ""
-        number = float(match.group(1))
-        low, high = numeric_ranges[label]
-        return match.group(1) if low <= number <= high else ""
-    if label in {"保证发电量", "保证有效小时数"}:
-        if re.search(r"风电场|保证年上网电量|满负荷小时|字段|单位", text):
-            return ""
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
-        if not match:
-            return ""
-        number = float(match.group(1))
-        if label == "保证发电量" and not (1 <= number <= 10000000):
-            return ""
-        if label == "保证有效小时数" and not (1 <= number <= 8760):
-            return ""
-        return match.group(1)
-    if label in {"极端风速", "年平均风速"}:
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
-        if match:
-            number = float(match.group(1))
-            low, high = numeric_ranges[label]
-            if not (low <= number <= high):
-                return ""
-            return f"{match.group(1)}m/s" if re.search(r"m/?s|米/秒", text, flags=re.I) else match.group(1)
-    if label in {"轮毂高度", "叶轮直径", "空气密度", "湍流强度", "风剪切"}:
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
-        if match:
-            number = float(match.group(1))
-            low, high = numeric_ranges[label]
-            if not (low <= number <= high):
-                return ""
-            return match.group(1)
-    if label in {"投标方案", "投标机型", "机组类型"}:
-        if text in {"机型", "投标机型", "方案", "投标方案"}:
-            return ""
-        model_match = re.search(r"([A-Z]{1,6}\d+(?:\.\d+)?[-—]\d+(?:[-—]\d+)?)", text, flags=re.I)
-        if model_match:
-            return model_match.group(1).replace("—", "-")
-    if label == "安全等级":
-        text = re.sub(r"^IEC\s*", "IEC ", text, flags=re.I).strip()
-    return text
-
-
-def material_fact(
-    label: str,
-    value: Any,
-    material: dict[str, Any],
-    *,
-    unit: str = "",
-    location: str = "",
-    confidence: float = 0.78,
-) -> dict[str, Any]:
-    tier = str(material.get("materialTier") or "").strip() or "standard"
-    return {
-        "label": canonical_fact_label(label),
-        "value": value,
-        "category": "素材库事实",
-        "unit": clean_fact_unit(unit),
-        "confidence": confidence,
-        "sourcePriority": FACT_MATERIAL_SOURCE_PRIORITIES.get(tier, 50),
-        "sourceRef": {
-            "type": "materialFact",
-            "materialId": str(material.get("id") or material.get("materialId") or ""),
-            "materialTier": tier,
-            "name": str(material.get("name") or material.get("fileName") or material.get("cleanedFileName") or ""),
-            "folderPath": str(material.get("folderPath") or ""),
-            "path": str(material.get("path") or ""),
-            "location": location,
-        },
     }
 
 
@@ -1925,12 +1003,6 @@ def number_from_fact(fact: dict[str, Any] | None) -> float | None:
         return None
     match = re.search(r"([0-9]+(?:\.[0-9]+)?)", str(fact.get("value") or ""))
     return float(match.group(1)) if match else None
-
-
-def run_async_material_files(**kwargs: Any) -> dict[str, Any]:
-    kwargs.pop("bid_type", None)
-    result = run_awaitable_sync(technical_material_store.raw_files(**kwargs))
-    return result if isinstance(result, dict) else {}
 
 
 def _now_iso() -> str:

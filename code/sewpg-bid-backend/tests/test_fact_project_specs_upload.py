@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import settings
+from app.services import technical_fact_extract_materials as fact_extract_module
 from app.services import technical_gap_fact_table as fact_table_module
 from app.services.auth_service import current_user
 from app.services.store import store
@@ -193,12 +194,12 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
 
         with (
             patch.object(
-                fact_table_module,
+                fact_extract_module,
                 "build_project_material_scope",
                 lambda project: {"readableScopes": scopes},
             ),
             patch.object(
-                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+                fact_extract_module, "run_async_material_files", side_effect=fake_material_files
             ),
         ):
             # gap_state 无 plan.materialIndex，走回退扫描
@@ -226,12 +227,12 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
 
         with (
             patch.object(
-                fact_table_module,
+                fact_extract_module,
                 "build_project_material_scope",
                 lambda project: {"readableScopes": scopes},
             ),
             patch.object(
-                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+                fact_extract_module, "run_async_material_files", side_effect=fake_material_files
             ),
         ):
             fact_table_module.project_fact_material_index(
@@ -262,12 +263,12 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
 
         with (
             patch.object(
-                fact_table_module,
+                fact_extract_module,
                 "build_project_material_scope",
                 lambda project: {"readableScopes": scopes},
             ),
             patch.object(
-                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+                fact_extract_module, "run_async_material_files", side_effect=fake_material_files
             ),
         ):
             fact_table_module.project_fact_material_index(
@@ -329,12 +330,12 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
 
         with (
             patch.object(
-                fact_table_module,
+                fact_extract_module,
                 "build_project_material_scope",
                 lambda project: {"readableScopes": scopes},
             ),
             patch.object(
-                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+                fact_extract_module, "run_async_material_files", side_effect=fake_material_files
             ),
         ):
             materials = fact_table_module.project_fact_material_index(
@@ -369,7 +370,7 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
             }
 
         with patch.object(
-            fact_table_module, "run_async_material_files", side_effect=fake_material_files
+            fact_extract_module, "run_async_material_files", side_effect=fake_material_files
         ):
             materials = fact_table_module.project_fact_material_index(
                 {"id": "P-SCOPE", "name": "当前项目"},
@@ -415,12 +416,12 @@ class ProjectFactMaterialIndexScopeTests(unittest.TestCase):
 
         with (
             patch.object(
-                fact_table_module,
+                fact_extract_module,
                 "build_project_material_scope",
                 lambda project: {"readableScopes": scopes},
             ),
             patch.object(
-                fact_table_module, "run_async_material_files", side_effect=fake_material_files
+                fact_extract_module, "run_async_material_files", side_effect=fake_material_files
             ),
         ):
             materials = fact_table_module.project_fact_material_index(

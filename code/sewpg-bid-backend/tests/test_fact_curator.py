@@ -1049,12 +1049,13 @@ def test_cross_project_candidates_yield_to_own_materials(workspace_dirs, monkeyp
 def test_blank_templates_do_not_block_cross_project_candidates(workspace_dirs, monkeypatch) -> None:
     """回归（PRJ-0007）：项目目录里全是「待填写」空白模板时，模板被索引过滤、
     _CURATOR_MATERIAL_LIMIT 额度释放，缺失类别的跨项目候选能注入 manifest。"""
+    from app.services import technical_fact_extract_materials as fact_extract_module
     from app.services import technical_gap_fact_table as fact_table_module
 
     # curator 侧接回真实索引（索引内部扫描用桩替代），验证模板在源头被过滤
     monkeypatch.setattr(curator, "project_fact_material_index", fact_table_module.project_fact_material_index)
     monkeypatch.setattr(
-        fact_table_module,
+        fact_extract_module,
         "build_project_material_scope",
         lambda project: {
             "readableScopes": [{"materialTier": "project", "path": "技术标/项目定制/事实表维护测试项目"}]
@@ -1069,7 +1070,7 @@ def test_blank_templates_do_not_block_cross_project_candidates(workspace_dirs, m
         }
         for i in range(50)  # 超过 _CURATOR_MATERIAL_LIMIT，修复前会占满额度
     ]
-    monkeypatch.setattr(fact_table_module, "run_async_material_files", lambda **kwargs: {"items": templates})
+    monkeypatch.setattr(fact_extract_module, "run_async_material_files", lambda **kwargs: {"items": templates})
     monkeypatch.setattr(
         curator,
         "build_fact_material_check",

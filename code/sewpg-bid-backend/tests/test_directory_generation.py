@@ -1270,26 +1270,26 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         with (
             patch(
-                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                "app.services.outline_chapter_runner._prepare_outline_chapter_workspaces",
                 return_value=(chapters, chapter_manifests, chapter_root, {}),
             ),
             patch(
-                "app.services.outline_generation._load_technical_outline_runner",
+                "app.services.outline_chapter_runner._load_technical_outline_runner",
                 return_value=runner,
             ),
             patch(
-                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                "app.services.outline_chapter_runner.system_settings_service.get_opencode_model_config_sync",
                 return_value=model_config,
             ) as load_config,
             patch(
-                "app.services.outline_generation._outline_chapter_base_urls",
+                "app.services.outline_chapter_runner._outline_chapter_base_urls",
                 return_value=["http://opencode:4096"],
             ),
             patch(
-                "app.services.outline_generation.ThreadPoolExecutor",
+                "app.services.outline_chapter_runner.ThreadPoolExecutor",
                 side_effect=recording_executor,
             ),
-            patch("app.services.outline_generation.OpencodeEngine") as client_class,
+            patch("app.services.outline_chapter_runner.OpencodeEngine") as client_class,
         ):
             client_class.return_value.run_outline_decision_session = AsyncMock(side_effect=[
                 {"sessionId": f"ses-{index}", "opencodeOutput": {}}
@@ -1349,22 +1349,22 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         with (
             patch(
-                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                "app.services.outline_chapter_runner._prepare_outline_chapter_workspaces",
                 return_value=(chapters, chapter_manifests, chapter_root, {}),
             ),
             patch(
-                "app.services.outline_generation._load_technical_outline_runner",
+                "app.services.outline_chapter_runner._load_technical_outline_runner",
                 return_value=runner,
             ),
             patch(
-                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                "app.services.outline_chapter_runner.system_settings_service.get_opencode_model_config_sync",
                 return_value={},
             ),
             patch(
-                "app.services.outline_generation._outline_chapter_base_urls",
+                "app.services.outline_chapter_runner._outline_chapter_base_urls",
                 return_value=["http://opencode:4096"],
             ),
-            patch("app.services.outline_generation.OpencodeEngine") as client_class,
+            patch("app.services.outline_chapter_runner.OpencodeEngine") as client_class,
         ):
             client_class.return_value.run_outline_decision_session = AsyncMock(side_effect=one_chapter_dies)
             with self.assertRaises(_ChapterParallelUnsupported):
@@ -1398,7 +1398,7 @@ class DirectoryGenerationTests(unittest.TestCase):
 
         with (
             patch(
-                "app.services.outline_generation._prepare_outline_chapter_workspaces",
+                "app.services.outline_chapter_runner._prepare_outline_chapter_workspaces",
                 return_value=(
                     chapters,
                     {"TPL-0001": chapter_manifest_path},
@@ -1407,18 +1407,18 @@ class DirectoryGenerationTests(unittest.TestCase):
                 ),
             ),
             patch(
-                "app.services.outline_generation._load_technical_outline_runner",
+                "app.services.outline_chapter_runner._load_technical_outline_runner",
                 return_value=runner,
             ),
             patch(
-                "app.services.outline_generation.system_settings_service.get_opencode_model_config_sync",
+                "app.services.outline_chapter_runner.system_settings_service.get_opencode_model_config_sync",
                 return_value={},
             ),
             patch(
-                "app.services.outline_generation._outline_chapter_base_urls",
+                "app.services.outline_chapter_runner._outline_chapter_base_urls",
                 return_value=["http://opencode:4096"],
             ),
-            patch("app.services.outline_generation.OpencodeEngine") as client_class,
+            patch("app.services.outline_chapter_runner.OpencodeEngine") as client_class,
         ):
             client_class.return_value.run_outline_decision_session = AsyncMock(return_value={
                 "sessionId": "ses-chapter",
@@ -1542,7 +1542,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         }
 
         with patch(
-            "app.services.outline_generation._load_technical_outline_runner",
+            "app.services.outline_chapter_runner._load_technical_outline_runner",
             return_value=runner,
         ):
             with self.assertRaisesRegex(RuntimeError, "没有提交新的目录判断"):
@@ -2319,7 +2319,7 @@ class DirectoryGenerationTests(unittest.TestCase):
         )
 
         with patch(
-            "app.services.outline_generation._ocr_fallback_text",
+            "app.services.outline_toc_publish._ocr_fallback_text",
             return_value=("第一章 投标响应概述\n1.1 项目理解\n第二章 实施方案\n2.1 工作计划", {"status": "completed"}),
         ), patch(
             "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
@@ -2410,10 +2410,10 @@ class DirectoryGenerationTests(unittest.TestCase):
         with patch(
             "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=RuntimeError("futurecode down"),
-        ), patch("app.services.outline_generation._run_local_outline_skill") as local_fallback:
+        ):
             with self.assertRaisesRegex(RuntimeError, "目录生成需要 opencode 自主决策"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-        local_fallback.assert_not_called()
+        # 本地 s2toc 兜底桩（_run_local_outline_skill）已删除，不存在可回退的本地路径。
 
         self.assertTrue(work_dir.exists())
         self.assertTrue(previous_toc.exists())
@@ -2441,7 +2441,7 @@ class DirectoryGenerationTests(unittest.TestCase):
             "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=self._mock_futurecode_outline,
         ), patch(
-            "app.services.outline_generation._remap_json_file",
+            "app.services.outline_toc_publish._remap_json_file",
             side_effect=RuntimeError("remap failed"),
         ):
             with self.assertRaises(RuntimeError):
@@ -2600,11 +2600,10 @@ class DirectoryGenerationTests(unittest.TestCase):
         with patch(
             "app.services.agent_engine.opencode_engine.OpencodeEngine.generate_outline_with_trace",
             side_effect=_mock_missing_output,
-        ), patch("app.services.outline_generation._run_local_outline_skill") as local_fallback:
+        ):
             with self.assertRaisesRegex(RuntimeError, "目录生成需要 opencode 自主决策"):
                 generate_outline_for_project(project_id, {"outlineStrategy": "strict"})
-
-        local_fallback.assert_not_called()
+        # 本地 s2toc 兜底桩（_run_local_outline_skill）已删除，不存在可回退的本地路径。
 
     def test_get_directory_state_keeps_generated_action_summary(self) -> None:
         from app.services.outline_generation import generate_outline_for_project

@@ -8,6 +8,11 @@ from typing import Any
 
 from app.services.business_bidder_profile import load_business_bidder_facts_sync
 from app.services.business_s1_handoff import business_s1_parse_result
+from app.services.fact_table_common import (
+    add_performance_facts_from_parse_text,
+    looks_like_project_name,
+    looks_like_tender_no,
+)
 from app.services.identity import build_project_identity
 
 
@@ -849,24 +854,6 @@ def fact_candidate_value_valid(label: str, value: str) -> bool:
     return True
 
 
-def looks_like_project_name(value: Any) -> bool:
-    text = str(value or "").strip()
-    if not text or len(text) > 160:
-        return False
-    if re.match(r"^[（(【\[]\s*(项目名称|工程名称|招标项目名称|采购项目名称)\s*[)）】\]]", text):
-        return False
-    if re.search(r"[。！？；]", text):
-        return False
-    if re.search(r"投标人|招标人|应当|必须|不得|标准|规范|条款|认可|提供|协议|事宜|订立|承诺|声明", text):
-        return False
-    return "项目" in text or "工程" in text
-
-
-def looks_like_tender_no(value: Any) -> bool:
-    text = str(value or "").strip()
-    return bool(text and len(text) <= 80 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\-./]+", text))
-
-
 PARTY_NAME_DECOR_RE = re.compile(r"[（(]\s*盖?[^）)]*章[^）)]*[)）]?\s*$")
 
 
@@ -876,6 +863,9 @@ def clean_party_name(value: Any) -> str:
 
 
 def looks_like_party_name(value: Any) -> bool:
+    # 与 technical_fact_extract_parse 的版本已分叉，不能取严统一：商务线按真实样本
+    # 加固了噪声拒绝（盖章/开标/逾期等语境词与标点），接受面收窄；技术线保留
+    # 「华能|国电|大唐|华电|招标|业主」等央企短名的宽松接受，S1 招标人抽取依赖它们。
     text = str(value or "").strip()
     if not text or len(text) > 80:
         return False
@@ -899,32 +889,6 @@ def looks_like_bidder_signature_context(value: Any, context: Any) -> bool:
     text = re.sub(r"[（(][^）)]*章[^）)]*[)）]?", "", text)
     window = text[: max(len(value_text) + 40, 80)]
     return bool(re.search(r"盖单位章|盖章|法定代表人|委托代理人|投标人[:：]|签字|签章|年月日|答复前.*暂停", window))
-
-
-def add_performance_facts_from_parse_text(text: str, source_field: dict[str, Any], add: Any) -> None:
-    normalized = re.sub(r"\s+", "", str(text or ""))
-    if not normalized:
-        return
-
-    patterns = [
-        (r"功率曲线[^。；;]{0,24}(?:不低于|≥|>=)(?:保证值的)?([0-9]+(?:\.[0-9]+)?%)", "功率曲线保证率"),
-        (r"风电场机组年平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "全场可利用率"),
-        (r"(?:全部机组|全场).*?平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "全场可利用率"),
-        (r"单台机组年平均可利用率(?:≥|>=|不低于)([0-9]+(?:\.[0-9]+)?%)", "单台可利用率"),
-        (r"主要部件更换率(?:低于|不高于|≤|<=)([0-9]+(?:\.[0-9]+)?%)", "主要部件更换率"),
-    ]
-    for pattern, label in patterns:
-        match = re.search(pattern, normalized)
-        if match:
-            add(
-                label,
-                match.group(1),
-                category="性能保证",
-                source_field=source_field,
-                confidence=0.86,
-                required=False,
-                unit="%",
-            )
 
 
 def _now_iso() -> str:
