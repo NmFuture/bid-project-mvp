@@ -831,3 +831,234 @@ export const materialTierLabels = {
 export const isEditableArtifactChoice = (choice) => (
   choice?.kind === 'artifact' && String(choice?.artifact?.source || '') === 'ai_fill'
 )
+
+// ===== TechnicalGapRecognition.jsx 第二轮拆分：页面主结构与选择模型的纯逻辑 =====
+
+// 识别结果归一：优先 gapPlan.items，否则把裸 items 映射成计划项结构。
+export const normalizeItems = (payload) => {
+  const planItems = payload?.gapPlan?.items
+  if (Array.isArray(planItems) && planItems.length) return planItems
+  return (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
+    id: item.id,
+    number: '',
+    title: item.title,
+    section: item.section,
+    status: item.status === 'resolved' ? 'resolved' : item.status === 'skipped' ? 'ignored' : 'missing',
+    gapReason: item.desc,
+    matchedMaterials: [],
+    fillTasks: [],
+    resolvedArtifacts: [],
+    reviewNotes: [],
+  }))
+}
+
+export const compactList = (items, limit = 4) => {
+  const list = uniqueStrings(items)
+  return {
+    visible: list.slice(0, limit),
+    overflow: Math.max(0, list.length - limit),
+    total: list.length,
+  }
+}
+
+export const sourceRoutingForAppendixTasks = (tasks, item = null) => {
+  const routing = asObjectArray(tasks)
+    .map((task) => task?.sourceRouting)
+    .find((entry) => entry && typeof entry === 'object' && entry.source === 'appendix_source_matrix')
+  if (routing) return routing
+  return item?.sourceRouting?.source === 'appendix_source_matrix' ? item.sourceRouting : null
+}
+
+export const sourceRoutedMaterials = (tasks, item = null) => [
+  ...asObjectArray(item?.sourceRoutedMaterials),
+  ...asObjectArray(tasks)
+    .filter((task) => task?.sourceRouting?.source === 'appendix_source_matrix')
+    .flatMap((task) => asObjectArray(task?.recommendedMaterials)),
+]
+
+export const sourceRoutingText = (routing) => {
+  if (!routing) return ''
+  const parts = []
+  const projectSources = uniqueStrings(routing.projectSources)
+  const standardSources = uniqueStrings(routing.standardSources)
+  const otherSources = uniqueStrings(routing.otherSources)
+  if (projectSources.length) parts.push(`项目定制：${projectSources.join('、')}`)
+  if (standardSources.length) parts.push(`标准文件：${standardSources.join('、')}`)
+  if (otherSources.length) parts.push(`其他：${otherSources.join('、')}`)
+  return parts.join('；')
+}
+
+// 可折叠目录树（产品裁决 2026-08-04，v6.1 改 level 栈）：按计划顺序 + level 字段构建，
+// 附表（编号不成链）同样归入「技术附表」根；筛选态退化为平铺命中列表。
+export const buildTocTreeRows = ({ items, filteredItems, tagFilter, expandedTocKeys }) => {
+  if (tagFilter) {
+    return asArray(filteredItems).map((item) => ({
+      item,
+      key: String(item?.id || ''),
+      depth: 0,
+      hasChildren: false,
+      expanded: false,
+    }))
+  }
+  const childrenMap = new Map()
+  const roots = []
+  const stack = []
+  asArray(items).forEach((item) => {
+    const level = Number(item?.level) > 0 ? Number(item.level) : 1
+    while (stack.length && stack[stack.length - 1].level >= level) stack.pop()
+    const parent = stack[stack.length - 1]?.item
+    if (parent) {
+      const parentId = String(parent.id || '')
+      if (!childrenMap.has(parentId)) childrenMap.set(parentId, [])
+      childrenMap.get(parentId).push(item)
+    } else {
+      roots.push(item)
+    }
+    stack.push({ item, level })
+  })
+  const rows = []
+  const walk = (item, depth) => {
+    const key = String(item?.id || '')
+    const children = childrenMap.get(key) || []
+    const expanded = expandedTocKeys instanceof Set ? expandedTocKeys.has(key) : false
+    rows.push({ item, key, depth, hasChildren: children.length > 0, expanded })
+    if (children.length && expanded) children.forEach((child) => walk(child, depth + 1))
+  }
+  roots.forEach((item) => walk(item, 0))
+  return rows
+}
+
+// AI 填写参考素材勾选态按「目录项 × 填写任务」隔离；没勾选过时用该任务的推荐默认值。
+export const aiFillSelectionKey = (selected, task) => (selected && task
+  ? `${selected.id}:${task.id || task?.blankSource?.id || 'fill'}`
+  : '')
+
+export const resolveAiFillReferenceIds = (selections, key, fallbackIds) => (
+  key && selections && Object.prototype.hasOwnProperty.call(selections, key)
+    ? selections[key]
+    : fallbackIds
+)
+
+export const toggleAiFillReferenceId = (activeIds, materialId) => {
+  const active = asArray(activeIds)
+  const next = active.includes(materialId)
+    ? active.filter((id) => id !== materialId)
+    : [...active, materialId]
+  return uniqueStrings(next)
+}
+
+// 弹窗内手动上传的补充素材并入候选列表（按 id 去重，保持上传顺序）。
+export const mergeUploadedCandidates = (current, items) => {
+  const existing = new Set(asArray(current).map((item) => String(item?.id || item?.materialId || '').trim()))
+  return [
+    ...asArray(current),
+    ...asObjectArray(items).filter((item) => !existing.has(String(item?.id || item?.materialId || '').trim())),
+  ]
+}
+
+// AI 填写统一候选池：规则路由时只取路由素材，否则合并 推荐/匹配/候选；
+// 按匹配度排序截断 20 条，手动上传的补充素材排最前且不受上限影响。
+export const aiFillReferenceCandidatesForItem = ({
+  tasks,
+  item,
+  sourceRouting,
+  materialMatch,
+  candidateMaterials,
+  uploadedCandidates,
+}) => {
+  const seen = new Set()
+  const routed = sourceRoutedMaterials(tasks, item)
+  const candidates = sourceRouting
+    ? routed
+    : [
+        ...asArray(tasks).flatMap((task) => asObjectArray(task?.recommendedMaterials)),
+        materialMatch?.material,
+        ...asObjectArray(item?.matchedMaterials),
+        ...asObjectArray(candidateMaterials),
+      ].filter(Boolean)
+  const base = candidates.filter((entry) => {
+    const key = String(entry?.id || entry?.materialId || entry?.name || '').trim()
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).sort((a, b) => technicalMatchScore(b) - technicalMatchScore(a)).slice(0, 20)
+  const uploaded = asObjectArray(uploadedCandidates).filter((entry) => {
+    const key = String(entry?.id || entry?.materialId || '').trim()
+    return key && !seen.has(key)
+  })
+  return [...uploaded, ...base]
+}
+
+// 待填写素材（解析空表/待填写模板）与普通参考素材平级进入统一候选池（产品意见 2026-07-17），
+// 每张卡绑定各自的填写任务。
+export const fillBlankEntriesForTasks = (fillTasks) => asObjectArray(fillTasks).map((task) => {
+  const blank = task?.blankSource || {}
+  const isMaterialBlank = blank.sourceType === 'material_fill_template'
+    || String(blank.materialId || blank.id || '').startsWith('RAW-')
+  return {
+    key: String(blank.materialId || blank.id || task.id || '').trim(),
+    task,
+    blank,
+    isMaterialBlank,
+    material: {
+      id: blank.materialId || blank.id,
+      name: blank.title || blank.cleanedFileName || blank.id || '待填写空表/Word',
+      folderPath: blank.folderPath || blank.sourceFile || blank.workspacePath || '招标文件解析产物',
+      cleanedFileName: blank.cleanedFileName,
+    },
+  }
+})
+
+// 备选素材 = 统一候选池剔除已选中项；系统预选置顶（产品裁决 2026-08-04），
+// 多机型时按 planner 给出的机型顺序。
+export const backupMaterialEntries = ({
+  topBlankEntries,
+  selectedCardMaterialIds,
+  selectedMaterialIdSet,
+  poolBlankEntries,
+  referenceCandidates,
+  matchedMaterialIds,
+}) => {
+  const seen = new Set()
+  // selectedCardMaterialIds/selectedMaterialIdSet 在主组件里是 Set，兼容数组入参便于测试
+  const addSeen = (values) => {
+    if (values instanceof Set) values.forEach((value) => seen.add(value))
+    else asArray(values).forEach((value) => seen.add(value))
+  }
+  asArray(topBlankEntries).forEach((entry) => seen.add(entry.key))
+  addSeen(selectedCardMaterialIds)
+  addSeen(selectedMaterialIdSet)
+  const wrappers = [
+    ...asArray(poolBlankEntries).map((entry) => ({ kind: 'blank', entry, key: entry.key })),
+    ...asArray(referenceCandidates).map((material) => ({
+      kind: 'material',
+      material,
+      key: String(material?.id || material?.materialId || '').trim(),
+    })),
+  ]
+  const deduped = wrappers.filter((wrapper) => {
+    if (!wrapper.key || seen.has(wrapper.key)) return false
+    seen.add(wrapper.key)
+    return true
+  })
+  if (!(matchedMaterialIds instanceof Set) || !matchedMaterialIds.size) return deduped
+  const pinned = deduped.filter((wrapper) => matchedMaterialIds.has(wrapper.key))
+  return pinned.length
+    ? [...pinned, ...deduped.filter((wrapper) => !matchedMaterialIds.has(wrapper.key))]
+    : deduped
+}
+
+// 多选铺开：按勾选顺序提交，顺序即正文顺序；支持勾选切换与上下移动。
+export const toggleListKey = (list, key) => (
+  asArray(list).includes(key) ? asArray(list).filter((item) => item !== key) : [...asArray(list), key]
+)
+
+export const moveListItem = (list, index, offset) => {
+  const source = asArray(list)
+  const target = index + offset
+  if (target < 0 || target >= source.length) return source
+  const next = [...source]
+  const [moved] = next.splice(index, 1)
+  next.splice(target, 0, moved)
+  return next
+}

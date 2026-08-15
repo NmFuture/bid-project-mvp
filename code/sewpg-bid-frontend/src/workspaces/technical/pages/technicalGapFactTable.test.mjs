@@ -86,3 +86,80 @@ test('默认展开只到第二层目录', () => {
   const expanded = collectDefaultExpandedTreePaths(nodes)
   assert.deepEqual([...expanded].sort(), ['a', 'a/b'])
 })
+
+// ===== 第二轮拆分抽出的字段编辑纯逻辑（原 TechnicalGapRecognition.jsx 内联） =====
+
+import {
+  applyFactFieldChange,
+  createManualFactField,
+  factFieldsToSave,
+  hasUnnamedManualFactValue,
+} from './technicalGapFactTable.js'
+
+test('字段编辑：改值打 manualEdit 标记并按有无值定三态', () => {
+  const fields = [
+    { label: '装机容量', value: '', sourceRefs: [{ type: 'ai', title: 'AI 抽取' }] },
+    { label: '机型', value: 'GWH-1' },
+  ]
+  const next = applyFactFieldChange(fields, 0, 'value', '100MW')
+  assert.equal(next[0].value, '100MW')
+  assert.equal(next[0].status, 'confirmed')
+  assert.equal(next[0].sourceRefs[0].type, 'manualEdit')
+  assert.equal(next[0].sourceRefs[0].field, '装机容量')
+  assert.equal(next[0].sourceRefs.length, 2)
+  // 已有 manualEdit 标记时不重复打
+  const again = applyFactFieldChange(next, 0, 'value', '200MW')
+  assert.equal(again[0].sourceRefs.filter((ref) => ref.type === 'manualEdit').length, 1)
+  // 清空值回落待填写
+  const cleared = applyFactFieldChange(next, 0, 'value', '  ')
+  assert.equal(cleared[0].status, 'unextracted')
+  // 改非 value 键（如 label）按当前值重判状态，不打 manualEdit
+  const relabeled = applyFactFieldChange(fields, 1, 'label', '风机机型')
+  assert.equal(relabeled[1].label, '风机机型')
+  assert.equal(relabeled[1].status, 'confirmed')
+  assert.equal(relabeled[1].sourceRefs, undefined)
+  // 未触及的行原样保留
+  assert.equal(next[1], fields[1])
+})
+
+test('字段编辑：status 分支只改状态（「不适用」路径）', () => {
+  const fields = [{ label: '备件', value: '有' }]
+  const next = applyFactFieldChange(fields, 0, 'status', 'not_applicable')
+  assert.deepEqual(next[0], { label: '备件', value: '有', status: 'not_applicable' })
+})
+
+test('createManualFactField：人工新增骨架', () => {
+  const field = createManualFactField({ id: 'FACT-MANUAL-1', createdAt: '2026-08-15T00:00:00.000Z' })
+  assert.equal(field.id, 'FACT-MANUAL-1')
+  assert.equal(field.category, '人工补充事实')
+  assert.equal(field.status, 'unextracted')
+  assert.equal(field.sourceRefs[0].type, 'manualFact')
+  assert.equal(field.updatedAt, '2026-08-15T00:00:00.000Z')
+  assert.equal(field.updatedBy, '当前用户')
+})
+
+test('hasUnnamedManualFactValue：人工新增字段有值无名才拦截', () => {
+  assert.equal(hasUnnamedManualFactValue([
+    { label: '', value: '100MW', sourceRefs: [{ type: 'manualFact' }] },
+  ]), true)
+  assert.equal(hasUnnamedManualFactValue([
+    { label: '装机容量', value: '100MW', sourceRefs: [{ type: 'manualFact' }] },
+  ]), false)
+  // AI 来源的字段有值无名不拦截
+  assert.equal(hasUnnamedManualFactValue([
+    { label: '', value: '100MW', sourceRefs: [{ type: 'ai' }] },
+  ]), false)
+  // 人工字段没值不拦截
+  assert.equal(hasUnnamedManualFactValue([
+    { label: '', value: '', sourceRefs: [{ type: 'manualFact' }] },
+  ]), false)
+})
+
+test('factFieldsToSave：只保留有字段名或有值的行', () => {
+  assert.deepEqual(factFieldsToSave([
+    { label: '装机容量', value: '' },
+    { label: '', value: '100MW' },
+    { label: ' ', value: ' ' },
+  ]), [{ label: '装机容量', value: '' }, { label: '', value: '100MW' }])
+  assert.deepEqual(factFieldsToSave(null), [])
+})

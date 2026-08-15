@@ -1,5 +1,6 @@
 // 项目事实表维护弹窗的纯展示/归一逻辑（从 TechnicalGapRecognition.jsx 抽出），
 // 不依赖 React，可用 node --test 直接验证。
+import { asObjectArray } from './technicalGapRecognitionHelpers.js'
 
 // 表级与字段级都有 confirmed，含义不同（表：全部了结 / 字段：有值可用），分成两张表
 export const factTableStatusLabels = {
@@ -97,3 +98,55 @@ export const collectDefaultExpandedTreePaths = (nodes = [], depth = 0, result = 
   })
   return result
 }
+
+// ===== 事实表字段编辑纯逻辑（TechnicalGapRecognition.jsx 第二轮拆分抽出） =====
+
+// 人改过的格子打 manualEdit 标记：重建时只有人工值跨轮保留，
+// AI 与规则抽的值一律重来，没有标记就会被当成 AI 值冲掉。
+// 三态：有值即可用，清空即回落待填写（「不适用」只走 status 分支）。
+export const applyFactFieldChange = (fields, index, key, value) =>
+  (Array.isArray(fields) ? fields : []).map((field, idx) => {
+    if (idx !== index) return field
+    if (key === 'status') {
+      return { ...field, status: value }
+    }
+    const sourceRefs = key === 'value' && !asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualEdit')
+      ? [{ type: 'manualEdit', title: '人工修改', field: field.label || '' }, ...asObjectArray(field.sourceRefs)]
+      : field.sourceRefs
+    return {
+      ...field,
+      [key]: value,
+      sourceRefs,
+      status: String(key === 'value' ? value : field.value || '').trim() ? 'confirmed' : 'unextracted',
+    }
+  })
+
+// 人工新增字段的骨架（id/createdAt 由调用方生成，保持纯函数可测）。
+export const createManualFactField = ({ id, createdAt }) => ({
+  id,
+  key: '',
+  label: '',
+  category: '人工补充事实',
+  value: '',
+  unit: '',
+  required: false,
+  status: 'unextracted',
+  confidence: 1,
+  sourcePriority: 360,
+  sourceRefs: [{ type: 'manualFact', title: '人工新增', field: '' }],
+  alternatives: [],
+  notes: 'S3 人工补充',
+  updatedAt: createdAt,
+  updatedBy: '当前用户',
+})
+
+// 人工新增字段填了值但没填字段名：保存/AI 匹配填充前先拦下。
+export const hasUnnamedManualFactValue = (fields) =>
+  asObjectArray(fields).some((field) => {
+    const isManualField = asObjectArray(field.sourceRefs).some((ref) => ref.type === 'manualFact')
+    return isManualField && String(field.value || '').trim() && !String(field.label || '').trim()
+  })
+
+// 只保存有字段名或有值的行。
+export const factFieldsToSave = (fields) =>
+  asObjectArray(fields).filter((field) => String(field.label || field.value || '').trim())

@@ -40,9 +40,12 @@ test('Wiki 任务耗时计算与展示对非法值和未来时间安全回退', 
 test('技术标 Wiki 使用 jobId 恢复轮询且不再调用无参数状态接口', () => {
   const source = readFileSync(resolve(__dirname, 'pages/TechnicalMaterialWiki.jsx'), 'utf8')
 
-  assert.match(source, /bootstrapStatus\(wikiJobId\)/)
+  // 锁定「带 jobId 调用」而非完整参数列表：8def749 起调用追加 { signal } 用于取消，
+  // 无参数调用的禁用由下面 doesNotMatch 负责。
+  assert.match(source, /bootstrapStatus\(wikiJobId/)
   assert.doesNotMatch(source, /bootstrapStatus\(\)/)
   assert.match(source, /readWikiJobStorage\(WIKI_JOB_ID_STORAGE_KEY\)/)
-  assert.match(source, /resolveWikiJobElapsedTimestamp\(status\)/)
-  assert.match(source, /calculateWikiJobElapsedSeconds\(wikiJobElapsedFrom\)/)
+  // 405fdc1 起「已耗时」展示从本页移除（改由 MaterialPipelineProgress 分段进度呈现），
+  // 不再锁定 resolveWikiJobElapsedTimestamp / calculateWikiJobElapsedSeconds 的调用点；
+  // 这两个纯函数的行为由本文件前两个用例直接覆盖。
 })

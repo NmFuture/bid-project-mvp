@@ -256,15 +256,18 @@ test('共创导出页二次确认后沿用正文生成接口并刷新最新文�
 
 test('素材范围变更后自动重建事实表，不保留手动刷新入口', async () => {
   const source = await readFile(new URL('./TechnicalGapRecognition.jsx', import.meta.url), 'utf8')
-  const scopeStart = source.indexOf('const handleSaveMaterialPaths')
-  const curateStart = source.indexOf('const handleCurateFacts')
-  const scopeFlow = source.slice(scopeStart, curateStart)
+  // 事实表维护族已收口到 useFactTableMaintenance（第二轮拆分），流程契约跟随迁移
+  const hookSource = await readFile(new URL('./useFactTableMaintenance.js', import.meta.url), 'utf8')
+  const scopeStart = hookSource.indexOf('const handleSaveMaterialPaths')
+  const curateStart = hookSource.indexOf('const handleCurateFacts')
+  const scopeFlow = hookSource.slice(scopeStart, curateStart)
 
   assert.ok(scopeStart >= 0 && curateStart > scopeStart)
   assert.ok(scopeFlow.indexOf('saveMaterialSources') < scopeFlow.indexOf('buildFacts'))
   // 没有独立的「生成/重建事实表」按钮：素材匹配完成后后端自动建一次，
   // 之后重建走保存参考范围与「刷新并 AI 填充」两条既有流程
   assert.doesNotMatch(source, /onBuild\b|handleBuildFacts/)
+  assert.doesNotMatch(hookSource, /onBuild\b|handleBuildFacts/)
   // 清单只有全局一份，本页没有上传入口，只跳转到素材库 · 规则页
   assert.doesNotMatch(source, /uploadFactSpecs/)
   assert.match(source, /workspace\/tech\/materials\/rules/)
@@ -1008,4 +1011,171 @@ test('验收通过、无需填写与人工复核通过都不亮标', () => {
   )
   assert.equal(technicalHelpers.technicalGapQualityFlag({}), null)
   assert.equal(technicalHelpers.technicalGapQualityFlag(null), null)
+})
+
+// ===== 第二轮拆分抽出的纯逻辑（原 TechnicalGapRecognition.jsx 内联） =====
+
+test('normalizeItems 优先 gapPlan.items，裸 items 兜底映射成计划项', () => {
+  const planItems = [{ id: 'A' }]
+  assert.equal(technicalHelpers.normalizeItems({ gapPlan: { items: planItems }, items: [{ id: 'B' }] }), planItems)
+  assert.deepEqual(technicalHelpers.normalizeItems({ items: [
+    { id: 'B', title: '章', section: '1', status: 'resolved', desc: 'd' },
+    { id: 'C', title: '节', section: '1.1', status: 'skipped' },
+    { id: 'D', title: '条', section: '1.2', status: 'missing' },
+  ] }), [
+    { id: 'B', number: '', title: '章', section: '1', status: 'resolved', gapReason: 'd', matchedMaterials: [], fillTasks: [], resolvedArtifacts: [], reviewNotes: [] },
+    { id: 'C', number: '', title: '节', section: '1.1', status: 'ignored', gapReason: undefined, matchedMaterials: [], fillTasks: [], resolvedArtifacts: [], reviewNotes: [] },
+    { id: 'D', number: '', title: '条', section: '1.2', status: 'missing', gapReason: undefined, matchedMaterials: [], fillTasks: [], resolvedArtifacts: [], reviewNotes: [] },
+  ])
+  assert.deepEqual(technicalHelpers.normalizeItems(null), [])
+})
+
+test('compactList 去重后截断并给出溢出数', () => {
+  assert.deepEqual(technicalHelpers.compactList(['a', 'b', 'a', 'c', 'd', 'e'], 4), {
+    visible: ['a', 'b', 'c', 'd'],
+    overflow: 1,
+    total: 5,
+  })
+  assert.deepEqual(technicalHelpers.compactList([], 4), { visible: [], overflow: 0, total: 0 })
+})
+
+test('sourceRouting 族：任务优先、目录项兜底、文案分层拼接', () => {
+  const routing = { source: 'appendix_source_matrix', projectSources: ['P1'], standardSources: ['S1', 'S1'], otherSources: [] }
+  assert.equal(technicalHelpers.sourceRoutingForAppendixTasks([{ sourceRouting: null }, { sourceRouting: routing }]), routing)
+  assert.equal(technicalHelpers.sourceRoutingForAppendixTasks([], { sourceRouting: routing }), routing)
+  assert.equal(technicalHelpers.sourceRoutingForAppendixTasks([{ sourceRouting: { source: 'other' } }], null), null)
+  assert.equal(technicalHelpers.sourceRoutingText(routing), '项目定制：P1；标准文件：S1')
+  assert.equal(technicalHelpers.sourceRoutingText(null), '')
+  assert.deepEqual(technicalHelpers.sourceRoutedMaterials(
+    [{ sourceRouting: routing, recommendedMaterials: [{ id: 'M1' }] }],
+    { sourceRoutedMaterials: [{ id: 'M0' }] },
+  ), [{ id: 'M0' }, { id: 'M1' }])
+})
+
+test('buildTocTreeRows：level 栈建树、默认折叠、展开只下钻一层级', () => {
+  const items = [
+    { id: 'A', level: 1 },
+    { id: 'A1', level: 2 },
+    { id: 'A1a', level: 3 },
+    { id: 'B', level: 1 },
+  ]
+  const collapsed = technicalHelpers.buildTocTreeRows({ items, filteredItems: items, tagFilter: '', expandedTocKeys: new Set() })
+  assert.deepEqual(collapsed.map((row) => row.key), ['A', 'B'])
+  assert.equal(collapsed[0].hasChildren, true)
+  const expanded = technicalHelpers.buildTocTreeRows({ items, filteredItems: items, tagFilter: '', expandedTocKeys: new Set(['A', 'A1']) })
+  assert.deepEqual(expanded.map((row) => [row.key, row.depth]), [['A', 0], ['A1', 1], ['A1a', 2], ['B', 0]])
+  // 筛选态退化为平铺命中列表
+  const filtered = technicalHelpers.buildTocTreeRows({ items, filteredItems: [items[1]], tagFilter: 'needs_choice', expandedTocKeys: new Set() })
+  assert.deepEqual(filtered.map((row) => [row.key, row.depth, row.hasChildren]), [['A1', 0, false]])
+})
+
+test('aiFillSelectionKey/resolveAiFillReferenceIds：按目录项×任务隔离，未勾选回落默认', () => {
+  const selected = { id: 'G1' }
+  assert.equal(technicalHelpers.aiFillSelectionKey(selected, { id: 'T1' }), 'G1:T1')
+  assert.equal(technicalHelpers.aiFillSelectionKey(selected, { blankSource: { id: 'B1' } }), 'G1:B1')
+  assert.equal(technicalHelpers.aiFillSelectionKey(selected, {}), 'G1:fill')
+  assert.equal(technicalHelpers.aiFillSelectionKey(null, { id: 'T1' }), '')
+  assert.deepEqual(technicalHelpers.resolveAiFillReferenceIds({ 'G1:T1': ['M1'] }, 'G1:T1', ['D1']), ['M1'])
+  assert.deepEqual(technicalHelpers.resolveAiFillReferenceIds({}, 'G1:T1', ['D1']), ['D1'])
+  assert.deepEqual(technicalHelpers.resolveAiFillReferenceIds({ 'G1:T1': ['M1'] }, '', ['D1']), ['D1'])
+})
+
+test('toggleAiFillReferenceId：勾选切换并去重', () => {
+  assert.deepEqual(technicalHelpers.toggleAiFillReferenceId(['M1', 'M2'], 'M2'), ['M1'])
+  assert.deepEqual(technicalHelpers.toggleAiFillReferenceId(['M1'], 'M2'), ['M1', 'M2'])
+  assert.deepEqual(technicalHelpers.toggleAiFillReferenceId(['M1'], 'M1'), [])
+})
+
+test('mergeUploadedCandidates：按 id 去重并保持上传顺序', () => {
+  const current = [{ id: 'M1' }]
+  assert.deepEqual(technicalHelpers.mergeUploadedCandidates(current, [{ id: 'M1' }, { id: 'M2' }, { materialId: 'M3' }]), [
+    { id: 'M1' },
+    { id: 'M2' },
+    { materialId: 'M3' },
+  ])
+})
+
+test('aiFillReferenceCandidatesForItem：规则路由时只取路由素材', () => {
+  const result = technicalHelpers.aiFillReferenceCandidatesForItem({
+    tasks: [{ recommendedMaterials: [{ id: 'M-TASK' }] }],
+    item: { sourceRoutedMaterials: [{ id: 'M-ROUTED' }], matchedMaterials: [{ id: 'M-MATCHED' }] },
+    sourceRouting: { source: 'appendix_source_matrix' },
+    materialMatch: { material: { id: 'M-MATCHED' } },
+    candidateMaterials: [{ id: 'M-CAND' }],
+    uploadedCandidates: [],
+  })
+  assert.deepEqual(result.map((item) => item.id), ['M-ROUTED'])
+})
+
+test('aiFillReferenceCandidatesForItem：去重、按匹配度排序截断，上传素材置顶不受限', () => {
+  const candidates = Array.from({ length: 25 }, (_, index) => ({
+    id: `M${index}`,
+    matchScore: index / 100,
+  }))
+  const result = technicalHelpers.aiFillReferenceCandidatesForItem({
+    tasks: [],
+    item: { matchedMaterials: candidates },
+    sourceRouting: null,
+    materialMatch: null,
+    candidateMaterials: [],
+    uploadedCandidates: [{ id: 'UP1' }],
+  })
+  assert.equal(result[0].id, 'UP1')
+  assert.equal(result.length, 21)
+  // 剩余按匹配度降序（matchScore 走 technicalMatchScore 口径）
+  assert.equal(result[1].id, 'M24')
+  // 重复 id 只保留一份
+  const deduped = technicalHelpers.aiFillReferenceCandidatesForItem({
+    tasks: [],
+    item: { matchedMaterials: [{ id: 'M1' }, { id: 'M1' }] },
+    sourceRouting: null,
+    materialMatch: null,
+    candidateMaterials: [],
+    uploadedCandidates: [{ id: 'M1' }],
+  })
+  assert.deepEqual(deduped.map((item) => item.id), ['M1'])
+})
+
+test('fillBlankEntriesForTasks：素材类空白按前缀/来源类型识别并构造卡片素材', () => {
+  const [materialBlank, parsedBlank] = technicalHelpers.fillBlankEntriesForTasks([
+    { id: 'T1', blankSource: { materialId: 'RAW-9', title: '待填写-参数表', folderPath: '/客户素材' } },
+    { id: 'T2', blankSource: { id: 'APPX-1', title: '空副表', sourceFile: '招标文件.pdf' } },
+  ])
+  assert.equal(materialBlank.isMaterialBlank, true)
+  assert.equal(materialBlank.key, 'RAW-9')
+  assert.equal(materialBlank.material.folderPath, '/客户素材')
+  assert.equal(parsedBlank.isMaterialBlank, false)
+  assert.equal(parsedBlank.material.folderPath, '招标文件.pdf')
+})
+
+test('backupMaterialEntries：剔除已选、系统预选置顶', () => {
+  const entries = technicalHelpers.backupMaterialEntries({
+    topBlankEntries: [{ key: 'BLANK-TOP' }],
+    selectedCardMaterialIds: new Set(['M-SEL']),
+    selectedMaterialIdSet: new Set(['M-MERGED']),
+    poolBlankEntries: [{ key: 'BLANK-POOL', entry: { key: 'BLANK-POOL' } }],
+    referenceCandidates: [{ id: 'M-PIN' }, { id: 'M-OTHER' }, { id: 'M-SEL' }],
+    matchedMaterialIds: new Set(['M-PIN']),
+  })
+  assert.deepEqual(entries.map((wrapper) => wrapper.key), ['M-PIN', 'BLANK-POOL', 'M-OTHER'])
+  assert.equal(entries[0].kind, 'material')
+  assert.equal(entries[1].kind, 'blank')
+  // 无系统预选时保持候选原顺序
+  const unpinned = technicalHelpers.backupMaterialEntries({
+    topBlankEntries: [],
+    selectedCardMaterialIds: new Set(),
+    selectedMaterialIdSet: new Set(),
+    poolBlankEntries: [],
+    referenceCandidates: [{ id: 'A' }, { id: 'B' }],
+    matchedMaterialIds: new Set(),
+  })
+  assert.deepEqual(unpinned.map((wrapper) => wrapper.key), ['A', 'B'])
+})
+
+test('toggleListKey/moveListItem：多选铺开勾选与排序', () => {
+  assert.deepEqual(technicalHelpers.toggleListKey(['A', 'B'], 'A'), ['B'])
+  assert.deepEqual(technicalHelpers.toggleListKey(['A'], 'B'), ['A', 'B'])
+  assert.deepEqual(technicalHelpers.moveListItem(['A', 'B', 'C'], 0, 1), ['B', 'A', 'C'])
+  assert.deepEqual(technicalHelpers.moveListItem(['A', 'B', 'C'], 2, 1), ['A', 'B', 'C'])
+  assert.deepEqual(technicalHelpers.moveListItem(['A', 'B', 'C'], 0, -1), ['A', 'B', 'C'])
 })
