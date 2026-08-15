@@ -30,6 +30,11 @@ import {
   tenderBasisSearchText,
 } from '../utils/outlineEvidence'
 import { markTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
+import {
+  scopeTechnicalTaskPayload,
+  technicalTaskBelongsToProject,
+  technicalTaskResponseMatchesProject,
+} from '../technicalOutlineTaskLifecycle.js'
 
 const cloneNodes = (nodes = []) => JSON.parse(JSON.stringify(nodes))
 const MATERIAL_MATCH_ACTIVE_STATUSES = new Set(['queued', 'running', 'processing', 'cancel_requested'])
@@ -292,6 +297,10 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   const materialMatchEpochRef = useRef(0)
   const materialMatchTerminalHandledRef = useRef(0)
   const materialMatchShouldFinalizeRef = useRef(false)
+  const currentProjectIdRef = useRef(String(id))
+  // 路由参数在 render 阶段即生效，避免上一项目的异步响应抢在 effect 前回写。
+  // eslint-disable-next-line react-hooks/refs
+  currentProjectIdRef.current = String(id)
 
   const markPendingSearch = useCallback((nonce) => {
     pendingSearchNonceRef.current = nonce || ''
@@ -312,7 +321,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     setOnlyofficeError('')
   }, [])
 
-  const applyMaterialMatchPayload = useCallback((payload) => {
+  const applyMaterialMatchPayload = useCallback((payload, ownerId = id) => {
     if (!payload?.status) return
     const incomingStatus = materialMatchStatusName(payload)
     const active = MATERIAL_MATCH_ACTIVE_STATUSES.has(incomingStatus)
@@ -323,38 +332,68 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     const nextPayload = materialMatchStopRequestedRef.current && active && incomingStatus !== 'cancel_requested'
       ? { ...payload, status: 'cancel_requested', message: '已请求停止素材匹配，正在等待安全停止点。' }
       : payload
+    const scopedPayload = scopeTechnicalTaskPayload(ownerId, nextPayload)
 
-    if (MATERIAL_MATCH_TERMINAL_STATUSES.has(materialMatchStatusName(nextPayload))) {
+    if (MATERIAL_MATCH_TERMINAL_STATUSES.has(materialMatchStatusName(scopedPayload))) {
       materialMatchStopRequestedRef.current = false
       setMaterialMatchStopping(false)
     }
     setMaterialMatchStatus((previous) => {
       const previousStatus = materialMatchStatusName(previous)
       if (
-        MATERIAL_MATCH_TERMINAL_STATUSES.has(previousStatus)
-        && MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(nextPayload))
+        technicalTaskBelongsToProject(previous, ownerId)
+        && MATERIAL_MATCH_TERMINAL_STATUSES.has(previousStatus)
+        && MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(scopedPayload))
       ) {
         return previous
       }
-      return nextPayload
+      return scopedPayload
     })
-  }, [])
+  }, [id])
+
+  useEffect(() => {
+    // 项目切换必须在新项目加载前同步清空上一项目的任务 UI。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDirectoryState(null)
+    setMaterialMatchStatus(null)
+    setRegenerationModalOpen(false)
+    setMaterialMatchModalOpen(false)
+    setDirectoryStopping(false)
+    setMaterialMatchStopping(false)
+    setMaterialMatchSubmitting(false)
+    setConfirming(false)
+    setRegenerating(false)
+    setRegenerationPendingState(null)
+    directoryStopRequestedRef.current = false
+    materialMatchStopRequestedRef.current = false
+    materialMatchEpochRef.current = 0
+    materialMatchTerminalHandledRef.current = 0
+    materialMatchShouldFinalizeRef.current = false
+  }, [id])
 
   const loadData = useCallback(async () => {
+    const requestProjectId = id
     setLoading(true)
     setError('')
     try {
       const [{ outlinePayload, generationPayload, projectPayload }, detectionPayload] = await Promise.all([
         loadConsistentOutlineReviewSnapshot({
-          loadDirectoryState: () => technicalDirectoryAPI.status(id).catch(() => null),
-          loadOutline: () => technicalOutlineAPI.get(id),
-          loadProject: () => technicalProjectsAPI.get(id).catch(() => null),
+          loadDirectoryState: () => technicalDirectoryAPI.status(requestProjectId).catch(() => null),
+          loadOutline: () => technicalOutlineAPI.get(requestProjectId),
+          loadProject: () => technicalProjectsAPI.get(requestProjectId).catch(() => null),
         }),
-        technicalGapsAPI.detectionStatus(id).catch(() => null),
+        technicalGapsAPI.detectionStatus(requestProjectId).catch(() => null),
       ])
-      const resolvedProjectName = projectPayload?.name || id
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      const resolvedProjectName = projectPayload?.name || requestProjectId
       applyOutlinePayload(outlinePayload)
-      setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, generationPayload))
+      setDirectoryState((previous) => scopeTechnicalTaskPayload(
+        requestProjectId,
+        mergeMonotonicDirectoryProgress(
+          technicalTaskBelongsToProject(previous, requestProjectId) ? previous : null,
+          generationPayload,
+        ),
+      ))
       if (generationPayload?.status === 'cancel_requested') {
         directoryStopRequestedRef.current = true
         setDirectoryStopping(true)
@@ -368,14 +407,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       if (detectionPayload?.status) {
         const detectionStatus = materialMatchStatusName(detectionPayload)
         const detectionActive = MATERIAL_MATCH_ACTIVE_STATUSES.has(detectionStatus)
-        applyMaterialMatchPayload(detectionPayload)
+        applyMaterialMatchPayload(detectionPayload, requestProjectId)
         if (detectionActive) {
           materialMatchEpochRef.current += 1
           materialMatchShouldFinalizeRef.current = true
           markTechnicalTask({
             taskType: 'material-match',
             taskName: '素材匹配',
-            projectId: id,
+            projectId: requestProjectId,
             projectName: resolvedProjectName,
             ...materialMatchTaskPatch(detectionPayload),
           })
@@ -388,9 +427,12 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         }
       }
     } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       setError(e?.message || '目录数据加载失败')
     } finally {
-      setLoading(false)
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setLoading(false)
+      }
     }
   }, [applyMaterialMatchPayload, applyOutlinePayload, id, progressTask])
 
@@ -401,12 +443,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     return () => clearTimeout(timer)
   }, [loadData])
 
-  const directoryRunning = isDirectoryProgressRunning(directoryState)
+  const directoryRunning = technicalTaskBelongsToProject(directoryState, id)
+    && isDirectoryProgressRunning(directoryState)
   const directoryLocked = regenerating || directoryRunning
-  const materialMatchRunning = MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(materialMatchStatus))
+  const materialMatchRunning = technicalTaskBelongsToProject(materialMatchStatus, id)
+    && MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(materialMatchStatus))
 
   useEffect(() => {
-    if (!directoryState?.status) return
+    if (!technicalTaskBelongsToProject(directoryState, id) || !directoryState?.status) return
     updateTechnicalTask('outline-regenerate', id, {
       status: String(directoryState.status).toLowerCase(),
       percentage: Number(directoryState.percentage) || 0,
@@ -422,13 +466,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
 
   useEffect(() => {
     if (!directoryRunning) return undefined
+    const requestProjectId = id
     let cancelled = false
     let timer = null
 
     const pollDirectoryStatus = async () => {
       try {
-        const response = await technicalDirectoryAPI.status(id)
-        if (cancelled) return
+        const response = await technicalDirectoryAPI.status(requestProjectId)
+        if (cancelled || !technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
         const responseStatus = String(response?.status || '').toLowerCase()
         const payload = directoryStopRequestedRef.current
           && isDirectoryProgressRunning(response)
@@ -437,11 +482,14 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           : response
         if (payload?.status === 'completed') {
           const [outlinePayload, projectPayload] = await Promise.all([
-            technicalOutlineAPI.get(id),
-            technicalProjectsAPI.get(id).catch(() => null),
+            technicalOutlineAPI.get(requestProjectId),
+            technicalProjectsAPI.get(requestProjectId).catch(() => null),
           ])
-          if (cancelled) return
-          setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+          if (cancelled || !technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+          setDirectoryState((previous) => scopeTechnicalTaskPayload(
+            requestProjectId,
+            mergeMonotonicDirectoryProgress(previous, payload),
+          ))
           applyOutlinePayload(outlinePayload)
           setCurrentStage(Number(projectPayload?.currentStage) || 2)
           directoryStopRequestedRef.current = false
@@ -450,7 +498,10 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           showToast?.('目录重新生成完成，请重新审核。')
           return
         }
-        setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
+        setDirectoryState((previous) => scopeTechnicalTaskPayload(
+          requestProjectId,
+          mergeMonotonicDirectoryProgress(previous, payload),
+        ))
         if (payload?.status === 'cancel_requested') {
           directoryStopRequestedRef.current = true
           setDirectoryStopping(true)
@@ -483,20 +534,21 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   }, [applyOutlinePayload, directoryRunning, id, showToast])
 
   useEffect(() => {
-    if (!materialMatchStatus?.status) return
+    if (!technicalTaskBelongsToProject(materialMatchStatus, id) || !materialMatchStatus?.status) return
     updateTechnicalTask('material-match', id, materialMatchTaskPatch(materialMatchStatus))
   }, [id, materialMatchStatus])
 
   useEffect(() => {
     if (!materialMatchRunning || materialMatchSubmitting) return undefined
+    const requestProjectId = id
     let disposed = false
     let timer = null
 
     const pollMaterialMatchStatus = async () => {
       try {
-        const payload = await technicalGapsAPI.detectionStatus(id)
-        if (disposed) return
-        applyMaterialMatchPayload(payload)
+        const payload = await technicalGapsAPI.detectionStatus(requestProjectId)
+        if (disposed || !technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+        applyMaterialMatchPayload(payload, requestProjectId)
       } catch {
         // 后台任务不中断，保留当前进度并继续轮询。
       }
@@ -511,6 +563,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
   }, [applyMaterialMatchPayload, id, materialMatchRunning, materialMatchSubmitting])
 
   useEffect(() => {
+    if (!technicalTaskBelongsToProject(materialMatchStatus, id)) return undefined
     const status = materialMatchStatusName(materialMatchStatus)
     if (!MATERIAL_MATCH_TERMINAL_STATUSES.has(status)) return undefined
 
@@ -529,18 +582,25 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       return undefined
     }
 
+    const requestProjectId = id
     let disposed = false
     const finishStage = async () => {
       try {
-        const stageResult = await technicalStagesAPI.update(id, 2, { status: 'completed' })
-        if (disposed || materialMatchEpochRef.current !== epoch) return
+        const stageResult = await technicalStagesAPI.update(requestProjectId, 2, { status: 'completed' })
+        if (
+          disposed
+          || materialMatchEpochRef.current !== epoch
+          || !technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)
+        ) return
         const nextStageId = Number(stageResult?.currentStage) || 3
-        const nextRoute = getTechnicalStageRoute(id, nextStageId, workspaceSlug)
-          || projectRoute(id, '/gaps', workspaceSlug)
+        const nextRoute = getTechnicalStageRoute(requestProjectId, nextStageId, workspaceSlug)
+          || projectRoute(requestProjectId, '/gaps', workspaceSlug)
         showToast?.('素材匹配已完成，已进入素材匹配')
         navigate(nextRoute)
       } catch (error) {
-        if (!disposed) showToast?.(error?.message || '素材匹配完成，但阶段状态更新失败。', 'error')
+        if (!disposed && technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+          showToast?.(error?.message || '素材匹配完成，但阶段状态更新失败。', 'error')
+        }
       }
     }
     finishStage()
@@ -607,6 +667,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
 
   const handleRegenerateDirectory = async () => {
     if (directoryLocked) return
+    const requestProjectId = id
     const confirmed = window.confirm(buildDirectoryRegenerationPrompt({
       dirty,
       hasDownstreamResults: currentStage > 2 || reviewStatus === 'confirmed',
@@ -614,7 +675,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     if (!confirmed) return
 
     const queuedAt = new Date().toISOString()
-    const queuedState = beginDirectoryProgressEpoch({
+    const queuedState = scopeTechnicalTaskPayload(requestProjectId, beginDirectoryProgressEpoch({
       incoming: {
         status: 'queued',
         percentage: 0,
@@ -622,7 +683,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         startedAt: queuedAt,
         updatedAt: queuedAt,
       },
-    })
+    }))
     setRegenerationPendingState(queuedState)
     directoryStopRequestedRef.current = false
     setDirectoryStopping(false)
@@ -631,7 +692,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     markTechnicalTask({
       taskType: 'outline-regenerate',
       taskName: '重新生成目录',
-      projectId: id,
+      projectId: requestProjectId,
       projectName,
       status: 'queued',
       percentage: 0,
@@ -640,31 +701,50 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
     })
     try {
       const payload = await technicalOutlineAPI.regenerate(id)
-      setDirectoryState((previous) => beginDirectoryProgressEpoch({ previous, incoming: payload }))
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      setDirectoryState((previous) => scopeTechnicalTaskPayload(
+        requestProjectId,
+        beginDirectoryProgressEpoch({ previous, incoming: payload }),
+      ))
       showToast?.(payload?.message || '已开始重新生成目录。')
     } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
+      const failedState = scopeTechnicalTaskPayload(requestProjectId, {
+        status: 'failed',
+        percentage: 0,
+        summary: e?.message || '启动目录重新生成失败',
+        completedAt: new Date().toISOString(),
+      })
+      setDirectoryState(failedState)
       setRegenerationModalOpen(false)
-      updateTechnicalTask('outline-regenerate', id, {
+      updateTechnicalTask('outline-regenerate', requestProjectId, {
         status: 'failed',
         percentage: 0,
         summary: e?.message || '启动目录重新生成失败',
       })
       showToast?.(e?.message || '启动目录重新生成失败', 'error')
     } finally {
-      setRegenerationPendingState(null)
-      setRegenerating(false)
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setRegenerationPendingState(null)
+        setRegenerating(false)
+      }
     }
   }
 
   const handleStopDirectory = async () => {
     if (!directoryRunning || directoryStopping) return
+    const requestProjectId = id
     directoryStopRequestedRef.current = true
     setDirectoryStopping(true)
     try {
-      const payload = await technicalDirectoryAPI.cancel(id)
+      const payload = await technicalDirectoryAPI.cancel(requestProjectId)
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       if (payload?.error) throw new Error(payload.error)
-      setDirectoryState((previous) => mergeMonotonicDirectoryProgress(previous, payload))
-      updateTechnicalTask('outline-regenerate', id, {
+      setDirectoryState((previous) => scopeTechnicalTaskPayload(
+        requestProjectId,
+        mergeMonotonicDirectoryProgress(previous, payload),
+      ))
+      updateTechnicalTask('outline-regenerate', requestProjectId, {
         status: String(payload?.status || 'cancel_requested').toLowerCase(),
         percentage: Number(payload?.percentage) || Number(directoryState?.percentage) || 0,
         summary: payload?.summary || payload?.message || '已请求停止目录重新生成。',
@@ -674,6 +754,7 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
         setDirectoryStopping(false)
       }
     } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       directoryStopRequestedRef.current = false
       setDirectoryStopping(false)
       showToast?.(e?.message || '停止目录重新生成失败，请稍后重试。', 'error')
@@ -713,17 +794,20 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       return
     }
 
+    const requestProjectId = id
     setConfirming(true)
     let submittedEpoch = 0
     try {
       if (dirty) {
         const nodesToSave = renumberOutlineNodes(nodes)
-        const saved = await technicalOutlineAPI.save(id, { nodes: nodesToSave })
+        const saved = await technicalOutlineAPI.save(requestProjectId, { nodes: nodesToSave })
+        if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
         setNodes(Array.isArray(saved?.nodes) ? saved.nodes : [])
         setDirty(false)
       }
 
-      await technicalOutlineAPI.confirm(id)
+      await technicalOutlineAPI.confirm(requestProjectId)
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       setReviewStatus('confirmed')
       showToast?.('目录确认已完成，正在执行素材匹配...')
 
@@ -742,23 +826,25 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
       materialMatchStopRequestedRef.current = false
       setMaterialMatchStopping(false)
       setMaterialMatchSubmitting(true)
-      setMaterialMatchStatus(queuedState)
+      setMaterialMatchStatus(scopeTechnicalTaskPayload(requestProjectId, queuedState))
       markTechnicalTask({
         taskType: 'material-match',
         taskName: '素材匹配',
-        projectId: id,
+        projectId: requestProjectId,
         projectName,
         ...materialMatchTaskPatch(queuedState),
         startedAt: queuedAt,
       })
 
-      const payload = await technicalGapsAPI.runDetection(id)
+      const payload = await technicalGapsAPI.runDetection(requestProjectId)
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       setMaterialMatchSubmitting(false)
       if (materialMatchEpochRef.current !== epoch) return
-      applyMaterialMatchPayload(payload)
-      updateTechnicalTask('material-match', id, materialMatchTaskPatch(payload))
+      applyMaterialMatchPayload(payload, requestProjectId)
+      updateTechnicalTask('material-match', requestProjectId, materialMatchTaskPatch(payload))
       setMaterialMatchModalOpen(true)
     } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       const message = e?.message || '目录确认或素材匹配失败，请稍后重试'
       if (submittedEpoch > 0 && materialMatchEpochRef.current === submittedEpoch) {
         const failedState = {
@@ -768,31 +854,36 @@ export default function TechnicalOutlineReview({ showToast, workspaceKind = 'tec
           completedAt: new Date().toISOString(),
         }
         materialMatchShouldFinalizeRef.current = false
-        setMaterialMatchStatus(failedState)
-        updateTechnicalTask('material-match', id, materialMatchTaskPatch(failedState))
+        setMaterialMatchStatus(scopeTechnicalTaskPayload(requestProjectId, failedState))
+        updateTechnicalTask('material-match', requestProjectId, materialMatchTaskPatch(failedState))
         setMaterialMatchModalOpen(true)
       }
       setMaterialMatchSubmitting(false)
       showToast?.(message, 'error')
     } finally {
-      setConfirming(false)
+      if (technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) {
+        setConfirming(false)
+      }
     }
   }
 
   const handleStopMaterialMatch = async () => {
     if (!materialMatchRunning || materialMatchStopping) return
+    const requestProjectId = id
     materialMatchStopRequestedRef.current = true
     setMaterialMatchStopping(true)
     try {
-      const payload = await technicalGapsAPI.cancelDetection(id)
+      const payload = await technicalGapsAPI.cancelDetection(requestProjectId)
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       if (payload?.error) throw new Error(payload.error)
-      applyMaterialMatchPayload(payload)
-      updateTechnicalTask('material-match', id, materialMatchTaskPatch(payload))
+      applyMaterialMatchPayload(payload, requestProjectId)
+      updateTechnicalTask('material-match', requestProjectId, materialMatchTaskPatch(payload))
       if (!MATERIAL_MATCH_ACTIVE_STATUSES.has(materialMatchStatusName(payload))) {
         materialMatchStopRequestedRef.current = false
         setMaterialMatchStopping(false)
       }
     } catch (e) {
+      if (!technicalTaskResponseMatchesProject(requestProjectId, currentProjectIdRef.current)) return
       materialMatchStopRequestedRef.current = false
       setMaterialMatchStopping(false)
       showToast?.(e?.message || '停止素材匹配失败，请稍后重试。', 'error')
