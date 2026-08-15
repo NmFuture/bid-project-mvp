@@ -152,6 +152,8 @@ class Settings:
     s1_parse_technical_shard_enabled: bool
     s4_llm_fill_timeout_sec: float | None
     body_fill_concurrency: int
+    fact_curate_concurrency: int
+    fact_curate_batches_per_slot: int
     s1_appendix_workers: int
     ocr_max_concurrent: int
     ocr_pdf_batch_size: int
@@ -259,6 +261,14 @@ settings = Settings(
     # 一键填写（正文+附表）的 compute 并发度；本地安全默认值，5090 实测取值只写
     # docker-compose.5090.yml。使用处另有 1~8 的 clamp 兜底。
     body_fill_concurrency=_int_env("BODY_FILL_CONCURRENCY", 4),
+    # 事实表 AI 填充的分批并发度。默认 4：opencode 全局 8 个槽位，正文填写虽然也占 4，
+    # 但两者已经互斥（curate 跑着时一键填写会被 409 拦），不会真正抢；仍留 4 个给别的
+    # skill。5090 实测取值只写 docker-compose.5090.yml。
+    fact_curate_concurrency=_int_env("FACT_CURATE_CONCURRENCY", 4),
+    # 批数 = 并发数 × 这个倍数。不设「单批多少字段」的固定阈值：清单条数会变（今天 59
+    # 个，换一版清单可能 150 个），固定阈值会让批数跟着字段数线性涨、波次翻倍反而更慢。
+    # 取 2 倍是为了留出负载均衡余量——各批实际耗时不齐时，先跑完的槽位能接着捡活。
+    fact_curate_batches_per_slot=_int_env("FACT_CURATE_BATCHES_PER_SLOT", 2),
     # 以下五项此前是各服务模块内的硬编码常量，默认值与原值一致，仅打开调参能力；
     # 5090 实测取值只写 docker-compose.5090.yml。
     # S1 附表处理线程池，原为固定单线程。

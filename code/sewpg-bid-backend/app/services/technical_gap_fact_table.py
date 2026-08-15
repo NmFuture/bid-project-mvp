@@ -365,7 +365,7 @@ def normalize_project_fact_field(
     }
     # 清单 spec 元数据（有则保留，供前端展示复核口径）；
     # turbineGroup/turbineModelLabel 是机型分组标记，页面保存后要跟着回写，否则分组丢失
-    for meta_key in ("specSeq", "specKey", "reviewLabel", "sourceKind", "sourceHint", "placeholder", "targetFile", "turbineGroup", "turbineModelLabel"):
+    for meta_key in ("specSeq", "specKey", "reviewLabel", "sourceKind", "sourceHint", "placeholder", "targetFile", "turbineGroup", "turbineModelLabel", "platformAuthored"):
         if field.get(meta_key) is not None:
             normalized[meta_key] = copy.deepcopy(field.get(meta_key))
     if field.get("outOfSpec"):
@@ -567,6 +567,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
     # 用于把这些行按机型分组置顶，并让它们绕过清单骨架过滤（多机型行不在清单里）。
     turbine_group_by_key: dict[str, tuple[int, int]] = {}
     turbine_label_by_key: dict[str, str] = {}
+    # 人在建项目时真的填了值的字段（值非空才算），AI 复核只许对它们报冲突不许覆盖
+    platform_authored_keys: set[str] = set()
     # 清单全局唯一（规则页上传），所有项目同一份；这里把生效版本固化进产物做审计
     project_specs, fact_specs_meta = resolve_fact_specs()
     # 换了新 Excel（规则版本变更）视作从头来：连人工值一起丢弃。清单换掉后字段本就
@@ -798,6 +800,13 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 continue
             turbine_group_by_key[key] = (index, order)
             turbine_label_by_key[key] = str(row_model or "")
+            # 只有人在建项目时**真的填了值**的字段才算平台输入。不能拿
+            # projectTurbineModel 来源标记当判据：这一圈字段不论平台值空不空都会挂上它，
+            # 而实测 hubHeightM/ratedPowerKw/rotorDiameterM 往往是空的，值其实是从素材
+            # 抽的。误判成平台输入就会把 AI 的正确修正降级成"建议"——实测让「轮毂高度」
+            # 停在跨列串行脏值「池建昌」上。
+            if str(value or "").strip():
+                platform_authored_keys.add(key)
             add_candidate(
                 label,
                 value,
@@ -828,6 +837,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             confidence=0.98,
             source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
         )
+        if any(formal_model_code(row.get("model")) for row in turbine_models):
+            platform_authored_keys.add(fact_label_key("投标机型"))
         rated_kw = turbine.get("ratedPowerKw")
         rated_mw = f"{rated_kw / 1000:g}" if isinstance(rated_kw, (int, float)) else ""
         for label, value, field_name, unit, confidence in (
@@ -849,6 +860,8 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
                 unit=unit,
                 source_priority=FACT_SOURCE_PRIORITY_PROJECT,
             )
+            if str(value or "").strip():
+                platform_authored_keys.add(fact_label_key(label))
     # 机组台数取各机型台数之和：弹窗强制每行填正整数，任一行填不出数就不给值，
     # 回落到招标文件与素材抽取。单机型时这个和就是那一行本身。
     turbine_counts = [str(row.get("turbineCount") or "").strip() for row in turbine_models]
@@ -862,6 +875,7 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
             unit="台",
             source_priority=FACT_SOURCE_PRIORITY_PROJECT_TURBINE,
         )
+        platform_authored_keys.add(fact_label_key("机组台数"))
     # 投标方案同样进正式材料，用英数字编码拼
     model_code = formal_model_code(model)
     if model_code and hub_height:
@@ -966,6 +980,10 @@ def build_project_fact_table(project: dict[str, Any], gap_state: dict[str, Any])
         if group:
             field["turbineGroup"] = group[0]
             field["turbineModelLabel"] = turbine_label_by_key.get(str(field.get("key") or ""), "")
+        # 与分组标记同一时机补：preserve_compatible_existing_fields 会用人工值整个换掉
+        # field dict，构建过程中打的标记会丢
+        if str(field.get("key") or "") in platform_authored_keys:
+            field["platformAuthored"] = True
     if spec_mode:
         # 以清单为唯一字段骨架：匹配不到 spec 的来源字段不再单独成行，
         # 只保留 spec 行、人工新增字段、旧规则下已经人工确认的兼容字段，

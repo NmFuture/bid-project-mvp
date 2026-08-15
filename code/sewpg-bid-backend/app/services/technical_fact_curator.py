@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable
@@ -214,25 +215,23 @@ _NO_FILL_SOURCE_KINDS = {"template", "platform", "derived"}
 # 和「基础形式填成了塔筒型式」两个真实错误），只是不许静默覆盖，改走冲突通道。
 _READONLY_SOURCE_KINDS = {"template", "derived"}
 
-# 建表时给「人在项目创建/完善项目信息里选定」的字段打的来源标记
-_PLATFORM_SOURCE_REF_TYPES = {"projectTurbineModel"}
-
-
 def _is_platform_authored_field(field: dict[str, Any]) -> bool:
-    """人在建项目时选定的字段（投标机型、机组台数、基础形式、轮毂高度……）。
+    """人在建项目时**真的填了值**的字段（投标机型、机组台数、基础形式……）。
 
-    不能只看 sourceKind：它是从清单「来源文件」列的前缀推出来的，实测 61 个字段里
-    platform 类**一个都没有**——「投标机型」的来源列写的是「项目定制…」被归成
-    material，而「机组台数」「基础形式」连 specKey 都是空的（根本不在清单里，是建表
-    时从机型行派生的）。所以改用建表时打的 projectTurbineModel 来源标记来认，
-    不依赖清单怎么填。
+    判据是建表时打的 platformAuthored 标记，只在平台值非空时才打。
+
+    两条更省事的判据都不成立：
+    - 只看 sourceKind：它由清单「来源文件」列前缀推出，实测 61 个字段里 platform 类
+      一个都没有——「投标机型」的来源列写着「项目定制…」被归成 material，
+      「机组台数」「基础形式」连 specKey 都是空的（不在清单里，是建表时派生的）。
+    - 看有没有 projectTurbineModel 来源标记：那圈字段不论平台值空不空都会挂上它。
+      实测 hubHeightM / ratedPowerKw / rotorDiameterM 都是空的，值其实抽自素材，
+      误判成平台输入会把 AI 的正确修正降级成"建议"——让「轮毂高度」停在跨列串行
+      脏值「池建昌」上，反倒把错值锁死了。
     """
-    if str(field.get("sourceKind") or "") == "platform":
+    if field.get("platformAuthored"):
         return True
-    return any(
-        isinstance(ref, dict) and str(ref.get("type") or "") in _PLATFORM_SOURCE_REF_TYPES
-        for ref in (field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else [])
-    )
+    return str(field.get("sourceKind") or "") == "platform"
 
 
 def _is_curator_readonly_field(field: dict[str, Any]) -> bool:
@@ -277,6 +276,76 @@ def _curate_targets(fields: list[dict[str, Any]], *, fill_only: bool = False) ->
     return targets
 
 
+def split_curate_targets(
+    targets: dict[str, list[str]],
+    fields: list[dict[str, Any]],
+    *,
+    max_batches: int,
+) -> list[dict[str, list[str]]]:
+    """把目标字段聚类切批，每批一个 opencode 会话。
+
+    **聚类**按 materialClass：同类字段读同一批素材，聚在一起省掉重复翻文件，也让
+    「定向取数」那条铁律在批内仍然成立。
+
+    **切批大小是算出来的，不设固定阈值。** 清单条数会变（实测这版 59 个，换一版可能
+    150 个），写死「单批 N 个字段」会让批数跟着字段数线性涨——批数一超过并发槽位就
+    要多跑一波，反而更慢。这里反过来：先由并发能力定批数上限，再按总量均分出批大小。
+
+    只按类别切也不行：实测分布是 tender 25 / wind_resource 20 / none 7 / cert 3 /
+    未指定 2 / production_base 2，前两类占 76%，整轮耗时会被最大那批卡死。所以大类
+    按均分出来的目标大小继续拆，拆剩的零头再合并，避免出现一堆一两个字段的碎批。
+
+    每批保留 fill / fix 两个桶的结构，落表侧的 action 校验不用改。
+    """
+    class_of: dict[str, str] = {}
+    for field in fields:
+        key = str(field.get("key") or "").strip()
+        if key:
+            class_of[key] = str(field.get("materialClass") or "") or "(未指定)"
+
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    total = 0
+    for bucket in ("fill", "fix"):
+        for raw_key in targets.get(bucket) or []:
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            grouped.setdefault(class_of.get(key, "(未指定)"), []).append((bucket, key))
+            total += 1
+    if not total:
+        return []
+
+    # 批数上限决定批大小，而不是反过来。下限 3 是防退化不是调参旋钮：每个会话的固定
+    # 开销是实打实的（建会话、读 SKILL.md + rules.md 约 240 行、跑一次 factcurate 实测
+    # 6.2 秒、写回建议文件），字段总数少于批数上限时不加这条会切出一堆单字段批，
+    # 全在付开销。主场景（59 个字段、上限 8）算出来是 8，不受这条影响。
+    limit = max(1, int(max_batches))
+    target_size = max(3, -(-total // limit))  # ceil
+
+    chunks: list[list[tuple[str, str]]] = []
+    leftovers: list[tuple[str, str]] = []
+    # 大类在前：重活先派出去，尾部小批用来填满空出来的槽位，整体收口更早
+    for _, entries in sorted(grouped.items(), key=lambda item: -len(item[1])):
+        for start in range(0, len(entries), target_size):
+            chunk = entries[start : start + target_size]
+            # 不足半批的零头攒起来合并，免得切出一堆只有一两个字段的碎批——
+            # 每个会话的固定开销（建会话、读 SKILL、跑 factcurate）是实打实的
+            if len(chunk) * 2 <= target_size:
+                leftovers.extend(chunk)
+            else:
+                chunks.append(chunk)
+    for start in range(0, len(leftovers), target_size):
+        chunks.append(leftovers[start : start + target_size])
+
+    batches: list[dict[str, list[str]]] = []
+    for chunk in chunks:
+        batch: dict[str, list[str]] = {"fill": [], "fix": []}
+        for bucket, key in chunk:
+            batch[bucket].append(key)
+        batches.append(batch)
+    return batches
+
+
 def _spec_reference_maps(
     specs: list[dict[str, Any]] | tuple[dict[str, Any], ...],
 ) -> tuple[dict[str, dict[str, Any]], dict[int, dict[str, Any]]]:
@@ -296,17 +365,52 @@ def _spec_reference_maps(
     return by_key, by_seq
 
 
-def build_fact_curator_manifest(
-    project: dict[str, Any],
-    gap_state: dict[str, Any],
-    data: dict[str, Any],
-) -> tuple[dict[str, Any], Path]:
-    """组装 curator manifest 并落盘，返回 (manifest, manifest_path)。"""
-    table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+# 交给 agent 的目标字段属性：SKILL.md 输入契约声明的那些。表里每个字段实际带 28 个属性，
+# 其余（confirmedBy / updatedAt / sourcePriority / turbineGroup / platformAuthored…）是
+# 后端内部账，塞进 prompt 只是噪音。
+_TARGET_FIELD_KEYS = (
+    "key", "label", "reviewLabel", "value", "unit", "status",
+    "sourceKind", "specKey", "specSeq", "referenceFile", "materialClass", "notes",
+)
+# 非本批目标的字段只给「叫什么、现在是什么值」——够 agent 做交叉印证（知道
+# 「投标机型=EW10.0-220」才能校验单机容量、分清场址要求安全等级与机型认证安全等级），
+# 不给 sourceRefs/alternatives 那些它用不上的。实测 61 个字段全量 65.4 KB，精简后 5.2 KB。
+_CONTEXT_FIELD_KEYS = ("key", "label", "value", "unit")
+
+
+def _manifest_field(field: dict[str, Any], *, is_target: bool) -> dict[str, Any]:
+    if not is_target:
+        # 上下文名录：空值直接省掉，它只是给 agent 认路用的
+        return {
+            key: copy.deepcopy(field.get(key))
+            for key in _CONTEXT_FIELD_KEYS
+            if field.get(key) not in (None, "")
+        } or {"key": str(field.get("key") or ""), "label": str(field.get("label") or "")}
+    # 目标字段按 SKILL.md 输入契约给全键位，空值也保留成空串——契约里写着
+    # 「value：当前值，可空」，键位缺失会让 agent 分不清「没这个属性」和「属性是空」
+    trimmed: dict[str, Any] = {}
+    for key in _TARGET_FIELD_KEYS:
+        value = field.get(key)
+        trimmed[key] = copy.deepcopy(value) if value is not None else ""
+    # sourceRefs 只保留类型：agent 要判断的是「这值哪来的」，不需要每条 ref 的完整
+    # payload（实测单个字段挂了 9 条）
+    refs = field.get("sourceRefs") if isinstance(field.get("sourceRefs"), list) else []
+    trimmed["sourceRefTypes"] = sorted(
+        {str(ref.get("type") or "") for ref in refs if isinstance(ref, dict) and ref.get("type")}
+    )
+    return trimmed
+
+
+def enrich_fields_with_spec_reference(
+    table: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """给事实表字段补 referenceFile / materialClass，返回 (字段副本, 规则版本快照)。
+
+    按项目绑定的规则版本关联 spec（R06-B04-02：不再读系统公共清单；项目无绑定时
+    resolve_fact_specs 回落系统默认）。skill 靠 materialClass 定向找素材、靠
+    referenceFile 分辨招标文件字段；并行切批也靠 materialClass 聚类，所以抽出来共用。
+    """
     fields = [copy.deepcopy(field) for field in (table.get("fields") or []) if isinstance(field, dict)]
-    # 按项目绑定的规则版本关联 spec 补 referenceFile/materialClass（R06-B04-02：
-    # 不再读系统公共清单；项目无绑定时 resolve_project_specs 回落系统默认），
-    # 供 skill 按字段 materialClass 定向找素材、按 referenceFile 分辨招标文件字段
     project_specs, fact_specs_meta = resolve_fact_specs()
     spec_by_key, spec_by_seq = _spec_reference_maps(project_specs)
     for field in fields:
@@ -318,6 +422,35 @@ def build_fact_curator_manifest(
                 spec = None
         field["referenceFile"] = str(spec.get("referenceFile") or "") if spec else ""
         field["materialClass"] = material_class_of(spec) if spec else ""
+    return fields, fact_specs_meta
+
+
+def build_fact_curator_manifest(
+    project: dict[str, Any],
+    gap_state: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    targets_override: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, Any], Path]:
+    """组装 curator manifest 并落盘，返回 (manifest, manifest_path)。
+
+    targets_override 是并行分批用的：**只换 targets，projectFactTable.fields 仍是全表**。
+    切分只切「这一批负责哪些字段」，不切「能看见哪些字段」——实测 agent 靠同时看到多个
+    相关字段才分得清「招标场址要求安全等级」和「机型认证安全等级」、分得清「功率曲线
+    取值的湍流度」和「认证 Iref」。把可见范围也切掉，这种辨析能力就没了。
+    """
+    table = gap_state.get("projectFactTable") if isinstance(gap_state.get("projectFactTable"), dict) else {}
+    fields, fact_specs_meta = enrich_fields_with_spec_reference(table)
+    targets = (
+        targets_override
+        if isinstance(targets_override, dict)
+        else _curate_targets(fields, fill_only=bool(data.get("fillOnly")))
+    )
+    target_keys = {
+        str(key or "").strip()
+        for bucket in ("fill", "fix")
+        for key in (targets.get(bucket) or [])
+    }
     work_dir = _curator_run_dir(project)
     manifest = {
         "schemaVersion": FACT_CURATE_SCHEMA_VERSION,
@@ -327,9 +460,13 @@ def build_fact_curator_manifest(
         "operator": str(data.get("operator") or "当前用户"),
         "projectFactTable": {
             "schemaVersion": str(table.get("schemaVersion") or ""),
-            "fields": fields,
+            # 全表都在，但只有本批负责的字段给完整属性，其余压成「叫什么、什么值」
+            "fields": [
+                _manifest_field(field, is_target=str(field.get("key") or "").strip() in target_keys)
+                for field in fields
+            ],
         },
-        "targets": _curate_targets(fields, fill_only=bool(data.get("fillOnly"))),
+        "targets": targets,
         "tenderSources": _tender_sources(project),
         "materials": _curator_materials(project, gap_state),
         # 素材按需拉取入口：materials 里没有 path 的条目，读取前先取一次拿到本地路径
@@ -610,6 +747,32 @@ def apply_fact_curator_suggestions(
     return table, report
 
 
+_REPORT_LIST_KEYS = (
+    "filled", "fixed", "notFound", "skippedConfirmed", "ignored", "conflicts", "touchedKeys",
+)
+
+
+def _new_curate_report() -> dict[str, Any]:
+    report: dict[str, Any] = {key: [] for key in _REPORT_LIST_KEYS}
+    # 分批并发时哪几批失败了要如实带出来，不能只看总数对不对
+    report["batchErrors"] = []
+    report["manifestPaths"] = []
+    report["suggestionCount"] = 0
+    return report
+
+
+def _accumulate_curate_report(merged: dict[str, Any], batch: dict[str, Any]) -> None:
+    """把一批的报告并进总报告。counts 由调用方在全部批次收完后统一算。"""
+    for key in _REPORT_LIST_KEYS:
+        values = batch.get(key)
+        if isinstance(values, list):
+            merged[key].extend(values)
+    merged["suggestionCount"] += int(batch.get("suggestionCount") or 0)
+    path = str(batch.get("manifestPath") or "").strip()
+    if path:
+        merged["manifestPaths"].append(path)
+
+
 def merge_curator_fields_into_table(
     latest_table: dict[str, Any],
     curated_table: dict[str, Any],
@@ -726,27 +889,93 @@ def run_fact_curator_for_project(
             key: 0 for key, value in empty_report.items() if isinstance(value, list)
         }
         return copy.deepcopy(table), empty_report
-    notify("AI 分析素材", f"AI 正在按 {target_total} 个目标字段查证素材（耗时较长）。")
-    result = run_technical_fact_curator_skill(manifest_path)
-    notify("回收建议落表", "正在回收 AI 建议并写入事实表。")
-    suggestions = load_fact_curator_suggestions(result, manifest)
-    saved_at = _now_iso()
-    operator = str(data.get("operator") or "当前用户")
-    cross_materials = [
-        material
-        for material in (manifest.get("materials") or [])
-        if isinstance(material, dict) and material.get("crossProject")
-    ]
-    updated_table, report = apply_fact_curator_suggestions(
-        table,
-        suggestions,
-        operator=operator,
-        saved_at=saved_at,
-        cross_materials=cross_materials,
-        targets=manifest.get("targets") if isinstance(manifest.get("targets"), dict) else None,
+    enriched_fields, _ = enrich_fields_with_spec_reference(table)
+    workers = max(1, int(settings.fact_curate_concurrency or 1))
+    batches = split_curate_targets(
+        targets,
+        enriched_fields,
+        max_batches=workers * max(1, int(settings.fact_curate_batches_per_slot or 1)),
     )
-    report["manifestPath"] = str(manifest_path)
-    report["suggestionCount"] = len(suggestions)
-    report["factSpecsRef"] = manifest.get("factSpecsRef") or {}
-    report["opencodeOutput"] = result.get("opencodeOutput") or {}
-    return updated_table, report
+    operator = str(data.get("operator") or "当前用户")
+
+    def run_batch(index: int, batch_targets: dict[str, list[str]]) -> dict[str, Any]:
+        """一批 = 一个 opencode 会话。慢活在这里跑，落表由调用方按完成顺序收口。"""
+        batch_manifest, batch_path = build_fact_curator_manifest(
+            project, gap_state, data, targets_override=batch_targets
+        )
+        for artifact_key in ("outputFile", "briefFile"):
+            artifact_text = str(batch_manifest.get(artifact_key) or "").strip()
+            if artifact_text and Path(artifact_text).is_file():
+                Path(artifact_text).unlink()
+        batch_result = run_technical_fact_curator_skill(batch_path)
+        batch_suggestions = load_fact_curator_suggestions(batch_result, batch_manifest)
+        cross = [
+            material
+            for material in (batch_manifest.get("materials") or [])
+            if isinstance(material, dict) and material.get("crossProject")
+        ]
+        # 每批各自对着开跑时那份表 apply，批之间目标字段不相交，所以互不干扰；
+        # 真正的收口由调用方按 touchedKeys 逐字段合并进最新的表
+        batch_table, batch_report = apply_fact_curator_suggestions(
+            table,
+            batch_suggestions,
+            operator=operator,
+            saved_at=_now_iso(),
+            cross_materials=cross,
+            targets=batch_targets,
+        )
+        batch_report["manifestPath"] = str(batch_path)
+        batch_report["suggestionCount"] = len(batch_suggestions)
+        batch_report["opencodeOutput"] = batch_result.get("opencodeOutput") or {}
+        return {"index": index, "table": batch_table, "report": batch_report}
+
+    notify(
+        "AI 分析素材",
+        f"AI 正在按 {target_total} 个目标字段查证素材，分 {len(batches)} 批并发（耗时较长）。",
+    )
+    merged_report = _new_curate_report()
+    merged_report["batchTotal"] = len(batches)
+    merged_report["factSpecsRef"] = manifest.get("factSpecsRef") or {}
+    updated_table = copy.deepcopy(table)
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fact-curate") as pool:
+        futures = {
+            pool.submit(run_batch, index, batch): index for index, batch in enumerate(batches, start=1)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                outcome = future.result()
+            except Exception as exc:  # noqa: BLE001 - 单批失败不该带走整轮已有成果
+                logger.exception("事实表维护第 %s 批失败", index)
+                merged_report["batchErrors"].append({"batch": index, "message": str(exc) or "批次执行失败"})
+                done += 1
+                notify("AI 分析素材", f"已完成 {done}/{len(batches)} 批（第 {index} 批失败）。")
+                continue
+            # 增量落表：这一批的结果先并进来，后面的批还在跑。跑一半失败前面的成果还在。
+            updated_table, _ = merge_curator_fields_into_table(
+                updated_table, outcome["table"], outcome["report"].get("touchedKeys") or []
+            )
+            _accumulate_curate_report(merged_report, outcome["report"])
+            done += 1
+            # 还有批在跑时阶段仍是「AI 分析素材」，别让按钮显示成已经在收尾
+            notify(
+                "AI 分析素材" if done < len(batches) else "回收建议落表",
+                f"已完成 {done}/{len(batches)} 批。",
+            )
+
+    errors = merged_report["batchErrors"]
+    if errors and len(errors) == len(batches):
+        # 部分批失败＝部分成功，这正是增量落表的意义；但全批失败要如实报错，
+        # 否则前端看到的是「跑完了，一条建议都没有」，跟「AI 查了但没找到」分不开
+        raise RuntimeError(f"事实表维护全部 {len(batches)} 批均失败：{errors[0]['message']}")
+    # 字段名类的桶按批合并后去重：正常情况下各批目标不相交不会重复，但 agent 越界
+    # 回传别批的字段时会被每一批各记一次，计数就虚高了。touchedKeys 尤其必须去重——
+    # 它驱动落表合并。ignored/conflicts 是带原因的字典，重复项本身是信息，不动。
+    for key in ("filled", "fixed", "notFound", "skippedConfirmed", "touchedKeys"):
+        merged_report[key] = list(dict.fromkeys(merged_report[key]))
+    merged_report["counts"] = {
+        key: len(value) for key, value in merged_report.items() if isinstance(value, list)
+    }
+    merged_report["batchDone"] = done
+    return updated_table, merged_report
