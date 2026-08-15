@@ -2110,6 +2110,11 @@ class BidParseService:
             summary=summary,
             parse_storage=parse_storage,
         )
+        if self.project_service.bid_type == TECHNICAL_PARSE_PROFILE.bid_type:
+            progress = project.get("parse_progress") if isinstance(project.get("parse_progress"), dict) else {}
+            parse_result["parseRevision"] = str(progress.get("runId") or uuid4().hex)
+            parse_result["appendixSelectionRevision"] = 0
+            project["parse_result"] = copy.deepcopy(parse_result)
         persist_workspace_project_fields(project, "parse_result", "parse_storage", "templateFiles", "templateFileRecords", "files", "fileRecords", "currentStage")
         return parse_result
 

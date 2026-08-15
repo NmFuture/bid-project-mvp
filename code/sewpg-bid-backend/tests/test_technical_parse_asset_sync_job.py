@@ -40,7 +40,7 @@ def test_schedule_runs_appendix_sync_and_persists_success_state() -> None:
     ), patch(
         "app.services.technical_parse_asset_sync_job.persist_workspace_project_fields",
     ) as persist_fields, patch(
-        "app.services.technical_parse_asset_sync_job.persist_technical_parse_result",
+        "app.services.technical_parse_asset_sync_job.persist_technical_parse_asset_sync_result",
         return_value=project["parse_result"],
     ) as persist_parse_result, patch(
         "app.services.technical_parse_asset_sync_job.sync_technical_parse_appendices",
@@ -80,7 +80,7 @@ def test_failed_appendix_sync_persists_checkpoint_and_can_be_retried() -> None:
         runs.append(coro_factory)
         return {"status": "running"}
 
-    async def fail_after_checkpoint(_project_payload, parse_result):
+    async def fail_after_checkpoint(_project_payload, parse_result, **_kwargs):
         parse_result["structured"]["technicalAppendixMaterialSync"] = {
             "items": [{"appendixId": "APPX-A", "materialId": "RAW-A"}]
         }
@@ -92,7 +92,7 @@ def test_failed_appendix_sync_persists_checkpoint_and_can_be_retried() -> None:
     ), patch(
         "app.services.technical_parse_asset_sync_job.persist_workspace_project_fields",
     ), patch(
-        "app.services.technical_parse_asset_sync_job.persist_technical_parse_result",
+        "app.services.technical_parse_asset_sync_job.persist_technical_parse_asset_sync_result",
         return_value=project["parse_result"],
     ) as persist_parse_result, patch(
         "app.services.technical_parse_asset_sync_job.sync_technical_parse_appendices",
@@ -112,6 +112,141 @@ def test_failed_appendix_sync_persists_checkpoint_and_can_be_retried() -> None:
         schedule_technical_parse_asset_sync(project["id"])
 
     assert len(runs) == 2
+
+
+def test_sync_superseded_by_new_parse_does_not_overwrite_latest_result() -> None:
+    from app.services.store import store
+    from app.services.technical_parse_asset_sync_job import schedule_technical_parse_asset_sync
+
+    store.reset_for_tests()
+    created = store.create_project({"name": "并发重解析项目", "bidType": "技术标"})
+    project = store.require_project_for_update(created["id"])
+    project["reviewDecision"] = "participate"
+    project["parse_result"] = {
+        "status": "completed",
+        "parseRevision": "parse-1",
+        "appendixSelectionRevision": 0,
+        "structured": {
+            "appendices": [
+                {"id": "APPX-A", "selectedForMaterial": True},
+            ]
+        },
+    }
+    store.persist_project_state(project)
+    captured: dict[str, object] = {}
+
+    def capture_job(_name, coro_factory):
+        captured["run"] = coro_factory
+        return {"status": "running"}
+
+    async def reparse_during_sync(_project_payload, parse_result, **kwargs):
+        latest = store.require_project_for_update(project["id"])
+        latest["parse_result"] = {
+            "status": "completed",
+            "parseRevision": "parse-2",
+            "appendixSelectionRevision": 0,
+            "structured": {
+                "appendices": [
+                    {"id": "APPX-NEW", "selectedForMaterial": True},
+                ]
+            },
+        }
+        latest["parse_storage"] = {
+            "items": [],
+            "structured": latest["parse_result"]["structured"],
+        }
+        ensure_current = kwargs.get("ensure_current")
+        if ensure_current:
+            ensure_current()
+        parse_result["structured"]["technicalAppendixMaterialSync"] = {
+            "items": [{"appendixId": "APPX-A", "materialId": "RAW-A"}],
+            "pendingDeleteIds": [],
+        }
+        return {
+            "status": "synced",
+            "selectedCount": 1,
+            "syncedCount": 1,
+            "uploadedCount": 1,
+            "deletedCount": 0,
+        }
+
+    with patch(
+        "app.services.technical_parse_asset_sync_job.sync_technical_parse_appendices",
+        new=AsyncMock(side_effect=reparse_during_sync),
+    ), patch(
+        "app.services.technical_parse_asset_sync_job.start_job",
+        side_effect=capture_job,
+    ):
+        schedule_technical_parse_asset_sync(project["id"])
+        result = asyncio.run(captured["run"]())
+
+    latest = store.require_project_for_update(project["id"])
+    assert result["status"] == "superseded"
+    assert latest["technicalParseAssetSyncState"]["status"] == "superseded"
+    assert latest["parse_result"]["parseRevision"] == "parse-2"
+    assert latest["parse_result"]["structured"]["appendices"][0]["id"] == "APPX-NEW"
+
+
+def test_sync_superseded_by_selection_change_keeps_latest_selection() -> None:
+    from app.services.store import store
+    from app.services.technical_parse_asset_sync_job import schedule_technical_parse_asset_sync
+    from app.services.technical_parse_assets import set_technical_appendix_asset_selected
+
+    store.reset_for_tests()
+    created = store.create_project({"name": "并发修改附表选择项目", "bidType": "技术标"})
+    project = store.require_project_for_update(created["id"])
+    project["reviewDecision"] = "participate"
+    project["parse_result"] = {
+        "status": "completed",
+        "parseRevision": "parse-1",
+        "appendixSelectionRevision": 0,
+        "structured": {
+            "appendices": [
+                {"id": "APPX-A", "selectedForMaterial": True},
+                {"id": "APPX-B", "selectedForMaterial": False},
+            ]
+        },
+    }
+    store.persist_project_state(project)
+    captured: dict[str, object] = {}
+
+    def capture_job(_name, coro_factory):
+        captured["run"] = coro_factory
+        return {"status": "running"}
+
+    async def change_selection_during_sync(_project_payload, parse_result, **kwargs):
+        set_technical_appendix_asset_selected(project["id"], "APPX-B", selected=True)
+        ensure_current = kwargs.get("ensure_current")
+        if ensure_current:
+            ensure_current()
+        parse_result["structured"]["technicalAppendixMaterialSync"] = {
+            "items": [{"appendixId": "APPX-A", "materialId": "RAW-A"}],
+            "pendingDeleteIds": [],
+        }
+        return {
+            "status": "synced",
+            "selectedCount": 1,
+            "syncedCount": 1,
+            "uploadedCount": 1,
+            "deletedCount": 0,
+        }
+
+    with patch(
+        "app.services.technical_parse_asset_sync_job.sync_technical_parse_appendices",
+        new=AsyncMock(side_effect=change_selection_during_sync),
+    ), patch(
+        "app.services.technical_parse_asset_sync_job.start_job",
+        side_effect=capture_job,
+    ):
+        schedule_technical_parse_asset_sync(project["id"])
+        result = asyncio.run(captured["run"]())
+
+    latest = store.require_project_for_update(project["id"])
+    appendices = latest["parse_result"]["structured"]["appendices"]
+    assert result["status"] == "superseded"
+    assert latest["technicalParseAssetSyncState"]["status"] == "superseded"
+    assert latest["parse_result"]["appendixSelectionRevision"] == 1
+    assert next(item for item in appendices if item["id"] == "APPX-B")["selectedForMaterial"] is True
 
 
 def test_retry_route_validates_project_and_schedules_sync() -> None:

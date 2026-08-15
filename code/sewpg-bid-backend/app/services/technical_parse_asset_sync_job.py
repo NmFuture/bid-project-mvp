@@ -8,8 +8,10 @@ from typing import Any
 
 from app.services.background_job_registry import is_job_active, start_job
 from app.services.technical_parse_assets import (
-    persist_technical_parse_result,
+    TechnicalParseAssetSyncSuperseded,
+    persist_technical_parse_asset_sync_result,
     sync_technical_parse_appendices,
+    technical_parse_sync_versions,
 )
 from app.services.workspace_project_access import (
     persist_workspace_project_fields,
@@ -74,6 +76,10 @@ def schedule_technical_parse_asset_sync(project_id: str) -> dict[str, Any]:
         project_id,
         not_found_error=lambda pid: KeyError(pid),
     )
+    source_parse_result = copy.deepcopy(
+        project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+    )
+    source_parse_revision, source_selection_revision = technical_parse_sync_versions(source_parse_result)
     selected_count = _selected_count(project)
     state = _write_state(
         project_id,
@@ -86,6 +92,8 @@ def schedule_technical_parse_asset_sync(project_id: str) -> dict[str, Any]:
         error="",
         startedAt=_now_iso(),
         finishedAt="",
+        sourceParseRevision=source_parse_revision,
+        sourceSelectionRevision=source_selection_revision,
     )
 
     async def run() -> dict[str, Any]:
@@ -98,15 +106,59 @@ def schedule_technical_parse_asset_sync(project_id: str) -> dict[str, Any]:
             if isinstance(latest_project.get("parse_result"), dict)
             else {}
         )
+
+        def ensure_current() -> None:
+            current_project = require_any_workspace_project_for_update(
+                project_id,
+                not_found_error=lambda pid: KeyError(pid),
+            )
+            current_parse_result = (
+                current_project.get("parse_result")
+                if isinstance(current_project.get("parse_result"), dict)
+                else {}
+            )
+            if technical_parse_sync_versions(current_parse_result) != (
+                source_parse_revision,
+                source_selection_revision,
+            ):
+                raise TechnicalParseAssetSyncSuperseded(
+                    "解析结果或附表选择已更新，本次后台同步已终止。"
+                )
+
+        def mark_superseded(exc: TechnicalParseAssetSyncSuperseded) -> dict[str, Any]:
+            message = str(exc) or "解析结果或附表选择已更新，本次后台同步已终止。"
+            _write_state(
+                project_id,
+                status="superseded",
+                message="解析结果或附表选择已更新，请按最新结果重试同步。",
+                error=message,
+                finishedAt=_now_iso(),
+            )
+            return {"status": "superseded", "message": message}
+
         result: dict[str, Any] = {}
         error: Exception | None = None
         try:
-            result = await sync_technical_parse_appendices(latest_project, parse_result)
+            ensure_current()
+            result = await sync_technical_parse_appendices(
+                latest_project,
+                parse_result,
+                ensure_current=ensure_current,
+            )
+        except TechnicalParseAssetSyncSuperseded as exc:
+            return mark_superseded(exc)
         except Exception as exc:  # noqa: BLE001 - 原始失败原因需要写回项目状态
             error = exc
 
         try:
-            persist_technical_parse_result(project_id, parse_result)
+            persist_technical_parse_asset_sync_result(
+                project_id,
+                parse_result,
+                expected_parse_revision=source_parse_revision,
+                expected_selection_revision=source_selection_revision,
+            )
+        except TechnicalParseAssetSyncSuperseded as exc:
+            return mark_superseded(exc)
         except Exception as exc:  # noqa: BLE001 - 清单断点保存失败同样属于任务失败
             if error is None:
                 error = exc

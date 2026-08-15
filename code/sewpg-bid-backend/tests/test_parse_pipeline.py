@@ -390,8 +390,8 @@ class ParsePipelineTests(unittest.TestCase):
         store.reset_for_tests()
         store._ensure_db()
         self.technical_appendix_sync_patcher = patch(
-            "app.services.bid_project_service.sync_technical_parse_appendices",
-            new=AsyncMock(return_value={"status": "synced", "syncedCount": 0}),
+            "app.services.bid_project_service.schedule_technical_parse_asset_sync",
+            return_value={"status": "running", "selectedCount": 0, "syncedCount": 0},
         )
         self.technical_appendix_sync_patcher.start()
         self.client = TestClient(app, base_url="http://127.0.0.1:8000")

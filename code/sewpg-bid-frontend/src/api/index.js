@@ -442,7 +442,12 @@ export const technicalProjectsAPI = {
   },
   get: (id) => request(`/technical/projects/${id}`),
   create: (data) => request('/technical/projects', { method: 'POST', body: data }),
-  update: (id, data) => request(`/technical/projects/${id}`, { method: 'PUT', body: data }),
+  update: (id, data) => request(`/technical/projects/${id}`, {
+    method: 'PUT',
+    body: data,
+    timeoutMs: 5 * 60 * 1000,
+    retryCount: 0,
+  }),
   retryParseAssetSync: (id) =>
     request(`/technical/projects/${id}/parse-assets/sync`, { method: 'POST' }),
   delete: (id) => request(`/technical/projects/${id}`, {

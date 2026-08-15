@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.services.bid_parse_state import update_parse_result_state
 from app.services.bid_type import TECHNICAL_BID_TYPE
@@ -12,8 +14,7 @@ from app.services.onlyoffice_documents import WORD_MEDIA_TYPE
 from app.services.technical_material_index import rebuild_technical_material_index_strict
 from app.services.technical_material_store import technical_material_store
 from app.services.workspace_project_access import (
-    persist_workspace_project_fields,
-    require_workspace_project_for_update,
+    mutate_workspace_project,
 )
 
 
@@ -27,45 +28,87 @@ class TechnicalParseAssetError(RuntimeError):
         self.status_code = status_code
 
 
-def persist_technical_parse_result(project_id: str, parse_result: dict[str, Any]) -> dict[str, Any]:
-    project = require_workspace_project_for_update(
-        project_id,
-        bid_type=TECHNICAL_BID_TYPE,
-        not_found_error=KeyError,
-        wrong_type_error=lambda _project_id: TechnicalParseAssetError("仅技术标解析附表支持该操作。"),
-    )
-    parse_storage = copy.deepcopy(project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {})
-    parse_storage["items"] = copy.deepcopy(parse_result.get("items") or parse_storage.get("items") or [])
-    parse_storage["structured"] = copy.deepcopy(parse_result.get("structured") or {})
-    payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
-    persist_workspace_project_fields(project, "parse_result", "parse_storage")
-    return payload
+class TechnicalParseAssetSyncSuperseded(RuntimeError):
+    """后台任务使用的解析结果或附表选择已过期。"""
+
+
+def _stable_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def technical_parse_revision(parse_result: dict[str, Any]) -> str:
+    explicit = str(parse_result.get("parseRevision") or "").strip()
+    if explicit:
+        return explicit
+
+    # 兼容修复上线前的历史解析结果：排除仅由素材同步/勾选维护的字段，
+    # 其余解析内容生成稳定指纹，用于识别任务期间发生的重新解析。
+    comparable = copy.deepcopy(parse_result)
+    comparable.pop("appendixSelectionRevision", None)
+    structured = comparable.get("structured") if isinstance(comparable.get("structured"), dict) else {}
+    structured.pop("technicalAppendixMaterialSync", None)
+    appendices = structured.get("appendices") if isinstance(structured.get("appendices"), list) else []
+    for appendix in appendices:
+        if not isinstance(appendix, dict):
+            continue
+        appendix.pop("selectedForMaterial", None)
+        appendix.pop("assetMaterialId", None)
+        appendix.pop("assetSyncStatus", None)
+    comparable["structured"] = structured
+    return f"legacy:{_stable_digest(comparable)}"
+
+
+def technical_appendix_selection_revision(parse_result: dict[str, Any]) -> str:
+    if "appendixSelectionRevision" in parse_result:
+        try:
+            return f"revision:{int(parse_result.get('appendixSelectionRevision') or 0)}"
+        except (TypeError, ValueError):
+            pass
+    structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
+    appendices = structured.get("appendices") if isinstance(structured.get("appendices"), list) else []
+    selection = [
+        {
+            "id": str(item.get("id") or ""),
+            "selected": item.get("selectedForMaterial") is True,
+        }
+        for item in appendices
+        if isinstance(item, dict)
+    ]
+    return f"legacy:{_stable_digest(selection)}"
+
+
+def technical_parse_sync_versions(parse_result: dict[str, Any]) -> tuple[str, str]:
+    return technical_parse_revision(parse_result), technical_appendix_selection_revision(parse_result)
 
 
 def _technical_parse_selection_payload(
-    project_id: str,
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
-    project = require_workspace_project_for_update(
-        project_id,
-        bid_type=TECHNICAL_BID_TYPE,
-        not_found_error=KeyError,
-        wrong_type_error=lambda _project_id: TechnicalParseAssetError("仅技术标解析附表支持该操作。"),
-    )
+    project: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     parse_result = copy.deepcopy(project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {})
     if parse_result.get("status") != "completed":
         raise TechnicalParseAssetError("请先完成技术标解析。")
     structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
     appendices = structured.get("appendices") if isinstance(structured.get("appendices"), list) else []
-    return project, parse_result, [item for item in appendices if isinstance(item, dict)]
+    return parse_result, [item for item in appendices if isinstance(item, dict)]
 
 
-def _persist_selection(project: dict[str, Any], parse_result: dict[str, Any]) -> dict[str, Any]:
+def _store_selection(project: dict[str, Any], parse_result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        current_revision = int(parse_result.get("appendixSelectionRevision") or 0)
+    except (TypeError, ValueError):
+        current_revision = 0
+    parse_result["appendixSelectionRevision"] = current_revision + 1
     parse_storage = copy.deepcopy(project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {})
     parse_storage["items"] = copy.deepcopy(parse_result.get("items") or parse_storage.get("items") or [])
     parse_storage["structured"] = copy.deepcopy(parse_result.get("structured") or {})
-    payload = update_parse_result_state(project, parse_result, parse_storage=parse_storage)
-    persist_workspace_project_fields(project, "parse_result", "parse_storage")
-    return payload
+    return update_parse_result_state(project, parse_result, parse_storage=parse_storage)
 
 
 def set_technical_appendix_asset_selected(
@@ -74,34 +117,139 @@ def set_technical_appendix_asset_selected(
     *,
     selected: bool,
 ) -> dict[str, Any]:
-    project, parse_result, appendices = _technical_parse_selection_payload(project_id)
-    target = next((item for item in appendices if str(item.get("id") or "") == appendix_id), None)
-    if target is None:
-        raise TechnicalParseAssetError("未找到对应的技术标附表。", 404)
-    target["selectedForMaterial"] = bool(selected)
-    parse_result["structured"]["appendices"] = appendices
-    persisted = _persist_selection(project, parse_result)
-    selected_count = sum(item.get("selectedForMaterial") is True for item in appendices)
-    return {
-        "message": "已更新附表素材选择。",
-        "selectedCount": selected_count,
-        "appendixCount": len(appendices),
-        "parseResult": persisted,
-    }
+    def apply(project: dict[str, Any]) -> dict[str, Any]:
+        parse_result, appendices = _technical_parse_selection_payload(project)
+        target = next((item for item in appendices if str(item.get("id") or "") == appendix_id), None)
+        if target is None:
+            raise TechnicalParseAssetError("未找到对应的技术标附表。", 404)
+        target["selectedForMaterial"] = bool(selected)
+        parse_result["structured"]["appendices"] = appendices
+        persisted = _store_selection(project, parse_result)
+        selected_count = sum(item.get("selectedForMaterial") is True for item in appendices)
+        return {
+            "message": "已更新附表素材选择。",
+            "selectedCount": selected_count,
+            "appendixCount": len(appendices),
+            "parseResult": persisted,
+        }
+
+    return mutate_workspace_project(
+        project_id,
+        apply,
+        bid_type=TECHNICAL_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: TechnicalParseAssetError("仅技术标解析附表支持该操作。"),
+    )
 
 
 def set_all_technical_appendix_assets_selected(project_id: str, *, selected: bool) -> dict[str, Any]:
-    project, parse_result, appendices = _technical_parse_selection_payload(project_id)
-    for appendix in appendices:
-        appendix["selectedForMaterial"] = bool(selected)
-    parse_result["structured"]["appendices"] = appendices
-    persisted = _persist_selection(project, parse_result)
-    return {
-        "message": "已全选附表。" if selected else "已清空附表选择。",
-        "selectedCount": len(appendices) if selected else 0,
-        "appendixCount": len(appendices),
-        "parseResult": persisted,
+    def apply(project: dict[str, Any]) -> dict[str, Any]:
+        parse_result, appendices = _technical_parse_selection_payload(project)
+        for appendix in appendices:
+            appendix["selectedForMaterial"] = bool(selected)
+        parse_result["structured"]["appendices"] = appendices
+        persisted = _store_selection(project, parse_result)
+        return {
+            "message": "已全选附表。" if selected else "已清空附表选择。",
+            "selectedCount": len(appendices) if selected else 0,
+            "appendixCount": len(appendices),
+            "parseResult": persisted,
+        }
+
+    return mutate_workspace_project(
+        project_id,
+        apply,
+        bid_type=TECHNICAL_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: TechnicalParseAssetError("仅技术标解析附表支持该操作。"),
+    )
+
+
+def _merge_appendix_sync_fields(
+    target_structured: dict[str, Any],
+    synced_structured: dict[str, Any],
+) -> dict[str, Any]:
+    merged = copy.deepcopy(target_structured)
+    synced_appendices = (
+        synced_structured.get("appendices")
+        if isinstance(synced_structured.get("appendices"), list)
+        else []
+    )
+    synced_by_id = {
+        str(item.get("id") or ""): item
+        for item in synced_appendices
+        if isinstance(item, dict) and str(item.get("id") or "")
     }
+    appendices = merged.get("appendices") if isinstance(merged.get("appendices"), list) else []
+    for appendix in appendices:
+        if not isinstance(appendix, dict):
+            continue
+        synced = synced_by_id.get(str(appendix.get("id") or ""), {})
+        for field in ("assetMaterialId", "assetSyncStatus"):
+            if field in synced:
+                appendix[field] = copy.deepcopy(synced[field])
+            else:
+                appendix.pop(field, None)
+    merged["appendices"] = appendices
+    if "technicalAppendixMaterialSync" in synced_structured:
+        merged["technicalAppendixMaterialSync"] = copy.deepcopy(
+            synced_structured["technicalAppendixMaterialSync"]
+        )
+    return merged
+
+
+def persist_technical_parse_asset_sync_result(
+    project_id: str,
+    synced_parse_result: dict[str, Any],
+    *,
+    expected_parse_revision: str,
+    expected_selection_revision: str,
+) -> dict[str, Any]:
+    """只把附表同步字段合入最新解析结果，CAS 冲突时基于最新项目重放。"""
+
+    def apply(project: dict[str, Any]) -> dict[str, Any]:
+        current = copy.deepcopy(
+            project.get("parse_result") if isinstance(project.get("parse_result"), dict) else {}
+        )
+        current_versions = technical_parse_sync_versions(current)
+        if current_versions != (expected_parse_revision, expected_selection_revision):
+            raise TechnicalParseAssetSyncSuperseded("解析结果或附表选择已更新，本次后台同步结果未覆盖保存。")
+
+        current_structured = (
+            current.get("structured") if isinstance(current.get("structured"), dict) else {}
+        )
+        synced_structured = (
+            synced_parse_result.get("structured")
+            if isinstance(synced_parse_result.get("structured"), dict)
+            else {}
+        )
+        merged_structured = _merge_appendix_sync_fields(current_structured, synced_structured)
+        current["structured"] = merged_structured
+
+        parse_storage = copy.deepcopy(
+            project.get("parse_storage") if isinstance(project.get("parse_storage"), dict) else {}
+        )
+        storage_structured = (
+            parse_storage.get("structured")
+            if isinstance(parse_storage.get("structured"), dict)
+            else {}
+        )
+        storage_structured = copy.deepcopy(storage_structured)
+        storage_structured["appendices"] = copy.deepcopy(merged_structured.get("appendices") or [])
+        if "technicalAppendixMaterialSync" in merged_structured:
+            storage_structured["technicalAppendixMaterialSync"] = copy.deepcopy(
+                merged_structured["technicalAppendixMaterialSync"]
+            )
+        parse_storage["structured"] = storage_structured
+        return update_parse_result_state(project, current, parse_storage=parse_storage)
+
+    return mutate_workspace_project(
+        project_id,
+        apply,
+        bid_type=TECHNICAL_BID_TYPE,
+        not_found_error=KeyError,
+        wrong_type_error=lambda _project_id: TechnicalParseAssetError("仅技术标解析附表支持该操作。"),
+    )
 
 
 def _appendix_material_name(title: str) -> str:
@@ -140,11 +288,15 @@ def _indexed_file_ids(payload: dict[str, Any]) -> set[str]:
 async def sync_technical_parse_appendices(
     project: dict[str, Any],
     parse_result: dict[str, Any],
+    *,
+    ensure_current: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """让项目素材库中的解析附表与最后一次勾选结果保持一致。"""
 
     if str(project.get("bidType") or "") != TECHNICAL_BID_TYPE:
         raise TechnicalParseAssetError("仅技术标解析附表支持该同步操作。")
+    if ensure_current is not None:
+        ensure_current()
 
     structured = parse_result.get("structured") if isinstance(parse_result.get("structured"), dict) else {}
     appendices = structured.get("appendices") if isinstance(structured.get("appendices"), list) else []
@@ -250,9 +402,15 @@ async def sync_technical_parse_appendices(
             "name": str(uploaded_item.get("name") or ""),
         }
 
+    # 上传是幂等覆盖，但删除不可逆。删除旧素材前必须再读一次当前版本，
+    # 避免任务运行期间新勾选的附表被旧快照当成过期文件删除。
+    if ensure_current is not None:
+        ensure_current()
     delete_result = {"succeeded": [], "failed": []}
     if stale_material_ids:
         delete_result = await technical_material_store.raw_batch_delete_files(stale_material_ids)
+    if ensure_current is not None:
+        ensure_current()
     deleted_ids = {str(item) for item in delete_result.get("succeeded") or []}
     failed_delete_ids = [
         str(item.get("fileId") or "")

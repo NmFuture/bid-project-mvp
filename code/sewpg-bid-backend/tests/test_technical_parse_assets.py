@@ -198,6 +198,58 @@ def test_sync_technical_parse_appendices_reconciles_to_latest_selection(tmp_path
     ]
 
 
+def test_sync_checks_source_version_before_deleting_stale_material() -> None:
+    from app.services.technical_parse_assets import (
+        TechnicalParseAssetSyncSuperseded,
+        sync_technical_parse_appendices,
+    )
+
+    project = {
+        "id": "PRJ-TECH-001",
+        "bidType": "技术标",
+        "name": "并发删除保护测试",
+        "materialProjectId": "MAT-TECH-001",
+    }
+    parse_result = {
+        "status": "completed",
+        "structured": {
+            "appendices": [
+                {"id": "APPX-A", "title": "附表A", "selectedForMaterial": False},
+            ],
+            "technicalAppendixMaterialSync": {
+                "items": [
+                    {"appendixId": "APPX-A", "materialId": "RAW-A", "name": "待填写-附表A.docx"},
+                ]
+            },
+        },
+    }
+    current_index = {
+        "tiers": [{"folders": [{"files": [{"id": "RAW-A", "name": "待填写-附表A.docx"}]}]}]
+    }
+    delete_files = AsyncMock(return_value={"succeeded": ["RAW-A"], "failed": []})
+
+    def reject_stale_snapshot() -> None:
+        raise TechnicalParseAssetSyncSuperseded("解析结果或附表选择已更新。")
+
+    with patch(
+        "app.services.technical_parse_assets.technical_material_store.raw_batch_delete_files",
+        delete_files,
+    ), patch(
+        "app.services.technical_parse_assets.rebuild_technical_material_index_strict",
+        new=AsyncMock(return_value=current_index),
+    ):
+        with pytest.raises(TechnicalParseAssetSyncSuperseded):
+            asyncio.run(
+                sync_technical_parse_appendices(
+                    project,
+                    parse_result,
+                    ensure_current=reject_stale_snapshot,
+                )
+            )
+
+    delete_files.assert_not_awaited()
+
+
 def test_sync_technical_parse_appendices_recovers_missing_tracked_materials(tmp_path: Path) -> None:
     from app.services.technical_parse_assets import sync_technical_parse_appendices
 
@@ -278,6 +330,7 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
         "bidType": "技术标",
         "parse_result": {
             "status": "completed",
+            "appendixSelectionRevision": 3,
             "structured": {
                 "appendices": [
                     {"id": "APPX-A", "title": "附表A", "selectedForMaterial": True},
@@ -289,18 +342,36 @@ def test_set_technical_appendix_selection_persists_boolean_choice() -> None:
     }
 
     with patch(
-        "app.services.technical_parse_assets.require_workspace_project_for_update",
-        return_value=project,
-    ), patch(
-        "app.services.technical_parse_assets.persist_workspace_project_fields",
-    ) as persist_state:
+        "app.services.technical_parse_assets.mutate_workspace_project",
+        side_effect=lambda _project_id, mutate, **_kwargs: mutate(project),
+    ) as mutate_project:
         result = set_technical_appendix_asset_selected("PRJ-TECH-001", "APPX-A", selected=False)
 
     appendices = result["parseResult"]["structured"]["appendices"]
     assert [item["selectedForMaterial"] for item in appendices] == [False, True]
     assert result["selectedCount"] == 1
-    persist_state.assert_called_once()
-    assert persist_state.call_args.args[0] is project
+    assert result["parseResult"]["appendixSelectionRevision"] == 4
+    mutate_project.assert_called_once()
+
+
+def test_technical_parse_completion_records_parse_and_selection_revisions() -> None:
+    from app.services.bid_parse_service import technical_parse_service
+    from app.services.store import store
+
+    store.reset_for_tests()
+    created = store.create_project({"name": "解析版本测试", "bidType": "技术标"})
+    project = store.require_project_for_update(created["id"])
+    project["parse_progress"] = {"runId": "RUN-TECH-001"}
+
+    result = technical_parse_service.complete_parse(
+        project["id"],
+        [],
+        [],
+        parse_storage={"items": [], "structured": {}},
+    )
+
+    assert result["parseRevision"] == "RUN-TECH-001"
+    assert result["appendixSelectionRevision"] == 0
 
 
 def test_refresh_technical_parse_result_preserves_appendix_runtime_state(tmp_path: Path) -> None:
@@ -494,10 +565,8 @@ def test_technical_parse_job_does_not_archive_appendices_before_participation() 
         "app.services.bid_parse_service.materialize_parse_appendix_docx_assets",
         return_value=materialized_result,
     ), patch(
-        "app.services.bid_parse_service.sync_technical_parse_appendices",
-        new=AsyncMock(return_value={"status": "synced", "syncedCount": 1}),
-        create=True,
-    ) as sync_appendices:
+        "app.services.bid_project_service.schedule_technical_parse_asset_sync",
+    ) as schedule_appendix_sync:
         service.execute_s1_parse_job(
             str(project["id"]),
             {
@@ -511,7 +580,7 @@ def test_technical_parse_job_does_not_archive_appendices_before_participation() 
     finalize_mock.assert_called_once()
     finalized_result = finalize_mock.call_args[0][1]
     assert finalized_result["structured"]["appendices"] == materialized_result["structured"]["appendices"]
-    sync_appendices.assert_not_awaited()
+    schedule_appendix_sync.assert_not_called()
 
 
 def test_technical_project_confirmation_schedules_appendix_sync_after_persisting_participation() -> None:

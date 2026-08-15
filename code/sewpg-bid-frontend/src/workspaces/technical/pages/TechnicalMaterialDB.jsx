@@ -999,6 +999,9 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
   const [technicalParseAssetSyncState, setTechnicalParseAssetSyncState] = useState(null)
   const [parseAssetSyncRetrying, setParseAssetSyncRetrying] = useState(false)
   const [projectSyncPollRevision, setProjectSyncPollRevision] = useState(0)
+  const parseAssetSyncNeedsRetry = ['failed', 'superseded'].includes(
+    String(technicalParseAssetSyncState?.status || ''),
+  )
 
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [uploadKind, setUploadKind] = useState(() => readStoredUploadKind())
@@ -2044,7 +2047,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
       {technicalParseAssetSyncState?.status && technicalParseAssetSyncState.status !== 'idle' && (
         <div
           className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4 text-sm ${
-            technicalParseAssetSyncState.status === 'failed'
+            parseAssetSyncNeedsRetry
               ? 'border-error/25 bg-error-container/40 text-error'
               : 'border-surface-container-high bg-surface-container-low/60 text-on-surface'
           }`}
@@ -2053,7 +2056,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
             <span className={`material-symbols-outlined mt-0.5 text-[18px] ${technicalParseAssetSyncState.status === 'running' ? 'animate-spin' : ''}`}>
               {technicalParseAssetSyncState.status === 'running'
                 ? 'sync'
-                : technicalParseAssetSyncState.status === 'failed'
+                : parseAssetSyncNeedsRetry
                   ? 'error'
                   : 'check_circle'}
             </span>
@@ -2069,7 +2072,7 @@ export default function TechnicalMaterialDB({ showToast = () => {} }) {
               )}
             </div>
           </div>
-          {technicalParseAssetSyncState.status === 'failed' && (
+          {parseAssetSyncNeedsRetry && (
             <button
               type="button"
               onClick={retryTechnicalParseAssetSync}

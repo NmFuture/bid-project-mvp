@@ -17,13 +17,18 @@ test('parse API exposes backend cancel endpoints', async () => {
   )
 })
 
-test('技术标项目更新立即返回，并提供解析附表后台同步重试入口', async () => {
+test('技术标项目更新为慢素材目录准备保留五分钟且不自动重试', async () => {
   const source = await readFile(apiSourceUrl, 'utf-8')
 
   assert.match(
     source,
-    /technicalProjectsAPI\s*=\s*\{[\s\S]*?update:\s*\(id, data\)\s*=>\s*request\(`\/technical\/projects\/\$\{id\}`,\s*\{\s*method:\s*'PUT',\s*body:\s*data,?\s*\}\)/,
+    /technicalProjectsAPI\s*=\s*\{[\s\S]*?update:\s*\(id, data\)\s*=>\s*request\(`\/technical\/projects\/\$\{id\}`,\s*\{\s*method:\s*'PUT',\s*body:\s*data,\s*timeoutMs:\s*5\s*\*\s*60\s*\*\s*1000,\s*retryCount:\s*0,?\s*\}\)/,
   )
+})
+
+test('技术标项目更新完成后仍提供解析附表后台同步重试入口', async () => {
+  const source = await readFile(apiSourceUrl, 'utf-8')
+
   assert.match(
     source,
     /retryParseAssetSync:\s*\(id\)\s*=>\s*request\(`\/technical\/projects\/\$\{id\}\/parse-assets\/sync`,\s*\{\s*method:\s*'POST'\s*\}\)/,
