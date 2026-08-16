@@ -48,7 +48,7 @@ from app.services.technical_gap_fact_table import (
     summarize_project_fact_fields,
 )
 from app.services.project_fact_materials import project_fact_material_cached_path
-from app.services.turbine_models import project_turbine_model
+from app.services.turbine_models import material_model_fit, project_turbine_model
 from app.services.workspace_artifacts import technical_workspace_dir, technical_workspace_parse_dir
 
 logger = logging.getLogger(__name__)
@@ -179,6 +179,7 @@ def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> li
         return []
     cache_dir = project_fact_material_work_dir(project) / "material_index"
     project_name = str(project.get("name") or "")
+    turbine_model = project_turbine_model(project)
     result: list[dict[str, Any]] = []
     for material in [*own, *candidates]:
         if not isinstance(material, dict):
@@ -186,16 +187,29 @@ def _curator_materials(project: dict[str, Any], gap_state: dict[str, Any]) -> li
         material_id = str(material.get("id") or material.get("materialId") or "")
         if not material_id:
             continue
+        # 明确属于别的机型的素材直接不给：本项目选了上置，下置的认证证书之类没有可用性。
+        # material_model_fit 只在素材带了型号且与本项目布局相反时才判 conflict，
+        # 通用素材（generic）照常保留。
+        if turbine_model and material_model_fit(material, turbine_model) == "conflict":
+            continue
         home_project = str(material.get("homeProject") or "") or material_home_project(material)
-        item = {
+        # 空值一律不输出。实测 175 份素材里 crossProject 全是 false、materialClass 只有
+        # 24 份非空、homeProject 只有 29 份、path 只有 60 份——空值白占 22 KB（约 5500
+        # token），而分批并发后每一批都要付一遍。
+        item: dict[str, Any] = {
             "id": material_id,
             "name": str(material.get("name") or material.get("cleanedFileName") or ""),
-            "folderPath": str(material.get("folderPath") or ""),
-            "materialTier": str(material.get("materialTier") or ""),
-            "materialClass": classify_material(material) or "",
-            "homeProject": home_project,
-            "crossProject": bool(home_project and home_project != project_name),
         }
+        for key, value in (
+            ("folderPath", str(material.get("folderPath") or "")),
+            ("materialTier", str(material.get("materialTier") or "")),
+            ("materialClass", classify_material(material) or ""),
+            ("homeProject", home_project),
+        ):
+            if value:
+                item[key] = value
+        if home_project and home_project != project_name:
+            item["crossProject"] = True
         # build 阶段已落地的素材直接给路径；未落地的不带 path，由 skill 按 materialFetch 现取
         cached = project_fact_material_cached_path(cache_dir, material_id)
         if cached is None:
