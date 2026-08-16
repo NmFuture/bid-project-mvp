@@ -26,7 +26,8 @@ from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
-from app.services.technical_fact_spec_global import resolve_fact_specs
+from app.services.technical_fact_spec_global import load_embed_rules, resolve_fact_specs
+from app.services.technical_fact_spec_import import placeholder_label
 from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
@@ -876,8 +877,9 @@ _EMBED_PLACEHOLDER_RE = re.compile(r"[\[【]\s*([^\]】\r\n]{1,80}?)\s*[,，、:
 _EMBED_NORM_RE = re.compile(r"[\s（）()、/\\:：；;，,。\-_—×*\[\]【】]+")
 # 素材分层的特异性：同名素材优先取更专的一层，同层撞名才交人工
 _EMBED_TIER_PRIORITY = {"project": 3, "customer": 2, "standard": 1}
-# 待插入范围统一成闭区间 [起点节, 终点节]：单标题是起点=终点，整份是这个保留字
-_EMBED_WHOLE_FILE_TOKEN = "完整插入"
+# 素材库把部件型式认证按部件分目录，目录名即部件名。规则表「素材」列写的若命中这样一个
+# 目录，它就不是素材名而是部件名，取哪份要看本项目投的品牌，不能靠名字匹配定。
+_EMBED_COMPONENT_CERT_SEGMENT = "部件认证"
 # 非 docx 素材按需转 Word 后再嵌入，转换脚本取自 bid-material-format-cleaner
 _EMBED_CONVERT_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".pdf"}
 _EMBED_EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm"}
@@ -888,26 +890,82 @@ def _embed_norm(value: Any) -> str:
     return _EMBED_NORM_RE.sub("", str(value or "").replace("　", " ").strip().lower())
 
 
-def _embed_split_label(label: str, by_key: dict[str, list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], list[str]]:
-    """把 `文件-起点-终点` 拆成 (素材候选, 标题锚点)。
+def _embed_rules_for_target(target_file_name: str) -> dict[str, dict[str, Any]]:
+    """本份待填写 Word 的插入规则：占位符正文归一 → 规则行。
 
-    素材名自带连字符（型式认证素材名里有四个），固定按第一个 `-` 拆会把文件名切碎，
-    所以从最长前缀往短试，第一个在素材索引里命中的前缀就是文件名——文件名边界由
-    「库里有没有这个名字」决定，比按语法猜更本质。
-
-    一个前缀都不命中时返回空候选，交给上层报 not_found。这类占位符的根因是素材名
-    对不上（清单写概念名、素材是带机型编号的全名），报「格式错误」会把人引去改清单。
+    规则表存占位符原文（`[基础弯矩表-完整插入，待插入]`），扫描拿到的是剥掉后缀的正文，
+    两边都过一遍 placeholder_label 再归一，方括号全半角与空格差异就不影响对上号。
     """
-    parts = [part.strip() for part in str(label or "").split("-")]
-    for count in range(len(parts), 0, -1):
-        matches = by_key.get(_embed_norm("-".join(parts[:count])))
-        if not matches:
+    target_key = _embed_norm(Path(target_file_name).stem)
+    if not target_key:
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for rule in load_embed_rules():
+        if _embed_norm(Path(str(rule.get("targetFile") or "")).stem) != target_key:
             continue
-        anchors = [part for part in parts[count:] if part]
-        if len(anchors) == 1 and _embed_norm(anchors[0]) == _embed_norm(_EMBED_WHOLE_FILE_TOKEN):
-            anchors = []
-        return matches, anchors
-    return [], []
+        key = _embed_norm(placeholder_label(rule.get("placeholder")))
+        if key:
+            index[key] = rule
+    return index
+
+
+def _embed_dedupe(materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一份素材挂在多个机型目录下会各出一条记录（上置/下置常见），按名字+层级去重。
+
+    不去重的话下游会把「同一份文件的两条记录」当成两个候选，误判成撞名要人工。
+    """
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for material in materials:
+        key = (_embed_norm(material.get("name")), str(material.get("materialTier") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(material)
+    return unique
+
+
+def _embed_component_cert_materials(
+    candidates: list[dict[str, Any]], component: str
+) -> list[dict[str, Any]]:
+    """部件名 → 该部件的认证候选；不是部件名返回空列表。
+
+    判据是素材库的目录结构本身（`.../部件认证/齿轮箱/`），不是关键词表，换项目一样成立。
+    """
+    key = _embed_norm(component)
+    if not key:
+        return []
+    return [
+        material
+        for material in candidates
+        if _EMBED_COMPONENT_CERT_SEGMENT in str(material.get("folderPath") or "")
+        and _embed_norm(Path(str(material.get("folderPath") or "")).name) == key
+    ]
+
+
+def _embed_keyword_materials(
+    candidates: list[dict[str, Any]], keyword: str
+) -> list[dict[str, Any]]:
+    """关键词 → 素材，先精确后包含。
+
+    素材真名常带项目特定后缀（`本项目主机供货制造基地_锡盟基地`），而规则表是全局一份
+    只能写概念名，故精确匹配不到时退包含匹配。先精确保证同名素材不被更长的名字抢走。
+    """
+    key = _embed_norm(keyword)
+    if not key:
+        return []
+    exact = [
+        material
+        for material in candidates
+        if _embed_norm(Path(str(material.get("name") or "")).stem) == key
+    ]
+    if exact:
+        return exact
+    return [
+        material
+        for material in candidates
+        if key in _embed_norm(Path(str(material.get("name") or "")).stem)
+    ]
 
 
 def _format_cleaner_script(script_name: str) -> Any:
@@ -1024,8 +1082,14 @@ def _embed_sources_for_fill(
     work_dir: Path,
     *,
     cache_dir: Path | None = None,
+    target_file_name: str = "",
 ) -> list[dict[str, Any]]:
     """为待填写 Word 里的每个待插入占位符备好可嵌入的 Word 素材。
+
+    范围由文档定、细节由规则表定：扫 Word 得到本次要处理哪些占位符，插哪份素材、插整份
+    还是插其中一节，全查规则表的「待插入」sheet。以前是拿占位符文字去素材库猜文件名，
+    概念名（`齿轮箱型式认证`）对不上真名（`EW10.0-220上置-CGC…（德利佳）…A.pdf`）就报
+    找不到，规则表里那 30 行从没被读过。
 
     每条都带 status：只有 ready 才会被嵌入，其余由 filler 原地标黄并写明原因，
     不静默跳过——整份素材没进去却报成功，审核界面上看不出来。
@@ -1034,23 +1098,51 @@ def _embed_sources_for_fill(
     if not labels:
         return []
     cache_dir = cache_dir or (work_dir / "embed_converted")
+    rules = _embed_rules_for_target(target_file_name or blank_docx_path.name)
     material_scope = build_project_material_scope(project)
     candidates = _allowed_technical_material_index(material_scope, project_turbine_model(project))
-    by_key: dict[str, list[dict[str, Any]]] = {}
-    for material in candidates:
-        key = _embed_norm(Path(str(material.get("name") or "")).stem)
-        if key:
-            by_key.setdefault(key, []).append(material)
 
     sources: list[dict[str, Any]] = []
     for label in labels:
-        matches, anchors = _embed_split_label(label, by_key)
+        rule = rules.get(_embed_norm(label))
+        if rule is None:
+            sources.append(
+                {
+                    "placeholder": label,
+                    "status": "no_rule",
+                    "statusMessage": (
+                        f"规则表「待插入」里没有这份 Word 的占位符「{label}」，"
+                        "请在素材库规则页补一行再重试。"
+                    ),
+                }
+            )
+            continue
+        material_keyword = str(rule.get("material") or "")
+        component_matches = _embed_dedupe(
+            _embed_component_cert_materials(candidates, material_keyword)
+        )
+        if component_matches:
+            # 部件认证取哪份由本项目投的品牌决定，读品牌清单是下一步的事，先显式挂起
+            sources.append(
+                {
+                    "placeholder": label,
+                    "component": material_keyword,
+                    "status": "need_brand",
+                    "statusMessage": (
+                        f"「{material_keyword}」是部件认证，需要按本项目投的品牌选取；"
+                        f"当前候选 {len(component_matches)} 份，暂未接入品牌清单。"
+                    ),
+                    "candidateCount": len(component_matches),
+                }
+            )
+            continue
+        matches = _embed_dedupe(_embed_keyword_materials(candidates, material_keyword))
         if not matches:
             sources.append(
                 {
                     "placeholder": label,
                     "status": "not_found",
-                    "statusMessage": f"项目素材范围内未找到名为「{label}」的素材。",
+                    "statusMessage": f"项目素材范围内未找到名为「{material_keyword}」的素材。",
                 }
             )
             continue
@@ -1064,22 +1156,13 @@ def _embed_sources_for_fill(
             "folderPath": str(picked.get("folderPath") or ""),
             "materialTier": str(picked.get("materialTier") or ""),
         }
-        if anchors:
-            # 单锚点是起点=终点，闭区间语义由 filler 按标题层级展开成整节
-            entry["headingRange"] = {"start": anchors[0], "end": anchors[-1]}
-        if len(anchors) > 2:
-            # 前缀已命中素材，后面还剩三段以上，才是真的占位符格式错
-            sources.append(
-                {
-                    **entry,
-                    "status": "invalid_range",
-                    "statusMessage": (
-                        f"占位符「{label}」在素材「{name}」之后拆出 {len(anchors)} 个标题锚点，"
-                        "最多支持起点和终点两个。"
-                    ),
-                }
-            )
-            continue
+        heading_start = str(rule.get("headingStart") or "")
+        if heading_start:
+            # 起止都空＝整份插入；只填起点＝起点=终点，闭区间由 filler 按标题层级展开成整节
+            entry["headingRange"] = {
+                "start": heading_start,
+                "end": str(rule.get("headingEnd") or "") or heading_start,
+            }
         if ambiguous:
             sources.append(
                 {
@@ -1740,6 +1823,13 @@ def compute_technical_ai_fill(
             Path(str(blank_source["docxPath"])),
             work_dir,
             cache_dir=_project_dir(project) / "s4_gap_workdir" / "ai_fill" / "_embed_converted_cache",
+            # 规则表按素材原名列行，而落地路径带 `{materialId}-` 前缀，只能用原名去对
+            target_file_name=str(
+                blank_source.get("cleanedFileName")
+                or blank_source.get("fileName")
+                or blank_source.get("title")
+                or ""
+            ),
         )
     manifest = {
         "schemaVersion": WORD_FILL_SCHEMA_VERSION if skill_name == TECHNICAL_WORD_FILL_SKILL_NAME else TABLE_FILL_SCHEMA_VERSION,
