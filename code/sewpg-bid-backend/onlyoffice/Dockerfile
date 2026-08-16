@@ -6,10 +6,21 @@ FROM ${ONLYOFFICE_FONT_BUILDER_IMAGE} AS font-builder
 ARG NOTO_CJK_PACKAGE_VERSION=1:20220127+repack1-1
 ARG LIBERATION_PACKAGE_VERSION=2.1.5-1
 ARG FONTTOOLS_PACKAGE_VERSION=4.38.0-1+deb12u1
+# apt 源锁定到 Debian 官方快照归档：实时源在点发布切换窗口或安全更新后会下架旧版本，
+# 曾导致冷构建报 version not found（2026-07 的 12.15 切换）。快照日期与基础镜像同批，
+# 对应 bookworm 12.15 归档，见镜像内 /etc/apt/sources.list.d/debian.sources 的注释。
+# 升级字体包版本时必须同步更新该快照日期。
+ARG DEBIAN_SNAPSHOT=20260713T000000Z
 
 COPY extract-noto-sc.py /usr/local/bin/extract-noto-sc.py
 
-RUN apt-get update \
+# 快照归档的 Release 文件 Valid-Until 早已过期，签名校验仍由 Signed-By 承担，不受影响。
+RUN sed -i \
+        -e "s|deb.debian.org/debian-security|snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+        -e "s|deb.debian.org/debian|snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
+        /etc/apt/sources.list.d/debian.sources \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99debian-snapshot.conf \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         fonts-liberation2="${LIBERATION_PACKAGE_VERSION}" \
         fonts-noto-cjk="${NOTO_CJK_PACKAGE_VERSION}" \
