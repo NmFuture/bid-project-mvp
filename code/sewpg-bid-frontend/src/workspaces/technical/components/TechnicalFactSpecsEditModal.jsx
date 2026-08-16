@@ -8,14 +8,16 @@ import { Dialog, DialogFooter, DialogHeader } from '../../../components/ui/Dialo
 // 与这里的编辑列不是一一对应关系。key/sourceKind 等派生字段不在界面暴露，
 // 保存时按导入解析器（technical_fact_spec_import.py）同款规则自动推导。
 // table-fixed 按百分比分摊弹窗宽度：序号/操作收紧，长文本列多分
+// note / reviewLabel 不出现在这里：两列都是全局清单里没有消费方的空列。
+// note 会被灌进项目事实表的 notes（那本是给人写「为什么本项目不需要这个字段」的，
+// 属于项目级），reviewLabel 全链路没人写也没人读。字段本身在保存时原样透传，
+// 不动后端 spec 结构。
 const COLUMNS = [
-  { field: 'seq', label: '序号', type: 'number', width: 'w-12' },
-  { field: 'targetFile', label: '待填写文件', type: 'multiline', width: 'w-[22%]' },
-  { field: 'placeholder', label: '原占位符位置', width: 'w-[13%]' },
-  { field: 'label', label: '实际要填写的字段', required: true, width: 'w-[15%]' },
-  { field: 'note', label: '必要说明', type: 'multiline', width: 'w-[13%]' },
-  { field: 'reviewLabel', label: '复核', type: 'multiline', width: 'w-[15%]' },
-  { field: 'referenceFile', label: '来源文件', type: 'multiline', width: 'w-[16%]' },
+  { field: 'seq', label: '序号', type: 'number', width: 'w-14' },
+  { field: 'targetFile', label: '待填写文件', type: 'multiline', width: 'w-[28%]' },
+  { field: 'placeholder', label: '原占位符位置', type: 'multiline', width: 'w-[22%]' },
+  { field: 'label', label: '实际要填写的字段', required: true, width: 'w-[22%]' },
+  { field: 'referenceFile', label: '来源文件', type: 'multiline', width: 'w-[22%]' },
 ]
 
 const CELL_INPUT_CLASS =
@@ -65,10 +67,11 @@ const toEditRow = (spec, index) => ({
   targetFile: String(spec?.targetFile || ''),
   placeholder: String(spec?.placeholder || ''),
   label: String(spec?.label || ''),
+  referenceFile: String(spec?.referenceFile || ''),
+  // 界面不展示但保存时原样带回的字段：note/reviewLabel 在全局清单里没有消费方（见 COLUMNS
+  // 上方说明），aliases 暂不支持在弹窗编辑。都不在这里编辑，但也不能被保存动作抹掉。
   note: String(spec?.note || ''),
   reviewLabel: String(spec?.reviewLabel || ''),
-  referenceFile: String(spec?.referenceFile || ''),
-  // 界面不展示但需在保存时保留的字段（aliases 暂不支持在弹窗编辑，原样带回）
   aliases: Array.isArray(spec?.aliases) ? spec.aliases : [],
 })
 
