@@ -106,24 +106,46 @@ def build_prompt(turbine_model: str, brand_list_text: str, components: dict[str,
 
 1. 对每个部件：先在品牌清单里找到**本项目投标机型那一列**写的品牌，再在候选里找厂家对得上的那份。
 2. 只能从上面给出的候选里原样照抄文件名，不许编造、不许改写、不许选未列出的东西。
-3. 候选里没有厂家对得上的，status 填 "{PICK_STATUS_NOT_AVAILABLE}"，materialName 留空，
+3. **品牌清单里这个部件写了几个品牌，就选几份证书**（业务规则：投一个放一个、投多个放多个）。
+   materialNames 是数组，按品牌清单里的先后顺序放。
+4. 候选里没有厂家对得上的，status 填 "{PICK_STATUS_NOT_AVAILABLE}"，materialNames 留空数组，
    reason 写清楚品牌清单要的是什么、候选里只有什么。**不要为了凑数硬选一份。**
-4. reason 必须让人能对着文件名和品牌清单核对，一句话说明你依据的是哪一处。厂家名两边写法
+   部分品牌有、部分没有时，有的照选，reason 里写明少了哪个。
+5. reason 必须让人能对着文件名和品牌清单核对，一句话说明你依据的是哪一处。厂家名两边写法
    常常不一致（简称与全称、个别错别字、证书上「制造商」与「生产厂」是两个字段），
    说清楚你比对的是哪个词。
-5. 只输出 JSON，前后不要有任何解释文字。
+6. 只输出 JSON，前后不要有任何解释文字。
 
 ## 输出格式
 
-{{"picks": [{{"component": "部件名", "brand": "本项目投的品牌", "materialName": "选中的候选文件名", "reason": "判断依据", "status": "{PICK_STATUS_OK}"}}]}}
+{{"picks": [{{"component": "部件名", "brand": "本项目投的品牌（多个用顿号分隔）", "materialNames": ["选中的候选文件名"], "reason": "判断依据", "status": "{PICK_STATUS_OK}"}}]}}
 """
+
+
+def normalize_material_names(item: dict[str, Any]) -> list[str]:
+    """取出一条 pick 里的素材名列表，兼容单值写法。
+
+    AI 偶尔会退回旧的 materialName 单值（prompt 改过、模型没跟上），页面上人工改写也
+    可能只给一个，这里统一收成数组，下游只认数组。
+    """
+    raw = item.get("materialNames")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raw = []
+    names = [str(name or "").strip() for name in raw]
+    single = str(item.get("materialName") or "").strip()
+    if single and single not in names:
+        names.append(single)
+    return [name for name in names if name]
 
 
 def _coerce_picks(parsed: dict[str, Any], components: dict[str, list[str]]) -> list[dict[str, Any]]:
     """AI 输出 → 规范化 picks，并把编造的文件名挡在门外。
 
     只信「原样出现在候选里」的文件名：模型偶尔会把两份候选拼在一起或补全省略号，
-    放过去就等于往标书里插了一份不存在的证书。
+    放过去就等于往标书里插了一份不存在的证书。品牌清单一格写了几个品牌就该选几份，
+    所以这里保留多个，但每一个都要过同一道校验。
     """
     raw = parsed.get("picks")
     if not isinstance(raw, list):
@@ -137,10 +159,14 @@ def _coerce_picks(parsed: dict[str, Any], components: dict[str, list[str]]) -> l
         names = allowed.get(component) or allowed.get(next((c for c in allowed if _norm(c) == _norm(component)), ""))
         if names is None:
             continue
-        picked_name = names.get(_norm(item.get("materialName")))
+        picked: list[str] = []
+        for candidate in normalize_material_names(item):
+            resolved = names.get(_norm(candidate))
+            if resolved and resolved not in picked:
+                picked.append(resolved)
         status = str(item.get("status") or "").strip() or PICK_STATUS_OK
         reason = str(item.get("reason") or "").strip()
-        if picked_name is None:
+        if not picked:
             status = PICK_STATUS_NOT_AVAILABLE
             if not reason:
                 reason = "AI 未从候选里选出可用的证书。"
@@ -148,9 +174,9 @@ def _coerce_picks(parsed: dict[str, Any], components: dict[str, list[str]]) -> l
             {
                 "component": component,
                 "brand": str(item.get("brand") or "").strip(),
-                "materialName": picked_name or "",
+                "materialNames": picked,
                 "reason": reason,
-                "status": PICK_STATUS_OK if picked_name and status == PICK_STATUS_OK else PICK_STATUS_NOT_AVAILABLE,
+                "status": PICK_STATUS_OK if picked and status == PICK_STATUS_OK else PICK_STATUS_NOT_AVAILABLE,
                 "source": "ai",
             }
         )

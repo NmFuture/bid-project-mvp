@@ -102,7 +102,7 @@ class RequestBrandPicksTests(unittest.TestCase):
         )
 
         self.assertEqual(len(picks), 1)
-        self.assertEqual(picks[0]["materialName"], GEARBOX_B)
+        self.assertEqual(picks[0]["materialNames"], [GEARBOX_B])
         self.assertEqual(picks[0]["status"], brand_pick.PICK_STATUS_OK)
         self.assertEqual(picks[0]["source"], "ai")
 
@@ -118,7 +118,49 @@ class RequestBrandPicksTests(unittest.TestCase):
         )
 
         self.assertEqual(picks[0]["status"], brand_pick.PICK_STATUS_NOT_AVAILABLE)
-        self.assertEqual(picks[0]["materialName"], "")
+        self.assertEqual(picks[0]["materialNames"], [])
+
+    def test_two_brands_two_certificates(self) -> None:
+        """业务规则：投一个放一个、投多个放多个。品牌清单一格两个品牌就该选两份。"""
+        client = self._client(
+            '{"picks": [{"component": "齿轮箱", "brand": "甲厂、乙厂", '
+            f'"materialNames": ["{GEARBOX_B}", "{GEARBOX_A}"], "reason": "两个品牌都在清单里", "status": "ok"}}]}}'
+        )
+
+        picks = brand_pick.request_brand_picks(
+            "EW10.0-220上置", "表", {"齿轮箱": [GEARBOX_A, GEARBOX_B]}, client=client
+        )
+
+        # 顺序按 AI 给的（＝品牌清单里的先后），不重排
+        self.assertEqual(picks[0]["materialNames"], [GEARBOX_B, GEARBOX_A])
+        self.assertEqual(picks[0]["status"], brand_pick.PICK_STATUS_OK)
+
+    def test_partial_match_keeps_the_available_ones(self) -> None:
+        """两个品牌只有一个有证书：有的照选，另一个由 reason 说明缺什么。"""
+        client = self._client(
+            '{"picks": [{"component": "齿轮箱", "brand": "乙厂、丙厂", '
+            f'"materialNames": ["{GEARBOX_B}", "丙厂齿轮箱认证.pdf"], "reason": "丙厂的候选里没有", "status": "ok"}}]}}'
+        )
+
+        picks = brand_pick.request_brand_picks(
+            "EW10.0-220上置", "表", {"齿轮箱": [GEARBOX_A, GEARBOX_B]}, client=client
+        )
+
+        # 编造/缺失的那份被挡掉，真实存在的保留
+        self.assertEqual(picks[0]["materialNames"], [GEARBOX_B])
+
+    def test_legacy_single_value_reply_is_still_accepted(self) -> None:
+        """prompt 改成数组后模型偶尔仍回单值，收成数组而不是当成没选。"""
+        client = self._client(
+            '{"picks": [{"component": "齿轮箱", "brand": "乙厂", '
+            f'"materialName": "{GEARBOX_B}", "reason": "文件名含乙厂", "status": "ok"}}]}}'
+        )
+
+        picks = brand_pick.request_brand_picks(
+            "EW10.0-220上置", "表", {"齿轮箱": [GEARBOX_A, GEARBOX_B]}, client=client
+        )
+
+        self.assertEqual(picks[0]["materialNames"], [GEARBOX_B])
 
     def test_not_available_is_kept_with_its_reason(self) -> None:
         client = self._client(
@@ -152,12 +194,12 @@ class PicksByComponentTests(unittest.TestCase):
     def test_manual_pick_wins_over_ai_pick_for_the_same_component(self) -> None:
         index = brand_pick.picks_by_component(
             [
-                {"component": "齿轮箱", "materialName": GEARBOX_A, "source": "manual"},
-                {"component": "齿轮箱", "materialName": GEARBOX_B, "source": "ai"},
+                {"component": "齿轮箱", "materialNames": [GEARBOX_A], "source": "manual"},
+                {"component": "齿轮箱", "materialNames": [GEARBOX_B], "source": "ai"},
             ]
         )
 
-        self.assertEqual(index[brand_pick._norm("齿轮箱")]["materialName"], GEARBOX_A)
+        self.assertEqual(index[brand_pick._norm("齿轮箱")]["materialNames"], [GEARBOX_A])
 
 
 class EmbedUsesBrandPickTests(unittest.TestCase):
@@ -218,7 +260,7 @@ class EmbedUsesBrandPickTests(unittest.TestCase):
                     {
                         "component": "齿轮箱",
                         "brand": "乙厂",
-                        "materialName": GEARBOX_B,
+                        "materialNames": [GEARBOX_B],
                         "reason": "文件名含乙厂",
                         "status": "ok",
                         "source": "ai",
@@ -236,6 +278,65 @@ class EmbedUsesBrandPickTests(unittest.TestCase):
         self.assertNotEqual(sources[0]["status"], "need_brand")
         self.assertEqual(sources[0]["name"], GEARBOX_B)
 
+    def test_two_certificates_become_two_ordered_embed_sources(self) -> None:
+        """投两个品牌就插两份：一个占位符产出两条 embedSource，顺序即插入顺序。"""
+        payload = {"bucket": "materials", "key": "raw/x.pdf", "fileName": "x.pdf", "mimeType": "application/pdf"}
+
+        def _run_async_stub(awaitable: object):
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            return payload
+
+        sources = self._run(
+            {
+                "picks": [
+                    {
+                        "component": "齿轮箱",
+                        "brand": "乙厂、甲厂",
+                        "materialNames": [GEARBOX_B, GEARBOX_A],
+                        "reason": "两个品牌都在清单里",
+                        "status": "ok",
+                        "source": "ai",
+                    }
+                ],
+                "error": "",
+            },
+            extra=(
+                patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),
+                patch.object(ai_fill.minio_client, "download_file", side_effect=RuntimeError("stop before convert")),
+            ),
+        )
+
+        self.assertEqual(len(sources), 2)
+        self.assertEqual([s["name"] for s in sources], [GEARBOX_B, GEARBOX_A])
+        # filler 按 embedOrder 依次嵌入，之间隔一个空段
+        self.assertEqual([s["embedOrder"] for s in sources], [0, 1])
+        self.assertEqual({s["embedTotal"] for s in sources}, {2})
+        # 同一个占位符，filler 才知道这两份要插在同一处
+        self.assertEqual({s["placeholder"] for s in sources}, {"齿轮箱型式认证-完整插入"})
+
+    def test_single_certificate_carries_no_order_fields(self) -> None:
+        """只插一份时不带 embedOrder/embedTotal，manifest 不长出没用的字段。"""
+        sources = self._run(
+            {
+                "picks": [
+                    {
+                        "component": "齿轮箱",
+                        "brand": "乙厂",
+                        "materialNames": [GEARBOX_B],
+                        "reason": "文件名含乙厂",
+                        "status": "ok",
+                        "source": "ai",
+                    }
+                ],
+                "error": "",
+            },
+            extra=(patch.object(ai_fill, "_run_async", side_effect=RuntimeError("stop here")),),
+        )
+
+        self.assertEqual(len(sources), 1)
+        self.assertNotIn("embedOrder", sources[0])
+
     def test_not_available_pick_is_held_with_the_ai_reason(self) -> None:
         sources = self._run(
             {
@@ -243,7 +344,7 @@ class EmbedUsesBrandPickTests(unittest.TestCase):
                     {
                         "component": "齿轮箱",
                         "brand": "丙厂",
-                        "materialName": "",
+                        "materialNames": [],
                         "reason": "品牌清单投丙厂，候选里只有甲厂和乙厂",
                         "status": "not_available",
                         "source": "ai",
@@ -271,7 +372,7 @@ class EmbedUsesBrandPickTests(unittest.TestCase):
                     {
                         "component": "齿轮箱",
                         "brand": "乙厂",
-                        "materialName": "别的项目的齿轮箱认证.pdf",
+                        "materialNames": ["别的项目的齿轮箱认证.pdf"],
                         "reason": "手工指定",
                         "status": "ok",
                         "source": "manual",

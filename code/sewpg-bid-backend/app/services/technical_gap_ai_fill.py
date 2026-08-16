@@ -1052,8 +1052,12 @@ def _pick_component_cert(
     candidates: list[dict[str, Any]],
     component: str,
     component_matches: list[dict[str, Any]],
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """部件 → 该插哪份认证。返回 (选中素材, 挂起原因)，两者恰有一个非 None。"""
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """部件 → 该插哪几份认证。返回 (选中素材列表, 挂起原因)，两者恰有一个非空。
+
+    业务规则是投一个放一个、投多个放多个，所以这里返回列表：品牌清单一格写了两个品牌
+    就插两份证书，按品牌清单里的先后顺序。
+    """
     picks = _resolve_brand_picks(project, candidates)
     hold_base = {
         "component": component,
@@ -1061,32 +1065,33 @@ def _pick_component_cert(
         "candidateCount": len(component_matches),
     }
     if picks.get("error"):
-        return None, {**hold_base, "statusMessage": str(picks["error"])}
+        return [], {**hold_base, "statusMessage": str(picks["error"])}
     pick = technical_brand_pick.picks_by_component(picks.get("picks") or []).get(_embed_norm(component))
     if pick is None:
-        return None, {
+        return [], {
             **hold_base,
             "statusMessage": f"品牌清单里没有查到「{component}」本项目投什么品牌，请人工指定。",
         }
     brand = str(pick.get("brand") or "")
     if str(pick.get("status") or "") != technical_brand_pick.PICK_STATUS_OK:
-        return None, {
+        return [], {
             **hold_base,
             "brand": brand,
             "statusMessage": str(pick.get("reason") or f"「{component}」未选出可用的认证证书。"),
         }
-    picked_name = _embed_norm(pick.get("materialName"))
-    for material in component_matches:
-        if _embed_norm(material.get("name")) == picked_name:
-            return material, None
-    return None, {
-        **hold_base,
-        "brand": brand,
-        "statusMessage": (
-            f"「{component}」按品牌「{brand}」选中的证书不在本项目候选里："
-            f"{pick.get('materialName') or '（空）'}。"
-        ),
-    }
+    wanted = technical_brand_pick.normalize_material_names(pick)
+    by_name = {_embed_norm(material.get("name")): material for material in component_matches}
+    picked = [by_name[key] for key in (_embed_norm(name) for name in wanted) if key in by_name]
+    if not picked:
+        return [], {
+            **hold_base,
+            "brand": brand,
+            "statusMessage": (
+                f"「{component}」按品牌「{brand}」选中的证书不在本项目候选里："
+                f"{'、'.join(wanted) or '（空）'}。"
+            ),
+        }
+    return picked, None
 
 
 def _embed_keyword_materials(
@@ -1268,8 +1273,8 @@ def _embed_sources_for_fill(
             _embed_component_cert_materials(candidates, material_keyword)
         )
         if component_matches:
-            # 部件认证取哪份由本项目投的品牌决定，不能靠名字匹配
-            picked, hold = _pick_component_cert(
+            # 部件认证插几份由品牌清单决定：投一个放一个、投多个放多个
+            picked_list, hold = _pick_component_cert(
                 project, candidates, material_keyword, component_matches
             )
             if hold is not None:
@@ -1287,77 +1292,100 @@ def _embed_sources_for_fill(
                     }
                 )
                 continue
-            picked, ambiguous = _pick_most_specific_material(matches)
-        material_id = str(picked.get("id") or "")
-        name = str(picked.get("name") or "")
-        entry = {
-            "placeholder": label,
-            "materialId": material_id,
-            "name": name,
-            "folderPath": str(picked.get("folderPath") or ""),
-            "materialTier": str(picked.get("materialTier") or ""),
-        }
-        heading_start = str(rule.get("headingStart") or "")
-        if heading_start:
-            # 起止都空＝整份插入；只填起点＝起点=终点，闭区间由 filler 按标题层级展开成整节
-            entry["headingRange"] = {
-                "start": heading_start,
-                "end": str(rule.get("headingEnd") or "") or heading_start,
-            }
-        if ambiguous:
+            single, ambiguous = _pick_most_specific_material(matches)
+            picked_list = [single]
+        # 同一个占位符可能要插多份（多品牌），逐份备料，顺序即插入顺序
+        for order, picked in enumerate(picked_list):
             sources.append(
-                {
-                    **entry,
-                    "status": "ambiguous",
-                    "statusMessage": f"同一层级存在多个名为「{Path(name).stem}」的素材，请人工指定。",
-                    "candidateCount": len(matches),
-                }
-            )
-            continue
-        # 按素材原始后缀判断，不看能不能取到 docx：xlsx 若被 Wiki 预览转换过，取素材时会拿到
-        # 自动转换的清洗稿，那份转换有损（合并单元格丢失、表头认错）。原来据此退回人工，现在改为
-        # 取 raw 原件用 format-cleaner 重新转换——它逐格读原件、不经过预览链路，那层顾虑不成立了。
-        if Path(name).suffix.lower() in _EMBED_CONVERT_SUFFIXES:
-            try:
-                converted_path, converted_kind = _embed_converted_docx(material_id, name, cache_dir)
-            except Exception as exc:  # noqa: BLE001 - 单份素材转不了不能中断整份文件的填写
-                sources.append(
-                    {
-                        **entry,
-                        "status": "convert_failed",
-                        "statusMessage": f"素材「{name}」转 Word 失败：{exc}",
-                    }
+                _embed_source_entry(
+                    label,
+                    picked,
+                    rule,
+                    ambiguous=ambiguous,
+                    candidate_count=len(component_matches or matches),
+                    order=order,
+                    total=len(picked_list),
+                    work_dir=work_dir,
+                    cache_dir=cache_dir,
                 )
-                continue
-            sources.append(
-                {**entry, "status": "ready", "sourceKind": converted_kind, "docxPath": str(converted_path)}
             )
-            continue
-        awaitable = _downloadable_technical_word_payload(material_id)
-        try:
-            payload, source_kind = _run_async(awaitable)
-            file_name = _safe_filename(
-                str(picked.get("cleanedFileName") or payload.get("fileName") or name or f"{material_id}.docx"),
-                f"{material_id}.docx",
-            )
-            if not file_name.lower().endswith(".docx"):
-                file_name = f"{Path(file_name).stem}.docx"
-            target_path = work_dir / "embed_sources" / f"{material_id}-{file_name}"
-            if not target_path.exists():
-                minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
-        except Exception as exc:  # noqa: BLE001 - 单份素材取不到不能中断整份文件的填写
-            if hasattr(awaitable, "close"):
-                awaitable.close()
-            sources.append(
-                {
-                    **entry,
-                    "status": "download_failed",
-                    "statusMessage": f"素材「{name}」下载失败：{exc}",
-                }
-            )
-            continue
-        sources.append({**entry, "status": "ready", "sourceKind": source_kind, "docxPath": str(target_path)})
     return sources
+
+
+def _embed_source_entry(
+    label: str,
+    picked: dict[str, Any],
+    rule: dict[str, Any],
+    *,
+    ambiguous: bool,
+    candidate_count: int,
+    order: int,
+    total: int,
+    work_dir: Path,
+    cache_dir: Path,
+) -> dict[str, Any]:
+    """一份素材 → 一条 embedSource。多份时带上顺序，filler 按序依次嵌入。"""
+    material_id = str(picked.get("id") or "")
+    name = str(picked.get("name") or "")
+    entry: dict[str, Any] = {
+        "placeholder": label,
+        "materialId": material_id,
+        "name": name,
+        "folderPath": str(picked.get("folderPath") or ""),
+        "materialTier": str(picked.get("materialTier") or ""),
+    }
+    if total > 1:
+        # 同一占位符多份素材：filler 按 embedOrder 依次插入，之间隔一个空段
+        entry["embedOrder"] = order
+        entry["embedTotal"] = total
+    heading_start = str(rule.get("headingStart") or "")
+    if heading_start:
+        # 起止都空＝整份插入；只填起点＝起点=终点，闭区间由 filler 按标题层级展开成整节
+        entry["headingRange"] = {
+            "start": heading_start,
+            "end": str(rule.get("headingEnd") or "") or heading_start,
+        }
+    if ambiguous:
+        return {
+            **entry,
+            "status": "ambiguous",
+            "statusMessage": f"同一层级存在多个名为「{Path(name).stem}」的素材，请人工指定。",
+            "candidateCount": candidate_count,
+        }
+    # 按素材原始后缀判断，不看能不能取到 docx：xlsx 若被 Wiki 预览转换过，取素材时会拿到
+    # 自动转换的清洗稿，那份转换有损（合并单元格丢失、表头认错）。原来据此退回人工，现在改为
+    # 取 raw 原件用 format-cleaner 重新转换——它逐格读原件、不经过预览链路，那层顾虑不成立了。
+    if Path(name).suffix.lower() in _EMBED_CONVERT_SUFFIXES:
+        try:
+            converted_path, converted_kind = _embed_converted_docx(material_id, name, cache_dir)
+        except Exception as exc:  # noqa: BLE001 - 单份素材转不了不能中断整份文件的填写
+            return {
+                **entry,
+                "status": "convert_failed",
+                "statusMessage": f"素材「{name}」转 Word 失败：{exc}",
+            }
+        return {**entry, "status": "ready", "sourceKind": converted_kind, "docxPath": str(converted_path)}
+    awaitable = _downloadable_technical_word_payload(material_id)
+    try:
+        payload, source_kind = _run_async(awaitable)
+        file_name = _safe_filename(
+            str(picked.get("cleanedFileName") or payload.get("fileName") or name or f"{material_id}.docx"),
+            f"{material_id}.docx",
+        )
+        if not file_name.lower().endswith(".docx"):
+            file_name = f"{Path(file_name).stem}.docx"
+        target_path = work_dir / "embed_sources" / f"{material_id}-{file_name}"
+        if not target_path.exists():
+            minio_client.download_file(str(payload["bucket"]), str(payload["key"]), target_path)
+    except Exception as exc:  # noqa: BLE001 - 单份素材取不到不能中断整份文件的填写
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        return {
+            **entry,
+            "status": "download_failed",
+            "statusMessage": f"素材「{name}」下载失败：{exc}",
+        }
+    return {**entry, "status": "ready", "sourceKind": source_kind, "docxPath": str(target_path)}
 
 
 def _field_key(field: dict[str, Any]) -> str:

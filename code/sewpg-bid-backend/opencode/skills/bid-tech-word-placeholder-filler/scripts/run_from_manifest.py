@@ -744,12 +744,19 @@ def replace_text(
 # 素材检索与下载在后端完成（脚本不联网、不查库），这里只依据 manifest 给的本地路径。
 
 
-def build_embed_index(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    index: dict[str, dict[str, Any]] = {}
+def build_embed_index(manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """占位符 → 该位置要插的素材列表（按 embedOrder）。
+
+    一个占位符可能要插多份：部件认证按品牌清单取，业务规则是投一个放一个、投多个放多个。
+    早先这里用 setdefault 只留第一条，多出来的会被静默丢掉。
+    """
+    index: dict[str, list[dict[str, Any]]] = {}
     for entry in object_items(manifest.get("embedSources")):
         key = placeholder_key(entry.get("placeholder")) or norm(entry.get("name"))
         if key:
-            index.setdefault(key, entry)
+            index.setdefault(key, []).append(entry)
+    for entries in index.values():
+        entries.sort(key=lambda item: int(item.get("embedOrder") or 0))
     return index
 
 
@@ -876,7 +883,7 @@ def embed_failure_message(entry: dict[str, Any] | None) -> str:
 def apply_embeds(
     doc: Any,
     targets: list[tuple[str, Any, dict[str, Any]]],
-    embed_index: dict[str, dict[str, Any]],
+    embed_index: dict[str, list[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """把整份素材插到占位符段落的位置，插完删掉占位符段落。
 
@@ -891,48 +898,70 @@ def apply_embeds(
     body = doc.element.body
     for location, paragraph, placeholder in targets:
         label = placeholder["label"]
-        entry = embed_index.get(placeholder_key(label))
-        source_path = Path(clean(entry.get("docxPath"))) if entry and clean(entry.get("docxPath")) else None
-        ready = bool(entry) and clean(entry.get("status")) == "ready" and source_path is not None and source_path.exists()
-        heading_range = entry.get("headingRange") if entry and isinstance(entry.get("headingRange"), dict) else None
-        start_anchor = clean(heading_range.get("start")) if heading_range else ""
-        end_anchor = (clean(heading_range.get("end")) if heading_range else "") or start_anchor
-        range_error = ""
-        source_doc: Any = None
-        if ready:
+        entries = embed_index.get(placeholder_key(label)) or []
+        # 逐份准备，任一份不可用就整个占位符标黄：一个占位符的语义是「这里放这个部件的
+        # 认证」，插一半不如不插——审核界面上看不出少了哪一份。
+        prepared: list[tuple[dict[str, Any], Any, Path, str, str]] = []
+        blocked = ""
+        entry = entries[0] if entries else None
+        for candidate in entries:
+            candidate_path = Path(clean(candidate.get("docxPath"))) if clean(candidate.get("docxPath")) else None
+            usable = (
+                clean(candidate.get("status")) == "ready"
+                and candidate_path is not None
+                and candidate_path.exists()
+            )
+            heading_range = candidate.get("headingRange") if isinstance(candidate.get("headingRange"), dict) else None
+            start_anchor = clean(heading_range.get("start")) if heading_range else ""
+            end_anchor = (clean(heading_range.get("end")) if heading_range else "") or start_anchor
+            if not usable:
+                blocked = embed_failure_message(candidate)
+                entry = candidate
+                break
             try:
                 source_doc = (
-                    slice_heading_range(source_path, start_anchor, end_anchor)
+                    slice_heading_range(candidate_path, start_anchor, end_anchor)
                     if start_anchor
-                    else Document(str(source_path))
+                    else Document(str(candidate_path))
                 )
             except Exception as exc:  # noqa: BLE001 - 单份素材截不出来不能中断整份文件的填写
-                ready = False
-                range_error = f"素材「{clean(entry.get('name')) or source_path.name}」按标题区间截取失败：{exc}"
-        if ready:
+                blocked = f"素材「{clean(candidate.get('name')) or candidate_path.name}」按标题区间截取失败：{exc}"
+                entry = candidate
+                break
+            prepared.append((candidate, source_doc, candidate_path, start_anchor, end_anchor))
+        if prepared and not blocked:
             if composer is None:
                 composer = Composer(doc)
-            composer.insert(list(body).index(paragraph._p), source_doc)
+            names: list[str] = []
+            for position, (candidate, source_doc, candidate_path, start_anchor, end_anchor) in enumerate(prepared):
+                composer.insert(list(body).index(paragraph._p), source_doc)
+                if position < len(prepared) - 1:
+                    # 多份之间隔一个空段：产品裁决不加分页符，换行即可
+                    paragraph.insert_paragraph_before("")
+                names.append(clean(candidate.get("name")) or candidate_path.name)
             paragraph._p.getparent().remove(paragraph._p)
-            source_name = clean(entry.get("name")) or source_path.name
+            first, _first_doc, first_path, first_start, first_end = prepared[0]
+            if len(prepared) > 1:
+                value = f"[已嵌入 {len(prepared)} 份素材：{'、'.join(names)}]"
+            elif first_start:
+                value = f"[已嵌入素材片段：{names[0]} · {first_start}~{first_end}]"
+            else:
+                value = f"[已嵌入整份素材：{names[0]}]"
             decisions.append(
                 {
                     "location": location,
                     "placeholder": placeholder["full"],
                     "label": label,
                     "action": "embed",
-                    "value": (
-                        f"[已嵌入素材片段：{source_name} · {start_anchor}~{end_anchor}]"
-                        if start_anchor
-                        else f"[已嵌入整份素材：{source_name}]"
-                    ),
+                    "value": value,
                     "confidence": 0.99,
                     "evidence": {
-                        "source": clean(entry.get("name")),
-                        "sourcePath": str(source_path),
-                        "materialId": clean(entry.get("materialId")),
-                        "materialTier": clean(entry.get("materialTier")),
-                        "headingRange": f"{start_anchor}~{end_anchor}" if start_anchor else "",
+                        "source": "、".join(names),
+                        "sourcePath": str(first_path),
+                        "materialId": clean(first.get("materialId")),
+                        "materialTier": clean(first.get("materialTier")),
+                        "headingRange": f"{first_start}~{first_end}" if first_start else "",
+                        "embedCount": len(prepared),
                         "factType": "embedded_document",
                     },
                     "alternatives": [],
@@ -941,7 +970,7 @@ def apply_embeds(
                 }
             )
             continue
-        message = range_error or embed_failure_message(entry)
+        message = blocked or embed_failure_message(entry)
         set_paragraph_text(paragraph, f"[待人工插入：{label}]", highlight=True)
         unfilled.append(label)
         decisions.append(
@@ -956,7 +985,11 @@ def apply_embeds(
                 "alternatives": [],
                 "specStatus": "embed_manual",
                 # 区间截取失败时素材本身是 ready 的，照抄 status 会让报告看不出真实原因
-                "embedStatus": "range_failed" if range_error else (clean(entry.get("status")) if entry else "not_found"),
+                "embedStatus": (
+                    "range_failed"
+                    if "截取失败" in blocked
+                    else (clean(entry.get("status")) if entry else "not_found")
+                ),
                 "embedMessage": message,
             }
         )
@@ -967,7 +1000,7 @@ def fill_docx(
     source_path: Path,
     output_file: Path,
     spec_index: SpecIndex,
-    embed_index: dict[str, dict[str, Any]] | None = None,
+    embed_index: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     doc = Document(str(source_path))
     decisions: list[dict[str, Any]] = []

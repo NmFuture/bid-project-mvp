@@ -468,6 +468,12 @@ async def save_technical_gap_fact_material_sources(
     return await technical_gap_service.save_fact_material_sources(project_id, data)
 
 
+@router.delete("/api/technical/projects/{project_id}/gaps/body-fill")
+async def cancel_technical_gap_body_fill(project_id: str) -> dict[str, Any]:
+    """停止一键填写：排队中的直接摘掉，正在跑的那条跑完后不再开始下一条。"""
+    return technical_gap_service.cancel_body_fill(project_id)
+
+
 @router.get("/api/technical/projects/{project_id}/gaps/brand-picks")
 async def get_technical_gap_brand_picks(project_id: str) -> dict[str, Any]:
     """部件认证的品牌选取结果：AI 选了哪份、依据是什么，连同候选清单一起返回供人核对。"""

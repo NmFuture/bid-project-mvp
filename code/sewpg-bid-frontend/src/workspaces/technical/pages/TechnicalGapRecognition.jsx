@@ -1564,6 +1564,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   const bodyFillTotal = Number(bodyFillState?.total || 0)
   // 部件认证的品牌选取：默认不拦一键填写，人想核对 AI 选了哪份证书时才打开
   const [brandPicksOpen, setBrandPicksOpen] = useState(false)
+  const [bodyFillCancelling, setBodyFillCancelling] = useState(false)
+  const bodyFillCancelRequested = Boolean(bodyFillState?.cancelRequested)
 
   const applyGenerationPayload = useCallback((payload, ownerId = id) => {
     const incomingStatus = String(payload?.status || '').toLowerCase()
@@ -2830,6 +2832,22 @@ export default function TechnicalGapRecognition({ showToast }) {
     return () => window.clearInterval(timer)
   }, [bodyFillRunning, id, loadData, showToast])
 
+  const handleCancelBodyFill = async () => {
+    if (bodyFillCancelling || bodyFillCancelRequested) return
+    setBodyFillCancelling(true)
+    try {
+      const payload = await technicalGapsAPI.cancelBodyFill(id)
+      const nextState = payload?.bodyFillState || null
+      setBodyFillState(nextState)
+      updateTechnicalTask('body-fill', id, bodyFillTaskPatch(nextState))
+      showToast?.(nextState?.message || '已请求停止一键填写')
+    } catch (e) {
+      showToast?.(e?.message || '停止失败，请稍后重试', 'error')
+    } finally {
+      setBodyFillCancelling(false)
+    }
+  }
+
   // 一键填写：范围取当前标签筛选后的可见目录项（没筛选就是全部待填写正文/附表）。
   // 提交后立即返回，不再逐条弹预览；产物统一停在「待审核」，由人集中复核。
   const handleBodyFillAll = async () => {
@@ -3222,6 +3240,18 @@ export default function TechnicalGapRecognition({ showToast }) {
             ) : null}
             {/* 一键入口按当前标签切换：点开「待填写」出填写、点开「待审核」出复核，同一个位置同一套样式。
                 任务执行中在任何筛选下都要能看到进度，所以运行态按钮不受此限制。 */}
+            {bodyFillRunning ? (
+              <Button
+                type="button"
+                onClick={handleCancelBodyFill}
+                disabled={bodyFillCancelling || bodyFillCancelRequested}
+                title="停止后续目录项；正在填写的那条会跑完，已完成的产物保留在待审核"
+                size="sm"
+                variant="quiet"
+              >
+                {bodyFillCancelRequested ? '停止中...' : '停止'}
+              </Button>
+            ) : null}
             {tagFilter === 'template_ready' || bodyFillRunning ? (
               <Button
                 type="button"

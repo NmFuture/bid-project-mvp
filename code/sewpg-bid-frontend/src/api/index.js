@@ -619,6 +619,8 @@ export const technicalGapsAPI = {
       timeoutMs: 60 * 1000,
       retryCount: 0,
     }),
+  cancelBodyFill: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/body-fill`, { method: 'DELETE' }),
   bodyFillStatus: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/body-fill`),
 }
