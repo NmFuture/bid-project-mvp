@@ -26,6 +26,7 @@ from app.services.technical_fact_spec_versions import fact_specs_ref, save_fact_
 GLOBAL_FACT_SPECS_PROJECT_ID = "_global"
 GLOBAL_FACT_SPECS_ARCHIVE_NAME = "technical_fact_specs.xlsx"
 GLOBAL_FACT_SPECS_META_NAME = "technical_fact_specs.meta.json"
+GLOBAL_EMBED_RULES_OVERRIDE_NAME = "technical_embed_rules.override.json"
 
 
 def global_fact_specs_archive_path() -> Path:
@@ -62,6 +63,32 @@ def apply_fact_specs_override(specs: list[dict[str, Any]]) -> dict[str, Any]:
         "template": sum(1 for spec in specs if spec.get("sourceKind") == "template"),
         "override": True,
     }
+
+
+def global_embed_rules_path() -> Path:
+    """插入规则 JSON：与 specs override 同目录同生共死，同一份规则表解析出来的两半。"""
+    return Path(settings.fact_specs_override_path).with_name(GLOBAL_EMBED_RULES_OVERRIDE_NAME)
+
+
+def apply_embed_rules_override(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    """原子写插入规则 JSON，返回统计摘要。
+
+    暂无在线编辑入口，这份 JSON 即唯一事实来源（specs 那边 SQL 才是，JSON 只是派生缓存）。
+    将来要支持在线改插入规则，按 technical_fact_spec_rows 的模式补一张 SQL 表再降级本文件。
+    """
+    _atomic_write_text(
+        global_embed_rules_path(), json.dumps(rules, ensure_ascii=False, indent=2) + "\n"
+    )
+    return {"embedRuleTotal": len(rules)}
+
+
+def load_embed_rules() -> list[dict[str, Any]]:
+    """读插入规则；未上传过或文件损坏返回空列表（消费方据此走「无规则」分支）。"""
+    try:
+        payload = json.loads(global_embed_rules_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
 
 def load_global_fact_specs_meta() -> dict[str, Any] | None:

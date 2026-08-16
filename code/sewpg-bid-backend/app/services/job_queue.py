@@ -36,6 +36,7 @@ INTERNAL_JOB_TYPES = {
     "s1_parse_continue",
 }
 KNOWN_JOB_TYPES = {
+    "brand_pick",
     "directory_generation",
     "fact_curate",
     "fill_generation",

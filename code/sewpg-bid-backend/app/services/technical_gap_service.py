@@ -78,6 +78,7 @@ from app.services.technical_fact_curate_job import (
     schedule_fact_curate_job,
 )
 from app.services.technical_body_fill_job import (
+    BODY_FILL_JOB_TYPE,
     apply_filled_gap_item,
     body_fill_locked,
     body_fill_running,
@@ -97,6 +98,13 @@ from app.services.job_queue import (
 )
 from app.services.job_timing import current_locked_job_id
 from app.services.local_job_executor import submit_local_job
+from app.services import technical_brand_pick, technical_gap_ai_fill
+from app.services.technical_brand_pick_job import (
+    autoschedule_brand_picks_after_detection,
+    brand_pick_running,
+    brand_picks_present,
+    schedule_brand_pick_job,
+)
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_repository import (
@@ -661,6 +669,9 @@ class TechnicalGapService:
         except Exception as exc:
             _raise_gap_error(exc, "Gap detection not found")
         self._autobuild_facts_after_detection(project_id)
+        # 品牌选取同样不该让人多点一次。区别是它要调 AI（实测几十秒），同步跑会拖着
+        # 素材匹配的返回，所以只排队不等待。
+        autoschedule_brand_picks_after_detection(project_id)
         return {
             **payload,
             "message": f"缺口识别完成，共识别 {payload['summary']['totalTocItems']} 个目录项。",
@@ -1679,6 +1690,106 @@ class TechnicalGapService:
             "pendingTotal": len(collect_body_fill_targets(gap_state, {})),
             "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
         }
+
+    def cancel_body_fill(self, project_id: str) -> dict[str, Any]:
+        """停止一键填写。语义是「停止后续目录项」——正在跑的那条让它跑完。
+
+        中途掐断会留下半截产物：填写是「读空表→逐个占位符替换→整份写回」，
+        写到一半的 Word 比没写更难收拾。已完成的产物保留在待审核，重新发起会补齐剩下的。
+        """
+        # 排队中的直接摘掉并释放锁，别让用户对着「停止中」干等 worker 把前面的活干完
+        stage = cancel_generation_job(BODY_FILL_JOB_TYPE, project_id)
+        terminal = stage in {"queued", "none"}
+
+        def apply(project: dict[str, Any]) -> dict[str, Any]:
+            gap_state = ensure_technical_gap_state(project)
+            state = body_fill_state(gap_state)
+            summary = (
+                "一键填写已停止。"
+                if terminal
+                else "已请求停止，正在填写的那条会跑完，后面的不再开始。"
+            )
+            updated = (
+                cancel_task_state(state, summary) if terminal else request_task_cancel(state, summary)
+            )
+            gap_state["bodyFillState"] = updated
+            project["updatedAt"] = now_iso()
+            return copy.deepcopy(updated)
+
+        return {"bodyFillState": mutate_technical_gap_project(project_id, apply)}
+
+    # ---------------- 部件认证的品牌选取 ----------------
+
+    def brand_picks(self, project_id: str) -> dict[str, Any]:
+        """当前项目的部件认证品牌选取结果与候选清单，供人核对。
+
+        没跑过就顺手排一次：正常路径是素材匹配完成时自动排的，但本功能上线前跑过素材匹配
+        的老项目没有那一步，不兜底的话人打开只能看到空表再手动点一次——那正是要去掉的动作。
+        """
+        project = self.ensure_project(project_id)
+        gap_state = ensure_technical_gap_state(project)
+        stored = gap_state.get("brandPicks") if isinstance(gap_state.get("brandPicks"), dict) else {}
+        components = technical_gap_ai_fill.brand_pick_components(project)
+        if components and not brand_picks_present(gap_state) and not brand_pick_running(gap_state):
+            stored = schedule_brand_pick_job(project_id)
+        return {
+            "picks": copy.deepcopy(stored.get("picks") or []),
+            "status": str(stored.get("status") or ""),
+            "message": str(stored.get("message") or ""),
+            "error": str(stored.get("error") or ""),
+            "brandListName": str(stored.get("brandListName") or ""),
+            "generatedAt": str(stored.get("generatedAt") or ""),
+            # 候选一并返回：人要判断 AI 选得对不对，得看见它是从哪几份里选的
+            "components": components,
+        }
+
+    async def regenerate_brand_picks(self, project_id: str) -> dict[str, Any]:
+        """重新问一次 AI：排队跑，立即返回 queued 状态，前端轮询拿结果。
+
+        不在请求线程里同步跑：读品牌清单 + 调 AI 实测几十秒，同步会把请求挂死，
+        也拿不到右下角的进度展示。
+        """
+        self.ensure_project(project_id)
+        schedule_brand_pick_job(project_id)
+        return self.brand_picks(project_id)
+
+    def save_brand_picks(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """人工改写选取结果。改过的标 source=manual，重跑 AI 时不会被悄悄盖掉。"""
+        raw = data.get("picks") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="picks 必须是数组。")
+        picks: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="picks 的每一项必须是对象。")
+            component = str(item.get("component") or "").strip()
+            if not component:
+                raise HTTPException(status_code=400, detail="picks 里每一项都要有 component。")
+            # 一个部件可以选多份：品牌清单投几个品牌就放几份证书
+            material_names = technical_brand_pick.normalize_material_names(item)
+            picks.append(
+                {
+                    "component": component,
+                    "brand": str(item.get("brand") or "").strip(),
+                    "materialNames": material_names,
+                    "reason": str(item.get("reason") or "").strip(),
+                    "status": (
+                        technical_brand_pick.PICK_STATUS_OK
+                        if material_names
+                        else technical_brand_pick.PICK_STATUS_NOT_AVAILABLE
+                    ),
+                    "source": "manual",
+                }
+            )
+
+        def apply(target: dict[str, Any]) -> None:
+            gap_state = ensure_technical_gap_state(target)
+            stored = gap_state.get("brandPicks") if isinstance(gap_state.get("brandPicks"), dict) else {}
+            gap_state["brandPicks"] = {**stored, "picks": picks, "error": ""}
+            target["updatedAt"] = now_iso()
+
+        mutate_technical_gap_project(project_id, apply)
+        return self.brand_picks(project_id)
 
 
 technical_gap_service = TechnicalGapService()

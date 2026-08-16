@@ -16,6 +16,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import settings
+from app.services.background_task_cancel import (
+    BackgroundTaskCancelled,
+    raise_if_task_cancel_requested,
+    task_cancel_requested,
+    throttled_cancel_probe,
+)
 from app.services.job_queue import enqueue_generation_job, is_generation_locked
 from app.services.local_job_executor import submit_local_job
 from app.services.technical_gap_repository import (
@@ -292,11 +298,21 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
         _write_state(project_id, status="failed", message=str(exc) or "一键填写启动失败。", finishedAt=_now_iso())
         raise
 
-    counters = {"done": 0, "succeeded": 0, "failed": 0}
+    counters = {"done": 0, "succeeded": 0, "failed": 0, "cancelled": 0}
     errors: list[dict[str, str]] = []
     workers = max(1, min(_BODY_FILL_MAX_CONCURRENCY, int(settings.body_fill_concurrency or 1)))
 
+    # 取消探针带节流：一批可能有几十个目录项，每项都查一次库不值当。
+    # 语义是「停止后续目录项」——正在跑的那条让它跑完，中途掐断会留下半截产物。
+    cancel_probe = throttled_cancel_probe(
+        lambda: task_cancel_requested(
+            body_fill_state(ensure_technical_gap_state(require_technical_gap_project_for_update(project_id)))
+        )
+    )
+
     def compute_one(target: dict[str, str]) -> dict[str, Any]:
+        # 排在后面还没开跑的目录项，取消后直接跳过，不必再花一次 AI 调用
+        raise_if_task_cancel_requested({"cancelRequested": cancel_probe()})
         # 慢计算在私有深拷贝快照上跑完，不写任何共享状态；写回由主线程统一 CAS 收口。
         # require 在内存后端返回的是 store 里的同一个 dict，必须深拷贝后才是线程私有的。
         snapshot = copy.deepcopy(require_technical_gap_project_for_update(project_id))
@@ -311,6 +327,10 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
         """主线程收口：成功则 CAS 写回结果包，失败则经 mutate 把原因写到目录项上。"""
         gap_id = target["gapId"]
         title = target["title"]
+        if isinstance(exc, BackgroundTaskCancelled):
+            # 取消跳过的不计成功也不计失败，更不该标红——它压根没跑
+            counters["cancelled"] += 1
+            return
         try:
             if exc is not None:
                 raise exc
@@ -341,14 +361,23 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
             target = futures[future]
             try:
                 fill_result = future.result()
+            except BackgroundTaskCancelled as exc:
+                collect_one(target, None, exc)
             except Exception as exc:  # noqa: BLE001 - 计算失败的异常走同一条单条失败路径
                 collect_one(target, None, exc)
             else:
                 collect_one(target, fill_result, None)
 
-    message = f"一键填写完成：成功 {counters['succeeded']} 条、失败 {counters['failed']} 条。"
-    if counters["failed"]:
-        message += "失败项已在目录树标红，可单条重填。"
+    cancelled = counters["cancelled"] > 0
+    if cancelled:
+        message = (
+            f"一键填写已停止：成功 {counters['succeeded']} 条、失败 {counters['failed']} 条、"
+            f"未开始 {counters['cancelled']} 条。已填写的产物保留在待审核，可重新发起补齐剩下的。"
+        )
+    else:
+        message = f"一键填写完成：成功 {counters['succeeded']} 条、失败 {counters['failed']} 条。"
+        if counters["failed"]:
+            message += "失败项已在目录树标红，可单条重填。"
 
     def finalize(project: dict[str, Any]) -> None:
         gap_state = ensure_technical_gap_state(project)
@@ -357,7 +386,9 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
             recompute_technical_gap_decisions(plan)
         gap_state["bodyFillState"] = {
             **body_fill_state(gap_state),
-            "status": "succeeded" if not counters["failed"] else "partial",
+            "status": "cancelled" if cancelled else ("succeeded" if not counters["failed"] else "partial"),
+            "cancelRequested": False,
+            "cancelledAt": _now_iso() if cancelled else "",
             "done": counters["done"],
             "succeeded": counters["succeeded"],
             "failed": counters["failed"],
@@ -369,7 +400,7 @@ def run_body_fill_job(project_id: str, data: dict[str, Any] | None = None) -> di
         project["updatedAt"] = _now_iso()
 
     mutate_technical_gap_project(project_id, finalize)
-    return {"status": "succeeded", "message": message}
+    return {"status": "cancelled" if cancelled else "succeeded", "message": message}
 
 
 def _collect_body_fill_tasks(

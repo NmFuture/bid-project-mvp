@@ -25,11 +25,13 @@ from app.services.technical_appendix_source_matrix import (
 )
 from app.services.technical_fact_field_specs import load_specs
 from app.services.technical_fact_spec_global import (
+    apply_embed_rules_override,
     global_fact_specs_archive_path,
+    load_embed_rules,
     load_global_fact_specs_meta,
     save_global_fact_specs,
 )
-from app.services.technical_fact_spec_import import FactSpecImportError, import_specs
+from app.services.technical_fact_spec_import import FactSpecImportError, import_rule_book
 from app.services.technical_gap_repository import get_technical_gap_project_runtime_state
 from app.services.technical_gap_service import technical_gap_service
 from app.services.technical_rules_store import (
@@ -113,21 +115,29 @@ async def upload_global_fact_specs(
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as handle:
             handle.write(content)
             tmp_upload = Path(handle.name)
-        specs = import_specs(tmp_upload)
+        book = import_rule_book(tmp_upload)
     except FactSpecImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         if tmp_upload is not None:
             tmp_upload.unlink(missing_ok=True)
 
+    specs = book["specs"]
     result = save_global_fact_specs(
         specs,
         file_name=filename,
         uploaded_by=_operator_name(user),
         content=content,
     )
+    embed_summary = apply_embed_rules_override(book["embedRules"])
     await store_imported_fact_spec_rows(specs, _operator_name(user))
-    return result
+    # sheet 识别结果回给前端：名字认错一个字会被当作不认识而跳过，不展示就看不出没生效
+    return {
+        **result,
+        **embed_summary,
+        "recognizedSheets": book["recognizedSheets"],
+        "skippedSheets": book["skippedSheets"],
+    }
 
 
 @router.get("/api/technical/materials/rules/fact-specs")
@@ -137,29 +147,37 @@ async def get_global_fact_specs(_: dict[str, Any] = Depends(current_user)) -> di
     仓库不再自带默认清单（上游 283381f 收敛）：都没上传过时返回 source=none。
     历史 override（本次改造前上传、尚未入库）按原 sidecar 元数据展示。
     """
+    embed_total = len(load_embed_rules())
     specs = await list_fact_spec_rows()
     if specs:
         meta = load_global_fact_specs_meta() or {}
         return {
             "source": "override",
             "specTotal": len(specs),
+            # 规则表现在管两类，只报字段数会让人以为待插入那半没传上去
+            "embedRuleTotal": embed_total,
             "fileName": str(meta.get("fileName") or ""),
             "uploadedAt": str(meta.get("uploadedAt") or ""),
             "uploadedBy": str(meta.get("uploadedBy") or ""),
         }
     meta = load_global_fact_specs_meta()
     if meta:
-        return {"source": "override", **meta}
-    return {"source": "none", "specTotal": 0}
+        return {"source": "override", "embedRuleTotal": embed_total, **meta}
+    return {"source": "none", "specTotal": 0, "embedRuleTotal": embed_total}
 
 
 @router.get("/api/technical/materials/rules/fact-specs/rows")
 async def get_global_fact_spec_rows(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    """弹窗编辑数据：SQL 中的完整 spec 列表；未保存过时回落当前生效清单（默认/历史 override）。"""
+    """弹窗编辑数据：SQL 中的完整 spec 列表；未保存过时回落当前生效清单（默认/历史 override）。
+
+    插入规则一并返回但只读：它没有 SQL 表也没有在线编辑接口，要改就下载 Excel 改完重传
+    （导出已含两个 sheet，闭环是通的）。页面上看得见比编得动更要紧——传上去没生效
+    是看不出来的，编不了只是麻烦一点。
+    """
     specs = await list_fact_spec_rows()
     if not specs:
         specs = list(load_specs())
-    return {"specs": specs}
+    return {"specs": specs, "embedRules": load_embed_rules()}
 
 
 @router.put("/api/technical/materials/rules/fact-specs/rows")
@@ -198,11 +216,13 @@ async def download_global_fact_specs() -> FileResponse:
 
 @router.get("/api/technical/materials/rules/fact-specs/export")
 async def export_global_fact_specs() -> Response:
-    """导出当前生效清单为 xlsx（列头与导入解析器兼容，导出件可再导入）；无鉴权同 download。"""
+    """导出当前生效规则表为 xlsx（列头与导入解析器兼容，导出件可再导入）；无鉴权同 download。"""
     specs = await list_fact_spec_rows()
     if not specs:
         specs = list(load_specs())
-    return _xlsx_response(export_fact_specs_xlsx(specs), "technical_fact_specs.xlsx")
+    return _xlsx_response(
+        export_fact_specs_xlsx(specs, load_embed_rules()), "technical_fact_specs.xlsx"
+    )
 
 
 # ---------------------------------------------------------------------------

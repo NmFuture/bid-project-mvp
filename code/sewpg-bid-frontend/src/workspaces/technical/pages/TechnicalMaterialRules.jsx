@@ -151,13 +151,13 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
     event.target.value = ''
     if (!file) return
     if (!/\.xlsx$/i.test(file.name)) {
-      showToast('事实表清单仅支持 .xlsx 文件', 'error')
+      showToast('项目规则清单仅支持 .xlsx 文件', 'error')
       return
     }
     if (busyAction) return
     if (
       factSpecsMeta?.source === 'override'
-      && !window.confirm(`已有全局上传的事实表清单（${factSpecsMeta?.fileName || '已上传'}），重新上传将完整覆盖。是否继续？`)
+      && !window.confirm(`已有全局上传的项目规则清单（${factSpecsMeta?.fileName || '已上传'}），重新上传将完整覆盖。是否继续？`)
     ) {
       return
     }
@@ -169,9 +169,15 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       const meta = await technicalMaterialsAPI.rules.factSpecsMeta()
       setFactSpecsMeta(meta || null)
       const specTotal = Number(payload?.specTotal ?? meta?.specTotal ?? 0)
-      showToast(`已解析 ${specTotal} 个字段，全局事实表清单已生效，所有技术标项目共用`)
+      const embedTotal = Number(payload?.embedRuleTotal ?? meta?.embedRuleTotal ?? 0)
+      // 两类都报出来：只说字段数会让人以为待插入那半没传上去
+      const skipped = Array.isArray(payload?.skippedSheets) ? payload.skippedSheets : []
+      showToast(
+        `已解析 ${specTotal} 个待填写字段、${embedTotal} 条待插入规则，全局生效，所有技术标项目共用`
+        + (skipped.length ? `（跳过未识别的 sheet：${skipped.join('、')}）` : ''),
+      )
     } catch (e) {
-      showToast(e?.message || '事实表清单上传失败', 'error')
+      showToast(e?.message || '项目规则清单上传失败', 'error')
     } finally {
       setBusyAction('')
     }
@@ -230,7 +236,7 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
       <section className="rounded-lg border border-outline-variant/45 bg-surface-container-lowest p-4 lg:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-headline font-semibold text-on-surface">项目事实表清单（全局生效）</h2>
+            <h2 className="text-lg font-headline font-semibold text-on-surface">项目规则清单（全局生效）</h2>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             <input
@@ -280,11 +286,32 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
             </Button>
           </div>
         </div>
-        <div className="mt-3 flex flex-col gap-1.5">
-          <MetaRow label="生效来源">{FACT_SPECS_SOURCE_LABELS[factSpecsSource] || factSpecsSource || '-'}</MetaRow>
-          <MetaRow label="文件名">{factSpecsMeta?.fileName || '-'}</MetaRow>
-          <MetaRow label="上传时间">{factSpecsMeta?.uploadedAt ? formatDateTime(factSpecsMeta.uploadedAt) : '-'}</MetaRow>
-          <MetaRow label="字段总数">{Number.isFinite(Number(factSpecsMeta?.specTotal)) ? Number(factSpecsMeta?.specTotal) : '-'}</MetaRow>
+        {/* 两类规则的条数是这一页最该被看见的信息，单独拎出来做统计块；
+            来源/文件名/时间是溯源信息，挤在一列反而喧宾夺主，改双列排。 */}
+        <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-stretch">
+          <div className="grid grid-cols-2 gap-3 sm:max-w-xs">
+            {[
+              ['待填写字段', factSpecsMeta?.specTotal],
+              ['待插入规则', factSpecsMeta?.embedRuleTotal],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded-lg border border-outline-variant/40 bg-surface-container-low px-4 py-3"
+              >
+                <div className="text-xs text-on-surface-variant">{label}</div>
+                <div className="mt-0.5 font-headline text-2xl font-semibold leading-none text-on-surface">
+                  {Number.isFinite(Number(value)) ? Number(value) : '-'}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="grid min-w-0 flex-1 gap-x-8 gap-y-1.5 sm:grid-cols-2 lg:content-center">
+            <MetaRow label="生效来源">{FACT_SPECS_SOURCE_LABELS[factSpecsSource] || factSpecsSource || '-'}</MetaRow>
+            <MetaRow label="上传时间">{factSpecsMeta?.uploadedAt ? formatDateTime(factSpecsMeta.uploadedAt) : '-'}</MetaRow>
+            <div className="min-w-0 sm:col-span-2">
+              <MetaRow label="文件名">{factSpecsMeta?.fileName || '-'}</MetaRow>
+            </div>
+          </div>
         </div>
       </section>
 

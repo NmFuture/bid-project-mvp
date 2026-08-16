@@ -6,6 +6,8 @@ import {
   technicalScoreIndexAPI,
 } from '../../api/index.js'
 import { directoryDisplayPercentage } from './technicalDirectoryProgress.js'
+import { bodyFillDisplayPercentage } from './technicalBodyFillProgress.js'
+import { factCurateDisplayPercentage } from './technicalFactCurateProgress.js'
 import { generationDisplayPercentage } from './technicalGenerationProgress.js'
 import { parseDisplayPercentage } from './technicalParseUploadRecovery.js'
 import { scoreIndexDisplayPercentage } from './technicalScoreIndexProgress.js'
@@ -50,6 +52,21 @@ export const TECHNICAL_TASK_DEFINITIONS = {
     status: (projectId) => technicalScoreIndexAPI.status(projectId),
     displayPercentage: (progress) => scoreIndexDisplayPercentage(progress || {}),
     route: ({ projectId }) => projectRoute(projectId, 'editor'),
+  },
+  // 下面两个同样跑在 worker 队列里（fact_curate / technical_body_fill），关掉页面任务照跑，
+  // 以前只能守在缺口页看进度，现在跟其他任务一样落到右下角卡片。
+  // 两者的状态都包在一层 xxxState 里，与其他任务的扁平结构不同，取值时要多剥一层。
+  'fact-curate': {
+    taskName: '事实表 AI 填写',
+    status: (projectId) => technicalGapsAPI.curateFactsStatus(projectId),
+    displayPercentage: (progress) => factCurateDisplayPercentage(progress?.factCurateState || progress || {}),
+    route: ({ projectId }) => projectRoute(projectId, 'gaps'),
+  },
+  'body-fill': {
+    taskName: '一键填写',
+    status: (projectId) => technicalGapsAPI.bodyFillStatus(projectId),
+    displayPercentage: (progress) => bodyFillDisplayPercentage(progress?.bodyFillState || progress || {}),
+    route: ({ projectId }) => projectRoute(projectId, 'gaps'),
   },
 }
 

@@ -5,6 +5,7 @@ import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import TechnicalBrandPicksModal from '../components/TechnicalBrandPicksModal'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import { markTechnicalTask, restoreTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
 import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
@@ -13,6 +14,16 @@ import {
   isGenerationProgressRunning,
   summarizeGenerationProgress,
 } from '../technicalGenerationProgress.js'
+import {
+  bodyFillDisplayPercentage,
+  bodyFillRunning as bodyFillRunningState,
+  summarizeBodyFill,
+} from '../technicalBodyFillProgress.js'
+import {
+  factCurateDisplayPercentage,
+  factCurateRunning as factCurateRunningState,
+  summarizeFactCurate,
+} from '../technicalFactCurateProgress.js'
 import { subscribeTechnicalGenerationStatus } from '../technicalGenerationStatusPolling'
 import { technicalTaskResponseMatchesProject } from '../technicalOutlineTaskLifecycle.js'
 import Badge from '../../../components/ui/Badge'
@@ -72,6 +83,20 @@ const generationTaskPatch = (status) => ({
 })
 
 const GENERATION_TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled'])
+
+// 事实表 AI 填写与一键填写都跑在 worker 队列里，状态包在一层 xxxState 里。
+// 百分比一律走共享算法，右下角卡片与页面上的进度必须是同一个数。
+const factCurateTaskPatch = (state) => ({
+  status: String(state?.status || 'queued').toLowerCase(),
+  percentage: Math.round(factCurateDisplayPercentage(state || {})),
+  summary: summarizeFactCurate(state || {}),
+})
+
+const bodyFillTaskPatch = (state) => ({
+  status: String(state?.status || 'queued').toLowerCase(),
+  percentage: Math.round(bodyFillDisplayPercentage(state || {})),
+  summary: summarizeBodyFill(state || {}),
+})
 
 const sourceRoutingForAppendixTasks = (tasks, item = null) => {
   const routing = asObjectArray(tasks)
@@ -1537,6 +1562,10 @@ export default function TechnicalGapRecognition({ showToast }) {
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
   const bodyFillDone = Number(bodyFillState?.done || 0)
   const bodyFillTotal = Number(bodyFillState?.total || 0)
+  // 部件认证的品牌选取：默认不拦一键填写，人想核对 AI 选了哪份证书时才打开
+  const [brandPicksOpen, setBrandPicksOpen] = useState(false)
+  const [bodyFillCancelling, setBodyFillCancelling] = useState(false)
+  const bodyFillCancelRequested = Boolean(bodyFillState?.cancelRequested)
 
   const applyGenerationPayload = useCallback((payload, ownerId = id) => {
     const incomingStatus = String(payload?.status || '').toLowerCase()
@@ -1612,13 +1641,36 @@ export default function TechnicalGapRecognition({ showToast }) {
       }
       try {
         const curateStatus = await technicalGapsAPI.curateFactsStatus(requestProjectId)
-        setFactCurateState(curateStatus?.factCurateState || null)
+        const curateState = curateStatus?.factCurateState || null
+        setFactCurateState(curateState)
+        // 刷新页面/换设备后补建右下角卡片：任务在 worker 里跑着，登记却只存在本地
+        if (factCurateRunningState(curateState)) {
+          restoreTechnicalTask({
+            taskType: 'fact-curate',
+            taskName: '事实表 AI 填写',
+            page: 'gaps',
+            projectId: requestProjectId,
+            projectName: projectPayload?.name || requestProjectId,
+            ...factCurateTaskPatch(curateState),
+          })
+        }
       } catch {
         setFactCurateState(null)
       }
       try {
         const bodyStatus = await technicalGapsAPI.bodyFillStatus(requestProjectId)
-        setBodyFillState(bodyStatus?.bodyFillState || null)
+        const bodyState = bodyStatus?.bodyFillState || null
+        setBodyFillState(bodyState)
+        if (bodyFillRunningState(bodyState)) {
+          restoreTechnicalTask({
+            taskType: 'body-fill',
+            taskName: '一键填写',
+            page: 'gaps',
+            projectId: requestProjectId,
+            projectName: projectPayload?.name || requestProjectId,
+            ...bodyFillTaskPatch(bodyState),
+          })
+        }
       } catch {
         setBodyFillState(null)
       }
@@ -2020,6 +2072,10 @@ export default function TechnicalGapRecognition({ showToast }) {
 
   // 弹窗开着就别在右下角再挂一张同样的卡片；关掉弹窗或离开本页后才交给任务栈。
   useTechnicalTaskPresence('body-generate', id, generationModalVisible)
+  // 事实表 AI 填写的进度画在事实表弹窗里，弹窗关掉才交给任务栈
+  useTechnicalTaskPresence('fact-curate', id, factModalOpen)
+  // 一键填写的进度画在本页工具条上，所以只要人在本页就不重复挂卡片
+  useTechnicalTaskPresence('body-fill', id, true)
   const generationCompleted = generationBelongsToProject && generationStatus?.status === 'completed'
 
   useEffect(() => {
@@ -2726,6 +2782,8 @@ export default function TechnicalGapRecognition({ showToast }) {
         const payload = await technicalGapsAPI.curateFactsStatus(id)
         const state = payload?.factCurateState || null
         setFactCurateState(state)
+        // 右下角卡片与页面同源：这里推进度，卡片自身不再各拉一次接口
+        updateTechnicalTask('fact-curate', id, factCurateTaskPatch(state))
         const status = String(state?.status || '')
         if (status !== 'succeeded' && status !== 'failed') return
         const notifyKey = `${state?.jobId || ''}:${state?.finishedAt || ''}`
@@ -2759,6 +2817,7 @@ export default function TechnicalGapRecognition({ showToast }) {
         const payload = await technicalGapsAPI.bodyFillStatus(id)
         const state = payload?.bodyFillState || null
         setBodyFillState(state)
+        updateTechnicalTask('body-fill', id, bodyFillTaskPatch(state))
         const status = String(state?.status || '')
         if (!['succeeded', 'partial', 'failed'].includes(status)) return
         const notifyKey = `${state?.jobId || ''}:${state?.finishedAt || ''}`
@@ -2773,6 +2832,22 @@ export default function TechnicalGapRecognition({ showToast }) {
     return () => window.clearInterval(timer)
   }, [bodyFillRunning, id, loadData, showToast])
 
+  const handleCancelBodyFill = async () => {
+    if (bodyFillCancelling || bodyFillCancelRequested) return
+    setBodyFillCancelling(true)
+    try {
+      const payload = await technicalGapsAPI.cancelBodyFill(id)
+      const nextState = payload?.bodyFillState || null
+      setBodyFillState(nextState)
+      updateTechnicalTask('body-fill', id, bodyFillTaskPatch(nextState))
+      showToast?.(nextState?.message || '已请求停止一键填写')
+    } catch (e) {
+      showToast?.(e?.message || '停止失败，请稍后重试', 'error')
+    } finally {
+      setBodyFillCancelling(false)
+    }
+  }
+
   // 一键填写：范围取当前标签筛选后的可见目录项（没筛选就是全部待填写正文/附表）。
   // 提交后立即返回，不再逐条弹预览；产物统一停在「待审核」，由人集中复核。
   const handleBodyFillAll = async () => {
@@ -2785,7 +2860,17 @@ export default function TechnicalGapRecognition({ showToast }) {
     try {
       const payload = await technicalGapsAPI.bodyFill(id, { gapIds, operator: '当前用户' })
       bodyFillNotifiedRef.current = ''
-      setBodyFillState(payload?.bodyFillState || null)
+      const nextState = payload?.bodyFillState || null
+      setBodyFillState(nextState)
+      // 「可离开页面」得配一张右下角卡片，否则一走开就看不到还在跑什么
+      markTechnicalTask({
+        taskType: 'body-fill',
+        taskName: '一键填写',
+        page: 'gaps',
+        projectId: id,
+        projectName: projectName || id,
+        ...bodyFillTaskPatch(nextState),
+      })
       showToast?.(`已提交 ${payload?.total || 0} 条正文填写，可离开页面`)
     } catch (e) {
       showToast?.(e?.message || '提交失败，请稍后重试', 'error')
@@ -2937,7 +3022,17 @@ export default function TechnicalGapRecognition({ showToast }) {
         fillOnly,
       })
       setFactCurateReport(null)
-      setFactCurateState(payload?.factCurateState || null)
+      const nextState = payload?.factCurateState || null
+      setFactCurateState(nextState)
+      // 登记到右下角后台任务栈：这活跑在 worker 队列里，关掉弹窗照跑，得让人在别的页面也看得见
+      markTechnicalTask({
+        taskType: 'fact-curate',
+        taskName: fillOnly ? '事实表 AI 补空' : '事实表 AI 填写',
+        page: 'gaps',
+        projectId: id,
+        projectName: projectName || id,
+        ...factCurateTaskPatch(nextState),
+      })
       showToast?.(payload?.message || (fillOnly ? '已提交 AI补空任务' : '已提交 AI重填任务'))
     } catch (e) {
       showToast?.(e?.message || '匹配填充失败，请稍后重试', 'error')
@@ -3130,8 +3225,33 @@ export default function TechnicalGapRecognition({ showToast }) {
                 {bodyFillState?.message || ''}
               </span>
             )}
+            {/* 待插入的部件认证按品牌选证书，选完才知道插哪份；查看入口不拦填写，只供事后核对 */}
+            {tagFilter === 'template_ready' ? (
+              <Button
+                type="button"
+                onClick={() => setBrandPicksOpen(true)}
+                disabled={Boolean(busyAction) || bodyFillRunning}
+                title="查看并改写部件认证的品牌选取结果（齿轮箱/主轴承/变流器等插哪一份证书）"
+                size="sm"
+                variant="quiet"
+              >
+                品牌选取
+              </Button>
+            ) : null}
             {/* 一键入口按当前标签切换：点开「待填写」出填写、点开「待审核」出复核，同一个位置同一套样式。
                 任务执行中在任何筛选下都要能看到进度，所以运行态按钮不受此限制。 */}
+            {bodyFillRunning ? (
+              <Button
+                type="button"
+                onClick={handleCancelBodyFill}
+                disabled={bodyFillCancelling || bodyFillCancelRequested}
+                title="停止后续目录项；正在填写的那条会跑完，已完成的产物保留在待审核"
+                size="sm"
+                variant="quiet"
+              >
+                {bodyFillCancelRequested ? '停止中...' : '停止'}
+              </Button>
+            ) : null}
             {tagFilter === 'template_ready' || bodyFillRunning ? (
               <Button
                 type="button"
@@ -3740,6 +3860,13 @@ export default function TechnicalGapRecognition({ showToast }) {
           onSaveMaterialPaths={handleSaveMaterialPaths}
           onCurate={() => handleCurateFacts()}
           onFillBlanks={() => handleCurateFacts({ fillOnly: true })}
+        />
+      ) : null}
+      {brandPicksOpen ? (
+        <TechnicalBrandPicksModal
+          projectId={id}
+          showToast={showToast}
+          onClose={() => setBrandPicksOpen(false)}
         />
       ) : null}
       <TechnicalGenerationProgressModal

@@ -24,7 +24,10 @@ from app.services.technical_fact_spec_global import (
     load_global_fact_specs_meta,
 )
 from app.services.technical_fact_spec_import import (
+    EMBED_EXPECTED_HEADER,
     EXPECTED_HEADER,
+    SHEET_EMBED,
+    SHEET_FILL,
     placeholder_label,
     split_multi_value,
 )
@@ -213,31 +216,32 @@ def _exportable_placeholder(placeholder: str, label: str) -> str:
     return placeholder
 
 
-def export_fact_specs_xlsx(specs: list[dict[str, Any]]) -> bytes:
-    """生成事实表清单 xlsx：列头与 import_specs 的导入列映射严格一致（可再导入）。
+def export_fact_specs_xlsx(
+    specs: list[dict[str, Any]], embed_rules: list[dict[str, Any]] | None = None
+) -> bytes:
+    """生成规则表 xlsx：两个 sheet 的列头与解析器的导入列映射严格一致（可再导入）。
 
     归并态的 spec 一格存多个位置，导出时按 (文件名, 占位符内容) 配对拆回多行——这是
     「下载→编辑→重新上传」闭环成立的前提：再导入时同字段名的多行会重新归并回一个 spec。
     「文件夹」列留空：下游只按文件名匹配 Word（见 bid-tech-word-placeholder-filler 的
     run_from_manifest.py），目录不参与匹配，不值得为往返无损再加一列靠索引对齐的多值。
+    插入规则相反，一行一个动作不归并，原样逐行写回。
     """
     wb = Workbook()
     ws = wb.active
-    ws.title = "Sheet1"
+    ws.title = SHEET_FILL
     ws.append(list(EXPECTED_HEADER))
     seq = 0
     for spec in specs:
         label = str(spec.get("label") or "")
         targets = split_multi_value(spec.get("targetFile") or spec.get("sourceFile")) or [""]
         placeholders = split_multi_value(spec.get("placeholder")) or [""]
-        row_type = str(spec.get("note") or "待填写")
         reference_file = str(spec.get("referenceFile") or "")
         for position in range(max(len(targets), len(placeholders))):
             seq += 1
             ws.append(
                 [
                     seq,
-                    row_type,
                     "",
                     targets[position] if position < len(targets) else "",
                     _exportable_placeholder(
@@ -246,6 +250,19 @@ def export_fact_specs_xlsx(specs: list[dict[str, Any]]) -> bytes:
                     reference_file,
                 ]
             )
+    embed_ws = wb.create_sheet(SHEET_EMBED)
+    embed_ws.append(list(EMBED_EXPECTED_HEADER))
+    for rule in embed_rules or []:
+        embed_ws.append(
+            [
+                str(rule.get("folder") or ""),
+                str(rule.get("targetFile") or ""),
+                str(rule.get("placeholder") or ""),
+                str(rule.get("material") or ""),
+                str(rule.get("headingStart") or ""),
+                str(rule.get("headingEnd") or ""),
+            ]
+        )
     buffer = BytesIO()
     wb.save(buffer)
     return buffer.getvalue()

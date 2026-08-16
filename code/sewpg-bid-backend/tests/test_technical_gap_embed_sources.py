@@ -1,5 +1,7 @@
-"""待插入素材备料单测：扫描占位符 → 按素材范围检索 → 写入 manifest.embedSources。
+"""待插入素材备料单测：扫描占位符 → 查规则表 → 按素材范围检索 → 写入 manifest.embedSources。
 
+范围由文档定、细节由规则表定：扫 Word 决定本次处理哪些占位符，插哪份素材、插整份还是
+插其中一节由规则表「待插入」sheet 说了算，不再拿占位符文字去素材库猜文件名。
 素材检索要联网查库，按「skill 只依据 manifest 工作」的既有约定放在后端；filler 只依据
 这里给出的本地路径与 status 决定嵌入还是标黄。
 fixture 为脱敏合成数据（通用领域词面，无真实项目数据）。
@@ -10,6 +12,7 @@ import inspect
 import shutil
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 from unittest.mock import patch
@@ -51,6 +54,26 @@ def _write_pdf(path: Path, pages: int) -> None:
         document.save(str(path))
     finally:
         document.close()
+
+
+def _rule(
+    placeholder: str,
+    material: str,
+    *,
+    target: str = "待填写-方案",
+    start: str = "",
+    end: str = "",
+) -> dict[str, Any]:
+    """一条「待插入」规则行，与 import_embed_rules 的产出同构。"""
+    return {
+        "seq": 1,
+        "folder": "标准文件",
+        "targetFile": target,
+        "placeholder": placeholder,
+        "material": material,
+        "headingStart": start,
+        "headingEnd": end or start,
+    }
 
 
 def _payload_stub(payload: dict[str, Any]) -> Callable[[object], dict[str, Any]]:
@@ -132,15 +155,43 @@ class EmbedSourcesTests(unittest.TestCase):
     def setUp(self) -> None:
         self.project = {"id": "PRJ-0001", "name": "示例项目", "bidType": "技术标"}
 
-    def _run(self, tmp: Path, materials: list[dict], paragraphs: list[str]) -> list[dict]:
+    def _run(
+        self,
+        tmp: Path,
+        materials: list[dict],
+        paragraphs: list[str],
+        rules: list[dict] | None = None,
+        extra_patches: tuple = (),
+        **kwargs: Any,
+    ) -> list[dict]:
         blank = tmp / "待填写-方案.docx"
         _write_docx(blank, paragraphs)
-        with (
-            patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-            patch.object(ai_fill, "project_turbine_model", return_value={}),
-            patch.object(ai_fill, "_allowed_technical_material_index", return_value=materials),
-        ):
-            return ai_fill._embed_sources_for_fill(self.project, blank, tmp)
+        if rules is None:
+            rules = [_rule("[设备清单，待插入]", "设备清单")]
+        with ExitStack() as stack:
+            for context in (
+                patch.object(ai_fill, "load_embed_rules", return_value=rules),
+                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
+                patch.object(ai_fill, "project_turbine_model", return_value={}),
+                patch.object(ai_fill, "_allowed_technical_material_index", return_value=materials),
+                *extra_patches,
+            ):
+                stack.enter_context(context)
+            return ai_fill._embed_sources_for_fill(self.project, blank, tmp, **kwargs)
+
+    def test_placeholder_without_rule_is_reported_not_guessed(self) -> None:
+        """规则表没这一行就明说，不再拿占位符文字去素材库猜文件名。"""
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
+                ["[设备清单，待插入]"],
+                rules=[],
+            )
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["status"], "no_rule")
+        self.assertIn("设备清单", sources[0]["statusMessage"])
 
     def test_missing_material_is_reported_not_silently_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -151,64 +202,121 @@ class EmbedSourcesTests(unittest.TestCase):
         self.assertIn("设备清单", sources[0]["statusMessage"])
 
     def test_same_tier_collision_is_marked_ambiguous(self) -> None:
+        """关键词包含匹配命中同层多份不同素材：分不出来就交人工，不挑一个蒙混过去。"""
         with tempfile.TemporaryDirectory() as raw:
             sources = self._run(
                 Path(raw),
                 [
-                    {"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"},
-                    {"id": "RAW-2", "name": "设备清单.docx", "materialTier": "project"},
+                    {"id": "RAW-1", "name": "叶片场址校核报告.pdf", "materialTier": "project"},
+                    {"id": "RAW-2", "name": "齿轮箱场址校核报告.pdf", "materialTier": "project"},
                 ],
-                ["[设备清单，待插入]"],
+                ["[场址校核报告，待插入]"],
+                rules=[_rule("[场址校核报告，待插入]", "场址校核报告")],
             )
 
         self.assertEqual(sources[0]["status"], "ambiguous")
         self.assertEqual(sources[0]["candidateCount"], 2)
 
+    def test_exact_name_wins_over_containing_names(self) -> None:
+        """精确同名的素材在场时不退包含匹配，否则会被更长的名字抢走。"""
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [
+                    {"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"},
+                    {"id": "RAW-2", "name": "设备清单附录.docx", "materialTier": "project"},
+                ],
+                ["[设备清单，待插入]"],
+                extra_patches=(patch.object(ai_fill, "_run_async", side_effect=RuntimeError("stop here")),),
+            )
+
+        self.assertEqual(sources[0]["name"], "设备清单.docx")
+
+    def test_keyword_falls_back_to_containing_match(self) -> None:
+        """规则表是全局一份只能写概念名，素材真名常带项目特定后缀。"""
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [{"id": "RAW-1", "name": "本项目主机供货制造基地_锡盟基地.docx", "materialTier": "project"}],
+                ["[本项目主机供货制造基地-完整插入，待插入]"],
+                rules=[_rule("[本项目主机供货制造基地-完整插入，待插入]", "本项目主机供货制造基地")],
+                extra_patches=(patch.object(ai_fill, "_run_async", side_effect=RuntimeError("stop here")),),
+            )
+
+        self.assertEqual(sources[0]["name"], "本项目主机供货制造基地_锡盟基地.docx")
+
+    def test_component_cert_is_held_for_brand_selection(self) -> None:
+        """部件认证按部件分目录，取哪份要看本项目投的品牌，不能靠名字匹配定。"""
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [
+                    {
+                        "id": "RAW-1",
+                        "name": "EW10.0-220上置-CGC2024（甲厂）齿轮箱型式认证A.pdf",
+                        "materialTier": "standard",
+                        "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书/部件认证/齿轮箱",
+                    },
+                    {
+                        "id": "RAW-2",
+                        "name": "EW10.0-220上置-CGC2025（乙厂）齿轮箱型式认证A.pdf",
+                        "materialTier": "standard",
+                        "folderPath": "技术标/标准文件/EW10.0-220上置/认证证书/部件认证/齿轮箱",
+                    },
+                ],
+                ["[齿轮箱型式认证-完整插入，待插入]"],
+                rules=[_rule("[齿轮箱型式认证-完整插入，待插入]", "齿轮箱")],
+            )
+
+        self.assertEqual(sources[0]["status"], "need_brand")
+        self.assertEqual(sources[0]["component"], "齿轮箱")
+        self.assertEqual(sources[0]["candidateCount"], 2)
+
+    def test_duplicate_records_of_one_file_are_not_treated_as_a_collision(self) -> None:
+        """同一份素材挂在上置/下置两个机型目录下会各出一条记录，去重后才是唯一。"""
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [
+                    {"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project", "folderPath": "技术标/标准文件/A"},
+                    {"id": "RAW-2", "name": "设备清单.docx", "materialTier": "project", "folderPath": "技术标/标准文件/B"},
+                ],
+                ["[设备清单，待插入]"],
+                extra_patches=(patch.object(ai_fill, "_run_async", side_effect=RuntimeError("stop here")),),
+            )
+
+        self.assertNotEqual(sources[0]["status"], "ambiguous")
+
     def test_download_failure_degrades_to_manual_not_exception(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            blank = Path(raw) / "待填写-方案.docx"
-            _write_docx(blank, ["[设备清单，待插入]"])
-            with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
-                patch.object(
-                    ai_fill,
-                    "_allowed_technical_material_index",
-                    return_value=[{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
-                ),
-                patch.object(ai_fill, "_run_async", side_effect=RuntimeError("minio down")),
-            ):
-                sources = ai_fill._embed_sources_for_fill(self.project, blank, Path(raw))
+            sources = self._run(
+                Path(raw),
+                [{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
+                ["[设备清单，待插入]"],
+                extra_patches=(patch.object(ai_fill, "_run_async", side_effect=RuntimeError("minio down")),),
+            )
 
         # 一份素材取不到不能中断整份文件的填写
         self.assertEqual(sources[0]["status"], "download_failed")
         self.assertIn("minio down", sources[0]["statusMessage"])
 
     def test_ready_source_carries_local_path_for_the_skill(self) -> None:
+        payload = {"bucket": "materials", "key": "cleaned/设备清单.docx", "fileName": "设备清单.docx"}
+
+        def _run_async_stub(awaitable: object) -> tuple[dict, str]:
+            # 真实 _run_async 会 await 掉协程；mock 不 await，这里显式关闭免得留下未等待警告
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            return payload, "cleaned"
+
         with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            blank = tmp / "待填写-方案.docx"
-            _write_docx(blank, ["[设备清单，待插入]"])
-            payload = {"bucket": "materials", "key": "cleaned/设备清单.docx", "fileName": "设备清单.docx"}
-
-            def _run_async_stub(awaitable: object) -> tuple[dict, str]:
-                # 真实 _run_async 会 await 掉协程；mock 不 await，这里显式关闭免得留下未等待警告
-                if hasattr(awaitable, "close"):
-                    awaitable.close()
-                return payload, "cleaned"
-
-            with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
-                patch.object(
-                    ai_fill,
-                    "_allowed_technical_material_index",
-                    return_value=[{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
-                ),
-                patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),
-                patch.object(ai_fill.minio_client, "download_file") as download,
-            ):
-                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
+            with patch.object(ai_fill.minio_client, "download_file") as download:
+                sources = self._run(
+                    Path(raw),
+                    [{"id": "RAW-1", "name": "设备清单.docx", "materialTier": "project"}],
+                    ["[设备清单，待插入]"],
+                    extra_patches=(patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),),
+                )
 
         self.assertEqual(sources[0]["status"], "ready")
         self.assertEqual(sources[0]["materialTier"], "project")
@@ -216,128 +324,104 @@ class EmbedSourcesTests(unittest.TestCase):
         self.assertIn("embed_sources", sources[0]["docxPath"])
         download.assert_called_once()
 
-    def test_no_embed_placeholder_skips_material_lookup_entirely(self) -> None:
+    def test_no_embed_placeholder_skips_rule_and_material_lookup_entirely(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             blank = tmp / "待填写-方案.docx"
             _write_docx(blank, ["本项目安全等级为[安全等级，待填写]。"])
-            with patch.object(ai_fill, "_allowed_technical_material_index") as lookup:
+            with (
+                patch.object(ai_fill, "load_embed_rules") as rules,
+                patch.object(ai_fill, "_allowed_technical_material_index") as lookup,
+            ):
                 sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
 
         self.assertEqual(sources, [])
+        rules.assert_not_called()
         lookup.assert_not_called()
 
 
-class EmbedLabelRangeTests(unittest.TestCase):
-    """`文件-起点-终点` 拆分：文件名边界由素材索引决定，不靠语法猜。"""
+class EmbedHeadingRangeTests(unittest.TestCase):
+    """插入范围来自规则表的起点/终点两列，不再从占位符字符串里拆。
+
+    占位符里那串 `文件-起点-终点` 是给人看的，机器不解析它——素材名自带连字符
+    （型式认证名里有四个），按语法拆必然把文件名切碎。
+    """
 
     def setUp(self) -> None:
         self.project = {"id": "PRJ-0001", "name": "示例项目", "bidType": "技术标"}
 
-    def _by_key(self, names: list[str]) -> dict[str, list[dict]]:
-        index: dict[str, list[dict]] = {}
-        for name in names:
-            index.setdefault(ai_fill._embed_norm(Path(name).stem), []).append({"id": name, "name": name})
-        return index
+    def _run(self, tmp: Path, rules: list[dict], paragraph: str) -> list[dict]:
+        blank = tmp / "待填写-方案.docx"
+        _write_docx(blank, [paragraph])
+        payload = {"bucket": "materials", "key": "cleaned/物流解决方案.docx", "fileName": "物流解决方案.docx"}
 
-    def test_two_anchors_become_closed_range(self) -> None:
-        matches, anchors = ai_fill._embed_split_label(
-            "物流解决方案-项目运输方案-场内道路建议参数", self._by_key(["物流解决方案.docx"])
-        )
+        def _run_async_stub(awaitable: object) -> tuple[dict, str]:
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            return payload, "cleaned"
 
-        self.assertEqual(matches[0]["name"], "物流解决方案.docx")
-        self.assertEqual(anchors, ["项目运输方案", "场内道路建议参数"])
+        with (
+            patch.object(ai_fill, "load_embed_rules", return_value=rules),
+            patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
+            patch.object(ai_fill, "project_turbine_model", return_value={}),
+            patch.object(
+                ai_fill,
+                "_allowed_technical_material_index",
+                return_value=[{"id": "RAW-3", "name": "物流解决方案.docx", "materialTier": "project"}],
+            ),
+            patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),
+            patch.object(ai_fill.minio_client, "download_file"),
+        ):
+            return ai_fill._embed_sources_for_fill(self.project, blank, tmp)
 
-    def test_single_anchor_is_start_equals_end(self) -> None:
-        _matches, anchors = ai_fill._embed_split_label(
-            "风资源评估报告-发电量结果", self._by_key(["风资源评估报告.docx"])
-        )
-
-        self.assertEqual(anchors, ["发电量结果"])
-
-    def test_reserved_whole_file_token_means_no_range(self) -> None:
-        matches, anchors = ai_fill._embed_split_label(
-            "基础弯矩表-完整插入", self._by_key(["基础弯矩表.xlsx"])
-        )
-
-        self.assertTrue(matches)
-        self.assertEqual(anchors, [])
-
-    def test_hyphenated_material_name_is_not_cut_apart(self) -> None:
-        # 型式认证素材名自带四个连字符，固定按第一个 `-` 拆会把文件名切碎
-        name = "EW5.0-202-FD24C3018（南高齿）齿轮箱型式认证A-20240829.pdf"
-        matches, anchors = ai_fill._embed_split_label(f"{Path(name).stem}-完整插入", self._by_key([name]))
-
-        self.assertEqual(matches[0]["name"], name)
-        self.assertEqual(anchors, [])
-
-    def test_unmatched_concept_name_reports_not_found_not_format_error(self) -> None:
-        # 清单写概念名、素材是带机型编号的全名：根因是素材名对不上，不是占位符格式错。
-        # 报「格式错误」会把人引去改清单，但清单没错。
+    def test_closed_range_is_handed_to_the_filler(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            blank = tmp / "待填写-方案.docx"
-            _write_docx(blank, ["[齿轮箱型式认证-完整插入，待插入]"])
-            with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
-                patch.object(
-                    ai_fill,
-                    "_allowed_technical_material_index",
-                    return_value=[{"id": "RAW-1", "name": "EW5.0-202-FD24C3018齿轮箱型式认证A.pdf", "materialTier": "project"}],
-                ),
-            ):
-                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
-
-        self.assertEqual(sources[0]["status"], "not_found")
-
-    def test_extra_anchors_after_matched_material_are_a_format_error(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            blank = tmp / "待填写-方案.docx"
-            _write_docx(blank, ["[物流解决方案-甲-乙-丙，待插入]"])
-            with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
-                patch.object(
-                    ai_fill,
-                    "_allowed_technical_material_index",
-                    return_value=[{"id": "RAW-3", "name": "物流解决方案.docx", "materialTier": "project"}],
-                ),
-            ):
-                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
-
-        # 前缀命中了素材、后面确实剩三段，这才是真正的格式错
-        self.assertEqual(sources[0]["status"], "invalid_range")
-        self.assertIn("3 个标题锚点", sources[0]["statusMessage"])
-
-    def test_heading_range_is_handed_to_the_filler(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            blank = tmp / "待填写-方案.docx"
-            _write_docx(blank, ["[物流解决方案-项目运输方案-场内道路建议参数，待插入]"])
-            payload = {"bucket": "materials", "key": "cleaned/物流解决方案.docx", "fileName": "物流解决方案.docx"}
-
-            def _run_async_stub(awaitable: object) -> tuple[dict, str]:
-                if hasattr(awaitable, "close"):
-                    awaitable.close()
-                return payload, "cleaned"
-
-            with (
-                patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
-                patch.object(ai_fill, "project_turbine_model", return_value={}),
-                patch.object(
-                    ai_fill,
-                    "_allowed_technical_material_index",
-                    return_value=[{"id": "RAW-3", "name": "物流解决方案.docx", "materialTier": "project"}],
-                ),
-                patch.object(ai_fill, "_run_async", side_effect=_run_async_stub),
-                patch.object(ai_fill.minio_client, "download_file"),
-            ):
-                sources = ai_fill._embed_sources_for_fill(self.project, blank, tmp)
+            sources = self._run(
+                Path(raw),
+                [
+                    _rule(
+                        "[物流解决方案-项目运输方案-场内道路建议参数，待插入]",
+                        "物流解决方案",
+                        start="项目运输方案",
+                        end="场内道路建议参数",
+                    )
+                ],
+                "[物流解决方案-项目运输方案-场内道路建议参数，待插入]",
+            )
 
         self.assertEqual(sources[0]["status"], "ready")
         self.assertEqual(sources[0]["headingRange"], {"start": "项目运输方案", "end": "场内道路建议参数"})
+
+    def test_start_only_means_start_equals_end(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [_rule("[物流解决方案-发电量结果，待插入]", "物流解决方案", start="发电量结果")],
+                "[物流解决方案-发电量结果，待插入]",
+            )
+
+        self.assertEqual(sources[0]["headingRange"], {"start": "发电量结果", "end": "发电量结果"})
+
+    def test_empty_range_means_whole_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw),
+                [_rule("[物流解决方案-完整插入，待插入]", "物流解决方案")],
+                "[物流解决方案-完整插入，待插入]",
+            )
+
+        self.assertEqual(sources[0]["status"], "ready")
+        self.assertNotIn("headingRange", sources[0])
+
+    def test_hyphenated_placeholder_is_matched_whole_not_split(self) -> None:
+        """占位符里带四个连字符也只当匹配键整体比对，切碎它就找不回规则。"""
+        placeholder = "[EW5.0-202-FD24C3018（南高齿）齿轮箱型式认证A-完整插入，待插入]"
+        with tempfile.TemporaryDirectory() as raw:
+            sources = self._run(
+                Path(raw), [_rule(placeholder, "物流解决方案")], placeholder
+            )
+
+        self.assertEqual(sources[0]["status"], "ready")
 
 
 class EmbedConversionTests(unittest.TestCase):
@@ -366,6 +450,11 @@ class EmbedConversionTests(unittest.TestCase):
             "mimeType": mime_type,
         }
         with (
+            patch.object(
+                ai_fill,
+                "load_embed_rules",
+                return_value=[_rule(f"[{source.stem}，待插入]", source.stem)],
+            ),
             patch.object(ai_fill, "build_project_material_scope", return_value={"readableScopes": []}),
             patch.object(ai_fill, "project_turbine_model", return_value={}),
             patch.object(ai_fill, "_allowed_technical_material_index", return_value=[material]),
