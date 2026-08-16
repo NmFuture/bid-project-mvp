@@ -15,6 +15,7 @@ from typing import Any
 from app.core.config import BASE_DIR, settings
 from app.services.bid_type import TECHNICAL_BID_TYPE, require_bid_type
 from app.services.identity import build_project_identity, build_project_material_scope
+from app.services.material_tower_types import TOWER_FAMILIES, material_tower_family
 from app.services.technical_appendix_source_matrix import load_appendix_source_matrix_for_customer
 from app.services.technical_gap_domain import (
     recompute_technical_gap_decisions,
@@ -639,6 +640,34 @@ def _keep_by_turbine_model(item: dict[str, Any], selected: list[dict[str, Any]] 
     return any(fit != "conflict" for fit in fits)
 
 
+def _keep_by_tower_type(item: dict[str, Any], selected: list[dict[str, Any]] | dict[str, Any]) -> bool:
+    """按项目「基础形式」剔除塔型冲突素材：钢塔项目剔混塔族，混塔项目剔钢塔族。
+
+    素材塔型由 material_tower_family 按命名结构特征判型，判不出的（塔型无关）
+    一律保留，不做机型那样的 generic 收紧——塔型变体素材远少于通用素材，
+    严格化会把「钢塔筒招标项目场址设计安全性」这类各塔型共用的附表素材误杀。
+
+    多机型项目取各机型基础形式的并集（与机型过滤的「命中任一即保留」同语义）。
+    基础形式全是海上类型（单桩/导管架/多桩承台）时，素材库没有对应素材，
+    钢塔/混塔族一律剔除。未选基础形式不过滤。
+    """
+    selected_foundations = {
+        str(model.get("foundationType") or "").strip()
+        for model in _as_turbine_model_list(selected)
+    }
+    selected_foundations.discard("")
+    if not selected_foundations:
+        return True
+    family = material_tower_family(item.get("name"), item.get("folderPath"))
+    if not family:
+        return True
+    tower_families = selected_foundations & TOWER_FAMILIES
+    if not tower_families:
+        # 项目全是海上基础形式：陆上塔型族素材都不适用
+        return False
+    return family in tower_families
+
+
 def _as_turbine_model_list(value: list[dict[str, Any]] | dict[str, Any] | None) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict) and item]
@@ -742,6 +771,9 @@ def _allowed_technical_material_index(
             # 标准文件：已选机型时严格限定到选中机型（generic/conflict 都不进池）；
             # 多机型时命中任一即可，各机型素材都要进正文。
             if selected_models and not _keep_by_turbine_model(raw_with_tier, selected_models):
+                continue
+            # 塔型：按项目「基础形式」剔除钢塔/混塔冲突素材（判不出塔型的一律保留）。
+            if selected_models and not _keep_by_tower_type(raw_with_tier, selected_models):
                 continue
             # 项目定制/附表：解析生成的空副表约定目录，不进正文素材候选池。
             if material_tier == "project" and _is_project_appendix_folder_material(raw):
