@@ -586,6 +586,17 @@ export const technicalGapsAPI = {
     request(`/technical/projects/${projectId}/gaps/facts/curate`),
   saveFacts: (projectId, data) =>
     request(`/technical/projects/${projectId}/gaps/facts`, { method: 'PUT', body: data }),
+  // 部件认证的品牌选取：AI 按品牌清单从候选证书里挑一份，人在弹窗里核对与改写
+  brandPicks: (projectId) => request(`/technical/projects/${projectId}/gaps/brand-picks`),
+  // 要读品牌清单 xlsx 再问一次 AI，比普通接口慢，给足超时
+  regenerateBrandPicks: (projectId) =>
+    request(`/technical/projects/${projectId}/gaps/brand-picks/regenerate`, {
+      method: 'POST',
+      timeoutMs: 5 * 60 * 1000,
+      retryCount: 0,
+    }),
+  saveBrandPicks: (projectId, data) =>
+    request(`/technical/projects/${projectId}/gaps/brand-picks`, { method: 'PUT', body: data }),
   recheck: (projectId) =>
     request(`/technical/projects/${projectId}/gaps/recheck`, { method: 'POST' }),
   aiFill: (projectId, gid, data) =>

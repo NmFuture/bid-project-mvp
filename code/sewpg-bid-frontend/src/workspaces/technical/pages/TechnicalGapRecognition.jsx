@@ -5,6 +5,7 @@ import { PageLoading, PageError } from '../../../components/states/PageState'
 import PageHeader from '../../../components/shared/PageHeader'
 import DataCard from '../../../components/shared/DataCard'
 import OnlyOfficeEmbed from '../../../components/shared/OnlyOfficeEmbed'
+import TechnicalBrandPicksModal from '../components/TechnicalBrandPicksModal'
 import TechnicalGenerationProgressModal from '../components/TechnicalGenerationProgressModal'
 import { markTechnicalTask, restoreTechnicalTask, updateTechnicalTask } from '../technicalBackgroundTasks.js'
 import { useTechnicalTaskPresence } from '../technicalTaskPresence.js'
@@ -1537,6 +1538,8 @@ export default function TechnicalGapRecognition({ showToast }) {
   const bodyFillRunning = ['queued', 'running'].includes(String(bodyFillState?.status || ''))
   const bodyFillDone = Number(bodyFillState?.done || 0)
   const bodyFillTotal = Number(bodyFillState?.total || 0)
+  // 部件认证的品牌选取：默认不拦一键填写，人想核对 AI 选了哪份证书时才打开
+  const [brandPicksOpen, setBrandPicksOpen] = useState(false)
 
   const applyGenerationPayload = useCallback((payload, ownerId = id) => {
     const incomingStatus = String(payload?.status || '').toLowerCase()
@@ -3130,6 +3133,19 @@ export default function TechnicalGapRecognition({ showToast }) {
                 {bodyFillState?.message || ''}
               </span>
             )}
+            {/* 待插入的部件认证按品牌选证书，选完才知道插哪份；查看入口不拦填写，只供事后核对 */}
+            {tagFilter === 'template_ready' ? (
+              <Button
+                type="button"
+                onClick={() => setBrandPicksOpen(true)}
+                disabled={Boolean(busyAction) || bodyFillRunning}
+                title="查看并改写部件认证的品牌选取结果（齿轮箱/主轴承/变流器等插哪一份证书）"
+                size="sm"
+                variant="quiet"
+              >
+                品牌选取
+              </Button>
+            ) : null}
             {/* 一键入口按当前标签切换：点开「待填写」出填写、点开「待审核」出复核，同一个位置同一套样式。
                 任务执行中在任何筛选下都要能看到进度，所以运行态按钮不受此限制。 */}
             {tagFilter === 'template_ready' || bodyFillRunning ? (
@@ -3740,6 +3756,13 @@ export default function TechnicalGapRecognition({ showToast }) {
           onSaveMaterialPaths={handleSaveMaterialPaths}
           onCurate={() => handleCurateFacts()}
           onFillBlanks={() => handleCurateFacts({ fillOnly: true })}
+        />
+      ) : null}
+      {brandPicksOpen ? (
+        <TechnicalBrandPicksModal
+          projectId={id}
+          showToast={showToast}
+          onClose={() => setBrandPicksOpen(false)}
         />
       ) : null}
       <TechnicalGenerationProgressModal
