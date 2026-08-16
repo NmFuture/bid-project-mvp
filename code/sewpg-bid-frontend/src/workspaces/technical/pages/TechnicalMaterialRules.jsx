@@ -284,7 +284,9 @@ export default function TechnicalMaterialRules({ showToast = () => {} }) {
           <MetaRow label="生效来源">{FACT_SPECS_SOURCE_LABELS[factSpecsSource] || factSpecsSource || '-'}</MetaRow>
           <MetaRow label="文件名">{factSpecsMeta?.fileName || '-'}</MetaRow>
           <MetaRow label="上传时间">{factSpecsMeta?.uploadedAt ? formatDateTime(factSpecsMeta.uploadedAt) : '-'}</MetaRow>
-          <MetaRow label="字段总数">{Number.isFinite(Number(factSpecsMeta?.specTotal)) ? Number(factSpecsMeta?.specTotal) : '-'}</MetaRow>
+          <MetaRow label="待填写字段">{Number.isFinite(Number(factSpecsMeta?.specTotal)) ? Number(factSpecsMeta?.specTotal) : '-'}</MetaRow>
+          {/* 规则表现在管两类，只报字段数会让人以为待插入那半没传上去 */}
+          <MetaRow label="待插入规则">{Number.isFinite(Number(factSpecsMeta?.embedRuleTotal)) ? Number(factSpecsMeta?.embedRuleTotal) : '-'}</MetaRow>
         </div>
       </section>
 

@@ -3,8 +3,8 @@ import { technicalMaterialsAPI } from '../../../api'
 import Button from '../../../components/ui/Button'
 import { Dialog, DialogFooter, DialogHeader } from '../../../components/ui/Dialog'
 
-// 列直接对应 spec 字段，不是 Excel 模板表头的镜像——Excel 清单现为
-// 序号/类型/文件夹/文件名/占位符内容/引用文件，字段名由占位符正文剥离得出，
+// 列直接对应 spec 字段，不是 Excel 模板表头的镜像——Excel 规则表「待填写」sheet 现为
+// 序号/文件夹/文件名/占位符内容/引用文件，字段名由占位符正文剥离得出，
 // 与这里的编辑列不是一一对应关系。key/sourceKind 等派生字段不在界面暴露，
 // 保存时按导入解析器（technical_fact_spec_import.py）同款规则自动推导。
 // table-fixed 按百分比分摊弹窗宽度：序号/操作收紧，长文本列多分
@@ -101,6 +101,8 @@ const toPayloadSpec = (row, index) => {
 // key/来源类别等派生字段按导入规则自动推导。走的不是 Excel 解析路径。
 export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToast = () => {} }) {
   const [rows, setRows] = useState(null)
+  const [embedRules, setEmbedRules] = useState([])
+  const [tab, setTab] = useState('fill')
   const [loadError, setLoadError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -111,8 +113,9 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
       const payload = await technicalMaterialsAPI.rules.factSpecsRows()
       const specs = Array.isArray(payload?.specs) ? payload.specs : []
       setRows(specs.map(toEditRow))
+      setEmbedRules(Array.isArray(payload?.embedRules) ? payload.embedRules : [])
     } catch (e) {
-      setLoadError(e?.message || '事实表清单加载失败')
+      setLoadError(e?.message || '规则表加载失败')
     }
   }
 
@@ -159,10 +162,36 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
   return (
     <Dialog open onClose={saving ? undefined : onClose} size="full">
       <DialogHeader onClose={saving ? undefined : onClose}>
-        <h3 className="text-lg font-headline font-semibold text-on-surface">编辑项目事实表清单（全局）</h3>
+        <h3 className="text-lg font-headline font-semibold text-on-surface">技术标规则表（全局）</h3>
         <p className="mt-1 text-xs text-outline">
-          按事实表字段逐行编辑，全局一份、所有技术标项目共用，保存后整表生效。来源文件决定取数方式：招标文件 / 项目定制 / 认证证书 / 平台输入 / 自动生成，留空表示模板占位不取数。
+          {tab === 'fill'
+            ? '「待填写」按字段逐行编辑，全局一份、所有技术标项目共用，保存后整表生效。来源文件决定取数方式：招标文件 / 项目定制 / 认证证书 / 平台输入 / 自动生成，留空表示模板占位不取数。'
+            : '「待插入」一行一个插入动作，不按素材名归并——同一份素材插进两个专题就是两行。素材列写关键词或部件名：命中部件认证目录的按本项目投的品牌选证书，其余在项目素材范围里按名字定位。起止标题都空＝整份插入。'}
         </p>
+        {/* 待插入只读：它没有 SQL 表也没有编辑接口，要改就下载 Excel 改完重传（导出已含两个 sheet）。
+            页面上看得见比编得动更要紧——传上去没生效是看不出来的，编不了只是麻烦一点。 */}
+        <div className="mt-2 flex items-center gap-1">
+          {[
+            ['fill', `待填写（${rows?.length ?? '-'}）`],
+            ['embed', `待插入（${embedRules.length}）`],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                tab === key
+                  ? 'bg-primary/10 font-semibold text-primary'
+                  : 'text-on-surface-variant hover:bg-surface-container-high'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+          {tab === 'embed' ? (
+            <span className="ml-1 text-[11px] text-outline">只读，改动请下载 Excel 编辑后重新上传</span>
+          ) : null}
+        </div>
       </DialogHeader>
       <div className="min-h-0 flex-1 overflow-auto">
         {loadError ? (
@@ -173,7 +202,52 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
             </Button>
           </div>
         ) : rows === null ? (
-          <p className="p-6 text-sm text-outline">正在加载事实表清单...</p>
+          <p className="p-6 text-sm text-outline">正在加载规则表...</p>
+        ) : tab === 'embed' ? (
+          embedRules.length ? (
+            <table className="w-full table-fixed border-collapse text-xs">
+              <thead className="sticky top-0 z-10">
+                <tr>
+                  {[
+                    ['文件夹', 'w-[16%]'],
+                    ['待填写文件', 'w-[20%]'],
+                    ['占位符内容', 'w-[26%]'],
+                    ['素材', 'w-[16%]'],
+                    ['起点标题', 'w-[11%]'],
+                    ['终点标题', 'w-[11%]'],
+                  ].map(([label, width]) => (
+                    <th
+                      key={label}
+                      className={`whitespace-nowrap border-b border-outline-variant/60 bg-surface-container-low px-2 py-2 text-left font-semibold text-on-surface-variant ${width}`}
+                    >
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {embedRules.map((rule, index) => (
+                  <tr
+                    key={`${rule.targetFile}-${rule.placeholder}-${index}`}
+                    className="odd:bg-surface-container-lowest even:bg-surface-container-low/40"
+                  >
+                    {['folder', 'targetFile', 'placeholder', 'material', 'headingStart', 'headingEnd'].map((field) => (
+                      <td
+                        key={field}
+                        className="break-all border-b border-outline-variant/40 px-2 py-1.5 align-top text-on-surface"
+                      >
+                        {String(rule[field] || '') || <span className="text-outline">—</span>}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="p-6 text-sm text-outline">
+              当前规则表里没有「待插入」sheet，或该 sheet 一行都没有。
+            </p>
+          )
         ) : (
           <table className="w-full table-fixed border-collapse text-xs">
             <thead className="sticky top-0 z-10">
@@ -244,17 +318,25 @@ export default function TechnicalFactSpecsEditModal({ onClose, onSaved, showToas
       </div>
       <DialogFooter>
         <div className="mr-auto flex items-center gap-3">
-          <Button type="button" size="sm" variant="quiet" onClick={addRow} disabled={rows === null || saving}>
-            新增行
-          </Button>
-          {rows ? <span className="text-xs text-outline">共 {rows.length} 行</span> : null}
+          {tab === 'fill' ? (
+            <>
+              <Button type="button" size="sm" variant="quiet" onClick={addRow} disabled={rows === null || saving}>
+                新增行
+              </Button>
+              {rows ? <span className="text-xs text-outline">共 {rows.length} 行</span> : null}
+            </>
+          ) : (
+            <span className="text-xs text-outline">共 {embedRules.length} 行</span>
+          )}
         </div>
         <Button type="button" size="sm" variant="quiet" onClick={onClose} disabled={saving}>
-          取消
+          {tab === 'fill' ? '取消' : '关闭'}
         </Button>
-        <Button type="button" size="sm" variant="primary" onClick={handleSave} disabled={rows === null || saving}>
-          {saving ? '保存中...' : '保存'}
-        </Button>
+        {tab === 'fill' ? (
+          <Button type="button" size="sm" variant="primary" onClick={handleSave} disabled={rows === null || saving}>
+            {saving ? '保存中...' : '保存'}
+          </Button>
+        ) : null}
       </DialogFooter>
     </Dialog>
   )

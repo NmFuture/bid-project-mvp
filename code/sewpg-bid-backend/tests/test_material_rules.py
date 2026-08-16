@@ -344,6 +344,29 @@ class MaterialRulesFactSpecsTests(_MaterialRulesTestBase):
         reimported = import_specs(exported)
         self.assertEqual([spec["label"] for spec in reimported], ["招标编号", "总装机容量"])
 
+    def test_meta_and_rows_expose_embed_rules_to_the_page(self) -> None:
+        """规则表管两类，页面只报字段数会让人以为待插入那半没传上去。"""
+        xlsx_path = _build_specs_xlsx(
+            Path(self.temp_dir.name) / "规则表.xlsx",
+            [("招标编号", "招标文件/招标公告")],
+            embed_rows=[
+                ["标准文件", "待填写-塔筒设计", "[基础弯矩表-完整插入，待插入]", "基础弯矩表", "", ""],
+                ["客户定制-华能", "待填写-物流", "[物流解决方案-x，待插入]", "物流解决方案", "项目运输方案", "场内道路建议参数"],
+            ],
+        )
+        self._upload_specs(xlsx_path).raise_for_status()
+
+        meta = self.client.get("/api/technical/materials/rules/fact-specs").json()
+        self.assertEqual(meta["specTotal"], 1)
+        self.assertEqual(meta["embedRuleTotal"], 2)
+
+        rows = self.client.get("/api/technical/materials/rules/fact-specs/rows").json()
+        self.assertEqual(len(rows["specs"]), 1)
+        self.assertEqual(
+            [(r["material"], r["headingStart"], r["headingEnd"]) for r in rows["embedRules"]],
+            [("基础弯矩表", "", ""), ("物流解决方案", "项目运输方案", "场内道路建议参数")],
+        )
+
     def test_upload_stores_embed_rules_and_export_round_trips(self) -> None:
         """待插入 30 行以前解析时整行丢弃，落不了库也导不出来，这里守住整条通路。"""
         xlsx_path = _build_specs_xlsx(

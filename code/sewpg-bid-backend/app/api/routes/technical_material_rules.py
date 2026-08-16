@@ -147,29 +147,37 @@ async def get_global_fact_specs(_: dict[str, Any] = Depends(current_user)) -> di
     仓库不再自带默认清单（上游 283381f 收敛）：都没上传过时返回 source=none。
     历史 override（本次改造前上传、尚未入库）按原 sidecar 元数据展示。
     """
+    embed_total = len(load_embed_rules())
     specs = await list_fact_spec_rows()
     if specs:
         meta = load_global_fact_specs_meta() or {}
         return {
             "source": "override",
             "specTotal": len(specs),
+            # 规则表现在管两类，只报字段数会让人以为待插入那半没传上去
+            "embedRuleTotal": embed_total,
             "fileName": str(meta.get("fileName") or ""),
             "uploadedAt": str(meta.get("uploadedAt") or ""),
             "uploadedBy": str(meta.get("uploadedBy") or ""),
         }
     meta = load_global_fact_specs_meta()
     if meta:
-        return {"source": "override", **meta}
-    return {"source": "none", "specTotal": 0}
+        return {"source": "override", "embedRuleTotal": embed_total, **meta}
+    return {"source": "none", "specTotal": 0, "embedRuleTotal": embed_total}
 
 
 @router.get("/api/technical/materials/rules/fact-specs/rows")
 async def get_global_fact_spec_rows(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    """弹窗编辑数据：SQL 中的完整 spec 列表；未保存过时回落当前生效清单（默认/历史 override）。"""
+    """弹窗编辑数据：SQL 中的完整 spec 列表；未保存过时回落当前生效清单（默认/历史 override）。
+
+    插入规则一并返回但只读：它没有 SQL 表也没有在线编辑接口，要改就下载 Excel 改完重传
+    （导出已含两个 sheet，闭环是通的）。页面上看得见比编得动更要紧——传上去没生效
+    是看不出来的，编不了只是麻烦一点。
+    """
     specs = await list_fact_spec_rows()
     if not specs:
         specs = list(load_specs())
-    return {"specs": specs}
+    return {"specs": specs, "embedRules": load_embed_rules()}
 
 
 @router.put("/api/technical/materials/rules/fact-specs/rows")
