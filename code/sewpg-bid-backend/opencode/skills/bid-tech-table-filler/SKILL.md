@@ -76,6 +76,7 @@ s4fill-prepare /data/documents/<projectId>/technical-workspace/s4_gap_workdir/ai
 
 - `action` 语义：`fill` 正常填写；`partial` 填入并黄高亮待人工核对（如证书 OCR 值）；`manual` 待人工（value 会被脚本强制改写为 `[待人工补充：字段名]`）。
 - 清单型附表（供货清单/品牌表）一行多列：每个「行标签 × 待填列」是 brief 里的一个独立字段，逐格给 fill。
+- 网格型（曲线表：每行一个风速区间、功率等数据列逐格待填）与清单行型（备品备件清单/培训计划表：记录行全空待生成）附表同理，按「行键 × 列头」逐格给 fill，targetField 带 `cellKind`（`matrix` / `blankList`）；行键是预填的风速区间或「第N行」。`cellKind: "image"` 是图片占位列（功率曲线对比图等），本期不支持图片插入，**无需给值**，脚本统一降级 `[待人工补充]`。
 - 降级不丢人：脚本把证据未命中/值不可用/低置信冲突的格子降级 manual 是防幻觉机制正常工作，不要为了避免降级而凑证据。
 
 ## 规则细则的适用范围
