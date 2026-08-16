@@ -7,7 +7,7 @@
 - `Dockerfile`
   - 基于按 AMD64 manifest digest 锁定的 `onlyoffice/documentserver:9.3.1.2` 构建项目镜像
   - 从按 digest 锁定的 Debian 镜像复制 Noto CJK 与 Liberation 的 Regular、Bold 和许可证
-  - 字体包与 `python3-fonttools` 锁定版本，抽取 OTF 时不重算时间戳
+  - 字体包与 `python3-fonttools` 锁定版本，apt 源锁定到 Debian 官方快照归档（`DEBIAN_SNAPSHOT`），上游下架旧版本不影响冷构建；抽取 OTF 时不重算时间戳
   - Compose 支持时关闭会每次变化的 BuildKit provenance 附件；旧版 Compose 会告警后继续构建
   - 发布追踪由 revision、manifest 和 checksum 承担；出现 provenance 降级告警时不得假定镜像 ID 可复现
 - `font-contract.json`
