@@ -97,6 +97,7 @@ from app.services.job_queue import (
 )
 from app.services.job_timing import current_locked_job_id
 from app.services.local_job_executor import submit_local_job
+from app.services import technical_brand_pick, technical_gap_ai_fill
 from app.services.technical_fact_material_classes import build_fact_material_check
 from app.services.technical_fact_spec_global import resolve_fact_specs
 from app.services.technical_gap_repository import (
@@ -1679,6 +1680,71 @@ class TechnicalGapService:
             "pendingTotal": len(collect_body_fill_targets(gap_state, {})),
             "gapPlan": copy.deepcopy(gap_state.get("plan") or {}),
         }
+
+    # ---------------- 部件认证的品牌选取 ----------------
+
+    def brand_picks(self, project_id: str) -> dict[str, Any]:
+        """当前项目的部件认证品牌选取结果与候选清单，供人核对。"""
+        project = self.ensure_project(project_id)
+        gap_state = ensure_technical_gap_state(project)
+        stored = gap_state.get("brandPicks") if isinstance(gap_state.get("brandPicks"), dict) else {}
+        return {
+            "picks": copy.deepcopy(stored.get("picks") or []),
+            "error": str(stored.get("error") or ""),
+            "brandListName": str(stored.get("brandListName") or ""),
+            "generatedAt": str(stored.get("generatedAt") or ""),
+            # 候选一并返回：人要判断 AI 选得对不对，得看见它是从哪几份里选的
+            "components": technical_gap_ai_fill.brand_pick_components(project),
+        }
+
+    async def regenerate_brand_picks(self, project_id: str) -> dict[str, Any]:
+        """重新问一次 AI。要读素材、调 OpenCode，放工作线程避免堵住事件循环。"""
+        project = self.ensure_project(project_id)
+        result = await asyncio.to_thread(technical_gap_ai_fill.regenerate_brand_picks, project)
+
+        def apply(target: dict[str, Any]) -> None:
+            ensure_technical_gap_state(target)["brandPicks"] = result
+            target["updatedAt"] = now_iso()
+
+        mutate_technical_gap_project(project_id, apply)
+        return self.brand_picks(project_id)
+
+    def save_brand_picks(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """人工改写选取结果。改过的标 source=manual，重跑 AI 时不会被悄悄盖掉。"""
+        raw = data.get("picks") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="picks 必须是数组。")
+        picks: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="picks 的每一项必须是对象。")
+            component = str(item.get("component") or "").strip()
+            if not component:
+                raise HTTPException(status_code=400, detail="picks 里每一项都要有 component。")
+            material_name = str(item.get("materialName") or "").strip()
+            picks.append(
+                {
+                    "component": component,
+                    "brand": str(item.get("brand") or "").strip(),
+                    "materialName": material_name,
+                    "reason": str(item.get("reason") or "").strip(),
+                    "status": (
+                        technical_brand_pick.PICK_STATUS_OK
+                        if material_name
+                        else technical_brand_pick.PICK_STATUS_NOT_AVAILABLE
+                    ),
+                    "source": "manual",
+                }
+            )
+
+        def apply(target: dict[str, Any]) -> None:
+            gap_state = ensure_technical_gap_state(target)
+            stored = gap_state.get("brandPicks") if isinstance(gap_state.get("brandPicks"), dict) else {}
+            gap_state["brandPicks"] = {**stored, "picks": picks, "error": ""}
+            target["updatedAt"] = now_iso()
+
+        mutate_technical_gap_project(project_id, apply)
+        return self.brand_picks(project_id)
 
 
 technical_gap_service = TechnicalGapService()

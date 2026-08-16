@@ -468,6 +468,27 @@ async def save_technical_gap_fact_material_sources(
     return await technical_gap_service.save_fact_material_sources(project_id, data)
 
 
+@router.get("/api/technical/projects/{project_id}/gaps/brand-picks")
+async def get_technical_gap_brand_picks(project_id: str) -> dict[str, Any]:
+    """部件认证的品牌选取结果：AI 选了哪份、依据是什么，连同候选清单一起返回供人核对。"""
+    return technical_gap_service.brand_picks(project_id)
+
+
+@router.post("/api/technical/projects/{project_id}/gaps/brand-picks/regenerate")
+async def regenerate_technical_gap_brand_picks(project_id: str) -> dict[str, Any]:
+    """按当前品牌清单与素材候选重新问一次 AI，覆盖已有结果。"""
+    return await technical_gap_service.regenerate_brand_picks(project_id)
+
+
+@router.put("/api/technical/projects/{project_id}/gaps/brand-picks")
+async def save_technical_gap_brand_picks(
+    project_id: str,
+    data: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """人工改写品牌选取结果；改过的标 source=manual，重跑 AI 不会悄悄盖掉。"""
+    return technical_gap_service.save_brand_picks(project_id, data)
+
+
 @router.get("/api/technical/projects/{project_id}/gaps/facts/curate")
 async def get_technical_gap_fact_curate_status(project_id: str) -> dict[str, Any]:
     """AI 匹配填充任务状态：前端轮询用，终态一并返回最新事实表与报告。"""

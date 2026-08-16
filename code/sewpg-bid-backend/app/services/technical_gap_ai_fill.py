@@ -26,9 +26,14 @@ from app.services.technical_gap_domain import (
     summarize_technical_gap_plan,
     technical_gap_artifact_onlyoffice_payload,
 )
+from app.services import technical_brand_pick
 from app.services.technical_fact_spec_global import load_embed_rules, resolve_fact_specs
 from app.services.technical_fact_spec_import import placeholder_label
-from app.services.technical_gap_state import legacy_technical_gap_items_from_plan
+from app.services.technical_gap_repository import mutate_technical_gap_project
+from app.services.technical_gap_state import (
+    ensure_technical_gap_state,
+    legacy_technical_gap_items_from_plan,
+)
 from app.services.technical_material_store import technical_material_store
 from app.services.turbine_models import project_turbine_model
 from app.services.workspace_artifacts import technical_workspace_dir
@@ -943,6 +948,147 @@ def _embed_component_cert_materials(
     ]
 
 
+def _all_component_cert_groups(candidates: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """素材库里全部部件认证目录 → {部件名: 候选}。
+
+    一次收齐所有部件再问 AI：品牌选取按项目做一次就够，按 Word 逐份问会把同一个部件在
+    X2/X3 两个专题里各判一次，可能judgment不一致，也白花调用。
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for material in candidates:
+        folder = str(material.get("folderPath") or "")
+        if _EMBED_COMPONENT_CERT_SEGMENT not in folder:
+            continue
+        component = Path(folder).name
+        if not component or _embed_norm(component) == _embed_norm(_EMBED_COMPONENT_CERT_SEGMENT):
+            continue
+        groups.setdefault(component, []).append(material)
+    return {component: _embed_dedupe(items) for component, items in groups.items()}
+
+
+def _generate_brand_picks(
+    project: dict[str, Any], candidates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """跑一次品牌选取。失败不抛出，把原因写进 error 由上层标黄，别断了整份文件的填写。"""
+    from app.services.bid_runtime_state import now_iso
+
+    result: dict[str, Any] = {
+        "picks": [],
+        "error": "",
+        "brandListName": "",
+        "generatedAt": now_iso(),
+    }
+    groups = _all_component_cert_groups(candidates)
+    if not groups:
+        return result
+    brand_material = technical_brand_pick.find_brand_list_material(candidates)
+    if brand_material is None:
+        result["error"] = (
+            f"项目素材范围内没有找到大部件品牌清单"
+            f"（{technical_brand_pick.BRAND_LIST_FOLDER_KEYWORD} 目录下名字含"
+            f"「{technical_brand_pick.BRAND_LIST_NAME_KEYWORD}」的 xlsx）。"
+        )
+        return result
+    result["brandListName"] = str(brand_material.get("name") or "")
+    try:
+        brand_text = technical_brand_pick.dump_brand_list_text(
+            brand_material,
+            lambda material_id: _run_async(technical_material_store.raw_download_content(material_id)),
+        )
+        result["picks"] = technical_brand_pick.request_brand_picks(
+            str(project_turbine_model(project).get("model") or ""),
+            brand_text,
+            {component: [str(m.get("name") or "") for m in items] for component, items in groups.items()},
+        )
+    except Exception as exc:  # noqa: BLE001 - 品牌选取失败只该让这几个部件标黄
+        result["error"] = f"品牌选取失败：{exc}"
+    return result
+
+
+def _resolve_brand_picks(
+    project: dict[str, Any], candidates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """项目级的品牌选取结果：有就用，没有跑一次并落库。人改过或点重跑会覆盖这份缓存。"""
+    state = ensure_technical_gap_state(project)
+    cached = state.get("brandPicks")
+    if isinstance(cached, dict) and (cached.get("picks") or cached.get("error")):
+        return cached
+    result = _generate_brand_picks(project, candidates)
+    state["brandPicks"] = result
+    project_id = str(project.get("id") or "")
+    if project_id:
+        try:
+            def _apply(target: dict[str, Any]) -> None:
+                ensure_technical_gap_state(target)["brandPicks"] = result
+
+            mutate_technical_gap_project(project_id, _apply)
+        except Exception:  # noqa: BLE001 - 落库失败只影响下次要重算，不该中断本次填写
+            pass
+    return result
+
+
+def regenerate_brand_picks(project: dict[str, Any]) -> dict[str, Any]:
+    """重跑品牌选取并返回结果（不落库，由调用方在自己的事务里写）。
+
+    人改过之后想重新问一遍 AI，或素材/品牌清单换了，走这里。
+    """
+    material_scope = build_project_material_scope(project)
+    candidates = _allowed_technical_material_index(material_scope, project_turbine_model(project))
+    return _generate_brand_picks(project, candidates)
+
+
+def brand_pick_components(project: dict[str, Any]) -> dict[str, list[str]]:
+    """本项目素材范围内每个部件的候选文件名，供页面展示「AI 是从哪几份里选的」。"""
+    material_scope = build_project_material_scope(project)
+    candidates = _allowed_technical_material_index(material_scope, project_turbine_model(project))
+    return {
+        component: [str(material.get("name") or "") for material in items]
+        for component, items in _all_component_cert_groups(candidates).items()
+    }
+
+
+def _pick_component_cert(
+    project: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    component: str,
+    component_matches: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """部件 → 该插哪份认证。返回 (选中素材, 挂起原因)，两者恰有一个非 None。"""
+    picks = _resolve_brand_picks(project, candidates)
+    hold_base = {
+        "component": component,
+        "status": "need_brand",
+        "candidateCount": len(component_matches),
+    }
+    if picks.get("error"):
+        return None, {**hold_base, "statusMessage": str(picks["error"])}
+    pick = technical_brand_pick.picks_by_component(picks.get("picks") or []).get(_embed_norm(component))
+    if pick is None:
+        return None, {
+            **hold_base,
+            "statusMessage": f"品牌清单里没有查到「{component}」本项目投什么品牌，请人工指定。",
+        }
+    brand = str(pick.get("brand") or "")
+    if str(pick.get("status") or "") != technical_brand_pick.PICK_STATUS_OK:
+        return None, {
+            **hold_base,
+            "brand": brand,
+            "statusMessage": str(pick.get("reason") or f"「{component}」未选出可用的认证证书。"),
+        }
+    picked_name = _embed_norm(pick.get("materialName"))
+    for material in component_matches:
+        if _embed_norm(material.get("name")) == picked_name:
+            return material, None
+    return None, {
+        **hold_base,
+        "brand": brand,
+        "statusMessage": (
+            f"「{component}」按品牌「{brand}」选中的证书不在本项目候选里："
+            f"{pick.get('materialName') or '（空）'}。"
+        ),
+    }
+
+
 def _embed_keyword_materials(
     candidates: list[dict[str, Any]], keyword: str
 ) -> list[dict[str, Any]]:
@@ -1122,31 +1268,26 @@ def _embed_sources_for_fill(
             _embed_component_cert_materials(candidates, material_keyword)
         )
         if component_matches:
-            # 部件认证取哪份由本项目投的品牌决定，读品牌清单是下一步的事，先显式挂起
-            sources.append(
-                {
-                    "placeholder": label,
-                    "component": material_keyword,
-                    "status": "need_brand",
-                    "statusMessage": (
-                        f"「{material_keyword}」是部件认证，需要按本项目投的品牌选取；"
-                        f"当前候选 {len(component_matches)} 份，暂未接入品牌清单。"
-                    ),
-                    "candidateCount": len(component_matches),
-                }
+            # 部件认证取哪份由本项目投的品牌决定，不能靠名字匹配
+            picked, hold = _pick_component_cert(
+                project, candidates, material_keyword, component_matches
             )
-            continue
-        matches = _embed_dedupe(_embed_keyword_materials(candidates, material_keyword))
-        if not matches:
-            sources.append(
-                {
-                    "placeholder": label,
-                    "status": "not_found",
-                    "statusMessage": f"项目素材范围内未找到名为「{material_keyword}」的素材。",
-                }
-            )
-            continue
-        picked, ambiguous = _pick_most_specific_material(matches)
+            if hold is not None:
+                sources.append({"placeholder": label, **hold})
+                continue
+            ambiguous = False
+        else:
+            matches = _embed_dedupe(_embed_keyword_materials(candidates, material_keyword))
+            if not matches:
+                sources.append(
+                    {
+                        "placeholder": label,
+                        "status": "not_found",
+                        "statusMessage": f"项目素材范围内未找到名为「{material_keyword}」的素材。",
+                    }
+                )
+                continue
+            picked, ambiguous = _pick_most_specific_material(matches)
         material_id = str(picked.get("id") or "")
         name = str(picked.get("name") or "")
         entry = {
